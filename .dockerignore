@@ -1,0 +1,22 @@
+# 绝不能打进镜像的凭证文件
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.superpowers
+
+node_modules
+dist
+build
+
+tests
+docs
+
+*.md
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
