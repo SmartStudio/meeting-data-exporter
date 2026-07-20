@@ -32,10 +32,17 @@ const ARRAY_FIELDS: Array<[keyof RawDetail, AssetType]> = [
 /**
  * assetId 必须含字段名与索引：六类文本资产同属一个 record_file，
  * 若只用 record_file_id 作标识，它们会在下游的唯一约束下被压成一行。
+ *
+ * assetId 同时把 meetingRecordId 编入前缀（<meetingRecordId>:<recordFileId>:<assetType>:<index>），
+ * 使其自包含——resolveDownloadUrl 解析下载地址所需的 meeting_record_id 直接从
+ * assetId 反解即可，不必依赖任何跨请求/跨实例的缓存。网关是多实例部署的服务端组件，
+ * `GET /meetings/{id}/assets` 与 `POST /assets/{assetId}/download-url` 是两次独立的
+ * HTTP 请求，随时可能落到不同实例，进程内缓存在这种场景下不可靠。
  */
 export function extractAssets(
   meetingId: string,
   subMeetingId: string,
+  meetingRecordId: string,
   detail: RawDetail,
   allowDownload: boolean,
 ): Asset[] {
@@ -44,7 +51,7 @@ export function extractAssets(
 
   const push = (t: AssetType, idx: number, fileType: string | null, allowed: boolean): void => {
     out.push({
-      assetId: `${fileId}:${t}:${idx}`,
+      assetId: `${meetingRecordId}:${fileId}:${t}:${idx}`,
       meetingId,
       subMeetingId,
       assetType: t,

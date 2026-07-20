@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { createAddressesApi } from '../../src/tencent/addresses'
 import {
   createCatalog,
-  AssetNotIndexedError,
+  InvalidAssetIdError,
   type CatalogDeps,
 } from '../../src/catalog/index'
 import { StsTokenUnavailableError, type StsManager } from '../../src/sts/manager'
@@ -203,19 +203,39 @@ test('两个接口的 expiresAt 相差 6*3600 - 300 秒', async () => {
   expect(videoResult.expiresAt - aiResult.expiresAt).toBe(6 * 3600 - 300)
 })
 
-test('resolveDownloadUrl：video 资产未经 listAssets 索引时抛出可识别错误', async () => {
+test('resolveDownloadUrl：assetId 自包含 meetingRecordId，无需先调用 listAssets 即可解析（多实例安全）', async () => {
+  // 新建一个从未调用过 listAssets 的 catalog 实例，模拟请求被负载均衡到另一台实例，
+  // 直接用一个手工构造的 assetId（往返验证：meetingRecordId 能从中正确解析回来）
+  // 调用 resolveDownloadUrl，验证其不依赖任何跨请求缓存也能成功。
   const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
-  const orphan = {
-    assetId: 'f-unknown:video:0',
+  const video = {
+    assetId: 'rec-1:f1:video:0',
     meetingId: 'm1',
     subMeetingId: '',
     assetType: 'video' as const,
-    recordFileId: 'f-unknown',
+    recordFileId: 'f1',
     fileType: 'mp4',
     bytesExpected: null,
     allowDownload: true,
   }
-  await expect(catalog.resolveDownloadUrl(orphan)).rejects.toThrow(AssetNotIndexedError)
+  const { url, expiresAt } = await catalog.resolveDownloadUrl(video)
+  expect(url).toBe('https://cos/video.mp4')
+  expect(expiresAt).toBe(NOW + 6 * 3600)
+})
+
+test('resolveDownloadUrl：assetId 段数不足（非法格式）时抛出明确错误', async () => {
+  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
+  const malformed = {
+    assetId: 'f1:video',
+    meetingId: 'm1',
+    subMeetingId: '',
+    assetType: 'video' as const,
+    recordFileId: 'f1',
+    fileType: 'mp4',
+    bytesExpected: null,
+    allowDownload: true,
+  }
+  await expect(catalog.resolveDownloadUrl(malformed)).rejects.toThrow(InvalidAssetIdError)
 })
 
 test('resolveDownloadUrl：ai_* 资产在 STS 不可用时抛出 StsTokenUnavailableError', async () => {

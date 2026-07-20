@@ -29,17 +29,21 @@ export interface Catalog {
 }
 
 /**
- * resolveDownloadUrl 对 video/audio/meeting_summary 复用批量接口（6 小时链接）时，
- * 需要该资产所属的 meeting_record_id——这不是 Asset 自带的字段，只能在 listAssets
- * 时观测到。因此要求先对该资产所属会议调用过 listAssets。
+ * assetId 不符合 <meetingRecordId>:<recordFileId>:<assetType>:<index> 格式时抛出。
+ *
+ * 网关是多实例部署的服务端组件，`GET /meetings/{id}/assets` 与
+ * `POST /assets/{assetId}/download-url` 是两次独立的 HTTP 请求，可能落到不同实例，
+ * 因此 resolveDownloadUrl 不能依赖任何进程内缓存来反查 meeting_record_id，只能从
+ * assetId 本身解析。解析失败说明 assetId 不是本网关签发的（或已损坏），必须显式报错，
+ * 不能静默跳过。
  */
-export class AssetNotIndexedError extends Error {
-  constructor(readonly recordFileId: string) {
+export class InvalidAssetIdError extends Error {
+  constructor(readonly assetId: string) {
     super(
-      `no meeting_record_id cached for record file ${recordFileId}; ` +
-        'call listAssets for the owning meeting before resolveDownloadUrl',
+      `malformed assetId ${JSON.stringify(assetId)}: expected ` +
+        '<meetingRecordId>:<recordFileId>:<assetType>:<index>',
     )
-    this.name = 'AssetNotIndexedError'
+    this.name = 'InvalidAssetIdError'
   }
 }
 
@@ -62,7 +66,10 @@ interface UrlSource {
   ai_ds_minutes?: RawFileEntry[]
 }
 
-/** assetId 形如 <recordFileId>:<assetType>:<index>，仅数组型字段需要取出 index */
+/**
+ * assetId 形如 <meetingRecordId>:<recordFileId>:<assetType>:<index>，末段恒为 index，
+ * 仅数组型字段需要取出它。
+ */
 function pickUrl(source: UrlSource, asset: Asset): string | undefined {
   if (asset.assetType === 'video') return source.download_address
   if (asset.assetType === 'audio') return source.audio_address
@@ -70,10 +77,22 @@ function pickUrl(source: UrlSource, asset: Asset): string | undefined {
   return source[asset.assetType]?.[idx]?.download_address
 }
 
-export function createCatalog(deps: CatalogDeps): Catalog {
-  // record_file_id -> meeting_record_id，供 resolveDownloadUrl 复用批量接口
-  const recordIndex = new Map<string, string>()
+/**
+ * 从 assetId 反解出 meetingRecordId，供 resolveDownloadUrl 无状态地调用批量接口——
+ * 不假设 assetId 正好四段（meetingRecordId / recordFileId 理论上不含冒号，但不依赖
+ * 这个假设去做精确匹配）：只要求至少四段，取前两段分别作为 meetingRecordId 与
+ * recordFileId，其余留给 assetType/index。段数不足即视为非法格式。
+ */
+function parseAssetId(assetId: string): { meetingRecordId: string; recordFileId: string } {
+  const parts = assetId.split(':')
+  const [meetingRecordId, recordFileId] = parts
+  if (parts.length < 4 || !meetingRecordId || !recordFileId) {
+    throw new InvalidAssetIdError(assetId)
+  }
+  return { meetingRecordId, recordFileId }
+}
 
+export function createCatalog(deps: CatalogDeps): Catalog {
   /** 一次 listAssets 调用内只判断一次 STS 可用性，避免每个 record_file 重复取一次 token */
   async function tryGetToken(now: number): Promise<string | null> {
     try {
@@ -112,14 +131,18 @@ export function createCatalog(deps: CatalogDeps): Catalog {
       const token = await tryGetToken(now)
 
       for (const file of files) {
-        recordIndex.set(file.record_file_id, meeting.meetingRecordId)
-
         const aiDetail =
           token !== null ? await deps.addressesApi.detailByFileId(file.record_file_id, token) : null
         const merged = mergeDetail(file, aiDetail)
 
         out.push(
-          ...extractAssets(meeting.meetingId, meeting.subMeetingId, merged, file.allow_download ?? true),
+          ...extractAssets(
+            meeting.meetingId,
+            meeting.subMeetingId,
+            meeting.meetingRecordId,
+            merged,
+            file.allow_download ?? true,
+          ),
         )
       }
 
@@ -138,8 +161,9 @@ export function createCatalog(deps: CatalogDeps): Catalog {
         return { url, expiresAt: now + DETAIL_URL_TTL_SEC }
       }
 
-      const meetingRecordId = recordIndex.get(asset.recordFileId)
-      if (meetingRecordId === undefined) throw new AssetNotIndexedError(asset.recordFileId)
+      // 无状态解析：meetingRecordId 直接从 assetId 反解，不依赖任何跨请求缓存，
+      // 因此本实例即便从未处理过该会议的 listAssets 也能正确解析下载地址。
+      const { meetingRecordId } = parseAssetId(asset.assetId)
 
       const files = await deps.addressesApi.listByRecordId(meetingRecordId)
       const file = files.find((f) => f.record_file_id === asset.recordFileId)
