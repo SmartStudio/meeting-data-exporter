@@ -243,3 +243,22 @@ test('lookupIdentityByEmail 按 email 查找', async () => {
   const missing = await store.lookupIdentityByEmail('nobody@example.com')
   expect(missing).toBeNull()
 })
+
+test('lookupIdentityByEmail 邮箱重复时返回 updated_at 最新的一条', async () => {
+  // email 无唯一约束，重复可能发生（离职员工邮箱回收、身份同步竞态写入）。
+  // 结果必须是确定性的「最新映射生效」，而不是查询计划的偶然产物。
+  await pool.execute(
+    `INSERT INTO identity_map (wecom_userid, tm_userid, email, updated_at) VALUES (?, ?, ?, ?)`,
+    ['wecom-ivan-old', 'tm-ivan-old', 'ivan@example.com', 1000],
+  )
+  await pool.execute(
+    `INSERT INTO identity_map (wecom_userid, tm_userid, email, updated_at) VALUES (?, ?, ?, ?)`,
+    ['wecom-ivan-new', 'tm-ivan-new', 'ivan@example.com', 2000],
+  )
+  const store = createAuthStore(pool)
+
+  const found = await store.lookupIdentityByEmail('ivan@example.com')
+  expect(found?.wecomUserId).toBe('wecom-ivan-new')
+  expect(found?.tmUserId).toBe('tm-ivan-new')
+  expect(found?.updatedAt).toBe(2000)
+})

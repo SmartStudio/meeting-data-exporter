@@ -273,11 +273,18 @@ export function createAuthStore(pool: Pool): AuthStore {
       return r ? mapIdentityMapRow(r) : null
     },
 
+    // identity_map.email 没有唯一约束（仅普通索引），且表使用 utf8mb4_unicode_ci
+    // 排序规则（大小写不敏感），碰撞面比预期大（离职员工邮箱回收、身份同步竞态写入
+    // 都可能产生重复 email）。这里的结果直接决定策略引擎按谁的身份判权限，多条命中
+    // 时必须有确定性排序，不能依赖查询计划的偶然顺序——否则可能把甲的操作权限记到
+    // 乙头上，造成越权。约定语义为「最新的映射生效」：按 updated_at 降序取最新一条，
+    // updated_at 相同时以 wecom_userid 升序做稳定 tie-break。
     async lookupIdentityByEmail(email) {
       const [rows] = await pool.execute<IdentityMapRow[]>(
         `SELECT wecom_userid, tm_userid, email, updated_at
            FROM identity_map
           WHERE email = ?
+          ORDER BY updated_at DESC, wecom_userid ASC
           LIMIT 1`,
         [email],
       )
