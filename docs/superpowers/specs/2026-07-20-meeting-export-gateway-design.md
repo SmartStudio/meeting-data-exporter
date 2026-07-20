@@ -293,9 +293,12 @@ AK/SK **不能下发到客户端**。文档明确 AK/SK 应用「可访问您账
 这是本子项目最重要的产出，子项目 2 完全依赖它。
 
 ```
-POST /api/v1/auth/wecom/start           发起企微扫码登录，返回二维码票据
-POST /api/v1/auth/wecom/callback        企微回调换取会话令牌
+POST /api/v1/auth/device/code           发起登录，返回 user_code 与验证地址
+POST /api/v1/auth/device/token          轮询换取访问令牌（授权完成前返回 pending）
+GET  /auth/wecom/callback               企微授权回调（浏览器访问，非客户端调用）
+POST /api/v1/auth/refresh               刷新令牌换新的访问令牌
 POST /api/v1/auth/service-token         服务账号凭证换取访问令牌
+POST /api/v1/auth/logout                主动登出，吊销刷新令牌
 
 GET  /api/v1/meetings                   列出可导出会议（已过策略过滤）
      ?from=<unix秒>&to=<unix秒>&cursor=<游标>&limit=<1..100>
@@ -329,14 +332,129 @@ POST /api/v1/assets/{asset_id}/download-url
 
 失败处理：若在旧 Token 过期前未收到回调，重新发起申请并告警。所有依赖 STS-Token 的请求在无有效 Token 时返回明确错误码，而非静默失败。
 
-### 5.4 客户端认证（双轨）
+### 5.4 业务用户认证
+
+两条轨道：
 
 | 轨道 | 用途 | 身份来源 |
 | --- | --- | --- |
-| **企微扫码 OAuth** | 真人使用桌面端 / CLI 交互模式 | 企业微信，身份与组织架构、部门、上下级天然对齐 |
-| **服务账号令牌** | 无人值守定时归档 | 管理员在网关签发，绑定固定策略与有效期 |
+| **设备授权流程 + 企微扫码** | 真人使用桌面端 / CLI | 企业微信 |
+| **服务账号令牌** | 无人值守定时归档 | 管理员在网关签发 |
 
-会话令牌为短期 JWT，刷新令牌单独存储可吊销。服务账号令牌支持管理员即时撤销。
+#### 5.4.1 为什么桌面端与 CLI 统一走设备授权流程
+
+CLI 没有浏览器，无法承接 OAuth 的重定向回调——这是必须先解决的实际问题。可选方案有三：
+
+| 方案 | 问题 |
+| --- | --- |
+| CLI 起本地回调服务器（`localhost:PORT`） | 端口占用、企业防火墙拦截、无头服务器上无浏览器可跳转 |
+| 自定义 URL scheme 回调 | 企业终端管理常禁用；CLI 场景不适用 |
+| **设备授权流程（RFC 8628）** | 客户端只需能发 HTTP 请求与显示文本 |
+
+选**设备授权流程**，且桌面端与 CLI 共用同一套。桌面端本可以内嵌 webview 做授权码流程，但那意味着两条认证路径、两套测试、两处可能出错。统一之后，桌面端只是在界面上把 `user_code` 和二维码画得好看一些，协议完全相同。
+
+#### 5.4.2 登录流程
+
+```
+①  客户端 ──► POST /api/v1/auth/device/code
+                ◄── { device_code, user_code, verification_uri, expires_in: 300, interval: 5 }
+
+②  客户端显示：
+       CLI    在终端渲染二维码（Unicode 块字符）+ 打印 verification_uri 与 user_code
+       桌面端  界面内显示二维码，并可点击按钮调起系统浏览器
+
+③  用户扫码 ──► 企微授权页 ──► 重定向至 GET /auth/wecom/callback?code=...&state=...
+                                        │
+                                        ├─ 校验 state（防 CSRF）
+                                        ├─ 用 code 调企微换取 userid
+                                        ├─ 身份映射（见 5.4.4）
+                                        └─ 将 device_code 标记为已授权
+                                        
+④  客户端轮询 ──► POST /api/v1/auth/device/token { device_code }
+                ◄── 授权前：{ error: "authorization_pending" }   客户端按 interval 继续轮询
+                ◄── 完成后：{ access_token, refresh_token, expires_in }
+```
+
+轮询约束：客户端必须遵守 `interval`；网关对过快轮询返回 `slow_down` 并要求退避。`device_code` 有效期 300 秒，过期需重新发起。
+
+#### 5.4.3 企微对接契约
+
+依 [Web 登录组件](https://developer.work.weixin.qq.com/document/path/98171) 与 [获取登录用户身份](https://developer.work.weixin.qq.com/document/path/98179)：
+
+```
+扫码授权页
+  https://login.work.weixin.qq.com/wwlogin/sso/login
+      ?login_type=CorpApp
+      &appid={corpid}
+      &agentid={agentid}
+      &redirect_uri={urlencoded 回调地址}
+      &state={一次性随机串}
+
+授权后重定向
+  {redirect_uri}?code=CODE&state=STATE
+
+code 换身份
+  GET https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo
+      ?access_token={企微 access_token}&code={CODE}
+  → { corpid, userid, open_userid, ... }
+```
+
+`state` 由网关生成并与 `device_code` 绑定，一次性使用。**回调中必须校验 `state`**——否则攻击者可诱导他人扫码，把自己的会话绑定到他人身份上。
+
+企微 `access_token` 由网关自行缓存与刷新（企微侧有效期 7200 秒），不与本项目的用户令牌混淆。
+
+#### 5.4.4 身份映射（对应用户故事 Q1）
+
+企微返回的是**企微 userid**，而策略判定依赖的会议属性（`host_user_id`）是**腾讯会议 userid**。两者不必然相同，必须显式映射：
+
+```
+企微 (corpid, userid) ──► IdentityMapper ──► 腾讯会议 userid
+```
+
+映射策略可配置，三选一：
+
+| 策略 | 适用场景 | 代价 |
+| --- | --- | --- |
+| `direct` | 企业通过企微对接腾讯会议 SSO，两侧 userid 同源 | 零维护；须事先验证确实一致 |
+| `email` | 两侧均有可靠邮箱，以邮箱为关联键 | 依赖邮箱唯一且已填写 |
+| `table` | 显式映射表，管理员导入或定期同步 | 需维护；人员变动时须同步 |
+
+**映射失败必须拒绝登录并明确报错，不得降级为「无权限」。** 二者性质不同：无权限是策略的正常结论，映射失败是配置缺陷。若混为一谈，管理员会看到用户抱怨"没权限"，却在策略表里找不到任何问题。
+
+部署时需完成一次性验证：取若干真实账号，确认所选策略能正确解析出腾讯会议 userid。该验证应作为 §6 部署检查的一部分。
+
+#### 5.4.5 令牌生命周期
+
+| 令牌 | 形式 | 有效期 | 存储 |
+| --- | --- | --- | --- |
+| `access_token` | JWT（含企微 userid、腾讯会议 userid、令牌类型） | 15 分钟 | 不落库，无状态校验 |
+| `refresh_token` | 不透明随机串 | 7 天 | 落库存 hash，可吊销 |
+
+- **刷新即轮换**：每次刷新签发新的 `refresh_token` 并作废旧的。若检测到已作废的 refresh_token 被再次使用，判定为泄露，吊销该用户全部会话。
+- **登出**吊销 refresh_token；未过期的 access_token 最多再存活 15 分钟。
+- **JWT 中不缓存策略判定结果**。策略必须在每次 `download-url` 请求时实时评估——否则管理员收紧策略后，持旧令牌者仍可继续导出，管控出现最长 15 分钟的空窗。
+
+#### 5.4.6 服务账号
+
+```
+POST /api/v1/auth/service-token
+     { client_id, client_secret }
+  → { access_token, expires_in }        无 refresh_token，到期重新换取
+```
+
+- `client_secret` 以 argon2id 存 hash，明文仅在签发时展示一次
+- 支持设置绝对过期时间与即时吊销
+- **服务账号同样受策略约束**，不享有绕过特权。其身份为一个显式的腾讯会议 userid，由管理员在创建时指定
+
+#### 5.4.7 安全约束
+
+| 约束 | 原因 |
+| --- | --- |
+| 全链路 HTTPS，拒绝明文 | 令牌与下载地址均为敏感数据 |
+| `state` 一次性且与 `device_code` 绑定 | 防 CSRF 与会话绑定攻击 |
+| `device_code` 与 `user_code` 熵值充足，`user_code` 至少 8 位 | `user_code` 会被用户读出，短码可被暴力猜测 |
+| 登录接口按 IP 与账号双维度限流 | 防止轮询接口被用于探测 |
+| 审计记录登录成功与失败 | 与 §5.7 的导出审计合并为同一条链路 |
 
 ### 5.5 策略引擎
 
@@ -427,6 +545,39 @@ CREATE TABLE audit_log (
   client_kind  TEXT
 );
 
+-- 设备授权流程的待授权请求
+CREATE TABLE device_authorizations (
+  device_code   TEXT PRIMARY KEY,
+  user_code     TEXT NOT NULL UNIQUE,
+  state         TEXT NOT NULL UNIQUE,   -- 与企微回调的 state 绑定
+  status        TEXT NOT NULL,          -- pending | authorized | denied | expired
+  wecom_userid  TEXT,                   -- 授权完成后写入
+  tm_userid     TEXT,                   -- 身份映射结果
+  expires_at    BIGINT NOT NULL,
+  last_polled_at BIGINT,                -- 用于 slow_down 判定
+  created_at    BIGINT NOT NULL
+);
+
+-- 刷新令牌（存 hash，支持吊销与重放检测）
+CREATE TABLE refresh_tokens (
+  id            BIGSERIAL PRIMARY KEY,
+  token_hash    TEXT NOT NULL UNIQUE,
+  wecom_userid  TEXT NOT NULL,
+  tm_userid     TEXT NOT NULL,
+  family_id     TEXT NOT NULL,          -- 轮换链标识，检测到重放时按此吊销整条链
+  revoked       BOOLEAN NOT NULL DEFAULT false,
+  expires_at    BIGINT NOT NULL,
+  created_at    BIGINT NOT NULL
+);
+
+-- 身份映射表（IdentityMapper 策略为 table 时使用）
+CREATE TABLE identity_map (
+  wecom_userid TEXT PRIMARY KEY,
+  tm_userid    TEXT NOT NULL,
+  email        TEXT,
+  updated_at   BIGINT NOT NULL
+);
+
 -- 服务账号
 CREATE TABLE service_accounts (
   id          TEXT PRIMARY KEY,
@@ -513,6 +664,14 @@ http/         端到端：假腾讯 API + 真网关
 ✓ 策略默认拒绝    无匹配规则时 deny
 ✓ 越权取地址      构造他人 asset_id → 拒绝并留审计
 ✓ 致命错误快速失败 mock 9042 → 立即返回，不重试
+
+✓ 设备流程正常路径  发码 → 授权 → 轮询取得令牌
+✓ 轮询过快        早于 interval 轮询 → slow_down
+✓ device_code 过期 超过 300 秒 → 拒绝并要求重新发起
+✓ state 校验      回调携带错误/重放的 state → 拒绝，不建立会话
+✓ 身份映射失败     映射不出腾讯会议 userid → 登录失败且错误明确区别于「无权限」
+✓ 刷新令牌轮换     旧 refresh_token 再次使用 → 判定泄露，吊销整条 family
+✓ 策略实时生效     持有效 access_token 时收紧策略 → 下一次 download-url 即被拒
 ```
 
 「错误码解析」那条是回归测试的关键：它锁定了「分类依据是 `error_code` 而非 HTTP status」这个约束。若日后有人把解析器改回按 status 分支，该用例会立刻失败。
@@ -529,7 +688,8 @@ http/         端到端：假腾讯 API + 真网关
 2. **事件加解密算法细节**：按[事件加解密文档](https://cloud.tencent.com/document/product/1095/54658)实现 EncodingAESKey 的解密流程。
 3. **企管后台配置**：需管理员在腾讯会议企管后台完成——创建企业自建应用取得 AppId / SdkId / SecretId / SecretKey；配置事件订阅 URL（支持四级域名）、Token、EncodingAESKey；勾选公共事件「STS Token 生成」；为 operator 账号授予「管理企业录制」「查看企业录制」权限。
 4. **operator_id 归属**：确定网关使用哪个账号作为固定 operator（`operator_id_type=1`，即 userid）。该账号须为超级管理员/管理员，或具备企业录制管理权限。**注意该账号一旦离职或被删除，全部导出能力立即中断**，建议使用专设的服务账号而非某位在职管理员的个人账号。
-5. **企微应用**：需创建企业微信自建应用用于扫码登录，取得 CorpId / AgentId / Secret。
+5. **企微应用**：需创建企业微信自建应用用于扫码登录，取得 CorpId / AgentId / Secret，并在企微后台配置授权回调域名。
+6. **身份映射策略**（阻断性）：确认企微 userid 与腾讯会议 userid 的对应关系，选定 `direct` / `email` / `table` 之一（见 §5.4.4）。**须取若干真实账号实测验证**，不能凭假设选择——若两侧 ID 无法可靠对应，策略引擎无法按人判定权限，US-2.1 不成立。
 
 ---
 
