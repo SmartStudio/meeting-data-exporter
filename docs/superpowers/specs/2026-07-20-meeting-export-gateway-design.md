@@ -285,7 +285,9 @@ AK/SK **不能下发到客户端**。文档明确 AK/SK 应用「可访问您账
 ### 5.1 技术栈
 
 - 运行时：Bun + TypeScript（与子项目 4 的 Bun 内嵌要求一致，且组织现有 TS 栈统一）
-- 数据库：PostgreSQL（阿里云 RDS）。网关是多实例可扩展的服务端组件，需要网络数据库；客户端侧才用 SQLite。
+- 数据库：**MySQL ≥ 5.7**（推荐 8.0，阿里云 RDS），驱动 `mysql2/promise`。网关是多实例可扩展的服务端组件，需要网络数据库；客户端侧才用 SQLite。
+  - 字符集强制 `utf8mb4` + `utf8mb4_unicode_ci`。会议主题含中文与 emoji，3 字节 utf8 会插入失败。
+  - 不使用 8.0 独有语法（CTE、窗口函数、`RETURNING`），保持 5.7 兼容。
 - 部署：阿里云，Docker 镜像
 
 ### 5.2 对客户端的 API 契约
@@ -531,92 +533,114 @@ effect    结果    allow | deny
 
 ### 5.8 数据模型
 
+MySQL 5.7+ / InnoDB / utf8mb4。下为设计意图的示意结构，**完整建表语句以实现计划 T4 为准**。
+
+三条 MySQL 特有约束贯穿全表：主键与唯一索引字段必须为 `VARCHAR(n)`（TEXT 不可索引）；数组语义由 `JSON` 列承载（MySQL 无数组类型）；字符集必须 `utf8mb4`——会议主题含中文与 emoji，3 字节 utf8 会插入失败。
+
 ```sql
 -- STS-Token 申请与回调配对
 CREATE TABLE sts_token_requests (
-  req_id       TEXT PRIMARY KEY,
-  state        TEXT NOT NULL,          -- pending | fulfilled | expired | failed
-  requested_at BIGINT NOT NULL,
-  fulfilled_at BIGINT,
-  expire_ts    BIGINT,
-  token_ref    TEXT                    -- 指向密文存储，明文不入库
-);
+  req_id       VARCHAR(128) NOT NULL,
+  state        VARCHAR(16)  NOT NULL,   -- pending | fulfilled | expired | failed
+  requested_at BIGINT       NOT NULL,
+  fulfilled_at BIGINT       NULL,
+  expire_ts    BIGINT       NULL,
+  token_cipher TEXT         NULL,       -- 密文，明文不入库
+  PRIMARY KEY (req_id),
+  KEY idx_sts_state (state, expire_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 策略规则
 CREATE TABLE policy_rules (
-  id            BIGSERIAL PRIMARY KEY,
-  priority      INTEGER NOT NULL,
-  subject_type  TEXT NOT NULL,         -- user | department | role
-  subject_value TEXT NOT NULL,
-  resource_expr JSONB NOT NULL,        -- 会议属性匹配表达式
-  asset_types   TEXT[] NOT NULL,       -- 八类之一或 '*'
-  effect        TEXT NOT NULL,         -- allow | deny
-  enabled       BOOLEAN NOT NULL DEFAULT true,
-  created_at    BIGINT NOT NULL,
-  updated_at    BIGINT NOT NULL
-);
+  id            BIGINT       NOT NULL AUTO_INCREMENT,
+  priority      INT          NOT NULL,
+  subject_type  VARCHAR(16)  NOT NULL,  -- user | department | role
+  subject_value VARCHAR(128) NOT NULL,
+  resource_expr JSON         NOT NULL,  -- 会议属性匹配表达式
+  asset_types   JSON         NOT NULL,  -- 八类之一或 ["*"]
+  effect        VARCHAR(8)   NOT NULL,  -- allow | deny
+  enabled       TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at    BIGINT       NOT NULL,
+  updated_at    BIGINT       NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_policy_lookup (enabled, priority, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 审计
 CREATE TABLE audit_log (
-  id           BIGSERIAL PRIMARY KEY,
-  occurred_at  BIGINT NOT NULL,
-  actor_type   TEXT NOT NULL,          -- wecom_user | service_account
-  actor_id     TEXT NOT NULL,
-  action       TEXT NOT NULL,          -- issue_download_url | list_meetings | ...
-  meeting_id   TEXT,
-  asset_id     TEXT,
-  asset_type   TEXT,
-  decision     TEXT NOT NULL,          -- allow | deny
-  matched_rule BIGINT,
-  client_kind  TEXT
-);
+  id           BIGINT       NOT NULL AUTO_INCREMENT,
+  occurred_at  BIGINT       NOT NULL,
+  actor_type   VARCHAR(32)  NOT NULL,   -- wecom_user | service_account
+  actor_id     VARCHAR(128) NOT NULL,
+  action       VARCHAR(32)  NOT NULL,   -- issue_download_url | login | list_meetings
+  meeting_id   VARCHAR(64)  NULL,
+  asset_id     VARCHAR(255) NULL,
+  asset_type   VARCHAR(64)  NULL,
+  decision     VARCHAR(8)   NOT NULL,   -- allow | deny
+  matched_rule BIGINT       NULL,
+  client_kind  VARCHAR(32)  NULL,
+  PRIMARY KEY (id),
+  KEY idx_audit_time (occurred_at DESC),
+  KEY idx_audit_actor (actor_id, occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 设备授权流程的待授权请求
 CREATE TABLE device_authorizations (
-  device_code   TEXT PRIMARY KEY,
-  user_code     TEXT NOT NULL UNIQUE,
-  state         TEXT NOT NULL UNIQUE,   -- 与企微回调的 state 绑定
-  status        TEXT NOT NULL,          -- pending | authorized | denied | expired
-  wecom_userid  TEXT,                   -- 授权完成后写入
-  tm_userid     TEXT,                   -- 身份映射结果
-  expires_at    BIGINT NOT NULL,
-  last_polled_at BIGINT,                -- 用于 slow_down 判定
-  created_at    BIGINT NOT NULL
-);
+  device_code    VARCHAR(64)  NOT NULL,
+  user_code      VARCHAR(16)  NOT NULL,
+  state          VARCHAR(64)  NOT NULL,  -- 与企微回调的 state 绑定
+  status         VARCHAR(16)  NOT NULL,  -- pending | authorized | denied | expired
+  wecom_userid   VARCHAR(128) NULL,      -- 授权完成后写入
+  tm_userid      VARCHAR(128) NULL,      -- 身份映射结果
+  expires_at     BIGINT       NOT NULL,
+  last_polled_at BIGINT       NULL,      -- 用于 slow_down 判定
+  created_at     BIGINT       NOT NULL,
+  PRIMARY KEY (device_code),
+  UNIQUE KEY uk_user_code (user_code),
+  UNIQUE KEY uk_state (state)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 刷新令牌（存 hash，支持吊销与重放检测）
 CREATE TABLE refresh_tokens (
-  id            BIGSERIAL PRIMARY KEY,
-  token_hash    TEXT NOT NULL UNIQUE,
-  wecom_userid  TEXT NOT NULL,
-  tm_userid     TEXT NOT NULL,
-  family_id     TEXT NOT NULL,          -- 轮换链标识，检测到重放时按此吊销整条链
-  revoked       BOOLEAN NOT NULL DEFAULT false,
-  expires_at    BIGINT NOT NULL,
-  created_at    BIGINT NOT NULL
-);
+  id           BIGINT       NOT NULL AUTO_INCREMENT,
+  token_hash   VARCHAR(64)  NOT NULL,   -- sha256 hex
+  wecom_userid VARCHAR(128) NOT NULL,
+  tm_userid    VARCHAR(128) NOT NULL,
+  family_id    VARCHAR(64)  NOT NULL,   -- 轮换链标识，检测到重放时按此吊销整条链
+  revoked      TINYINT(1)   NOT NULL DEFAULT 0,
+  expires_at   BIGINT       NOT NULL,
+  created_at   BIGINT       NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_token_hash (token_hash),
+  KEY idx_refresh_family (family_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 身份映射表（IdentityMapper 策略为 table 时使用）
 CREATE TABLE identity_map (
-  wecom_userid TEXT PRIMARY KEY,
-  tm_userid    TEXT NOT NULL,
-  email        TEXT,
-  updated_at   BIGINT NOT NULL
-);
+  wecom_userid VARCHAR(128) NOT NULL,
+  tm_userid    VARCHAR(128) NOT NULL,
+  email        VARCHAR(255) NULL,
+  updated_at   BIGINT       NOT NULL,
+  PRIMARY KEY (wecom_userid),
+  KEY idx_identity_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 服务账号
 CREATE TABLE service_accounts (
-  id          TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  secret_hash TEXT NOT NULL,
-  enabled     BOOLEAN NOT NULL DEFAULT true,
-  expires_at  BIGINT,
-  created_at  BIGINT NOT NULL
-);
+  id          VARCHAR(64)  NOT NULL,
+  name        VARCHAR(128) NOT NULL,
+  secret_hash VARCHAR(255) NOT NULL,   -- argon2id
+  tm_userid   VARCHAR(128) NOT NULL,   -- 该服务账号对应的腾讯会议身份
+  enabled     TINYINT(1)   NOT NULL DEFAULT 1,
+  expires_at  BIGINT       NULL,
+  created_at  BIGINT       NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-SecretKey、STS-Token 明文均不入库，使用阿里云 KMS 托管或等效的密文存储，库中只存引用。
+SecretKey、STS-Token 明文均不入库，使用阿里云 KMS 托管或等效的密文存储，库中只存密文或引用。
 
+**无 `RETURNING` 的影响**：MySQL 不支持 `UPDATE ... RETURNING`，需要判断记录是否存在时用 `affectedRows`。例如 STS 回调配对时，`UPDATE ... WHERE req_id = ?` 影响 0 行即表示回调无法配对，属异常而非静默忽略。
 ### 5.9 错误处理
 
 #### 响应结构
@@ -666,7 +690,7 @@ API 请求错误  → HTTP 400
 ```
 domain/       纯函数 → 单元测试（时间戳换算、退避计算、策略表达式求值）
 tencent-api/  真实响应存 fixture → mock fetch 回放，永不联网
-store/        真实 PostgreSQL（testcontainer 或本地实例）→ 跑真实 SQL
+store/        真实 MySQL（独立 database 隔离）→ 跑真实 SQL
 policy/       表驱动测试，覆盖 allow/deny 优先级与默认拒绝
 sts-token/    模拟异步回调时序，含超时未回调分支
 http/         端到端：假腾讯 API + 真网关

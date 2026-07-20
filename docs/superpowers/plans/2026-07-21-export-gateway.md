@@ -6,7 +6,7 @@
 
 **Architecture:** 控制平面与数据平面分离——网关处理鉴权、策略、清单（低流量），客户端凭网关签发的临时地址直连对象存储下载（高流量）。模块依赖严格自上而下，`domain` 零依赖，`tencent` 层吸收全部平台细节。
 
-**Tech Stack:** Bun + TypeScript · PostgreSQL · 阿里云部署（Docker）
+**Tech Stack:** Bun + TypeScript · MySQL 5.7+ · 阿里云部署（Docker）
 
 **Spec:** [`docs/superpowers/specs/2026-07-20-meeting-export-gateway-design.md`](../specs/2026-07-20-meeting-export-gateway-design.md)
 **用户故事:** [`docs/superpowers/specs/2026-07-20-user-stories.md`](../specs/2026-07-20-user-stories.md)
@@ -16,6 +16,9 @@
 以下为项目级约束，**每个任务的要求都隐含包含本节**。数值均从 spec 逐字复制。
 
 - **运行时**：Bun ≥ 1.1，TypeScript strict 模式。禁用 `any`（`noImplicitAny` + `strict`）。
+- **数据库**：MySQL ≥ 5.7（推荐 8.0），驱动 `mysql2/promise`。不得使用 8.0 独有语法（CTE、窗口函数、`RETURNING`），保持 5.7 兼容。
+- **字符集**：库、表、连接一律 `utf8mb4` + `utf8mb4_unicode_ci`。会议主题含中文与 emoji，3 字节 utf8 会导致插入失败。
+- **MySQL 约束**：主键与唯一索引字段必须为 `VARCHAR(n)`（TEXT 不可索引）；数组用 `JSON` 列承载；`UPDATE` 的影响行数用 `affectedRows` 判断（无 `RETURNING`）。
 - **API Host**：`https://api.meeting.qq.com`，基础路径 `/v1`，Content-Type 恒为 `application/json`（GET 也必须携带）。
 - **签名**：`Base64( lowerHex( HmacSHA256(secretKey, stringToSign) ) )` —— HMAC 结果先转小写十六进制字符串，**再**做 Base64。
 - **URL 编码先于签名**：query 特殊字符须先 urlencode 再参与签名。URL 构造必须只有一个出口函数，返回 `{ url, uriForSigning }`。
@@ -311,7 +314,7 @@ const validEnv = {
   WECOM_CORP_ID: 'ww-corp',
   WECOM_AGENT_ID: '1000002',
   WECOM_SECRET: 'wecom-secret',
-  DATABASE_URL: 'postgres://localhost/gw',
+  DATABASE_URL: 'mysql://user:pass@localhost:3306/gw?charset=utf8mb4',
   JWT_SECRET: 'c'.repeat(32),
   GATEWAY_BASE_URL: 'https://gw.example.com',
   IDENTITY_STRATEGY: 'direct',
@@ -942,171 +945,241 @@ git commit -m "feat: 腾讯 API 错误三层分类，依据 error_code 而非 HT
 **Interfaces:**
 - Consumes: `AppConfig` (T1)
 - Produces:
-  - `createPool(databaseUrl: string): Pool`
+  - `createPool(databaseUrl: string): Pool`（`mysql2/promise` 的连接池）
   - `runMigrations(pool: Pool): Promise<void>`
   - `StsStore` — `createRequest`, `fulfill`, `getActive`, `expireStale`
   - `PolicyStore` — `listEnabledRules`
-  - `AuthStore` — `createDeviceAuth`, `findByUserCode`, `findByState`, `authorize`, `pollDevice`, `saveRefreshToken`, `findRefreshToken`, `revokeFamily`, `findServiceAccount`, `lookupIdentityMap`
+  - `AuthStore` — `createDeviceAuth`, `findByState`, `authorize`, `pollDevice`, `saveRefreshToken`, `findRefreshToken`, `revokeFamily`, `findServiceAccount`, `lookupIdentityMap`, `lookupIdentityByEmail`
   - `AuditStore` — `record`
   - 类型：`StsTokenRecord`, `PolicyRule`, `DeviceAuth`, `RefreshTokenRecord`, `ServiceAccount`, `AuditEntry`
 
-- [ ] **Step 1: 安装 PostgreSQL 驱动**
+**MySQL 适配要点**（实现时以本任务的建表语句为准）：
+
+| 事项 | 处理 |
+| --- | --- |
+| 主键 / 唯一索引 | 必须 `VARCHAR(n)`，TEXT 不可索引 |
+| 字符集 | 表与连接均 `utf8mb4`，否则中文 emoji 主题插入失败 |
+| 数组列 | `asset_types` 由 `TEXT[]` 改为 `JSON`，应用层解析 |
+| 自增主键 | `BIGSERIAL` → `BIGINT AUTO_INCREMENT` |
+| 冲突忽略 | `ON CONFLICT DO NOTHING` → `INSERT IGNORE` |
+| 影响行数 | 无 `RETURNING`，用 `result.affectedRows` 判断 |
+| 索引创建 | 不支持 `CREATE INDEX IF NOT EXISTS`，改为建表时内联 |
+
+- [ ] **Step 1: 安装 MySQL 驱动**
 
 ```bash
-bun add postgres
+bun add mysql2
 ```
 
 - [ ] **Step 2: 写 migration**
 
-创建 `migrations/001_init.sql`（内容为 spec §5.8 的全部建表语句）：
+创建 `migrations/001_init.sql`：
 
 ```sql
 CREATE TABLE IF NOT EXISTS sts_token_requests (
-  req_id        TEXT PRIMARY KEY,
-  state         TEXT NOT NULL,
-  requested_at  BIGINT NOT NULL,
-  fulfilled_at  BIGINT,
-  expire_ts     BIGINT,
-  token_cipher  TEXT
-);
+  req_id       VARCHAR(128) NOT NULL,
+  state        VARCHAR(16)  NOT NULL,
+  requested_at BIGINT       NOT NULL,
+  fulfilled_at BIGINT       NULL,
+  expire_ts    BIGINT       NULL,
+  token_cipher TEXT         NULL,
+  PRIMARY KEY (req_id),
+  KEY idx_sts_state (state, expire_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS policy_rules (
-  id            BIGSERIAL PRIMARY KEY,
-  priority      INTEGER NOT NULL,
-  subject_type  TEXT NOT NULL,
-  subject_value TEXT NOT NULL,
-  resource_expr JSONB NOT NULL,
-  asset_types   TEXT[] NOT NULL,
-  effect        TEXT NOT NULL,
-  enabled       BOOLEAN NOT NULL DEFAULT true,
-  created_at    BIGINT NOT NULL,
-  updated_at    BIGINT NOT NULL
-);
+  id            BIGINT       NOT NULL AUTO_INCREMENT,
+  priority      INT          NOT NULL,
+  subject_type  VARCHAR(16)  NOT NULL,
+  subject_value VARCHAR(128) NOT NULL,
+  resource_expr JSON         NOT NULL,
+  asset_types   JSON         NOT NULL,
+  effect        VARCHAR(8)   NOT NULL,
+  enabled       TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at    BIGINT       NOT NULL,
+  updated_at    BIGINT       NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_policy_lookup (enabled, priority, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS audit_log (
-  id           BIGSERIAL PRIMARY KEY,
-  occurred_at  BIGINT NOT NULL,
-  actor_type   TEXT NOT NULL,
-  actor_id     TEXT NOT NULL,
-  action       TEXT NOT NULL,
-  meeting_id   TEXT,
-  asset_id     TEXT,
-  asset_type   TEXT,
-  decision     TEXT NOT NULL,
-  matched_rule BIGINT,
-  client_kind  TEXT
-);
+  id           BIGINT       NOT NULL AUTO_INCREMENT,
+  occurred_at  BIGINT       NOT NULL,
+  actor_type   VARCHAR(32)  NOT NULL,
+  actor_id     VARCHAR(128) NOT NULL,
+  action       VARCHAR(32)  NOT NULL,
+  meeting_id   VARCHAR(64)  NULL,
+  asset_id     VARCHAR(255) NULL,
+  asset_type   VARCHAR(64)  NULL,
+  decision     VARCHAR(8)   NOT NULL,
+  matched_rule BIGINT       NULL,
+  client_kind  VARCHAR(32)  NULL,
+  PRIMARY KEY (id),
+  KEY idx_audit_time (occurred_at DESC),
+  KEY idx_audit_actor (actor_id, occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS service_accounts (
-  id          TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  secret_hash TEXT NOT NULL,
-  tm_userid   TEXT NOT NULL,
-  enabled     BOOLEAN NOT NULL DEFAULT true,
-  expires_at  BIGINT,
-  created_at  BIGINT NOT NULL
-);
+  id          VARCHAR(64)  NOT NULL,
+  name        VARCHAR(128) NOT NULL,
+  secret_hash VARCHAR(255) NOT NULL,
+  tm_userid   VARCHAR(128) NOT NULL,
+  enabled     TINYINT(1)   NOT NULL DEFAULT 1,
+  expires_at  BIGINT       NULL,
+  created_at  BIGINT       NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS device_authorizations (
-  device_code    TEXT PRIMARY KEY,
-  user_code      TEXT NOT NULL UNIQUE,
-  state          TEXT NOT NULL UNIQUE,
-  status         TEXT NOT NULL,
-  wecom_userid   TEXT,
-  tm_userid      TEXT,
-  expires_at     BIGINT NOT NULL,
-  last_polled_at BIGINT,
-  created_at     BIGINT NOT NULL
-);
+  device_code    VARCHAR(64)  NOT NULL,
+  user_code      VARCHAR(16)  NOT NULL,
+  state          VARCHAR(64)  NOT NULL,
+  status         VARCHAR(16)  NOT NULL,
+  wecom_userid   VARCHAR(128) NULL,
+  tm_userid      VARCHAR(128) NULL,
+  expires_at     BIGINT       NOT NULL,
+  last_polled_at BIGINT       NULL,
+  created_at     BIGINT       NOT NULL,
+  PRIMARY KEY (device_code),
+  UNIQUE KEY uk_user_code (user_code),
+  UNIQUE KEY uk_state (state)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
-  id           BIGSERIAL PRIMARY KEY,
-  token_hash   TEXT NOT NULL UNIQUE,
-  wecom_userid TEXT NOT NULL,
-  tm_userid    TEXT NOT NULL,
-  family_id    TEXT NOT NULL,
-  revoked      BOOLEAN NOT NULL DEFAULT false,
-  expires_at   BIGINT NOT NULL,
-  created_at   BIGINT NOT NULL
-);
+  id           BIGINT       NOT NULL AUTO_INCREMENT,
+  token_hash   VARCHAR(64)  NOT NULL,
+  wecom_userid VARCHAR(128) NOT NULL,
+  tm_userid    VARCHAR(128) NOT NULL,
+  family_id    VARCHAR(64)  NOT NULL,
+  revoked      TINYINT(1)   NOT NULL DEFAULT 0,
+  expires_at   BIGINT       NOT NULL,
+  created_at   BIGINT       NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_token_hash (token_hash),
+  KEY idx_refresh_family (family_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS identity_map (
-  wecom_userid TEXT PRIMARY KEY,
-  tm_userid    TEXT NOT NULL,
-  email        TEXT,
-  updated_at   BIGINT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_refresh_family ON refresh_tokens (family_id);
-CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log (occurred_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sts_state ON sts_token_requests (state);
+  wecom_userid VARCHAR(128) NOT NULL,
+  tm_userid    VARCHAR(128) NOT NULL,
+  email        VARCHAR(255) NULL,
+  updated_at   BIGINT       NOT NULL,
+  PRIMARY KEY (wecom_userid),
+  KEY idx_identity_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-- [ ] **Step 3: 写测试数据库辅助**
+- [ ] **Step 3: 实现连接池与 migration 执行**
+
+创建 `src/store/db.ts`：
+
+```ts
+import mysql from 'mysql2/promise'
+
+export type Pool = mysql.Pool
+
+/**
+ * charset 必须显式设为 utf8mb4——MySQL 默认的 utf8 只有 3 字节，
+ * 会议主题中的 emoji（4 字节）会插入失败。
+ */
+export function createPool(databaseUrl: string): Pool {
+  return mysql.createPool({
+    uri: databaseUrl,
+    connectionLimit: 10,
+    charset: 'utf8mb4',
+    timezone: 'Z',
+    supportBigNumbers: true,
+    bigNumberStrings: false,
+    multipleStatements: false,
+  })
+}
+
+/** migration 文件含多条语句，逐条执行（连接池禁用 multipleStatements） */
+export async function runMigrations(pool: Pool): Promise<void> {
+  const file = Bun.file(`${import.meta.dir}/../../migrations/001_init.sql`)
+  const sql = await file.text()
+  const statements = sql
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+
+  for (const stmt of statements) {
+    await pool.query(stmt)
+  }
+}
+```
+
+- [ ] **Step 4: 写测试数据库辅助**
 
 创建 `tests/helpers/testdb.ts`：
 
 ```ts
-import postgres from 'postgres'
-import { runMigrations } from '../../src/store/db'
+import mysql from 'mysql2/promise'
+import { runMigrations, type Pool } from '../../src/store/db'
 
 /**
  * store 层不 mock 数据库——这一层的价值几乎全在 SQL 语义里
- * （UNIQUE 冲突、原子更新、JSONB 查询），mock 掉等于没测。
- * 需要本地或 CI 提供 TEST_DATABASE_URL。
+ * （唯一约束冲突、affectedRows、JSON 列往返），mock 掉等于没测。
+ *
+ * MySQL 没有 PostgreSQL 的 schema 概念，用独立 database 做隔离。
+ * 需要 TEST_DATABASE_URL 指向一个有 CREATE DATABASE 权限的实例。
  */
-export async function withTestDb(): Promise<{
-  sql: postgres.Sql
-  cleanup: () => Promise<void>
-}> {
+export async function withTestDb(): Promise<{ pool: Pool; cleanup: () => Promise<void> }> {
   const url = process.env.TEST_DATABASE_URL
   if (!url) throw new Error('TEST_DATABASE_URL not set')
 
-  const schema = `t_${Math.random().toString(36).slice(2, 10)}`
-  const sql = postgres(url, { onnotice: () => {} })
-  await sql.unsafe(`CREATE SCHEMA ${schema}`)
-  await sql.unsafe(`SET search_path TO ${schema}`)
-  await runMigrations(sql)
+  const dbName = `t_${Math.random().toString(36).slice(2, 10)}`
+  const admin = await mysql.createConnection({ uri: url, charset: 'utf8mb4' })
+  await admin.query(
+    `CREATE DATABASE \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+  )
+  await admin.end()
+
+  const base = new URL(url)
+  base.pathname = `/${dbName}`
+  const pool = await import('../../src/store/db').then((m) => m.createPool(base.toString()))
+  await runMigrations(pool)
 
   return {
-    sql,
+    pool,
     cleanup: async () => {
-      await sql.unsafe(`DROP SCHEMA ${schema} CASCADE`)
-      await sql.end()
+      await pool.end()
+      const c = await mysql.createConnection({ uri: url })
+      await c.query(`DROP DATABASE \`${dbName}\``)
+      await c.end()
     },
   }
 }
 ```
 
-- [ ] **Step 4: 写 STS store 的失败测试**
+- [ ] **Step 5: 写 STS store 的失败测试**
 
 创建 `tests/store/sts.test.ts`：
 
 ```ts
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import type postgres from 'postgres'
+import type { Pool } from '../../src/store/db'
 import { withTestDb } from '../helpers/testdb'
 import { createStsStore } from '../../src/store/sts'
 
-let sql: postgres.Sql
+let pool: Pool
 let cleanup: () => Promise<void>
 
 beforeAll(async () => {
   const db = await withTestDb()
-  sql = db.sql
+  pool = db.pool
   cleanup = db.cleanup
 })
 afterAll(() => cleanup())
 
-test('createRequest 写入 pending 记录', async () => {
-  const store = createStsStore(sql)
+test('createRequest 写入 pending 记录，此时无可用 token', async () => {
+  const store = createStsStore(pool)
   await store.createRequest('req-1', 1000)
-  const active = await store.getActive(1000)
-  expect(active).toBeNull()
+  expect(await store.getActive(1000)).toBeNull()
 })
 
 test('fulfill 后可取到有效 token', async () => {
-  const store = createStsStore(sql)
+  const store = createStsStore(pool)
   await store.createRequest('req-2', 1000)
   await store.fulfill('req-2', 'cipher-abc', 9999, 1100)
   const active = await store.getActive(2000)
@@ -1115,55 +1188,55 @@ test('fulfill 后可取到有效 token', async () => {
 })
 
 test('getActive 忽略已过期的 token', async () => {
-  const store = createStsStore(sql)
+  const store = createStsStore(pool)
   await store.createRequest('req-3', 1000)
-  await store.fulfill('req-3', 'old', 500, 1100)
+  await store.fulfill('req-3', 'expired-one', 500, 1100)
   const active = await store.getActive(600)
-  expect(active?.tokenCipher).not.toBe('old')
+  expect(active?.tokenCipher).not.toBe('expired-one')
 })
 
-test('getActive 取过期时间最晚的一个（新旧并存时用新的）', async () => {
-  const store = createStsStore(sql)
-  await store.createRequest('req-4', 1000)
-  await store.fulfill('req-4', 'newer', 99999, 1200)
-  const active = await store.getActive(2000)
-  expect(active?.tokenCipher).toBe('newer')
+test('新旧并存时取过期最晚的一个', async () => {
+  const store = createStsStore(pool)
+  await store.createRequest('req-old', 1000)
+  await store.fulfill('req-old', 'older', 50_000, 1100)
+  await store.createRequest('req-new', 1200)
+  await store.fulfill('req-new', 'newer', 90_000, 1300)
+  expect((await store.getActive(2000))?.tokenCipher).toBe('newer')
 })
 
-test('fulfill 未知 req_id 时抛错（回调无法配对是异常）', async () => {
-  const store = createStsStore(sql)
-  await expect(store.fulfill('nope', 'x', 1, 1)).rejects.toThrow('unknown req_id')
+/** MySQL 无 RETURNING，靠 affectedRows 判断——此用例锁定该行为 */
+test('fulfill 未知 req_id 时抛错（回调无法配对属异常）', async () => {
+  const store = createStsStore(pool)
+  await expect(store.fulfill('nonexistent', 'x', 1, 1)).rejects.toThrow('unknown req_id')
+})
+
+test('createRequest 重复调用不报错（幂等）', async () => {
+  const store = createStsStore(pool)
+  await store.createRequest('req-dup', 1000)
+  await store.createRequest('req-dup', 1000)
+  expect(true).toBe(true)
+})
+
+test('中文与 emoji 可正确往返（验证 utf8mb4）', async () => {
+  const store = createStsStore(pool)
+  await store.createRequest('req-utf8', 1000)
+  await store.fulfill('req-utf8', '季度评审 🎉 纪要', 99_999, 1100)
+  expect((await store.getActive(2000))?.tokenCipher).toBe('季度评审 🎉 纪要')
 })
 ```
 
-- [ ] **Step 5: 运行测试确认失败**
+- [ ] **Step 6: 运行测试确认失败**
 
-Run: `TEST_DATABASE_URL=postgres://localhost/gw_test bun test tests/store/sts.test.ts`
-Expected: FAIL — `Cannot find module '../../src/store/db'`
+Run: `TEST_DATABASE_URL=mysql://root@localhost:3306 bun test tests/store/sts.test.ts`
+Expected: FAIL — `Cannot find module '../../src/store/sts'`
 
-- [ ] **Step 6: 实现 db 与 sts store**
-
-创建 `src/store/db.ts`：
-
-```ts
-import postgres from 'postgres'
-
-export type Sql = postgres.Sql
-
-export function createPool(databaseUrl: string): Sql {
-  return postgres(databaseUrl, { max: 10, onnotice: () => {} })
-}
-
-export async function runMigrations(sql: Sql): Promise<void> {
-  const file = Bun.file(`${import.meta.dir}/../../migrations/001_init.sql`)
-  await sql.unsafe(await file.text())
-}
-```
+- [ ] **Step 7: 实现 STS store**
 
 创建 `src/store/sts.ts`：
 
 ```ts
-import type { Sql } from './db'
+import type { RowDataPacket, ResultSetHeader } from 'mysql2'
+import type { Pool } from './db'
 
 export interface StsTokenRecord {
   reqId: string
@@ -1179,62 +1252,71 @@ export interface StsStore {
   expireStale(now: number): Promise<number>
 }
 
-export function createStsStore(sql: Sql): StsStore {
+interface StsRow extends RowDataPacket {
+  req_id: string
+  token_cipher: string
+  expire_ts: number
+}
+
+export function createStsStore(pool: Pool): StsStore {
   return {
     async createRequest(reqId, now) {
-      await sql`
-        INSERT INTO sts_token_requests (req_id, state, requested_at)
-        VALUES (${reqId}, 'pending', ${now})
-        ON CONFLICT (req_id) DO NOTHING
-      `
+      // INSERT IGNORE 等价于 PostgreSQL 的 ON CONFLICT DO NOTHING
+      await pool.execute(
+        `INSERT IGNORE INTO sts_token_requests (req_id, state, requested_at)
+         VALUES (?, 'pending', ?)`,
+        [reqId, now],
+      )
     },
 
     async fulfill(reqId, tokenCipher, expireTs, now) {
-      const rows = await sql`
-        UPDATE sts_token_requests
-           SET state = 'fulfilled', token_cipher = ${tokenCipher},
-               expire_ts = ${expireTs}, fulfilled_at = ${now}
-         WHERE req_id = ${reqId}
-        RETURNING req_id
-      `
-      if (rows.length === 0) throw new Error(`unknown req_id: ${reqId}`)
+      // MySQL 无 RETURNING，用 affectedRows 判断记录是否存在
+      const [result] = await pool.execute<ResultSetHeader>(
+        `UPDATE sts_token_requests
+            SET state = 'fulfilled', token_cipher = ?, expire_ts = ?, fulfilled_at = ?
+          WHERE req_id = ?`,
+        [tokenCipher, expireTs, now, reqId],
+      )
+      if (result.affectedRows === 0) throw new Error(`unknown req_id: ${reqId}`)
     },
 
     async getActive(now) {
-      const rows = await sql<{ req_id: string; token_cipher: string; expire_ts: number }[]>`
-        SELECT req_id, token_cipher, expire_ts
-          FROM sts_token_requests
-         WHERE state = 'fulfilled' AND expire_ts > ${now}
-         ORDER BY expire_ts DESC
-         LIMIT 1
-      `
+      const [rows] = await pool.execute<StsRow[]>(
+        `SELECT req_id, token_cipher, expire_ts
+           FROM sts_token_requests
+          WHERE state = 'fulfilled' AND expire_ts > ?
+          ORDER BY expire_ts DESC
+          LIMIT 1`,
+        [now],
+      )
       const r = rows[0]
       return r ? { reqId: r.req_id, tokenCipher: r.token_cipher, expireTs: Number(r.expire_ts) } : null
     },
 
     async expireStale(now) {
-      const rows = await sql`
-        UPDATE sts_token_requests SET state = 'expired'
-         WHERE state = 'pending' AND requested_at < ${now - 3600}
-        RETURNING req_id
-      `
-      return rows.length
+      const [result] = await pool.execute<ResultSetHeader>(
+        `UPDATE sts_token_requests SET state = 'expired'
+          WHERE state = 'pending' AND requested_at < ?`,
+        [now - 3600],
+      )
+      return result.affectedRows
     },
   }
 }
 ```
 
-- [ ] **Step 7: 运行测试确认通过**
+- [ ] **Step 8: 运行测试确认通过**
 
-Run: `TEST_DATABASE_URL=postgres://localhost/gw_test bun test tests/store/sts.test.ts`
-Expected: PASS — 5 tests
+Run: `TEST_DATABASE_URL=mysql://root@localhost:3306 bun test tests/store/sts.test.ts`
+Expected: PASS — 7 tests
 
-- [ ] **Step 8: 实现其余三个 store 并各写测试**
+- [ ] **Step 9: 实现 policy store**
 
 创建 `src/store/policy.ts`：
 
 ```ts
-import type { Sql } from './db'
+import type { RowDataPacket } from 'mysql2'
+import type { Pool } from './db'
 
 export interface PolicyRule {
   id: number
@@ -1250,32 +1332,48 @@ export interface PolicyStore {
   listEnabledRules(): Promise<PolicyRule[]>
 }
 
-export function createPolicyStore(sql: Sql): PolicyStore {
+interface RuleRow extends RowDataPacket {
+  id: number
+  priority: number
+  subject_type: string
+  subject_value: string
+  resource_expr: unknown
+  asset_types: unknown
+  effect: string
+}
+
+/**
+ * MySQL 的 JSON 列由 mysql2 自动解析为 JS 值，但驱动版本差异可能返回字符串，
+ * 因此统一做一次防御性解析。
+ */
+function parseJsonColumn<T>(value: unknown, fallback: T): T {
+  if (value === null || value === undefined) return fallback
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T
+    } catch {
+      return fallback
+    }
+  }
+  return value as T
+}
+
+export function createPolicyStore(pool: Pool): PolicyStore {
   return {
     async listEnabledRules() {
-      const rows = await sql<
-        {
-          id: number
-          priority: number
-          subject_type: string
-          subject_value: string
-          resource_expr: Record<string, unknown>
-          asset_types: string[]
-          effect: string
-        }[]
-      >`
-        SELECT id, priority, subject_type, subject_value, resource_expr, asset_types, effect
-          FROM policy_rules
-         WHERE enabled = true
-         ORDER BY priority ASC, id ASC
-      `
+      const [rows] = await pool.execute<RuleRow[]>(
+        `SELECT id, priority, subject_type, subject_value, resource_expr, asset_types, effect
+           FROM policy_rules
+          WHERE enabled = 1
+          ORDER BY priority ASC, id ASC`,
+      )
       return rows.map((r) => ({
         id: Number(r.id),
         priority: r.priority,
         subjectType: r.subject_type as PolicyRule['subjectType'],
         subjectValue: r.subject_value,
-        resourceExpr: r.resource_expr,
-        assetTypes: r.asset_types,
+        resourceExpr: parseJsonColumn<Record<string, unknown>>(r.resource_expr, {}),
+        assetTypes: parseJsonColumn<string[]>(r.asset_types, []),
         effect: r.effect as PolicyRule['effect'],
       }))
     },
@@ -1283,24 +1381,113 @@ export function createPolicyStore(sql: Sql): PolicyStore {
 }
 ```
 
-创建 `src/store/auth.ts`（`AuthStore` 接口，方法见 Interfaces 块）与 `src/store/audit.ts`（`AuditStore.record`）。为每个 store 写测试，覆盖：
+- [ ] **Step 10: 写 policy store 测试**
 
-- `tests/store/auth.test.ts`：device_code 唯一、user_code 唯一、state 唯一、`authorize` 只对 pending 生效、refresh token 按 hash 查找、`revokeFamily` 吊销整条链
-- `tests/store/audit.test.ts`：写入后可按时间倒序查出，`decision` 字段必填
-- `tests/store/policy.test.ts`：按 priority 升序返回，`enabled=false` 的规则不返回
+创建 `tests/store/policy.test.ts`，覆盖：
 
-- [ ] **Step 9: 运行全部 store 测试**
+```ts
+test('按 priority 升序返回')
+test('enabled = 0 的规则不返回')
+test('JSON 列往返：resourceExpr 与 assetTypes 解析为对象与数组')
+test('asset_types 存 ["*"] 时正确读出通配')
+test('resource_expr 含中文值时正确往返（utf8mb4）')
+```
 
-Run: `TEST_DATABASE_URL=postgres://localhost/gw_test bun test tests/store/ && bun run typecheck`
+插入测试数据时 JSON 列用 `JSON.stringify` 写入：
+
+```ts
+await pool.execute(
+  `INSERT INTO policy_rules
+     (priority, subject_type, subject_value, resource_expr, asset_types, effect, enabled, created_at, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  [10, 'user', 'tm-alice', JSON.stringify({ host_userid: 'tm-alice' }),
+   JSON.stringify(['*']), 'allow', 1, 0, 0],
+)
+```
+
+- [ ] **Step 11: 实现 auth store 与 audit store**
+
+创建 `src/store/auth.ts`，实现 Interfaces 块列出的十个方法。要点：
+
+- `createDeviceAuth` 用 `INSERT`，`user_code` / `state` 的唯一冲突直接抛出（碰撞应当被感知，不可静默重试）
+- `authorize(state, wecomUserId, tmUserId)` 用 `UPDATE ... WHERE state = ? AND status = 'pending'`，返回 `affectedRows === 1`。**`status = 'pending'` 这个条件是防重放的关键**：已授权的 state 再次提交将影响 0 行，返回 false
+- `revokeFamily(familyId)` 用 `UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ?`
+- `lookupIdentityMap` / `lookupIdentityByEmail` 查 `identity_map`
+
+创建 `src/store/audit.ts`：
+
+```ts
+import type { Pool } from './db'
+
+export interface AuditEntry {
+  occurredAt: number
+  actorType: string
+  actorId: string
+  action: string
+  meetingId: string | null
+  assetId: string | null
+  assetType: string | null
+  decision: 'allow' | 'deny'
+  matchedRuleId: number | null
+  clientKind: string | null
+}
+
+export interface AuditStore {
+  record(entry: AuditEntry): Promise<void>
+}
+
+export function createAuditStore(pool: Pool): AuditStore {
+  return {
+    async record(e) {
+      await pool.execute(
+        `INSERT INTO audit_log
+           (occurred_at, actor_type, actor_id, action, meeting_id, asset_id,
+            asset_type, decision, matched_rule, client_kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [e.occurredAt, e.actorType, e.actorId, e.action, e.meetingId, e.assetId,
+         e.assetType, e.decision, e.matchedRuleId, e.clientKind],
+      )
+    },
+  }
+}
+```
+
+- [ ] **Step 12: 写 auth 与 audit store 测试**
+
+创建 `tests/store/auth.test.ts`，覆盖：
+
+```ts
+test('device_code 为主键，重复插入报错')
+test('user_code 唯一约束生效')
+test('state 唯一约束生效')
+test('authorize 对 pending 记录成功并返回 true')
+test('authorize 对已授权记录返回 false（防 state 重放）')
+test('authorize 对不存在的 state 返回 false')
+test('refresh token 按 hash 精确查找')
+test('revokeFamily 吊销整条轮换链上的全部令牌')
+test('findServiceAccount 返回 enabled 与 expires_at 供上层判断')
+```
+
+创建 `tests/store/audit.test.ts`，覆盖：
+
+```ts
+test('写入后可按时间倒序查出')
+test('decision 为 deny 的记录同样落库')
+test('meetingId 等可空字段接受 null')
+test('中文 actor 名与主题正确往返（utf8mb4）')
+```
+
+- [ ] **Step 13: 运行全部 store 测试与类型检查**
+
+Run: `TEST_DATABASE_URL=mysql://root@localhost:3306 bun test tests/store/ && bun run typecheck`
 Expected: PASS
 
-- [ ] **Step 10: 提交**
+- [ ] **Step 14: 提交**
 
 ```bash
 git add migrations src/store tests/store tests/helpers package.json bun.lockb
-git commit -m "feat: PostgreSQL schema 与 store 层"
+git commit -m "feat: MySQL schema 与 store 层"
 ```
-
 ---
 
 ## Task 5: 令牌工具
@@ -3697,6 +3884,12 @@ CMD ["bun", "src/index.ts"]
 ```
 1. 配置完整性         loadConfig 不抛错
 2. 数据库连通性       SELECT 1
+2b. 数据库字符集      SELECT @@character_set_database, @@collation_database
+                     必须为 utf8mb4 / utf8mb4_unicode_ci。
+                     不满足时明确指出：会议主题含中文与 emoji，
+                     3 字节 utf8 会在真实数据上插入失败（测试数据多为
+                     ASCII，不会暴露该问题）
+2c. 数据库版本        SELECT VERSION() ≥ 5.7
 3. 腾讯凭证与签名     调 /v1/records 取最近 1 天，成功即证明签名与权限正确
                      失败时按 error_code 给出具体指引：
                        9042   → 检查 SecretId/SecretKey 与应用权限
@@ -3713,7 +3906,20 @@ CMD ["bun", "src/index.ts"]
 
 - [ ] **Step 3: 写部署文档**
 
-创建 `docs/deploy.md`，含：阿里云部署步骤、腾讯会议企管后台配置清单（应用创建、事件订阅 URL/Token/EncodingAESKey、勾选「STS Token 生成」事件、operator 权限）、企微自建应用配置、环境变量说明、preflight 使用方法、常见错误码对照表。
+创建 `docs/deploy.md`，含：
+
+- 阿里云部署步骤
+- **MySQL 准备**：版本 ≥ 5.7（推荐 8.0）；建库语句须显式指定字符集
+  ```sql
+  CREATE DATABASE meeting_gateway
+    CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  ```
+  阿里云 RDS 需确认实例参数 `character_set_server = utf8mb4`
+- 腾讯会议企管后台配置清单（应用创建、事件订阅 URL/Token/EncodingAESKey、勾选「STS Token 生成」事件、operator 权限）
+- 企微自建应用配置
+- 环境变量说明（`DATABASE_URL` 格式：`mysql://user:pass@host:3306/db?charset=utf8mb4`）
+- preflight 使用方法
+- 常见错误码对照表
 
 - [ ] **Step 4: 验证镜像可构建并运行自检**
 
