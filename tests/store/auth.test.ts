@@ -202,17 +202,35 @@ test('findServiceAccount 返回 enabled 与 expires_at 供上层判断', async (
   expect(missing).toBeNull()
 })
 
-test('pollDevice 更新 last_polled_at 并返回当前状态', async () => {
+test('pollDevice 更新 last_polled_at，但返回的是更新前的旧值', async () => {
+  // pollDevice 的契约是「记录本次轮询，返回本次轮询之前的状态」。调用方（device.ts
+  // 的限速判断）需要知道的正是「上一次轮询是什么时候」——如果返回值里的 last_polled_at
+  // 被静默替换成本次的 now，这个信息就永久丢失，差值恒为 0，限速会对每次轮询都生效，
+  // 设备授权流程在真实数据库下将永远无法完成（这是本用例锁定的真实故障场景）。
   const store = createAuthStore(pool)
   const t = uniqueTriplet('poll')
   await store.createDeviceAuth({ ...t, expiresAt: 9999, now: 1000 })
 
-  const before = await store.pollDevice(t.deviceCode, 2000)
-  expect(before?.status).toBe('pending')
-  expect(before?.lastPolledAt).toBe(2000)
+  // 从未轮询过，旧值应为 null，而不是本次传入的 now
+  const first = await store.pollDevice(t.deviceCode, 2000)
+  expect(first?.status).toBe('pending')
+  expect(first?.lastPolledAt).toBeNull()
 
   const missing = await store.pollDevice('device-code-not-exist', 2000)
   expect(missing).toBeNull()
+})
+
+test('连续两次 pollDevice，第二次返回的 lastPolledAt 等于第一次调用时传入的 now', async () => {
+  const store = createAuthStore(pool)
+  const t = uniqueTriplet('poll-seq')
+  await store.createDeviceAuth({ ...t, expiresAt: 9999, now: 1000 })
+
+  await store.pollDevice(t.deviceCode, 2000)
+  const second = await store.pollDevice(t.deviceCode, 2010)
+  expect(second?.lastPolledAt).toBe(2000)
+
+  const third = await store.pollDevice(t.deviceCode, 2025)
+  expect(third?.lastPolledAt).toBe(2010)
 })
 
 test('lookupIdentityMap 按 wecom_userid 查找', async () => {
