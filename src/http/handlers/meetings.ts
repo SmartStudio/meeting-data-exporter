@@ -115,6 +115,14 @@ export async function listMeetings(req: Request, ctx: RouteCtx): Promise<Respons
  * 单场会议详情，含（已按策略过滤的）资产清单。若同一 meeting_id 在窗口内
  * 命中多条记录（理论上限于周期性会议的多次实例复用同一 meeting_id），
  * 取时间最新的一条作为主记录——这是一个尽力而为的简化，详见任务报告。
+ *
+ * 整场可见性检查（与 listMeetings 完全一致的口径：只要有至少一类资产对该
+ * actor 判定为 allow 即视为可见）在这里同样是必需的——否则会议本身的属性
+ * （subject / host_user_id / start_time / end_time）会在完全不做权限判断的
+ * 情况下无条件返回，构成元数据泄露。未通过可见性检查时统一返回 404
+ * meeting_not_found_in_range（而非 403），与「范围外未命中」共用同一响应
+ * 形状：区分「不存在」与「无权限」本身就是一种信息泄露，不应新增这种可
+ * 探测信号。
  */
 export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response> {
   const now = ctx.deps.now()
@@ -124,13 +132,11 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
   const url = new URL(req.url)
   const from = parseIntParam(url.searchParams.get('from'))
   const to = parseIntParam(url.searchParams.get('to'))
+  const meetingIdParam = ctx.params.meetingId!
 
   let meetings: Meeting[]
   try {
-    meetings = await ctx.deps.recordsApi.listMeetings(
-      { kind: 'id', meetingId: ctx.params.meetingId!, from, to },
-      now,
-    )
+    meetings = await ctx.deps.recordsApi.listMeetings({ kind: 'id', meetingId: meetingIdParam, from, to }, now)
   } catch (err) {
     if (err instanceof MeetingNotFoundInRangeError) {
       return json(404, { error: 'meeting_not_found_in_range', message: err.message })
@@ -140,6 +146,14 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
 
   await Promise.all(meetings.map((m) => ctx.deps.meetingsCache.upsert(m, now)))
   const meeting = [...meetings].sort((a, b) => b.startTime - a.startTime)[0]!
+
+  if (!(await isMeetingVisible(ctx, auth.identity, meeting))) {
+    // 与真正「范围外未命中」时抛出的 MeetingNotFoundInRangeError 使用完全相同的
+    // from/to 缺省口径（见 tencent/records.ts），使两种情况下的响应体在形状与
+    // 措辞上都不可区分。
+    const notFound = new MeetingNotFoundInRangeError(meetingIdParam, from ?? now - DEFAULT_WINDOW_SEC, to ?? now)
+    return json(404, { error: 'meeting_not_found_in_range', message: notFound.message })
+  }
 
   const assets = await ctx.deps.catalog.listAssets(meeting)
   const visibleAssets = await filterAssetsByPolicy(ctx, auth.identity, meeting, assets)
@@ -268,7 +282,11 @@ export async function downloadUrl(req: Request, ctx: RouteCtx): Promise<Response
 
   await ctx.deps.auditRecorder.recordDownloadUrl({
     actor: auth.identity,
-    meetingId: meeting.meetingId,
+    // 与上面缓存未命中分支保持同一维度：未命中时只拿得到 meetingRecordId（真正
+    // 的 Tencent meeting_id 无从得知），因此两条路径统一填 meetingRecordId，
+    // 避免同一列在两个分支混入不同维度的 ID（详见 audit_log.meeting_id 的
+    // 列注释，migrations/001_init.sql）。
+    meetingId: parsed.meetingRecordId,
     assetId,
     assetType: parsed.assetType,
     decision: decision.effect,

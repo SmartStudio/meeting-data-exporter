@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
   actor_type   VARCHAR(32)  NOT NULL,
   actor_id     VARCHAR(128) NOT NULL,
   action       VARCHAR(32)  NOT NULL,
+  -- action = issue_download_url 的记录里，本列存的是 meeting_record_id（record
+  -- 维度 ID），不是腾讯会议的 meeting_id：缓存未命中时网关只能拿到
+  -- meeting_record_id（真正的 meeting_id 无从得知），为使同一列在所有
+  -- download-url 审计记录里语义一致，统一填 meeting_record_id
+  -- （见 src/http/handlers/meetings.ts 的 downloadUrl / src/audit/recorder.ts）。
   meeting_id   VARCHAR(64)  NULL,
   asset_id     VARCHAR(255) NULL,
   asset_type   VARCHAR(64)  NULL,

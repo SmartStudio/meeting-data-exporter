@@ -3,6 +3,13 @@ import type { AuditStore } from '../store/audit'
 
 export interface DownloadUrlAudit {
   actor: ActorIdentity
+  /**
+   * 写入 audit_log.meeting_id 列，但语义是 meetingRecordId（record 维度），
+   * 不是 Tencent 的 meeting_id——调用方（http/handlers/meetings.ts 的
+   * downloadUrl）在缓存命中与未命中两条路径下都只保证拿得到 meetingRecordId，
+   * 因此统一用它，避免同一列在不同路径混入不同维度的 ID。详见
+   * migrations/001_init.sql 里 audit_log.meeting_id 的列注释。
+   */
   meetingId: string
   assetId: string
   assetType: AssetType

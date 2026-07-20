@@ -76,6 +76,45 @@ test('列表按策略过滤，被拒的会议不出现', async () => {
   expect(body.meetings.map((m) => m.meeting_id)).toEqual(['m-a-1'])
 })
 
+test('单场详情对无可见权限的会议返回 404，且不泄露会议属性（不是无条件全量返回）', async () => {
+  const noAccess: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-noaccess-1', tmUserId: 'tm-noaccess-1' }
+  const secretMeeting = rawMeeting({
+    meeting_record_id: 'rec-secret-1',
+    meeting_id: 'm-secret-1',
+    meeting_code: '999',
+    host_user_id: 'tm-owner-1',
+    subject: '并购谈判纪要',
+  })
+
+  const { app } = buildTestApp(pool, {
+    now: () => NOW,
+    tencentGet: (path) => (path === '/v1/records' ? recordsPage([secretMeeting]) : {}),
+  })
+  // 有意不插入任何策略规则：noAccess 对该会议的任何资产类型都判定为 deny，
+  // 因此按 listMeetings 相同口径，这场会议对她不可见。
+
+  // 对照：列表端点对同一场会议已经正确过滤为 0 条（回归锚点）。
+  const listRes = await app(new Request('https://gw/api/v1/meetings', { headers: bearer(noAccess) }))
+  expect(listRes.status).toBe(200)
+  expect(((await listRes.json()) as { meetings: unknown[] }).meetings).toEqual([])
+
+  // 漏洞点：直接按 meeting_id 查详情，此前会绕过可见性检查直接吐出会议属性。
+  const res = await app(
+    new Request('https://gw/api/v1/meetings/m-secret-1', { headers: bearer(noAccess) }),
+  )
+  expect(res.status).toBe(404)
+  const body = (await res.json()) as Record<string, unknown>
+  expect(body.error).toBe('meeting_not_found_in_range')
+  // 响应体不得包含该会议的任何属性——subject 这类元数据本身可能敏感
+  expect(body.subject).toBeUndefined()
+  expect(body.host_user_id).toBeUndefined()
+  expect(body.start_time).toBeUndefined()
+  expect(body.end_time).toBeUndefined()
+  expect(body.assets).toBeUndefined()
+  expect(JSON.stringify(body)).not.toContain('并购谈判纪要')
+  expect(JSON.stringify(body)).not.toContain('tm-owner-1')
+})
+
 test('download-url 对无权资产返回 403 且写审计', async () => {
   const carol: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-carol-1', tmUserId: 'tm-carol-1' }
   const meeting = rawMeeting({
@@ -170,6 +209,65 @@ test('download-url 对从未被任何人列出过的 meetingRecordId 同样返�
   )
   expect(res.status).toBe(403)
   expect((await res.json()).error).toBe('forbidden')
+})
+
+test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条路径下语义一致（均为 meetingRecordId 维度）', async () => {
+  const kate: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-kate-1', tmUserId: 'tm-kate-1' }
+  const meeting = rawMeeting({
+    meeting_record_id: 'rec-kate-1', meeting_id: 'm-kate-1', meeting_code: '890', host_user_id: 'tm-kate-1',
+  })
+  const addressFile = {
+    record_file_id: 'file-kate-1', download_address: 'https://cos/kate.mp4', download_address_file_type: 'mp4',
+  }
+
+  const { app } = buildTestApp(pool, {
+    now: () => NOW,
+    tencentGet: (path) => {
+      if (path === '/v1/records') return recordsPage([meeting])
+      if (path === '/v1/addresses') return addressesPage([addressFile])
+      return {}
+    },
+  })
+  await insertPolicyRule(pool, {
+    priority: 10, subjectType: 'user', subjectValue: 'tm-kate-1',
+    resourceExpr: {}, assetTypes: ['*'], effect: 'allow',
+  })
+
+  const headers = bearer(kate)
+
+  // 缓存未命中分支：meetingRecordId 从未被任何人列出过，网关根本拿不到真正的
+  // Tencent meeting_id，只有 record_id 可用。
+  const missAssetId = 'rec-never-listed-kate:file-x:video:0'
+  const missRes = await app(
+    new Request(`https://gw/api/v1/assets/${missAssetId}/download-url`, { method: 'POST', headers }),
+  )
+  expect(missRes.status).toBe(403) // 未命中一律 deny（见 downloadUrl 注释）
+
+  // 缓存命中分支：先列会议使其进入 meeting_cache，此时网关同时知道
+  // meetingRecordId 与真正的 meeting_id 两者。
+  await app(new Request('https://gw/api/v1/meetings', { headers }))
+  const hitAssetId = 'rec-kate-1:file-kate-1:video:0'
+  const hitRes = await app(
+    new Request(`https://gw/api/v1/assets/${hitAssetId}/download-url`, { method: 'POST', headers }),
+  )
+  expect(hitRes.status).toBe(200)
+
+  const [missRows] = await pool.execute<RowDataPacket[]>(
+    'SELECT meeting_id FROM audit_log WHERE asset_id = ?',
+    [missAssetId],
+  )
+  const [hitRows] = await pool.execute<RowDataPacket[]>(
+    'SELECT meeting_id FROM audit_log WHERE asset_id = ?',
+    [hitAssetId],
+  )
+  expect(missRows).toHaveLength(1)
+  expect(hitRows).toHaveLength(1)
+
+  // 两条路径统一填 meetingRecordId（record 维度），而不是一边 record_id
+  // 一边 Tencent meeting_id——否则合规人员按 meeting_id 聚合分析时会被误导。
+  expect(missRows[0]!.meeting_id).toBe('rec-never-listed-kate')
+  expect(hitRows[0]!.meeting_id).toBe('rec-kate-1')
+  expect(hitRows[0]!.meeting_id).not.toBe('m-kate-1') // 不再是 Tencent meeting_id
 })
 
 test('未传 from/to 时默认最近 31 天', async () => {
