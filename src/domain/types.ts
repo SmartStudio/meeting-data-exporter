@@ -29,7 +29,13 @@ export interface Meeting {
 }
 
 export interface Asset {
-  /** 网关生成的稳定 ID：<recordFileId>:<assetType>:<index> */
+  /**
+   * 网关生成的稳定 ID：<meetingRecordId>:<recordFileId>:<assetType>:<index>
+   *
+   * meetingRecordId 编在首段是为了让 assetId 自包含——解析下载地址需要它，
+   * 而网关是多实例部署，任何跨请求的进程内缓存都不可靠。
+   * 后三段保证六类文本资产（同属一个 record_file，且每类还是数组）互不覆盖。
+   */
   assetId: string
   meetingId: string
   subMeetingId: string
