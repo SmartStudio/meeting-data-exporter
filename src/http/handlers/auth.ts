@@ -15,8 +15,12 @@ import type { RouteCtx } from '../router'
 /**
  * POST /api/v1/auth/device/code
  *
- * 发起设备授权流程（RFC 8628）。桌面端与 CLI 共用同一条路径：显示
- * user_code 与 verification_uri，由用户在浏览器里扫码/确认。
+ * 发起设备授权流程（RFC 8628）。桌面端与 CLI 共用同一条路径：响应体同时
+ * 带上 user_code 与 verification_uri。
+ *
+ * 已知缺口：verification_uri 指向的 `/device` 确认页面尚未实现（归属待定，
+ * 见 auth/device.ts 内 start() 的说明），当前会 404。客户端/CLI 应以
+ * user_code 为准引导用户完成企微授权，不要假设打开 verification_uri 就能用。
  */
 export async function deviceCode(_req: Request, ctx: RouteCtx): Promise<Response> {
   const started = await ctx.deps.deviceFlow.start(ctx.deps.now())

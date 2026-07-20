@@ -41,3 +41,9 @@ test('多个键之间为 AND', () => {
 test('未知字段名不匹配（防拼写错误导致规则意外放行）', () => {
   expect(matchExpr({ nonexistent_field: 'x' }, meeting)).toBe(false)
 })
+
+test('end_time 不是合法字段：平台不返回真实结束时间，Meeting.endTime 恒等于 startTime，' +
+  '开放该字段会让「按结束时间管控」的规则静默按开始时间比对——因此按未知字段一律拒绝', () => {
+  expect(matchExpr({ end_time: { gte: 0 } }, meeting)).toBe(false)
+  expect(matchExpr({ end_time: meeting.endTime }, meeting)).toBe(false)
+})

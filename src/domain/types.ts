@@ -24,6 +24,14 @@ export interface Meeting {
   hostUserId: string
   /** unix 秒 UTC */
   startTime: number
+  /**
+   * unix 秒 UTC——当前恒等于 startTime，不是真实的会议结束时间。
+   *
+   * 平台 /v1/records 只返回 media_start_time，没有结束时间字段（见
+   * tencent/records.ts）；真实 endTime 需要从 record_files 聚合，是另一个
+   * 需求，本次未做。策略引擎（policy/expr.ts）因此故意不开放 end_time 作为
+   * 可查询字段，避免管理员以为按结束时间管控、实际却在按开始时间比对。
+   */
   endTime: number
   state: RecordState
 }
