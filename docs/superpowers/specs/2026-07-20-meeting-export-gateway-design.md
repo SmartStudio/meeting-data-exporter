@@ -301,7 +301,13 @@ POST /api/v1/auth/service-token         服务账号凭证换取访问令牌
 POST /api/v1/auth/logout                主动登出，吊销刷新令牌
 
 GET  /api/v1/meetings                   列出可导出会议（已过策略过滤）
-     ?from=<unix秒>&to=<unix秒>&cursor=<游标>&limit=<1..100>
+     ?from=<unix秒>&to=<unix秒>          时间范围，缺省为最近 31 天
+     &meeting_code=<会议号>              可选，按会议号过滤（非唯一，可能多条）
+     &meeting_id=<会议ID>                可选，按会议 ID 过滤
+     &cursor=<游标>&limit=<1..100>
+
+GET  /api/v1/meetings/{meeting_id}      单场会议详情（含资产清单）
+     ?from=&to=                          可选，缺省最近 31 天，见下方约束
 
 GET  /api/v1/meetings/{meeting_id}/assets
                                         列出该会议资产清单（已过策略过滤）
@@ -316,6 +322,26 @@ POST /api/v1/assets/{asset_id}/download-url
 - **对外统一游标分页**，不暴露腾讯的 page/page_size 语义。
 - **时间一律 Unix 秒 + UTC**，不传毫秒，不传本地时间。
 - `download-url` 响应包含 `url`、`expires_at`、`file_type`、`bytes_expected`（若平台提供）。
+
+#### 定点查询的约束
+
+平台侧 `GET /v1/records` 的 `start_time` / `end_time` 为**必填**，`meeting_id` / `meeting_code` 仅为补充过滤条件。而 51174 需要 `meeting_record_id`、51180 需要 `record_file_id`，二者均只能从列表接口取得。
+
+**因此不存在「仅凭会议 ID 直接查询」的路径**，时间窗口无法绕过。网关据此约定：
+
+| 情况 | 网关行为 |
+| --- | --- |
+| 客户端未传 `from` / `to` | 默认取**最近 31 天**（正好是单次查询上限，不触发切分） |
+| 客户端传了范围 | 按传入范围查，超过 31 天时自动切分 |
+| 指定 ID 但在范围内未找到 | 返回明确错误：`meeting_not_found_in_range`，提示可扩大时间范围重试 |
+
+最后一条尤其重要：会议不在默认窗口内是**最常见的失败场景**（用户想导三个月前的会议）。错误信息必须指出真实原因与解法，而不是笼统的「未找到」——否则用户会以为会议不存在或自己没权限。
+
+#### 会议号非唯一
+
+`meeting_code` 是会议的呼入号码，平台文档明确标注其为**非唯一标识**：周期性会议的各次实例、以及号码复用都会造成一个 code 对应多场会议。
+
+按 `meeting_code` 查询时，网关**返回全部匹配项**而非猜测其一，由客户端展示给用户选择。响应中附带主题、起止时间、主持人，使用户足以辨认。
 
 ### 5.3 STS-Token 生命周期
 
@@ -672,6 +698,11 @@ http/         端到端：假腾讯 API + 真网关
 ✓ 身份映射失败     映射不出腾讯会议 userid → 登录失败且错误明确区别于「无权限」
 ✓ 刷新令牌轮换     旧 refresh_token 再次使用 → 判定泄露，吊销整条 family
 ✓ 策略实时生效     持有效 access_token 时收紧策略 → 下一次 download-url 即被拒
+
+✓ 默认时间窗口     未传 from/to → 取最近 31 天，不触发切分
+✓ 会议号多结果     一个 meeting_code 命中多场 → 全部返回，不擅自择一
+✓ 范围外未命中     指定 ID 但不在窗口内 → meeting_not_found_in_range，
+                  错误信息区别于「不存在」与「无权限」
 ```
 
 「错误码解析」那条是回归测试的关键：它锁定了「分类依据是 `error_code` 而非 HTTP status」这个约束。若日后有人把解析器改回按 status 分支，该用例会立刻失败。
@@ -889,21 +920,55 @@ size > 0 ─→ Range: bytes=<size>-
 | 文本类（转写、纪要） | 拉取后算 `content_hash`，与已完成记录比对；不一致则重置为 pending 重导 | 成本可忽略，可捕捉平台侧内容更新 |
 | 视频 / 音频 | 用 `bytes_expected` 与文件实际大小比对 | 算 hash 需读完数 GB，收益仅为确认下载时就该确认的事 |
 
-### A.8 CLI
+### A.8 两种使用模式
+
+工具需同时服务两种心智，二者共用同一套任务队列与下载引擎，只是**发现阶段的输入不同**：
+
+| 模式 | 心智 | 典型用户 |
+| --- | --- | --- |
+| **归档模式** | 「把 7 月的会议全部存档」 | 归档运维、定时任务、桌面端的批量归档 |
+| **点选模式** | 「找到上周那场评审会，下载它」 | 业务用户、桌面端主要交互方式 |
+
+为此将 Discovery 的输入从「时间窗口」泛化为**选择器**：
+
+```ts
+type MeetingSelector =
+  | { kind: 'range';  from: number; to: number }              // 归档模式
+  | { kind: 'code';   meetingCode: string; from?: number; to?: number }  // 点选：会议号
+  | { kind: 'id';     meetingId: string;   from?: number; to?: number }  // 点选：会议 ID
+```
+
+`from` / `to` 在点选模式下可省略，由网关补默认窗口（见 §5.2）。Executor、任务表、去重、断点续传全部不受选择器类型影响——**它们只消费任务队列，不关心任务从何而来**。
+
+### A.9 CLI
 
 ```bash
+# 归档模式
 mde run      --from 2026-07-01 --to 2026-07-31 --out ./meetings
 mde discover --from ... --to ...     只发现，不下载
+
+# 点选模式
+mde list     --from ... --to ...     查看可导出的会议（人读格式）
+mde list     --code 88123456         按会议号查找
+mde get      88123456                导出指定会议（会议号或会议 ID 均可）
+mde get      88123456 --assets recording,summary    只导指定资产类型
+mde get      88123456 --from 2026-04-01             会议较早时扩大搜索范围
+
+# 通用
 mde execute                          只消费队列（可反复跑，天然续传）
 mde status                           各状态计数与失败明细
 mde retry    --failed                failed/dead 重置为 pending
 ```
 
-三命令共享同一数据库，因此**中断后重跑 `mde execute` 即为续传**，无需专门的恢复命令。续传不是一个功能，而是架构的副产品——「继续上次」与「重新开始」在代码上是同一条路径。
+所有命令共享同一数据库，因此**中断后重跑 `mde execute` 即为续传**，无需专门的恢复命令。续传不是一个功能，而是架构的副产品——「继续上次」与「重新开始」在代码上是同一条路径。
+
+`mde get` 与 `mde run` 的差别仅在写入队列的选择器，写完之后走的是同一条执行路径。这也意味着两种模式可以混用：先 `mde run` 批量归档整月，再 `mde get` 补一场遗漏的会议，队列会正确合并且不重复下载。
+
+按会议号查到多场会议时，`mde get` 不猜测：列出全部匹配项，要求用户以 `--meeting-id` 精确指定。非交互环境（cron）下直接失败并给出候选列表，避免自动选错导致归档错乱。
 
 CLI 跑完即退出，不会在后台等待 48 小时。等待 AI 纪要依赖工具被反复运行（cron / 计划任务），或子项目 4 的桌面常驻进程。提供 `mde run --watch --interval 30m` 作为便利选项，但默认心智是「可反复运行的幂等命令」。
 
-### A.9 边界情况
+### A.10 边界情况
 
 | 情况 | 处理 |
 | --- | --- |
@@ -914,7 +979,7 @@ CLI 跑完即退出，不会在后台等待 48 小时。等待 AI 纪要依赖�
 | 本机时钟偏移 | 网关侧签名受影响；客户端不签名，但仍需在首次异常时提示校时 |
 | CLI 与 GUI 并发 | WAL + `busy_timeout` + 租约三者共同保证，无需额外 IPC |
 
-### A.10 测试策略
+### A.11 测试策略
 
 ```
 domain/       纯函数 → 单元测试
