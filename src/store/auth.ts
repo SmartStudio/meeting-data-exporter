@@ -58,7 +58,13 @@ export interface AuthStore {
    */
   authorize(state: string, wecomUserId: string, tmUserId: string): Promise<boolean>
 
-  /** 设备端轮询：返回当前状态并顺带记录 last_polled_at */
+  /**
+   * 设备端轮询：记录本次轮询（写入 last_polled_at = now），返回的是
+   * 【本次轮询之前】查到的状态——尤其是 last_polled_at，返回的是上一次
+   * 轮询的时间，而不是本次的 now。调用方（device.ts 的限速判断）依赖的
+   * 正是「上一次轮询是什么时候」这个信息；如果把返回值里的 last_polled_at
+   * 也替换成本次的 now，这个信息就永久丢失，字段就失去了意义。
+   */
   pollDevice(deviceCode: string, now: number): Promise<DeviceAuth | null>
 
   saveRefreshToken(input: {
@@ -219,7 +225,9 @@ export function createAuthStore(pool: Pool): AuthStore {
         `UPDATE device_authorizations SET last_polled_at = ? WHERE device_code = ?`,
         [now, deviceCode],
       )
-      return mapDeviceAuthRow({ ...r, last_polled_at: now })
+      // 返回 UPDATE 之前 SELECT 到的原始行：调用方需要的是「上一次轮询的时间」，
+      // 把它替换成本次的 now 会让限速判断的差值恒为 0，永远触发 slow_down。
+      return mapDeviceAuthRow(r)
     },
 
     async saveRefreshToken({ tokenHash, wecomUserId, tmUserId, familyId, expiresAt, now }) {

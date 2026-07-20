@@ -53,7 +53,26 @@ export function createWecomClient(cfg: WecomConfig, deps: WecomClientDeps): Weco
       )
       const body = (await res.json()) as { userid?: string; errmsg?: string }
       if (!body.userid) throw new Error(`wecom getuserinfo failed: ${body.errmsg ?? 'unknown'}`)
-      return { userId: body.userid, email: null }
+
+      const email = await fetchEmail(token, body.userid)
+      return { userId: body.userid, email }
     },
+  }
+
+  // auth/getuserinfo 本身不返回邮箱，email 身份映射策略需要再用拿到的 userid
+  // 调一次 user/get 才能取到。这次调用失败、返回业务错误码、或邮箱为空，都不应
+  // 阻断登录——direct/table 策略根本不需要邮箱，是否因缺邮箱而拒绝应由
+  // identity.ts 按所配策略决定，这里只负责尽力取值，取不到就置 null。
+  async function fetchEmail(token: string, userId: string): Promise<string | null> {
+    try {
+      const res = await deps.fetch(
+        `https://qyapi.weixin.qq.com/cgi-bin/user/get?access_token=${token}&userid=${encodeURIComponent(userId)}`,
+      )
+      const body = (await res.json()) as { errcode?: number; email?: string }
+      if (body.errcode !== undefined && body.errcode !== 0) return null
+      return body.email ? body.email : null
+    } catch {
+      return null
+    }
   }
 }
