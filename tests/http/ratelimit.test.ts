@@ -99,6 +99,14 @@ test('C1 回归：XFF 首段可被客户端任意伪造，限流必须按末段�
   expect(await blocked.json()).toEqual({ error: 'rate_limited' })
 })
 
+function deviceTokenReq(ip: string, deviceCode: string): Request {
+  return new Request('http://gw.example/api/v1/auth/device/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+    body: JSON.stringify({ device_code: deviceCode }),
+  })
+}
+
 function serviceTokenReq(ip: string, clientId: string): Request {
   return new Request('http://gw.example/api/v1/auth/service-token', {
     method: 'POST',
@@ -136,6 +144,21 @@ test('I1 回归：IP 维度不受账号维度干扰——同一 IP、每次换 c
   }
   const blocked = await app(serviceTokenReq('10.2.0.1', 'svc-diff-final'))
   expect(blocked.status).toBe(429)
+})
+
+test('M（回归）：device/token 账号维度限流独立于 IP 维度——固定 device_code、每次换 IP，第 21 次仍 429', async () => {
+  const { app } = buildTestApp(pool, { now: () => 2_350_000 })
+  for (let i = 0; i < 20; i++) {
+    // IP 每次都不同：IP 维度的桶不会耗尽，若第 21 次仍被拒绝，只能是账号维度生效。
+    // device_code 无需真实存在——账号维度限流检查在 deviceFlow.poll 之前生效，
+    // 未耗尽时会走到 poll 拿到 expired_token（device_code 未知）。
+    const res = await app(deviceTokenReq(`10.5.0.${i}`, 'dev-fixed-1'))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'expired_token' })
+  }
+  const blocked = await app(deviceTokenReq('10.5.0.99', 'dev-fixed-1'))
+  expect(blocked.status).toBe(429)
+  expect(await blocked.json()).toEqual({ error: 'rate_limited' })
 })
 
 test('I2 回归：refresh 端点确在 RATE_LIMITED 集合内，同 IP 第 21 次 429', async () => {

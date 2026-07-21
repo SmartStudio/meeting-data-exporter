@@ -42,3 +42,31 @@ test('loadConfig 校验 webhook token 长度为 25', () => {
 test('限流默认 5 QPS', () => {
   expect(loadConfig(validEnv).tencent.qps).toBe(5)
 })
+
+test('TRUSTED_PROXY_HOPS 缺省时默认 1', () => {
+  expect(loadConfig(validEnv).trustedProxyHops).toBe(1)
+})
+
+test('TRUSTED_PROXY_HOPS 接受合法正整数', () => {
+  expect(loadConfig({ ...validEnv, TRUSTED_PROXY_HOPS: '2' }).trustedProxyHops).toBe(2)
+})
+
+test('TRUSTED_PROXY_HOPS 为 0 时启动期拒绝', () => {
+  expect(() => loadConfig({ ...validEnv, TRUSTED_PROXY_HOPS: '0' }))
+    .toThrow('TRUSTED_PROXY_HOPS')
+})
+
+test('TRUSTED_PROXY_HOPS 为负数时启动期拒绝', () => {
+  expect(() => loadConfig({ ...validEnv, TRUSTED_PROXY_HOPS: '-1' }))
+    .toThrow('TRUSTED_PROXY_HOPS')
+})
+
+test('TRUSTED_PROXY_HOPS 非数字时启动期拒绝', () => {
+  expect(() => loadConfig({ ...validEnv, TRUSTED_PROXY_HOPS: 'abc' }))
+    .toThrow('TRUSTED_PROXY_HOPS')
+})
+
+test('TRUSTED_PROXY_HOPS 非整数时启动期拒绝', () => {
+  expect(() => loadConfig({ ...validEnv, TRUSTED_PROXY_HOPS: '1.5' }))
+    .toThrow('TRUSTED_PROXY_HOPS')
+})
