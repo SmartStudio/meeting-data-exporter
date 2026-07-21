@@ -131,6 +131,7 @@ const detailResponse = {
 function stsAvailable(token = 'sts-tok'): StsManager {
   return {
     async ensureFresh() {},
+    async pruneStale() { return 0 },
     async getToken() { return token },
     async handleWebhook() {},
   }
@@ -139,6 +140,7 @@ function stsAvailable(token = 'sts-tok'): StsManager {
 function stsUnavailable(): StsManager {
   return {
     async ensureFresh() {},
+    async pruneStale() { return 0 },
     async getToken(): Promise<string> { throw new StsTokenUnavailableError() },
     async handleWebhook() {},
   }

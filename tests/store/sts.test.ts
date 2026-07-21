@@ -150,3 +150,35 @@ test('expireStale 不影响已 fulfilled 的记录', async () => {
   expect(count).toBe(0)
   expect(await stateOf(pool, 'req-done')).toBe('fulfilled')
 })
+
+/**
+ * hasRecentPending 用例：req_id 与时间戳都选与上面所有既有用例远隔的值
+ * （见文件顶部关于共享 pool、不回滚的说明），避免因 INSERT IGNORE 撞上已存在
+ * 的 req_id 而让新建请求被静默忽略、误判用例结果。
+ */
+test('hasRecentPending：存在未过陈旧窗口的 pending 时为 true', async () => {
+  const store = createStsStore(pool)
+  await store.createRequest('hp-recent', 500_000_000)
+  // 陈旧窗口 3600s：now=500_000_500 时 requested_at=500_000_000 仍在窗口内
+  expect(await store.hasRecentPending(500_000_500)).toBe(true)
+})
+
+test('hasRecentPending：pending 已超陈旧窗口（>1h）时为 false', async () => {
+  const store = createStsStore(pool)
+  await store.createRequest('hp-old', 500_100_000)
+  // now 比 requested_at 晚超过 3600s
+  expect(await store.hasRecentPending(500_100_000 + 3601)).toBe(false)
+})
+
+test('hasRecentPending：已 fulfilled 的记录不算在途', async () => {
+  const store = createStsStore(pool)
+  await store.createRequest('hp-fulfilled', 500_200_000)
+  await store.fulfill('hp-fulfilled', 'cipher', 500_200_000 + 86_400, 500_200_050)
+  // 若仍按 pending 计入，requested_at=500_200_000 落在窗口内会被误判为 true
+  expect(await store.hasRecentPending(500_200_100)).toBe(false)
+})
+
+test('hasRecentPending：无任何在窗口内的 pending 时为 false', async () => {
+  const store = createStsStore(pool)
+  expect(await store.hasRecentPending(999_999_999)).toBe(false)
+})

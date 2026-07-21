@@ -129,8 +129,13 @@ async function main(): Promise<void> {
   // 随后每 5 分钟检查一次剩余有效期，真正发起续期申请的频率由 ensureFresh
   // 内部的 1/3 阈值判断决定，这里只负责定期"问一下要不要续"。
   const renewLoop = (): void => {
-    stsManager.ensureFresh(now()).catch((err: unknown) => {
+    const t = now()
+    stsManager.ensureFresh(t).catch((err: unknown) => {
       console.error('sts ensureFresh failed', err)
+    })
+    // 看门狗另一半：清理超时未回调的 pending，防止其无界增长
+    stsManager.pruneStale(t).catch((err: unknown) => {
+      console.error('sts pruneStale failed', err)
     })
   }
   renewLoop()

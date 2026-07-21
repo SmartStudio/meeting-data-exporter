@@ -37,6 +37,7 @@ export interface StsManagerDeps {
 
 export interface StsManager {
   ensureFresh(now: number): Promise<void>
+  pruneStale(now: number): Promise<number>
   getToken(now: number): Promise<string>
   handleWebhook(req: WebhookRequest, now: number): Promise<void>
 }
@@ -53,12 +54,21 @@ export function createStsManager(deps: StsManagerDeps): StsManager {
         const remaining = active.expireTs - now
         if (remaining > (VALID_TIME_HOURS * 3600) * RENEW_THRESHOLD_RATIO) return
       }
+      // 去重：已有未超陈旧窗口的在途申请时，等 webhook 回调即可，不重复 POST，
+      // 避免调用间隔短于回调到达时间时产生多条 pending 并浪费腾讯 API 配额。
+      if (await deps.store.hasRecentPending(now)) return
+
       const res = await deps.client.post<{ req_id: string }>('/v1/app/sts-token', {
         operator_id: deps.operatorId,
         operator_id_type: 1,
         valid_time: VALID_TIME_HOURS,
       })
       await deps.store.createRequest(res.req_id, now)
+    },
+
+    /** 看门狗：把超陈旧窗口仍未回调的 pending 标记为 expired，返回清理条数 */
+    async pruneStale(now) {
+      return deps.store.expireStale(now)
     },
 
     async getToken(now) {
