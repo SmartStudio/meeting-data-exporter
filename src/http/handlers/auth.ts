@@ -45,6 +45,11 @@ export async function deviceToken(req: Request, ctx: RouteCtx): Promise<Response
   if (!deviceCode) return json(400, { error: 'invalid_request' })
 
   const now = ctx.deps.now()
+  // 账号维度限流：IP 维度（router.ts）挡不住多 IP 分布式对同一 device_code 的
+  // 试探，这里按 device_code 再加一层桶（spec §5.4.7 要求 IP + 账号双维度）。
+  if (!ctx.deps.loginRateLimiter.allow(`acct:dev:${deviceCode}`, now)) {
+    return json(429, { error: 'rate_limited' })
+  }
   try {
     const identity = await ctx.deps.deviceFlow.poll(deviceCode, now)
     const tokens = await issueSession(ctx, identity, now)
@@ -171,6 +176,11 @@ export async function serviceToken(req: Request, ctx: RouteCtx): Promise<Respons
   if (!clientId || !clientSecret) return json(400, { error: 'invalid_request' })
 
   const now = ctx.deps.now()
+  // 账号维度限流：IP 维度（router.ts）挡不住多 IP 分布式对同一 client_id 的
+  // 试探，这里按 client_id 再加一层桶（spec §5.4.7 要求 IP + 账号双维度）。
+  if (!ctx.deps.loginRateLimiter.allow(`acct:svc:${clientId}`, now)) {
+    return json(429, { error: 'rate_limited' })
+  }
   try {
     const identity = await ctx.deps.serviceAuth.authenticate(clientId, clientSecret, now)
     const accessToken = signAccessToken(identity, ctx.deps.jwtSecret, now)

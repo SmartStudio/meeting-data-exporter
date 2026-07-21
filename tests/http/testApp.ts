@@ -25,6 +25,7 @@ import { createRecordsApi } from '../../src/tencent/records'
 import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
+import { createLoginRateLimiter } from '../../src/http/ratelimit'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -129,6 +130,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     authStore,
     stsManager,
     meetingsCache,
+    // 每个测试 app 一个独立桶（不跨测试共享），保持测试间隔离
+    loginRateLimiter: createLoginRateLimiter(),
+    trustedProxyHops: 1,
   }
 
   return { app: createApp(deps), deps, pool }

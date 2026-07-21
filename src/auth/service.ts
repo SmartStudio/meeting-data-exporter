@@ -10,6 +10,8 @@ import type { AuthStore } from '../store/auth'
 const DUMMY_HASH_PROMISE = Bun.password.hash('invalid-placeholder-not-a-real-secret', {
   algorithm: 'argon2id',
 })
+// 标记已处理，避免加载期哈希意外失败时的未处理 rejection 警告；authenticate 内仍会 await 它
+DUMMY_HASH_PROMISE.catch(() => {})
 
 /**
  * 统一的失败原因，不区分「账号不存在」「密钥错误」「已禁用」「已过期」——

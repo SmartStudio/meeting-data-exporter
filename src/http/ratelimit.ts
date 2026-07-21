@@ -40,3 +40,18 @@ export function createRateLimiter(cfg: RateLimiterConfig): RateLimiter {
     },
   }
 }
+
+/**
+ * 登录端点限流参数。capacity=20 允许合理突发（设备端每 5 秒轮询一次远低于此），
+ * refillPerSec=1 把单 key 的稳态速率压到 60 次/分钟——足以让穷举/试探在
+ * argon2 校验成本之上再叠一层节流。数值是保守默认，可按上线观测调整。
+ *
+ * 导出为常量与工厂函数，供 index.ts（生产装配）与 tests/http/testApp.ts
+ * （测试装配）共用同一份默认值，避免两处各自复制一份、后续调参时改漏一处。
+ */
+export const LOGIN_BURST = 20
+export const LOGIN_REFILL_PER_SEC = 1
+
+export function createLoginRateLimiter(): RateLimiter {
+  return createRateLimiter({ capacity: LOGIN_BURST, refillPerSec: LOGIN_REFILL_PER_SEC })
+}
