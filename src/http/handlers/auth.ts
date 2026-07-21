@@ -9,7 +9,7 @@ import { DeviceFlowExpired, DeviceFlowPending, DeviceFlowSlowDown } from '../../
 import { IdentityMappingError } from '../../auth/identity'
 import { ServiceAuthError } from '../../auth/service'
 import type { ActorIdentity } from '../../domain/types'
-import { html, json, readJson } from '../respond'
+import { escapeHtml, html, json, readJson } from '../respond'
 import type { RouteCtx } from '../router'
 
 /**
@@ -18,9 +18,9 @@ import type { RouteCtx } from '../router'
  * 发起设备授权流程（RFC 8628）。桌面端与 CLI 共用同一条路径：响应体同时
  * 带上 user_code 与 verification_uri。
  *
- * 已知缺口：verification_uri 指向的 `/device` 确认页面尚未实现（归属待定，
- * 见 auth/device.ts 内 start() 的说明），当前会 404。客户端/CLI 应以
- * user_code 为准引导用户完成企微授权，不要假设打开 verification_uri 就能用。
+ * `/device` 确认页已由网关自带（见 http/handlers/device.ts）：浏览器打开
+ * verification_uri 即会凭 user_code 302 跳转到企微扫码授权页，用户扫码后
+ * 由 wecomCallback 完成身份映射与设备授权。
  */
 export async function deviceCode(_req: Request, ctx: RouteCtx): Promise<Response> {
   const started = await ctx.deps.deviceFlow.start(ctx.deps.now())
@@ -45,6 +45,11 @@ export async function deviceToken(req: Request, ctx: RouteCtx): Promise<Response
   if (!deviceCode) return json(400, { error: 'invalid_request' })
 
   const now = ctx.deps.now()
+  // 账号维度限流：IP 维度（router.ts）挡不住多 IP 分布式对同一 device_code 的
+  // 试探，这里按 device_code 再加一层桶（spec §5.4.7 要求 IP + 账号双维度）。
+  if (!ctx.deps.loginRateLimiter.allow(`acct:dev:${deviceCode}`, now)) {
+    return json(429, { error: 'rate_limited' })
+  }
   try {
     const identity = await ctx.deps.deviceFlow.poll(deviceCode, now)
     const tokens = await issueSession(ctx, identity, now)
@@ -171,6 +176,11 @@ export async function serviceToken(req: Request, ctx: RouteCtx): Promise<Respons
   if (!clientId || !clientSecret) return json(400, { error: 'invalid_request' })
 
   const now = ctx.deps.now()
+  // 账号维度限流：IP 维度（router.ts）挡不住多 IP 分布式对同一 client_id 的
+  // 试探，这里按 client_id 再加一层桶（spec §5.4.7 要求 IP + 账号双维度）。
+  if (!ctx.deps.loginRateLimiter.allow(`acct:svc:${clientId}`, now)) {
+    return json(429, { error: 'rate_limited' })
+  }
   try {
     const identity = await ctx.deps.serviceAuth.authenticate(clientId, clientSecret, now)
     const accessToken = signAccessToken(identity, ctx.deps.jwtSecret, now)
@@ -247,8 +257,4 @@ function successPage(): string {
 
 function failurePage(message: string): string {
   return `<!doctype html><html><body><h1>登录失败</h1><p>${escapeHtml(message)}</p></body></html>`
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 }

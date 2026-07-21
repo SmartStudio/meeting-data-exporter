@@ -13,6 +13,8 @@ export interface StsStore {
   /** 返回当前有效且过期最晚的 token；无有效 token 时返回 null */
   getActive(now: number): Promise<StsTokenRecord | null>
   expireStale(now: number): Promise<number>
+  /** 是否存在「未超陈旧窗口（1h）」的在途 pending 申请，用于 ensureFresh 去重 */
+  hasRecentPending(now: number): Promise<boolean>
 }
 
 interface StsRow extends RowDataPacket {
@@ -63,6 +65,18 @@ export function createStsStore(pool: Pool): StsStore {
         [now - 3600],
       )
       return result.affectedRows
+    },
+
+    async hasRecentPending(now) {
+      // 与 expireStale 用同一个 1h 陈旧阈值：更早的 pending 视为已废弃（将被
+      // expireStale 标记为 expired），不应再阻止发起新申请。
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT 1 FROM sts_token_requests
+          WHERE state = 'pending' AND requested_at >= ?
+          LIMIT 1`,
+        [now - 3600],
+      )
+      return rows.length > 0
     },
   }
 }

@@ -11,8 +11,10 @@ import type { IdentityMapper } from '../auth/identity'
 import type { ServiceAuth } from '../auth/service'
 import { internalError, json } from './respond'
 import * as authHandlers from './handlers/auth'
+import * as deviceHandlers from './handlers/device'
 import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
+import type { RateLimiter } from './ratelimit'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -33,6 +35,10 @@ export interface AppDeps {
   authStore: AuthStore
   stsManager: StsManager
   meetingsCache: MeetingCacheStore
+  /** 登录端点限流器（IP 维度 + handler 内的账号维度共用同一个实例，见 ratelimit.ts） */
+  loginRateLimiter: RateLimiter
+  /** 网关前方会追加 X-Forwarded-For 的可信代理层数，决定 clientIp 取右数第几段 */
+  trustedProxyHops: number
 }
 
 export interface RouteCtx {
@@ -69,6 +75,7 @@ const ROUTES: Route[] = [
   compile('POST', '/api/v1/auth/device/code', authHandlers.deviceCode),
   compile('POST', '/api/v1/auth/device/token', authHandlers.deviceToken),
   compile('GET', '/auth/wecom/callback', authHandlers.wecomCallback),
+  compile('GET', '/device', deviceHandlers.devicePage),
   compile('POST', '/api/v1/auth/refresh', authHandlers.refresh),
   compile('POST', '/api/v1/auth/service-token', authHandlers.serviceToken),
   compile('POST', '/api/v1/auth/logout', authHandlers.logout),
@@ -83,9 +90,47 @@ const ROUTES: Route[] = [
   compile('GET', '/healthz', async () => json(200, { status: 'ok' })),
 ]
 
+/** 仅对写型登录端点限流（webhook 是腾讯侧调用、GET /device 是浏览器页，均不在此列） */
+const RATE_LIMITED = new Set([
+  'POST /api/v1/auth/device/code',
+  'POST /api/v1/auth/device/token',
+  'POST /api/v1/auth/service-token',
+  'POST /api/v1/auth/refresh',
+])
+
+/**
+ * 取客户端 IP 用于限流。XFF 由每跳代理在末尾追加，越靠右越可信——最左段是
+ * 客户端自填、可伪造的值，绝不能取首段（否则换个请求头即可绕过限流）。
+ * 取右数第 trustedHops 段：trustedHops = 网关前方会追加 XFF 的可信代理层数
+ * （默认 1，单层反向代理）。链条比预期短时回退到最左端已知值。
+ */
+function clientIp(req: Request, trustedHops: number): string {
+  const xff = req.headers.get('x-forwarded-for')
+  if (xff) {
+    const parts = xff.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+    if (parts.length > 0) {
+      // 纵深防御：即便 loadConfig 已校验 trustedHops 为正整数，这里仍不用 `!`
+      // 强行断言——任何残留路径算出空下标时，回退到 x-real-ip/'unknown'，
+      // 避免产生 undefined 限流 key（会把不同客户端合并进同一个桶）。
+      const seg = parts[Math.max(0, parts.length - trustedHops)]
+      if (seg) return seg
+    }
+  }
+  return req.headers.get('x-real-ip') ?? 'unknown'
+}
+
 export function createApp(deps: AppDeps): (req: Request) => Promise<Response> {
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url)
+
+    // 限流在路由派发之前：按「方法+路径」精确匹配（这些端点无路径参数），
+    // key 含 pathname 与 ip: 命名空间前缀，使每个端点对每个 IP 有独立的桶，
+    // 且不会与 handler 内的账号维度桶（acct: 前缀，见 handlers/auth.ts）撞 key。
+    if (RATE_LIMITED.has(`${req.method} ${url.pathname}`)) {
+      if (!deps.loginRateLimiter.allow(`ip:${url.pathname}|${clientIp(req, deps.trustedProxyHops)}`, deps.now())) {
+        return json(429, { error: 'rate_limited' })
+      }
+    }
 
     for (const route of ROUTES) {
       if (route.method !== req.method) continue

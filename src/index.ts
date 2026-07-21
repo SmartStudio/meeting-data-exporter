@@ -19,15 +19,16 @@ import { createWecomClient } from './auth/wecom'
 import { createIdentityMapper } from './auth/identity'
 import { createServiceAuth } from './auth/service'
 import { createApp, type AppDeps } from './http/router'
+import { createLoginRateLimiter } from './http/ratelimit'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
 
 /**
  * STS-Token 落库前的对称加密。设计文档 §5.8 建议用阿里云 KMS 托管或等效的
- * 密文存储——本任务范围是组装既有模块，不引入 KMS 集成，因此用密钥派生自
- * JWT_SECRET 的 AES-256-GCM 作为最小可用实现。这是一处已知的简化，生产
- * 部署前应替换为真正的 KMS 密钥托管（见任务报告"疑虑"部分）。
+ * 密文存储——本实现用一把【独立于 JWT_SECRET】的密钥（STS_ENC_KEY）派生
+ * AES-256-GCM 密钥，使会话签名域与 STS 加密域互不牵连：任一密钥泄露不会同时
+ * 危及另一域。生产部署前仍建议替换为真正的 KMS 密钥托管。
  */
 function createTokenCipher(secret: string): { encrypt: (plain: string) => string; decrypt: (cipher: string) => string } {
   const key = createHash('sha256').update(secret).digest()
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
   const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
 
   const stsStore = createStsStore(pool)
-  const tokenCipher = createTokenCipher(config.jwtSecret)
+  const tokenCipher = createTokenCipher(config.stsEncKey)
   const stsManager = createStsManager({
     store: stsStore,
     client: tencentClient,
@@ -98,6 +99,7 @@ async function main(): Promise<void> {
   })
   const serviceAuth = createServiceAuth({ store: authStore })
   const meetingsCache = createMeetingCacheStore(pool)
+  const loginRateLimiter = createLoginRateLimiter()
 
   const deps: AppDeps = {
     now,
@@ -114,6 +116,8 @@ async function main(): Promise<void> {
     authStore,
     stsManager,
     meetingsCache,
+    loginRateLimiter,
+    trustedProxyHops: config.trustedProxyHops,
   }
 
   const app = createApp(deps)
@@ -125,8 +129,13 @@ async function main(): Promise<void> {
   // 随后每 5 分钟检查一次剩余有效期，真正发起续期申请的频率由 ensureFresh
   // 内部的 1/3 阈值判断决定，这里只负责定期"问一下要不要续"。
   const renewLoop = (): void => {
-    stsManager.ensureFresh(now()).catch((err: unknown) => {
+    const t = now()
+    stsManager.ensureFresh(t).catch((err: unknown) => {
       console.error('sts ensureFresh failed', err)
+    })
+    // 看门狗另一半：清理超时未回调的 pending，防止其无界增长
+    stsManager.pruneStale(t).catch((err: unknown) => {
+      console.error('sts pruneStale failed', err)
     })
   }
   renewLoop()

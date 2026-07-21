@@ -2,7 +2,16 @@ import { expect, test } from 'bun:test'
 import { createStsManager, StsTokenUnavailableError } from '../../src/sts/manager'
 import type { StsStore, StsTokenRecord } from '../../src/store/sts'
 
-function memStore(): StsStore & { records: Map<string, StsTokenRecord & { state: string }> } {
+/**
+ * in-memory StsStore 桩。默认行为由 records map 计算得出（沿用既有实现）；
+ * 传入 opts 里的可控点时直接返回固定值，覆盖计算结果——用于 ensureFresh 去重
+ * 与 pruneStale 委托的单元测试，无需搭建真实的 pending/fulfilled 记录组合。
+ */
+function memStore(opts: {
+  active?: StsTokenRecord | null
+  recentPending?: boolean
+  expireStaleReturns?: number
+} = {}): StsStore & { records: Map<string, StsTokenRecord & { state: string }> } {
   const records = new Map<string, StsTokenRecord & { state: string }>()
   return {
     records,
@@ -15,11 +24,13 @@ function memStore(): StsStore & { records: Map<string, StsTokenRecord & { state:
       records.set(reqId, { reqId, tokenCipher: cipher, expireTs, state: 'fulfilled' })
     },
     async getActive(now) {
+      if (opts.active !== undefined) return opts.active
       const valid = [...records.values()].filter((r) => r.state === 'fulfilled' && r.expireTs > now)
       valid.sort((a, b) => b.expireTs - a.expireTs)
       return valid[0] ?? null
     },
-    async expireStale() { return 0 },
+    async expireStale() { return opts.expireStaleReturns ?? 0 },
+    async hasRecentPending() { return opts.recentPending ?? false },
   }
 }
 
@@ -105,4 +116,27 @@ test('新旧 token 并存时返回过期最晚的', async () => {
   await store.createRequest('new', 0)
   await store.fulfill('new', 'enc(new-tok)', 9000, 0)
   expect(await m.getToken(1000)).toBe('new-tok')
+})
+
+test('ensureFresh：已有在途 pending 时不再重复 POST 申请（去重）', async () => {
+  const posts: string[] = []
+  // 无有效 token（active: null），但已有未超陈旧窗口的在途 pending
+  const store = memStore({ active: null, recentPending: true })
+  const m = createStsManager(deps(store, posts))
+  await m.ensureFresh(1000)
+  expect(posts).toHaveLength(0) // 在途申请已存在，不重复打腾讯 API
+})
+
+test('ensureFresh：无有效 token 且无在途 pending 时发起一次 POST', async () => {
+  const posts: string[] = []
+  const store = memStore({ active: null, recentPending: false })
+  const m = createStsManager(deps(store, posts))
+  await m.ensureFresh(1000)
+  expect(posts).toHaveLength(1)
+})
+
+test('pruneStale：委托 store.expireStale 并返回清理条数', async () => {
+  const store = memStore({ expireStaleReturns: 3 })
+  const m = createStsManager(deps(store))
+  expect(await m.pruneStale(1000)).toBe(3)
 })
