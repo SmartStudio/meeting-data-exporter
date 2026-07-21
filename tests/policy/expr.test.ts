@@ -47,3 +47,23 @@ test('end_time 不是合法字段：平台不返回真实结束时间，Meeting.
   expect(matchExpr({ end_time: { gte: 0 } }, meeting)).toBe(false)
   expect(matchExpr({ end_time: meeting.endTime }, meeting)).toBe(false)
 })
+
+test('gte/lte 套在非数值字段上：一律不匹配（不得静默放行）', () => {
+  // subject 是字符串字段，Number('季度评审') = NaN。NaN 比较恒 false，绝不能
+  // 被理解成「通过」——必须显式判定为不匹配。
+  expect(matchExpr({ subject: { gte: 0 } }, meeting)).toBe(false)
+  expect(matchExpr({ subject: { lte: 9999999999 } }, meeting)).toBe(false)
+  expect(matchExpr({ host_userid: { gte: 0 } }, meeting)).toBe(false)
+})
+
+test('gte/lte 的界值非数值：不匹配', () => {
+  expect(matchExpr({ start_time: { gte: 'abc' as unknown as number } }, meeting)).toBe(false)
+  expect(matchExpr({ start_time: { lte: 'abc' as unknown as number } }, meeting)).toBe(false)
+})
+
+test('数值字段的 gte/lte 仍按原语义工作（回归保护）', () => {
+  expect(matchExpr({ start_time: { gte: 1767225600 } }, meeting)).toBe(true)
+  expect(matchExpr({ start_time: { gte: 1767225601 } }, meeting)).toBe(false)
+  expect(matchExpr({ start_time: { lte: 1767225600 } }, meeting)).toBe(true)
+  expect(matchExpr({ start_time: { gte: 1767225500, lte: 1767225700 } }, meeting)).toBe(true)
+})
