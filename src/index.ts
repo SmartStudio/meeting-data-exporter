@@ -19,6 +19,7 @@ import { createWecomClient } from './auth/wecom'
 import { createIdentityMapper } from './auth/identity'
 import { createServiceAuth } from './auth/service'
 import { createApp, type AppDeps } from './http/router'
+import { createLoginRateLimiter } from './http/ratelimit'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -98,6 +99,7 @@ async function main(): Promise<void> {
   })
   const serviceAuth = createServiceAuth({ store: authStore })
   const meetingsCache = createMeetingCacheStore(pool)
+  const loginRateLimiter = createLoginRateLimiter()
 
   const deps: AppDeps = {
     now,
@@ -114,6 +116,8 @@ async function main(): Promise<void> {
     authStore,
     stsManager,
     meetingsCache,
+    loginRateLimiter,
+    trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 1),
   }
 
   const app = createApp(deps)

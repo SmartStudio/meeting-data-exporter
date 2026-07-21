@@ -156,6 +156,7 @@ DATABASE_URL=mysql://gateway:<强密码>@<host>:3306/meeting_gateway?charset=utf
 | `GATEWAY_BASE_URL` | 必须是公网可达的 HTTPS 域名，Webhook 回调地址、企微登录跳转都由它拼出来；本地联调可以先用内网穿透工具（如 `ngrok`）临时获得一个公网 HTTPS 地址。 |
 | `IDENTITY_STRATEGY` | 见第 6 节，选错会导致所有用户登录后都拿不到正确的腾讯会议身份。 |
 | `TM_QPS` | 默认 5，多个客户端共用同一个网关时不要盲目调高——腾讯侧限流触发 `190310` 后网关会自动收敛速率，但仍会拖慢所有客户端的响应。 |
+| `TRUSTED_PROXY_HOPS` | 可选，默认 1。登录端点限流按客户端 IP 分桶，取值必须等于网关前方会追加 X-Forwarded-For 的可信代理层数——配错会导致限流按错误的 IP 生效（填少了限流可被伪造的 XFF 前缀段绕过，填多了会误伤共享同一出口 IP 的不同客户端）。 |
 
 **任何一个必填变量缺失，网关都不会启动**（`loadConfig` 在 `src/index.ts` 的
 `main()` 一开始就会抛错），错误信息会明确指出缺的是哪个字段。
@@ -355,6 +356,12 @@ VALUES
    前面挂一层 Nginx / 阿里云 SLB / ALB 做 TLS 终止，把 `GATEWAY_BASE_URL`
    对应的域名解析到这一层。腾讯会议 Webhook 回调、企业微信登录跳转都要求
    HTTPS，直接暴露 HTTP 端口无法满足这两者。
+
+   网关登录端点的限流（`/api/v1/auth/*`）依赖 X-Forwarded-For 判断客户端 IP，
+   因此**这一层反向代理必须追加或覆盖 X-Forwarded-For**（Nginx 默认行为即是
+   追加），且 `TRUSTED_PROXY_HOPS` 必须等于网关到公网之间会追加 XFF 的可信代理
+   层数——不一致会导致限流按错误的 IP 生效，要么可被客户端伪造的 XFF 前缀段
+   绕过，要么误伤共享同一出口 IP 的不同客户端。
 
 6. **首次启动会自动建表**：`src/index.ts` 的 `main()` 里会在监听端口之前先跑
    `migrations/001_init.sql`（`runMigrations`），因此第一次启动稍慢属正常现象；

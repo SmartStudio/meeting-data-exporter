@@ -45,6 +45,7 @@ import { createIdentityMapper } from '../../src/auth/identity'
 import { createServiceAuth } from '../../src/auth/service'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createApp, type AppDeps } from '../../src/http/router'
+import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import {
   startFakeTencentServer,
   createFakeTencentState,
@@ -171,6 +172,10 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     authStore,
     stsManager,
     meetingsCache,
+    // e2e 测试重点不在限流本身（那是 tests/http/ratelimit.test.ts 的职责），
+    // 这里只需满足 AppDeps 契约，给每个 app 实例一个独立桶。
+    loginRateLimiter: createLoginRateLimiter(),
+    trustedProxyHops: 1,
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }
