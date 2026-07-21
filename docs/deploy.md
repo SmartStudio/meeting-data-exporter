@@ -472,9 +472,15 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
 
 ## 11. 上线前必须确认（已知技术债）
 
-以下几点是前序任务在实现过程中留下的、**明确记录在案、尚未解决**的简化/假设，
+以下几点是前序任务在实现过程中留下的、**明确记录在案**的简化/假设，
 不是隐藏的坑——但如果不在上线前逐条确认，可能会在生产环境里变成真正的问题。
 按风险从高到低排列：
+
+> **M1 网关加固已清掉的项**（2026-07-22 合并 master）：下方 **#4 登录端点限流**（IP + 账号
+> 双维度 + 服务账号恒定时间 + 限流器有界内存）、**#9 `/device` 验证页面**（网关已自带）已实现；
+> **#3** 的密钥复用问题已解决（STS 加密密钥已与 JWT_SECRET 分离），仅 KMS 托管仍为后续项。
+> 其余各项（webhook 线路格式、事件加解密、meeting_cache TTL、subject_type、addresses 字段名等）
+> 仍为待确认项。
 
 1. **Webhook 回调的线路格式未经腾讯官方文档核实**
    （`src/http/handlers/webhook.ts`，`src/sts/manager.ts`）。当前实现约定为
@@ -507,7 +513,8 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
    分布式暴力的外层防线仍建议由反向代理层（Nginx/SLB/WAF）承担；若需强一致的
    跨实例限流，可把 `createRateLimiter` 换成基于 Redis/DB 的实现，`allow(key, now)`
    接口不变。另见 `TRUSTED_PROXY_HOPS`（第 5 节）——限流按 X-Forwarded-For 判 IP，
-   该值必须与实际可信代理层数一致。
+   该值必须与实际可信代理层数一致。限流器的桶表已做周期性清扫（补满即回收，
+   语义等价于不存在），内存有界，不会随攻击者可控的账号维度 key 无界增长。
 
 5. **`meeting_cache` 表没有 TTL/清理策略**（`migrations/001_init.sql`）。这张
    表用于支持 download-url 端点重建会议元数据（详见表定义上方的注释），写入
@@ -535,13 +542,13 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
    `/v1/records` 已确认的响应命名风格与既有 fixture，但没有拿到官方文档原文
    逐字核对，建议用真实响应验证一次。
 
-9. **`/device` 验证页面不存在，登录全流程有一段"断档"**
-   （`src/auth/device.ts` 返回的 `verification_uri` 指向 `${baseUrl}/device`，
-   但网关的路由表——`src/http/router.ts`——里没有这个端点）。设计上完整的登录
-   流程需要一个页面把 `user_code` 解析回 `state` 再跳转到企微授权页，这个页面
-   目前既不在网关也不在任何已知的客户端项目里实现。上线前需要明确谁来提供这个
-   页面（网关补一个端点，还是由桌面端/CLI 客户端承担），否则设备授权登录流程
-   走不通。
+9. **✅ 已解决（M1）：`/device` 验证页面已由网关提供**
+   （`src/http/handlers/device.ts` + `src/http/router.ts` 的 `GET /device` 路由）。
+   该页面凭 `user_code` 反查待授权记录的 `state`，302 跳转到企业微信扫码登录页；
+   用户扫码授权后企微回调 `/auth/wecom/callback` 完成身份映射与设备授权。设备授权
+   登录全流程「仅凭网关」即可走通（US-2.1 前提成立）。四种失败态（缺参/不存在/
+   已过期/已用过）返回同一措辞的 400 页，不泄露 `user_code` 是否有效。桌面端将来
+   可用内嵌 webview 覆盖更顺滑的体验，但网关已自带这层兜底，不再是上线阻塞项。
 
 10. **`download-url` 成功响应目前只有 `{ url, expires_at }`**，缺少设计文档
     提到的 `file_type` / `bytes_expected` 字段（`catalog.resolveDownloadUrl`
