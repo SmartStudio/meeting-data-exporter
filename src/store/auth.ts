@@ -52,6 +52,9 @@ export interface AuthStore {
 
   findByState(state: string): Promise<DeviceAuth | null>
 
+  /** 按 user_code 查设备授权记录（/device 确认页用 user_code 反查其 state） */
+  findByUserCode(userCode: string): Promise<DeviceAuth | null>
+
   /**
    * 仅对 status = 'pending' 的记录生效，返回 affectedRows === 1。
    * 这个条件是防重放的关键：已授权的 state 再次提交将影响 0 行，返回 false。
@@ -195,6 +198,18 @@ export function createAuthStore(pool: Pool): AuthStore {
            FROM device_authorizations
           WHERE state = ?`,
         [state],
+      )
+      const r = rows[0]
+      return r ? mapDeviceAuthRow(r) : null
+    },
+
+    async findByUserCode(userCode) {
+      const [rows] = await pool.execute<DeviceAuthRow[]>(
+        `SELECT device_code, user_code, state, status, wecom_userid, tm_userid,
+                expires_at, last_polled_at, created_at
+           FROM device_authorizations
+          WHERE user_code = ?`,
+        [userCode],
       )
       const r = rows[0]
       return r ? mapDeviceAuthRow(r) : null

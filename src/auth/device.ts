@@ -39,7 +39,7 @@ export interface DeviceFlowStart {
   deviceCode: string
   userCode: string
   state: string
-  /** 指向 `${baseUrl}/device` ——该验证页面尚未实现，见 start() 内的说明 */
+  /** 指向 `${baseUrl}/device`——由网关自带的确认页处理，见 http/handlers/device.ts */
   verificationUri: string
   interval: number
   expiresIn: number
@@ -82,14 +82,13 @@ export function createDeviceFlow(deps: DeviceFlowDeps): DeviceFlow {
       }
       await deps.store.createDeviceAuth(input)
 
-      // 已知缺口：`${baseUrl}/device` 验证页面尚未实现（路由表里没有这个端点，
-      // 访问会 404），归属待定——可能是独立前端应用，也可能是后续任务里网关
-      // 自己承接的一个简单确认页。在那之前不要把这个 URL 当作已经可用的承诺。
-      // deviceCode()（http/handlers/auth.ts）会把 userCode 与这里的
-      // verificationUri 一并放进 POST /api/v1/auth/device/code 的响应体，
-      // 客户端/CLI 应引导用户凭 user_code 自行完成企微授权（例如展示
-      // user_code 让用户在企微里手动发起，或后续换成企微原生的授权二维码/
-      // 跳转链接），而不是假设浏览器打开 verification_uri 就能工作。
+      // `${baseUrl}/device` 已由网关自带的确认页处理（http/handlers/device.ts）：
+      // 浏览器打开 verification_uri 时，该 handler 凭 user_code 反查到这里生成的
+      // state，302 跳转企微扫码登录页；用户扫码后企微回调 /auth/wecom/callback
+      // 完成身份映射与本次设备授权。deviceCode()（http/handlers/auth.ts）会把
+      // userCode 与这里的 verificationUri 一并放进 POST /api/v1/auth/device/code
+      // 的响应体，客户端/CLI 只需引导用户打开 verification_uri（或展示 user_code
+      // 供用户核对）即可，无需自行实现企微授权跳转。
       return {
         deviceCode,
         userCode,

@@ -11,6 +11,7 @@ import type { IdentityMapper } from '../auth/identity'
 import type { ServiceAuth } from '../auth/service'
 import { internalError, json } from './respond'
 import * as authHandlers from './handlers/auth'
+import * as deviceHandlers from './handlers/device'
 import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
 import type { RateLimiter } from './ratelimit'
@@ -74,6 +75,7 @@ const ROUTES: Route[] = [
   compile('POST', '/api/v1/auth/device/code', authHandlers.deviceCode),
   compile('POST', '/api/v1/auth/device/token', authHandlers.deviceToken),
   compile('GET', '/auth/wecom/callback', authHandlers.wecomCallback),
+  compile('GET', '/device', deviceHandlers.devicePage),
   compile('POST', '/api/v1/auth/refresh', authHandlers.refresh),
   compile('POST', '/api/v1/auth/service-token', authHandlers.serviceToken),
   compile('POST', '/api/v1/auth/logout', authHandlers.logout),

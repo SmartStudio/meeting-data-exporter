@@ -15,6 +15,14 @@ export function html(status: number, body: string): Response {
   })
 }
 
+/** HTML 文本转义：用于把不可信内容安全嵌入服务端渲染页面 */
+export function escapeHtml(s: string): string {
+  return s.replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
+  )
+}
+
 /**
  * 请求体不是合法 JSON（或为空）时返回 null 而非抛出——由调用方决定如何应答
  * （多数场景为 400，webhook 端点则必须是 401，因此不能在这里统一处理）。
