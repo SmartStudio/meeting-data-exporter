@@ -1,0 +1,39 @@
+import type { Meeting } from '../domain/types'
+
+/**
+ * 仅支持等值、集合包含、时间区间——策略需被管理员读懂并审计，可编程性不是目标。
+ *
+ * 故意不提供 end_time：平台 /v1/records 不返回会议结束时间，Meeting.endTime
+ * 目前是 startTime 的镜像（见 tencent/records.ts、domain/types.ts 上的注释）。
+ * 如果在这里把 end_time 映射到 m.endTime，管理员写出的「按结束时间管控」规则
+ * 会静默地按开始时间比对——一个授权中枢里查不出来的错误。宁可让 end_time
+ * 被下面的未知字段兜底逻辑直接拒绝，管理员写规则时就能立刻发现它不是合法字段。
+ */
+const FIELD_ACCESSORS: Record<string, (m: Meeting) => string | number> = {
+  host_userid: (m) => m.hostUserId,
+  meeting_code: (m) => m.meetingCode,
+  meeting_id: (m) => m.meetingId,
+  subject: (m) => m.subject,
+  start_time: (m) => m.startTime,
+}
+
+function matchOne(condition: unknown, actual: string | number): boolean {
+  if (Array.isArray(condition)) return condition.includes(actual)
+  if (condition !== null && typeof condition === 'object') {
+    const c = condition as { not_in?: unknown[]; gte?: number; lte?: number }
+    if (c.not_in !== undefined && c.not_in.includes(actual)) return false
+    if (c.gte !== undefined && Number(actual) < c.gte) return false
+    if (c.lte !== undefined && Number(actual) > c.lte) return false
+    return true
+  }
+  return condition === actual
+}
+
+export function matchExpr(expr: Record<string, unknown>, meeting: Meeting): boolean {
+  for (const [field, condition] of Object.entries(expr)) {
+    const accessor = FIELD_ACCESSORS[field]
+    if (!accessor) return false // 未知字段一律不匹配，避免拼写错误意外放行
+    if (!matchOne(condition, accessor(meeting))) return false
+  }
+  return true
+}

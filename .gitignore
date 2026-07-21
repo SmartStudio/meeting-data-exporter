@@ -3,8 +3,10 @@ dist/
 build/
 .env
 .env.*
+!.env.example
 *.local
 .DS_Store
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+.superpowers/
