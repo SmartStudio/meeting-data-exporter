@@ -496,13 +496,16 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
    `JWT_SECRET` 派生一个静态密钥（一旦 `JWT_SECRET` 泄露，STS-Token 密文也会
    一并失守）。
 
-4. **登录相关端点没有限流/防暴力破解保护**（`src/http/handlers/auth.ts`）。
-   设备授权轮询本身有 `interval`/`slow_down` 机制约束客户端行为，但
-   `/api/v1/auth/service-token`（服务账号密钥校验）、
-   `/api/v1/auth/refresh`、`/auth/wecom/callback` 等端点目前都没有基于 IP 或
-   账号维度的限流，理论上存在被暴力破解服务账号密钥、或被恶意刷量消耗腾讯会议
-   API 配额的风险。建议在反向代理层（Nginx/SLB）先加一层基础限流兜底，长期看
-   需要在网关内实现。
+4. **登录端点限流已实现，但为进程内内存桶**（`src/http/ratelimit.ts`、
+   `src/http/router.ts`、`src/http/handlers/auth.ts`）。写型登录端点
+   （`device/code`、`device/token`、`service-token`、`refresh`）已按 IP 维度限流，
+   `service-token`/`device/token` 另加 `client_id`/`device_code` 账号维度限流；
+   服务账号校验为恒定时间比较（消除账号枚举的时序旁路）。**遗留特性**：限流桶是
+   进程内内存、不跨实例共享——N 个实例后方聚合放行速率为单实例的 N 倍（仍有界）。
+   分布式暴力的外层防线仍建议由反向代理层（Nginx/SLB/WAF）承担；若需强一致的
+   跨实例限流，可把 `createRateLimiter` 换成基于 Redis/DB 的实现，`allow(key, now)`
+   接口不变。另见 `TRUSTED_PROXY_HOPS`（第 5 节）——限流按 X-Forwarded-For 判 IP，
+   该值必须与实际可信代理层数一致。
 
 5. **`meeting_cache` 表没有 TTL/清理策略**（`migrations/001_init.sql`）。这张
    表用于支持 download-url 端点重建会议元数据（详见表定义上方的注释），写入
