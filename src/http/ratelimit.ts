@@ -12,6 +12,8 @@
 export interface RateLimiter {
   /** 返回 true 放行、false 超限应拒绝。now 单位为秒（与 AppDeps.now 一致）。 */
   allow(key: string, now: number): boolean
+  /** 当前桶数量——仅用于观测/测试回收是否生效 */
+  size(): number
 }
 
 export interface RateLimiterConfig {
@@ -23,8 +25,24 @@ export interface RateLimiterConfig {
 
 export function createRateLimiter(cfg: RateLimiterConfig): RateLimiter {
   const buckets = new Map<string, { tokens: number; last: number }>()
+  // 空闲桶回收：到 now 时已补满到 capacity 的桶与「不存在的桶」等价，可安全删除，
+  // 防止 buckets 随攻击者可控的 key（acct:dev:/acct:svc:）无界增长。
+  const SWEEP_INTERVAL_SEC = 300
+  let lastSweep = 0
+
+  function sweep(now: number): void {
+    for (const [key, b] of buckets) {
+      const refilled = Math.min(cfg.capacity, b.tokens + Math.max(0, now - b.last) * cfg.refillPerSec)
+      if (refilled >= cfg.capacity) buckets.delete(key)
+    }
+  }
+
   return {
     allow(key, now) {
+      if (now - lastSweep >= SWEEP_INTERVAL_SEC) {
+        lastSweep = now
+        sweep(now)
+      }
       const b = buckets.get(key) ?? { tokens: cfg.capacity, last: now }
       // 时钟只前进：now 倒退时 elapsed 归零，不凭空补令牌也不扣令牌
       const elapsed = Math.max(0, now - b.last)
@@ -37,6 +55,9 @@ export function createRateLimiter(cfg: RateLimiterConfig): RateLimiter {
       b.tokens -= 1
       buckets.set(key, b)
       return true
+    },
+    size() {
+      return buckets.size
     },
   }
 }
