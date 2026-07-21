@@ -68,3 +68,23 @@ test('已授权（非 pending）的 user_code：400（不可复用）', async ()
   const res = await app(deviceReq('?user_code=USED-01'))
   expect(res.status).toBe(400)
 })
+
+test('失败不可区分：未知/已过期/已用过三种失败态响应体逐字节相同（避免 user_code 有效性成为可探测信号）', async () => {
+  await seedDeviceAuth({ userCode: 'EXP-02', state: 'state-exp-02', expiresAt: 1_700_000_050 })
+  await seedDeviceAuth({ userCode: 'USED-02', state: 'state-used-02', expiresAt: 1_700_000_300 })
+  const store = createAuthStore(pool)
+  await store.authorize('state-used-02', 'ww-x', 'tm-x') // 置为 authorized（已用过）
+  const { app } = buildTestApp(pool, { now: () => 1_700_000_100 }) // now > EXP-02.expiresAt
+
+  const unknown = await app(deviceReq('?user_code=NOPE-02'))
+  const expired = await app(deviceReq('?user_code=EXP-02'))
+  const used = await app(deviceReq('?user_code=USED-02'))
+
+  for (const res of [unknown, expired, used]) {
+    expect(res.status).toBe(400)
+    expect(res.headers.get('content-type')).toContain('text/html')
+  }
+  const [unknownBody, expiredBody, usedBody] = await Promise.all([unknown.text(), expired.text(), used.text()])
+  expect(unknownBody).toBe(expiredBody)
+  expect(expiredBody).toBe(usedBody)
+})

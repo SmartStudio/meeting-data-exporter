@@ -37,6 +37,26 @@ test('时间倒流不产生负令牌（防御时钟异常）', () => {
   expect(rl.allow('k', 999)).toBe(true) // now 回退，elapsed 视为 0，仍用桶内余量
 })
 
+test('空闲满桶被回收：sweep 把补满且过期的桶从 Map 中清除', () => {
+  const rl = createRateLimiter({ capacity: 5, refillPerSec: 1 })
+  for (let i = 0; i < 100; i++) rl.allow(`k${i}`, 1000)
+  expect(rl.size()).toBe(100)
+  // now = 1000 + 400：超过 SWEEP_INTERVAL_SEC(300) 且 400s * 1/s 足以把每个桶补满到 capacity=5
+  // 复用已有 key 之一触发 sweep：sweep 先于当前 key 的 get 执行，命中的桶会被重建为等价满桶
+  expect(rl.allow('k1', 1400)).toBe(true)
+  expect(rl.size()).toBe(1) // 其余 99 个空闲满桶被回收，仅剩这次访问重建的 1 个
+})
+
+test('仍在限流中的桶不被 sweep 误删：过了 sweep 间隔但未补满仍保留限流状态', () => {
+  const rl = createRateLimiter({ capacity: 2, refillPerSec: 0.001 })
+  // capacity+1 次打满同一桶（同一 now，不补令牌）
+  expect(rl.allow('k', 1000)).toBe(true)
+  expect(rl.allow('k', 1000)).toBe(true)
+  expect(rl.allow('k', 1000)).toBe(false)
+  // now + SWEEP_INTERVAL_SEC(300)：过了 sweep 间隔，但 300 * 0.001 = 0.3 远不足以补满 capacity=2
+  expect(rl.allow('k', 1300)).toBe(false) // 桶未被误删，限流状态保留
+})
+
 let pool: Pool
 let cleanup: () => Promise<void>
 beforeAll(async () => { const db = await withTestDb(); pool = db.pool; cleanup = db.cleanup })
