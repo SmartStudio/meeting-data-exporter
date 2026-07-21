@@ -20,8 +20,14 @@ const FIELD_ACCESSORS: Record<string, (m: Meeting) => string | number> = {
 function matchOne(condition: unknown, actual: string | number): boolean {
   if (Array.isArray(condition)) return condition.includes(actual)
   if (condition !== null && typeof condition === 'object') {
-    const c = condition as { not_in?: unknown[]; gte?: unknown; lte?: unknown }
-    if (c.not_in !== undefined && Array.isArray(c.not_in) && c.not_in.includes(actual)) return false
+    const c = condition as { not_in?: unknown; gte?: unknown; lte?: unknown }
+    if (c.not_in !== undefined) {
+      // not_in 必须是数组；管理员漏写中括号会把它误配置成字符串/数字/对象。
+      // policy_rules.resource_expr 是无 schema 校验的 JSON 列，这种误配置真能落库，
+      // Array.isArray 为 false 时绝不能落到本函数末尾的 return true 被当成「通过」。
+      if (!Array.isArray(c.not_in)) return false
+      if (c.not_in.includes(actual)) return false
+    }
     // gte/lte 只对数值有意义。actual 或界值任一非数值时 Number() 得 NaN，
     // 涉及 NaN 的比较全为 false——但「比较为 false」绝不能落到末尾的 return true
     // 被当成「通过」。显式判定：一旦不是有限数值就视为不匹配（return false）。
