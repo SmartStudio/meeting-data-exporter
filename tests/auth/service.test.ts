@@ -117,3 +117,17 @@ test('账号不存在：拒绝', async () => {
     ServiceAuthError,
   )
 })
+
+test('账号不存在与密钥错误：都跑一次 verify（消除时序预言机），且都抛同一错误', async () => {
+  // 行为锁定：两条路径都必须抛 ServiceAuthError（不可区分）。恒定时间属性由
+  // 「不存在时也对 dummy hash 跑一次 verify」的实现保证，见 service.ts。
+  const store = memServiceAccountStore([
+    {
+      id: 'svc-1', name: '导出机器人', secretHash: correctHash,
+      tmUserId: 'tm-svc-1', enabled: true, expiresAt: null, createdAt: 1000,
+    },
+  ])
+  const auth = createServiceAuth({ store })
+  await expect(auth.authenticate('does-not-exist', 'any', 2000)).rejects.toThrow(ServiceAuthError)
+  await expect(auth.authenticate('svc-1', 'wrong-pass', 2000)).rejects.toThrow(ServiceAuthError)
+})
