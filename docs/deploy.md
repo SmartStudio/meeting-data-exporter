@@ -152,7 +152,8 @@ DATABASE_URL=mysql://gateway:<强密码>@<host>:3306/meeting_gateway?charset=utf
 | `TM_WEBHOOK_TOKEN` | 代码里做了强校验，**必须恰好 25 个字符**，多一位少一位 `loadConfig` 会直接拒绝启动。 |
 | `TM_WEBHOOK_AES_KEY` | 企微/腾讯的惯例是 43 位，但 `loadConfig` 本身没有做长度校验（只要求非空），填错长度不会在启动时报错，而是会在真正收到 Webhook 回调、解密失败时才暴露——建议部署前手动核对长度。 |
 | `DATABASE_URL` | 格式 `mysql://user:pass@host:3306/db?charset=utf8mb4`；密码含 `@` `:` `!` 等特殊字符时必须做 URL 编码，否则会被解析成错误的 host/path。 |
-| `JWT_SECRET` | 建议 ≥ 32 位随机字符串（例如 `openssl rand -base64 32`），这是签发用户会话 JWT 与派生 STS-Token 落库加密密钥（见第 11 节技术债）共用的根密钥，不要用弱口令。 |
+| `JWT_SECRET` | 必须 ≥ 32 位随机字符串（例如 `openssl rand -base64 32`），`loadConfig` 会在启动期强制校验长度。仅用于签发/校验用户会话 JWT，不要用弱口令，且不得与 `STS_ENC_KEY` 相同。 |
+| `STS_ENC_KEY` | 必须 ≥ 32 位随机字符串（例如 `openssl rand -base64 32`），且必须与 `JWT_SECRET` 不同——`loadConfig` 会在启动期校验长度与「不得等于 JWT_SECRET」。这是 STS-Token 落库前对称加密（见第 11 节技术债）用的独立密钥，与 `JWT_SECRET` 分属两个信任域，任一泄露不牵连另一个。 |
 | `GATEWAY_BASE_URL` | 必须是公网可达的 HTTPS 域名，Webhook 回调地址、企微登录跳转都由它拼出来；本地联调可以先用内网穿透工具（如 `ngrok`）临时获得一个公网 HTTPS 地址。 |
 | `IDENTITY_STRATEGY` | 见第 6 节，选错会导致所有用户登录后都拿不到正确的腾讯会议身份。 |
 | `TM_QPS` | 默认 5，多个客户端共用同一个网关时不要盲目调高——腾讯侧限流触发 `190310` 后网关会自动收敛速率，但仍会拖慢所有客户端的响应。 |
@@ -491,11 +492,11 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
    核实是否与腾讯会议官方实现完全一致。
 
 3. **STS-Token 落库前的加密不是真正的 KMS 托管**（`src/index.ts` 的
-   `createTokenCipher`）。当前用 `AES-256-GCM`，密钥由 `SHA-256(JWT_SECRET)`
-   派生，是一个明确标注的"最小可用实现"。设计文档要求"使用阿里云 KMS 托管或
-   等效的密文存储"——生产部署前应替换为真正的 KMS 密钥托管，而不是从
-   `JWT_SECRET` 派生一个静态密钥（一旦 `JWT_SECRET` 泄露，STS-Token 密文也会
-   一并失守）。
+   `createTokenCipher`）。当前用 `AES-256-GCM`，密钥由独立的 `STS_ENC_KEY`
+   派生，已与 `JWT_SECRET` 分离（两者分属不同信任域，`loadConfig` 会在启动期
+   校验二者长度均 ≥32 位且不得相同），是一个明确标注的"最小可用实现"。设计
+   文档要求"使用阿里云 KMS 托管或等效的密文存储"——仍建议上线后替换为真正的
+   KMS 密钥托管。
 
 4. **登录端点限流已实现，但为进程内内存桶**（`src/http/ratelimit.ts`、
    `src/http/router.ts`、`src/http/handlers/auth.ts`）。写型登录端点

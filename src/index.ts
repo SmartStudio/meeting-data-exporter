@@ -26,9 +26,9 @@ const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
 
 /**
  * STS-Token 落库前的对称加密。设计文档 §5.8 建议用阿里云 KMS 托管或等效的
- * 密文存储——本任务范围是组装既有模块，不引入 KMS 集成，因此用密钥派生自
- * JWT_SECRET 的 AES-256-GCM 作为最小可用实现。这是一处已知的简化，生产
- * 部署前应替换为真正的 KMS 密钥托管（见任务报告"疑虑"部分）。
+ * 密文存储——本实现用一把【独立于 JWT_SECRET】的密钥（STS_ENC_KEY）派生
+ * AES-256-GCM 密钥，使会话签名域与 STS 加密域互不牵连：任一密钥泄露不会同时
+ * 危及另一域。生产部署前仍建议替换为真正的 KMS 密钥托管。
  */
 function createTokenCipher(secret: string): { encrypt: (plain: string) => string; decrypt: (cipher: string) => string } {
   const key = createHash('sha256').update(secret).digest()
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
   const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
 
   const stsStore = createStsStore(pool)
-  const tokenCipher = createTokenCipher(config.jwtSecret)
+  const tokenCipher = createTokenCipher(config.stsEncKey)
   const stsManager = createStsManager({
     store: stsStore,
     client: tencentClient,
