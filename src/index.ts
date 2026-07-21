@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     stsManager,
     meetingsCache,
     loginRateLimiter,
-    trustedProxyHops: Number(process.env.TRUSTED_PROXY_HOPS ?? 1),
+    trustedProxyHops: config.trustedProxyHops,
   }
 
   const app = createApp(deps)

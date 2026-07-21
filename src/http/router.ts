@@ -106,7 +106,13 @@ function clientIp(req: Request, trustedHops: number): string {
   const xff = req.headers.get('x-forwarded-for')
   if (xff) {
     const parts = xff.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-    if (parts.length > 0) return parts[Math.max(0, parts.length - trustedHops)]!
+    if (parts.length > 0) {
+      // 纵深防御：即便 loadConfig 已校验 trustedHops 为正整数，这里仍不用 `!`
+      // 强行断言——任何残留路径算出空下标时，回退到 x-real-ip/'unknown'，
+      // 避免产生 undefined 限流 key（会把不同客户端合并进同一个桶）。
+      const seg = parts[Math.max(0, parts.length - trustedHops)]
+      if (seg) return seg
+    }
   }
   return req.headers.get('x-real-ip') ?? 'unknown'
 }
