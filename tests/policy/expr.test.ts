@@ -67,3 +67,18 @@ test('数值字段的 gte/lte 仍按原语义工作（回归保护）', () => {
   expect(matchExpr({ start_time: { lte: 1767225600 } }, meeting)).toBe(true)
   expect(matchExpr({ start_time: { gte: 1767225500, lte: 1767225700 } }, meeting)).toBe(true)
 })
+
+test('not_in 非数组（管理员漏写中括号误配置成字符串/数字/对象）：一律不匹配（不得静默放行）', () => {
+  // policy_rules.resource_expr 是无 schema 校验的 JSON 列，not_in 被误配置成
+  // 非数组值是真实可能落库的情况。Array.isArray 守卫为 false 时绝不能落到
+  // matchOne 末尾的 return true 被当成「通过」——必须显式判定为不匹配。
+  expect(matchExpr({ host_userid: { not_in: 'tm-alice' as unknown as unknown[] } }, meeting)).toBe(false)
+  expect(matchExpr({ host_userid: { not_in: 123 as unknown as unknown[] } }, meeting)).toBe(false)
+  expect(matchExpr({ host_userid: { not_in: { foo: 'bar' } as unknown as unknown[] } }, meeting)).toBe(false)
+})
+
+test('not_in 合法数组用法保持原语义（回归保护）', () => {
+  expect(matchExpr({ host_userid: { not_in: ['tm-bob'] } }, meeting)).toBe(true) // 未命中黑名单 → 继续匹配 → 通过
+  expect(matchExpr({ host_userid: { not_in: ['tm-alice'] } }, meeting)).toBe(false) // 命中黑名单 → 不匹配
+  expect(matchExpr({ host_userid: { not_in: [] } }, meeting)).toBe(true) // 空数组是合法数组，永不命中
+})
