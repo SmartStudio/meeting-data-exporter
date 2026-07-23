@@ -1,6 +1,9 @@
 import { Database } from 'bun:sqlite'
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 export function openDb(path: string): Database {
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })  // 首次运行时 dbPath 父目录（如 <out>/.mde）尚不存在
   const db = new Database(path, { create: true })
   db.exec('PRAGMA journal_mode = WAL;')
   db.exec('PRAGMA busy_timeout = 5000;')
