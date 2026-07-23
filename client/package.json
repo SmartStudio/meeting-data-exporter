@@ -1,0 +1,13 @@
+{
+  "name": "@yaowu/meeting-exporter-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "mde": "./bin/mde.ts" },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "mde": "bun bin/mde.ts"
+  },
+  "devDependencies": { "@types/bun": "latest", "typescript": "^5.6.0" }
+}
