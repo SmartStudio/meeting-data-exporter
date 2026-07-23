@@ -33,6 +33,16 @@ test('allow_download=false 的想要资产直接 skipped，不建任务不留探
   expect(store.counts().skipped).toBe(1)
 })
 
+test('discovery 存网关下发的 assetId，不自行重构', async () => {
+  const store = createStore(openDb(':memory:'))
+  const gw = fakeGw({ m1: [
+    { assetId: 'mrec9:rf1:download_address:0', assetType: 'download_address', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
+  ] })
+  await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video'], 1000)
+  const row = store.claimNext(2000, 300)!
+  expect(row.asset_id).toBe('mrec9:rf1:download_address:0')
+})
+
 test('同类型多段录制 → 每段各建一个任务（不塌缩为一个）', async () => {
   const store = createStore(openDb(':memory:'))
   const gw = fakeGw({ m1: [

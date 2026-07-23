@@ -23,13 +23,13 @@ export async function discover(
       const verdict = judgeReadiness({ present: present.length > 0, state: rep?.state, allowDownload: rep?.allowDownload, now, deadlineAt })
       if (verdict === 'ready') {
         for (const a of present) {
-          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, bytesExpected: a.bytesExpected, fileType: a.fileType }, now)
+          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId, bytesExpected: a.bytesExpected, fileType: a.fileType }, now)
           tasks++
         }
       } else if (verdict === 'skip_disallowed') {
         // 建行后直接置 skipped（平台明示不可得，不留探测、不空等）
         for (const a of present) {
-          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId }, now)
+          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId }, now)
         }
         deps.store.markSkippedByKey({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'download_not_allowed', now)
       } else if (verdict === 'skip_timeout') {

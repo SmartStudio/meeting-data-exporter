@@ -21,6 +21,7 @@ function migrate(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       meeting_id TEXT NOT NULL, sub_meeting_id TEXT NOT NULL DEFAULT '',
       asset_type TEXT NOT NULL, remote_id TEXT NOT NULL,
+      asset_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       storage_target TEXT NOT NULL DEFAULT 'local', target_path TEXT,
       file_type TEXT, bytes_expected INTEGER, bytes_written INTEGER NOT NULL DEFAULT 0,

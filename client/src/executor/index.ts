@@ -35,7 +35,7 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   deps.store.setTargetPath(row.id, relPath, row.file_type, now())
 
   const isText = !['download_address', 'audio_address'].includes(row.asset_type)
-  const res = await deps.download({ assetId: assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => deps.store.touchProgress(row.id, b, now(), leaseSec))
+  const res = await deps.download({ assetId: row.asset_id ?? assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => deps.store.touchProgress(row.id, b, now(), leaseSec))
   if (res.status === 'completed') { deps.store.markCompleted(row.id, res.contentHash, now()); result.completed++; return }
   if (row.attempts >= MAX_ATTEMPTS) { deps.store.markDead(row.id, res.error, now()); result.failed++; return }
   deps.store.markFailed(row.id, res.error, now()); result.failed++
@@ -66,7 +66,7 @@ export async function runProbes(deps: ExecutorDeps & { store: Store }, now: () =
     // p 来自 dueProbes()，形状为 ProbeRow（snake_case: meeting_id/sub_meeting_id/asset_type），
     // 而 resolveProbe/abandonProbe/bumpProbe 接受的是 ProbeKey（camelCase）——显式建 key 适配，避免形状不一致
     const key = { meetingId: p.meeting_id, subMeetingId: p.sub_meeting_id, assetType: p.asset_type }
-    if (verdict === 'ready') { deps.store.upsertAsset({ meetingId: p.meeting_id, subMeetingId: p.sub_meeting_id, assetType: p.asset_type, remoteId: a!.remoteId, bytesExpected: a!.bytesExpected, fileType: a!.fileType }, now()); deps.store.resolveProbe(key); out.resolved++; out.newTasks++ }
+    if (verdict === 'ready') { deps.store.upsertAsset({ meetingId: p.meeting_id, subMeetingId: p.sub_meeting_id, assetType: p.asset_type, remoteId: a!.remoteId, assetId: a!.assetId, bytesExpected: a!.bytesExpected, fileType: a!.fileType }, now()); deps.store.resolveProbe(key); out.resolved++; out.newTasks++ }
     else if (verdict === 'skip_disallowed') { deps.store.abandonProbe(key, 'download_not_allowed'); out.abandoned++ }
     else if (verdict === 'skip_timeout') { deps.store.abandonProbe(key, 'upstream_timeout'); out.abandoned++ }
     else deps.store.bumpProbe(key, now() + probeBackoff(p.attempts))   // 继续等，退避

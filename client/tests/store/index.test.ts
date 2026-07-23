@@ -32,6 +32,13 @@ test('探测：upsert/due/resolve', () => {
   s.resolveProbe({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes' })
   expect(s.dueProbes(100).length).toBe(0)
 })
+test('upsertAsset 存网关 assetId，claimNext 原样取回；二次 upsert 不传时 COALESCE 保留', () => {
+  const s = fresh(); s.upsertMeeting(M, 1)
+  s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'download_address', remoteId: 'rf1', assetId: 'mrec1:rf1:download_address:0', bytesExpected: 10 }, 1)
+  s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'download_address', remoteId: 'rf1', bytesExpected: 20 }, 2)  // 不传 assetId
+  const row = s.claimNext(100, 300)!
+  expect(row.asset_id).toBe('mrec1:rf1:download_address:0')   // 原样取回且未被二次 upsert 抹掉
+})
 test('markSkippedByKey 不回退已完成的同类资产，只跳过未完成的', () => {
   const s = fresh(); s.upsertMeeting(M, 1)
   s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'download_address', remoteId: 'seg1', bytesExpected: 1 }, 1)

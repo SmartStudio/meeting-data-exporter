@@ -3,10 +3,12 @@ import type { Meeting, AssetStatus, ProbeState } from '../domain/types'
 
 export interface AssetUpsert {
   meetingId: string; subMeetingId: string; assetType: string; remoteId: string
+  assetId?: string | null
   bytesExpected?: number | null; fileType?: string | null
 }
 export interface AssetRow {
   id: number; meeting_id: string; sub_meeting_id: string; asset_type: string; remote_id: string
+  asset_id: string | null
   status: AssetStatus; target_path: string | null; file_type: string | null
   bytes_expected: number | null; bytes_written: number; content_hash: string | null
   attempts: number; lease_expires_at: number | null; last_error: string | null
@@ -53,12 +55,13 @@ export function createStore(db: Database): Store {
         .run(m.meetingId, m.subMeetingId, m.meetingCode, m.subject, m.hostUserId, m.startTime, m.endTime, now, now)
     },
     upsertAsset(a, now) {
-      db.query(`INSERT INTO assets (meeting_id,sub_meeting_id,asset_type,remote_id,status,bytes_expected,file_type,created_at,updated_at)
-        VALUES (?,?,?,?, 'pending', ?,?,?,?)
+      db.query(`INSERT INTO assets (meeting_id,sub_meeting_id,asset_type,remote_id,asset_id,status,bytes_expected,file_type,created_at,updated_at)
+        VALUES (?,?,?,?,?, 'pending', ?,?,?,?)
         ON CONFLICT(meeting_id,sub_meeting_id,asset_type,remote_id) DO UPDATE SET
+          asset_id=COALESCE(excluded.asset_id, assets.asset_id),
           bytes_expected=COALESCE(excluded.bytes_expected, assets.bytes_expected),
           file_type=COALESCE(excluded.file_type, assets.file_type), updated_at=excluded.updated_at`)
-        .run(a.meetingId, a.subMeetingId, a.assetType, a.remoteId, a.bytesExpected ?? null, a.fileType ?? null, now, now)
+        .run(a.meetingId, a.subMeetingId, a.assetType, a.remoteId, a.assetId ?? null, a.bytesExpected ?? null, a.fileType ?? null, now, now)
     },
     claimNext(now, leaseSec) { return claimStmt.get(now + leaseSec, now, now) ?? null },
     markCompleted(id, h, now) { db.query(`UPDATE assets SET status='completed', content_hash=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(h, now, now, id) },
