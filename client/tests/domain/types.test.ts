@@ -16,6 +16,11 @@ test('parseAssetKeys：逗号分隔 + all + 未知键报错', () => {
   expect(parseAssetKeys('all')).toEqual(ALL_ASSET_KEYS)
   expect(() => parseAssetKeys('video,bogus')).toThrow(UnknownAssetKeyError)
 })
+test('parseAssetKeys：原型链成员名不被误判为合法键', () => {
+  expect(() => parseAssetKeys('constructor')).toThrow(UnknownAssetKeyError)
+  expect(() => parseAssetKeys('__proto__')).toThrow(UnknownAssetKeyError)
+  expect(() => parseAssetKeys('video,toString')).toThrow(UnknownAssetKeyError)
+})
 test('assetKeyToFilename：视频用 remoteId、扩展名由 file_type 决定', () => {
   expect(assetKeyToFilename('video', 'rf-1', 'mp4')).toBe('recording_rf-1.mp4')
   expect(assetKeyToFilename('transcript', 'rf-1', 'pdf')).toBe('transcript.pdf')

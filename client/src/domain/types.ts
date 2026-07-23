@@ -38,7 +38,8 @@ export function parseAssetKeys(csv: string): AssetKey[] {
   const out: AssetKey[] = []
   for (const raw of trimmed.split(',')) {
     const k = raw.trim()
-    if (!(k in ASSET_KEY_TO_FIELD)) throw new UnknownAssetKeyError(k)
+    // Use Object.hasOwn instead of `in` to avoid prototype chain lookups (constructor, toString, etc.)
+    if (!Object.hasOwn(ASSET_KEY_TO_FIELD, k)) throw new UnknownAssetKeyError(k)
     out.push(k as AssetKey)
   }
   return out
