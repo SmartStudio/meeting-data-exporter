@@ -224,7 +224,9 @@ export function parseAssetKeys(csv: string): AssetKey[] {
   const out: AssetKey[] = []
   for (const raw of trimmed.split(',')) {
     const k = raw.trim()
-    if (!(k in ASSET_KEY_TO_FIELD)) throw new UnknownAssetKeyError(k)
+    // 用 Object.hasOwn 而非 `k in ...`：`in` 会命中原型链，
+    // 使 constructor/toString/__proto__ 等被静默当作合法键，违反「不静默忽略」。
+    if (!Object.hasOwn(ASSET_KEY_TO_FIELD, k)) throw new UnknownAssetKeyError(k)
     out.push(k as AssetKey)
   }
   return out
@@ -655,7 +657,7 @@ function migrate(db: Database): void {
 
 ```ts
 import type { Database } from 'bun:sqlite'
-import type { Meeting, AssetStatus } from '../domain/types'
+import type { Meeting, AssetStatus, ProbeState } from '../domain/types'
 
 export interface AssetUpsert {
   meetingId: string; subMeetingId: string; assetType: string; remoteId: string
@@ -668,7 +670,7 @@ export interface AssetRow {
   attempts: number; lease_expires_at: number | null; last_error: string | null
 }
 export interface ProbeUpsert { meetingId: string; subMeetingId: string; assetType: string; deadlineAt: number; probeAfter: number }
-export interface ProbeRow { meeting_id: string; sub_meeting_id: string; asset_type: string; state: string; attempts: number; deadline_at: number }
+export interface ProbeRow { meeting_id: string; sub_meeting_id: string; asset_type: string; state: ProbeState; attempts: number; deadline_at: number }
 export interface ProbeKey { meetingId: string; subMeetingId: string; assetType: string }
 
 export interface Store {
@@ -720,7 +722,9 @@ export function createStore(db: Database): Store {
     markCompleted(id, h, now) { db.query(`UPDATE assets SET status='completed', content_hash=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(h, now, now, id) },
     markFailed(id, e, now) { db.query(`UPDATE assets SET status='failed', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
     markSkipped(id, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(r, now, id) },
-    markSkippedByKey(k, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=?`).run(r, now, k.meetingId, k.subMeetingId, k.assetType) },
+    // status NOT IN ('completed','running')：按键跳过「不可下载/超时」的该类资产时，
+    // 绝不回退已完成的下载，也不打断在途下载（与并发执行池自洽，避免与 markCompleted 竞态）。
+    markSkippedByKey(k, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=? AND status NOT IN ('completed','running')`).run(r, now, k.meetingId, k.subMeetingId, k.assetType) },
     markDead(id, e, now) { db.query(`UPDATE assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
     touchProgress(id, bytes, now, leaseSec) { db.query(`UPDATE assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=?`).run(bytes, now + leaseSec, now, id) },
     setTargetPath(id, p, ft, now) { db.query(`UPDATE assets SET target_path=?, file_type=COALESCE(?,file_type), updated_at=? WHERE id=?`).run(p, ft, now, id) },
@@ -878,7 +882,7 @@ git commit -m "feat(client): storage 抽象接口 + LocalStorage（T5）"
 - Consumes: `domain/types`（Meeting）。注入 `fetch` 便于测试。
 - Produces:
   - `createGatewayClient(cfg: { gatewayUrl; clientId; clientSecret }, deps: { fetch: typeof fetch; now: () => number }): GatewayClient`
-  - `GatewayClient`：`listMeetings(selector, cursor?, limit?)` / `getMeeting(id, from?, to?)` / `listAssets(meetingId, from?, to?)` / `getDownloadUrl(assetId)`
+  - `GatewayClient`：`listMeetings(selector, cursor?, limit?)` / `listAssets(meetingId, from?, to?)` / `getDownloadUrl(assetId)`（按 ID/会议号取会议统一走 `listMeetings({kind:'id'|'code'})`，不单列 getMeeting——无下游消费者）
   - 错误类：`GatewayError`（含 httpStatus、body.error）、`MeetingNotFoundInRangeError`
 
 - [ ] **Step 1: 写失败测试** — `client/tests/gateway/client.test.ts`（stub fetch）
