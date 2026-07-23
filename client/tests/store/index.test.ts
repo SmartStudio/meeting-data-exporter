@@ -32,3 +32,14 @@ test('探测：upsert/due/resolve', () => {
   s.resolveProbe({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes' })
   expect(s.dueProbes(100).length).toBe(0)
 })
+test('markSkippedByKey 不回退已完成的同类资产，只跳过未完成的', () => {
+  const s = fresh(); s.upsertMeeting(M, 1)
+  s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'download_address', remoteId: 'seg1', bytesExpected: 1 }, 1)
+  s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'download_address', remoteId: 'seg2', bytesExpected: 1 }, 1)
+  const c1 = s.claimNext(100, 300)!          // 领到 seg1（id 最小）
+  s.markCompleted(c1.id, 'hash', 100)        // seg1 → completed
+  s.markSkippedByKey({ meetingId: 'm1', subMeetingId: '', assetType: 'download_address' }, 'download_not_allowed', 200)
+  const cnt = s.counts()
+  expect(cnt.completed).toBe(1)              // seg1 未被回退
+  expect(cnt.skipped).toBe(1)               // seg2 被跳过
+})
