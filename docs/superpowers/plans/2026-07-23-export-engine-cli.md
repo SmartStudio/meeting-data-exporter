@@ -1101,7 +1101,7 @@ import { ASSET_KEY_TO_FIELD, ASSET_WAIT_CAP_SEC } from '../domain/types'
 import { judgeReadiness } from '../domain/readiness'
 import { splitWindow } from '../domain/window'
 
-export interface DiscoveryDeps { gw: GatewayClient; store: Store; now: () => number }
+export interface DiscoveryDeps { gw: GatewayClient; store: Store }
 
 export async function discover(
   deps: DiscoveryDeps, sel: MeetingSelector, wantedKeys: AssetKey[], now: number,
@@ -1112,17 +1112,21 @@ export async function discover(
   for (const m of meetings) {
     deps.store.upsertMeeting(m, now)
     const assets = await deps.gw.listAssets(m.meetingId, sel.kind !== 'range' ? sel.from : undefined, sel.kind !== 'range' ? sel.to : undefined)
-    const presentByField = new Map(assets.map((a) => [a.assetType, a]))
     for (const [field, key] of wantedFields) {
-      const a = presentByField.get(field)
+      const present = assets.filter((a) => a.assetType === field)  // 同类多段全取，不塌缩
+      const rep = present[0]  // 同一 meeting 的同类多段共享 allow_download/state，取代表判定类型级就绪
       const deadlineAt = (m.endTime ?? now) + ASSET_WAIT_CAP_SEC[key]
-      const verdict = judgeReadiness({ present: !!a, state: a?.state, allowDownload: a?.allowDownload, now, deadlineAt })
+      const verdict = judgeReadiness({ present: present.length > 0, state: rep?.state, allowDownload: rep?.allowDownload, now, deadlineAt })
       if (verdict === 'ready') {
-        deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a!.remoteId, bytesExpected: a!.bytesExpected, fileType: a!.fileType }, now)
-        tasks++
+        for (const a of present) {  // 每个 remote_id（每段录制）各建一个任务
+          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, bytesExpected: a.bytesExpected, fileType: a.fileType }, now)
+          tasks++
+        }
       } else if (verdict === 'skip_disallowed') {
-        // 建行后直接置 skipped（平台明示不可得，不留探测、不空等）
-        deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a!.remoteId }, now)
+        // 建行后直接置 skipped（平台明示不可得，不留探测、不空等）；同类多段各建行
+        for (const a of present) {
+          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId }, now)
+        }
         deps.store.markSkippedByKey({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'download_not_allowed', now)
       } else if (verdict === 'skip_timeout') {
         deps.store.upsertProbe({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, deadlineAt, probeAfter: 0 })
