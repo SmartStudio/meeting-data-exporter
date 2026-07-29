@@ -50,7 +50,8 @@ function buildRelPath(deps: ExecutorDeps, row: AssetRow): string | null {
   const hhmm = String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0')
   const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, m.subject ?? '', m.meetingCode ?? row.meeting_id)
   const key = FIELD_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
-  const fname = assetKeyToFilename(key, row.remote_id, row.file_type ?? 'bin')
+  const { ordinal } = deps.store.siblingRank(row)
+  const fname = assetKeyToFilename(key, row.remote_id, row.file_type ?? 'bin', ordinal)
   return `${yyyy}/${mm}/${dir}/${fname}`
 }
 function assetId(row: AssetRow): string { return `${row.meeting_id}:${row.remote_id}:${row.asset_type}:0` }

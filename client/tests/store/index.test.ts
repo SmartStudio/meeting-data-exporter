@@ -50,3 +50,12 @@ test('markSkippedByKey 不回退已完成的同类资产，只跳过未完成的
   expect(cnt.completed).toBe(1)              // seg1 未被回退
   expect(cnt.skipped).toBe(1)               // seg2 被跳过
 })
+test('siblingRank：同类多段按 id 升序给 1-based 序号', () => {
+  const s = fresh(); s.upsertMeeting(M, 1)
+  s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rf1' }, 1)
+  s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rf2' }, 1)
+  const a = s.claimNext(100, 300)!   // id 较小者
+  const b = s.claimNext(100, 300)!
+  expect(s.siblingRank(a)).toEqual({ ordinal: 1, total: 2 })
+  expect(s.siblingRank(b)).toEqual({ ordinal: 2, total: 2 })
+})

@@ -28,6 +28,8 @@ export interface Store {
   markDead(id: number, err: string, now: number): void
   touchProgress(id: number, bytesWritten: number, now: number, leaseSec: number): void
   setTargetPath(id: number, path: string, fileType: string | null, now: number): void
+  /** 该资产在同 (meeting, sub_meeting, asset_type) 兄弟中的 1-based 序号与兄弟总数（文件名消歧用） */
+  siblingRank(row: { id: number; meeting_id: string; sub_meeting_id: string; asset_type: string }): { ordinal: number; total: number }
   upsertProbe(p: ProbeUpsert): void
   dueProbes(now: number): ProbeRow[]
   resolveProbe(k: ProbeKey): void
@@ -71,6 +73,13 @@ export function createStore(db: Database): Store {
     markDead(id, e, now) { db.query(`UPDATE assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
     touchProgress(id, bytes, now, leaseSec) { db.query(`UPDATE assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=?`).run(bytes, now + leaseSec, now, id) },
     setTargetPath(id, p, ft, now) { db.query(`UPDATE assets SET target_path=?, file_type=COALESCE(?,file_type), updated_at=? WHERE id=?`).run(p, ft, now, id) },
+    siblingRank(row) {
+      const r = db.query<{ total: number; ordinal: number }, [string, string, string, number]>(
+        `SELECT COUNT(*) AS total, SUM(CASE WHEN id <= ?4 THEN 1 ELSE 0 END) AS ordinal
+         FROM assets WHERE meeting_id=?1 AND sub_meeting_id=?2 AND asset_type=?3`,
+      ).get(row.meeting_id, row.sub_meeting_id, row.asset_type, row.id)
+      return { ordinal: r?.ordinal ?? 1, total: r?.total ?? 1 }
+    },
     upsertProbe(p) {
       db.query(`INSERT INTO asset_probes (meeting_id,sub_meeting_id,asset_type,state,deadline_at,probe_after)
         VALUES (?,?,?, 'probing', ?, ?)

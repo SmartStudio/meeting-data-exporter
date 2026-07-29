@@ -27,3 +27,15 @@ test('磁盘不足 → 该任务 skipped(disk_full)，不写半截', async () =>
   const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
   expect(r.skipped).toBe(1)
 })
+
+test('同一会议同类多段文本 → 输出路径不碰撞', async () => {
+  const store = createStore(openDb(':memory:'))
+  store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
+  for (const rid of ['rf1', 'rf2']) store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: rid, fileType: 'pdf' }, 1)
+  const paths: string[] = []
+  const deps: any = { store, download: async (t: any) => { paths.push(t.relPath); return { status: 'completed', contentHash: null } }, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
+  const r = await runExecutor(deps, { concurrency: 2, leaseSec: 300 }, () => 1000)
+  expect(r.completed).toBe(2)
+  expect(new Set(paths).size).toBe(2)                        // 两个路径不同 —— 不碰撞
+  expect(paths.some((p) => p.endsWith('transcript_2.pdf'))).toBe(true)
+})

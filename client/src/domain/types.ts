@@ -52,8 +52,21 @@ const FILENAME_BASE: Record<AssetKey, (remoteId: string) => string> = {
   ai_minutes: () => 'ai_minutes', ai_topic_minutes: () => 'ai_topic_minutes',
   ai_speaker_minutes: () => 'ai_speaker_minutes', ai_ds_minutes: () => 'ai_ds_minutes',
 }
-export function assetKeyToFilename(key: AssetKey, remoteId: string, ext: string): string {
-  return `${FILENAME_BASE[key](remoteId)}.${ext}`
+/** 文件名是否已含 remoteId：含则同类多段天然不碰撞，无需序号消歧 */
+const FILENAME_HAS_REMOTE_ID: Record<AssetKey, boolean> = {
+  video: true, audio: true,
+  transcript: false, ai_transcript: false, ai_minutes: false,
+  ai_topic_minutes: false, ai_speaker_minutes: false, ai_ds_minutes: false,
+}
+/**
+ * 资产文件名。`ordinal` 是该资产在同 (meeting, sub_meeting, asset_type) 兄弟中的
+ * 1-based 序号：仅当文件名不含 remoteId（文本类）且 ordinal>1 时追加 `_<ordinal>` 消歧，
+ * 保证单段场景文件名保持干净（transcript.pdf），多段场景不互相覆盖（transcript_2.pdf）。
+ */
+export function assetKeyToFilename(key: AssetKey, remoteId: string, ext: string, ordinal = 1): string {
+  const base = FILENAME_BASE[key](remoteId)
+  const suffix = !FILENAME_HAS_REMOTE_ID[key] && ordinal > 1 ? `_${ordinal}` : ''
+  return `${base}${suffix}.${ext}`
 }
 
 export interface Meeting {
