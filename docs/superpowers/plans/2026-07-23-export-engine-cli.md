@@ -107,7 +107,7 @@ Batch 1 的五个任务落点互不相交（`domain/{window,filename,readiness}`
   - `type AssetKey`（8 个字面量）；`DEFAULT_ASSET_KEYS`、`ALL_ASSET_KEYS: AssetKey[]`
   - `ASSET_KEY_TO_FIELD: Record<AssetKey,string>`、`FIELD_TO_ASSET_KEY: Record<string,AssetKey>`
   - `ASSET_WAIT_CAP_SEC: Record<AssetKey,number>`
-  - `assetKeyToFilename(key: AssetKey, remoteId: string, ext: string): string`
+  - `assetKeyToFilename(key: AssetKey, remoteId: string, ext: string, ordinal?: number): string`（`ordinal` 默认 1；`FILENAME_HAS_REMOTE_ID: Record<AssetKey, boolean>` 标注该类文件名是否已含 remoteId，仅未含且 ordinal>1 时追加 `_<ordinal>` 消歧同类多段）
   - `parseAssetKeys(csv: string): AssetKey[]`（未知键抛 `UnknownAssetKeyError`）
   - `type MeetingSelector`、`interface Meeting`、`type AssetStatus`、`type ProbeState`
 
@@ -239,8 +239,21 @@ const FILENAME_BASE: Record<AssetKey, (remoteId: string) => string> = {
   ai_minutes: () => 'ai_minutes', ai_topic_minutes: () => 'ai_topic_minutes',
   ai_speaker_minutes: () => 'ai_speaker_minutes', ai_ds_minutes: () => 'ai_ds_minutes',
 }
-export function assetKeyToFilename(key: AssetKey, remoteId: string, ext: string): string {
-  return `${FILENAME_BASE[key](remoteId)}.${ext}`
+/** 文件名是否已含 remoteId：含则同类多段天然不碰撞，无需序号消歧 */
+const FILENAME_HAS_REMOTE_ID: Record<AssetKey, boolean> = {
+  video: true, audio: true,
+  transcript: false, ai_transcript: false, ai_minutes: false,
+  ai_topic_minutes: false, ai_speaker_minutes: false, ai_ds_minutes: false,
+}
+/**
+ * 资产文件名。`ordinal` 是该资产在同 (meeting, sub_meeting, asset_type) 兄弟中的
+ * 1-based 序号：仅当文件名不含 remoteId（文本类）且 ordinal>1 时追加 `_<ordinal>` 消歧，
+ * 保证单段场景文件名保持干净（transcript.pdf），多段场景不互相覆盖（transcript_2.pdf）。
+ */
+export function assetKeyToFilename(key: AssetKey, remoteId: string, ext: string, ordinal = 1): string {
+  const base = FILENAME_BASE[key](remoteId)
+  const suffix = !FILENAME_HAS_REMOTE_ID[key] && ordinal > 1 ? `_${ordinal}` : ''
+  return `${base}${suffix}.${ext}`
 }
 
 export interface Meeting {
@@ -555,6 +568,7 @@ git commit -m "feat(client): config 加载与校验（T3）"
     - `claimNext(now: number, leaseSec: number): AssetRow | null`（原子领租约）
     - `markCompleted(id, contentHash, now)` / `markFailed(id, err, now)` / `markSkipped(id, reason, now)` / `markSkippedByKey(k: {meetingId;subMeetingId;assetType}, reason, now)` / `markDead(id, err, now)`
     - `touchProgress(id, bytesWritten, now, leaseSec)`（每 8MB 更新 + 续租）
+    - `siblingRank(row): { ordinal: number; total: number }`（该资产在同 (meeting, sub_meeting, asset_type) 兄弟中的 1-based 序号与兄弟总数，供 executor 文件名消歧）
     - `upsertProbe(p: ProbeUpsert): void` / `dueProbes(now): ProbeRow[]` / `resolveProbe(key)` / `abandonProbe(key, reason)`
     - `counts(): Record<AssetStatus, number>` / `failures(): AssetRow[]` / `resetFailed(now): number`
 
@@ -627,6 +641,7 @@ function migrate(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       meeting_id TEXT NOT NULL, sub_meeting_id TEXT NOT NULL DEFAULT '',
       asset_type TEXT NOT NULL, remote_id TEXT NOT NULL,
+      asset_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       storage_target TEXT NOT NULL DEFAULT 'local', target_path TEXT,
       file_type TEXT, bytes_expected INTEGER, bytes_written INTEGER NOT NULL DEFAULT 0,
@@ -661,10 +676,12 @@ import type { Meeting, AssetStatus, ProbeState } from '../domain/types'
 
 export interface AssetUpsert {
   meetingId: string; subMeetingId: string; assetType: string; remoteId: string
+  assetId?: string | null
   bytesExpected?: number | null; fileType?: string | null
 }
 export interface AssetRow {
   id: number; meeting_id: string; sub_meeting_id: string; asset_type: string; remote_id: string
+  asset_id: string | null
   status: AssetStatus; target_path: string | null; file_type: string | null
   bytes_expected: number | null; bytes_written: number; content_hash: string | null
   attempts: number; lease_expires_at: number | null; last_error: string | null
@@ -684,6 +701,8 @@ export interface Store {
   markDead(id: number, err: string, now: number): void
   touchProgress(id: number, bytesWritten: number, now: number, leaseSec: number): void
   setTargetPath(id: number, path: string, fileType: string | null, now: number): void
+  /** 该资产在同 (meeting, sub_meeting, asset_type) 兄弟中的 1-based 序号与兄弟总数（文件名消歧用） */
+  siblingRank(row: { id: number; meeting_id: string; sub_meeting_id: string; asset_type: string }): { ordinal: number; total: number }
   upsertProbe(p: ProbeUpsert): void
   dueProbes(now: number): ProbeRow[]
   resolveProbe(k: ProbeKey): void
@@ -711,12 +730,13 @@ export function createStore(db: Database): Store {
         .run(m.meetingId, m.subMeetingId, m.meetingCode, m.subject, m.hostUserId, m.startTime, m.endTime, now, now)
     },
     upsertAsset(a, now) {
-      db.query(`INSERT INTO assets (meeting_id,sub_meeting_id,asset_type,remote_id,status,bytes_expected,file_type,created_at,updated_at)
-        VALUES (?,?,?,?, 'pending', ?,?,?,?)
+      db.query(`INSERT INTO assets (meeting_id,sub_meeting_id,asset_type,remote_id,asset_id,status,bytes_expected,file_type,created_at,updated_at)
+        VALUES (?,?,?,?,?, 'pending', ?,?,?,?)
         ON CONFLICT(meeting_id,sub_meeting_id,asset_type,remote_id) DO UPDATE SET
+          asset_id=COALESCE(excluded.asset_id, assets.asset_id),
           bytes_expected=COALESCE(excluded.bytes_expected, assets.bytes_expected),
           file_type=COALESCE(excluded.file_type, assets.file_type), updated_at=excluded.updated_at`)
-        .run(a.meetingId, a.subMeetingId, a.assetType, a.remoteId, a.bytesExpected ?? null, a.fileType ?? null, now, now)
+        .run(a.meetingId, a.subMeetingId, a.assetType, a.remoteId, a.assetId ?? null, a.bytesExpected ?? null, a.fileType ?? null, now, now)
     },
     claimNext(now, leaseSec) { return claimStmt.get(now + leaseSec, now, now) ?? null },
     markCompleted(id, h, now) { db.query(`UPDATE assets SET status='completed', content_hash=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(h, now, now, id) },
@@ -728,6 +748,13 @@ export function createStore(db: Database): Store {
     markDead(id, e, now) { db.query(`UPDATE assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
     touchProgress(id, bytes, now, leaseSec) { db.query(`UPDATE assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=?`).run(bytes, now + leaseSec, now, id) },
     setTargetPath(id, p, ft, now) { db.query(`UPDATE assets SET target_path=?, file_type=COALESCE(?,file_type), updated_at=? WHERE id=?`).run(p, ft, now, id) },
+    siblingRank(row) {
+      const r = db.query<{ total: number; ordinal: number }, [string, string, string, number]>(
+        `SELECT COUNT(*) AS total, SUM(CASE WHEN id <= ?4 THEN 1 ELSE 0 END) AS ordinal
+         FROM assets WHERE meeting_id=?1 AND sub_meeting_id=?2 AND asset_type=?3`,
+      ).get(row.meeting_id, row.sub_meeting_id, row.asset_type, row.id)
+      return { ordinal: r?.ordinal ?? 1, total: r?.total ?? 1 }
+    },
     upsertProbe(p) {
       db.query(`INSERT INTO asset_probes (meeting_id,sub_meeting_id,asset_type,state,deadline_at,probe_after)
         VALUES (?,?,?, 'probing', ?, ?)
@@ -1119,13 +1146,13 @@ export async function discover(
       const verdict = judgeReadiness({ present: present.length > 0, state: rep?.state, allowDownload: rep?.allowDownload, now, deadlineAt })
       if (verdict === 'ready') {
         for (const a of present) {  // 每个 remote_id（每段录制）各建一个任务
-          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, bytesExpected: a.bytesExpected, fileType: a.fileType }, now)
+          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId, bytesExpected: a.bytesExpected, fileType: a.fileType }, now)
           tasks++
         }
       } else if (verdict === 'skip_disallowed') {
         // 建行后直接置 skipped（平台明示不可得，不留探测、不空等）；同类多段各建行
         for (const a of present) {
-          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId }, now)
+          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId }, now)
         }
         deps.store.markSkippedByKey({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'download_not_allowed', now)
       } else if (verdict === 'skip_timeout') {
@@ -1404,7 +1431,7 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   deps.store.setTargetPath(row.id, relPath, row.file_type, now())
 
   const isText = !['download_address', 'audio_address'].includes(row.asset_type)
-  const res = await deps.download({ assetId: assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => deps.store.touchProgress(row.id, b, now(), leaseSec))
+  const res = await deps.download({ assetId: row.asset_id ?? assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => deps.store.touchProgress(row.id, b, now(), leaseSec))
   if (res.status === 'completed') { deps.store.markCompleted(row.id, res.contentHash, now()); result.completed++; return }
   if (row.attempts >= MAX_ATTEMPTS) { deps.store.markDead(row.id, res.error, now()); result.failed++; return }
   deps.store.markFailed(row.id, res.error, now()); result.failed++
@@ -1419,7 +1446,8 @@ function buildRelPath(deps: ExecutorDeps, row: AssetRow): string | null {
   const hhmm = String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0')
   const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, m.subject ?? '', m.meetingCode ?? row.meeting_id)
   const key = FIELD_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
-  const fname = assetKeyToFilename(key, row.remote_id, row.file_type ?? 'bin')
+  const { ordinal } = deps.store.siblingRank(row)
+  const fname = assetKeyToFilename(key, row.remote_id, row.file_type ?? 'bin', ordinal)
   return `${yyyy}/${mm}/${dir}/${fname}`
 }
 function assetId(row: AssetRow): string { return `${row.meeting_id}:${row.remote_id}:${row.asset_type}:0` }
@@ -1432,7 +1460,7 @@ export async function runProbes(deps: ExecutorDeps & { store: Store }, now: () =
     const assets = await deps.gw.listAssets(meetingKey)
     const a = assets.find((x) => x.assetType === p.asset_type)
     const verdict = judgeReadiness({ present: !!a, state: a?.state, allowDownload: a?.allowDownload, now: now(), deadlineAt: p.deadline_at })
-    if (verdict === 'ready') { deps.store.upsertAsset({ meetingId: p.meeting_id, subMeetingId: p.sub_meeting_id, assetType: p.asset_type, remoteId: a!.remoteId, bytesExpected: a!.bytesExpected, fileType: a!.fileType }, now()); deps.store.resolveProbe(p); out.resolved++; out.newTasks++ }
+    if (verdict === 'ready') { deps.store.upsertAsset({ meetingId: p.meeting_id, subMeetingId: p.sub_meeting_id, assetType: p.asset_type, remoteId: a!.remoteId, assetId: a!.assetId, bytesExpected: a!.bytesExpected, fileType: a!.fileType }, now()); deps.store.resolveProbe(p); out.resolved++; out.newTasks++ }
     else if (verdict === 'skip_disallowed') { deps.store.abandonProbe(p, 'download_not_allowed'); out.abandoned++ }
     else if (verdict === 'skip_timeout') { deps.store.abandonProbe(p, 'upstream_timeout'); out.abandoned++ }
     else deps.store.bumpProbe(p, now() + probeBackoff(p.attempts))   // 继续等，退避
@@ -1680,3 +1708,23 @@ git commit -m "test(client): 端到端 10 条必测用例 + README（T11）"
 **类型一致性**：`AssetKey`/`asset_type`（平台字段名）双表示贯穿；`Store` 方法签名在 T4 定义、T7/T9 消费一致；`ASSET_WAIT_CAP_SEC`/`FIELD_TO_ASSET_KEY` 在 T1 定义、T7/T9 引用；`DownloadTask`/`DownloadResult` T8 定义、T9 消费。已核对无 T4-定义-T9-改名 类问题。
 
 **冲突复核**：Batch 1 五任务落点 {domain/window,filename,readiness}/{config}/{store}/{storage}/{gateway} 两两不相交，可 worktree 隔离并行。`markSkippedByKey`/`readPart` 已并入 T4/T5，故 Batch 2（T7 discovery / T8 downloader）落点为 {discovery}/{downloader}，同样不相交、可并行——两者只**读** store/storage 接口，不改。T9→T10→T11 各自单独。全链路无跨任务写冲突。
+
+---
+
+## 实现期偏离与修正（执行后回填）
+
+M3 落地过程中经历多轮 review（含终审），以下改动在实现期发生但计划正文未回填；本节统一补记，作为计划与 `client/` 实际交付代码之间的权威差异记录。
+
+| # | 涉及任务 | 计划原文 | 实际交付 | 原因 |
+|---|---|---|---|---|
+| 1 | T1 `domain/types.ts` | `parseAssetKeys` 用 `k in ASSET_KEY_TO_FIELD` 判键是否合法 | 改用 `Object.hasOwn(ASSET_KEY_TO_FIELD, k)` | `in` 会走原型链，`constructor`/`__proto__`/`toString` 等原型属性会被静默当作合法资产键放行，违反 spec「未知键报错、不静默忽略」的约束 |
+| 2 | T6 `gateway/client.ts` | `GatewayClient` 接口摘要列出 `getMeeting` 方法 | 删除该方法，未进入接口与实现 | 正文代码、全部测试、所有下游消费者均未使用它——按 ID/会议号取会议统一走 `listMeetings({kind:'id'\|'code'})`；`getMeeting` 是未消费的赘生接口项 |
+| 3 | T4 `store/index.ts` | `markSkippedByKey` 无状态守卫，直接把匹配行置 skipped | UPDATE 语句加 `AND status NOT IN ('completed','running')` | 同一 `asset_type` 下可有多个 `remote_id`（多段录制）；按类整体跳过会把已完成的段翻回 skipped、丢失已下载成果。排除 `running` 同时消除与执行池 `markCompleted` 的竞态 |
+| 4 | T4 `store/index.ts` | `ProbeRow.state` 字段类型为裸 `string` | 类型化为 `ProbeState`（复用 T1 定义的 `'probing' \| 'resolved' \| 'abandoned'`） | 兑现计划自己 prose 里写的「consumes ProbeState」承诺，消除潜在的越界字符串风险 |
+| 5 | T7 `discovery/index.ts` | `DiscoveryDeps` 含 `now: () => number` 字段 | 删除该字段；`discover` 全程只用调用方传入的显式 `now: number` 参数 | `discover` 从未调用 `deps.now`，是死字段；保留会造成「两个时钟源」的误导，删除后单一时钟源、语义更清晰 |
+| 6 | T7 `discovery/index.ts` | 用 `presentByField` 之类的 Map 把同 `asset_type` 的多个资产塌缩为最后一个，就绪时只建一个任务 | 改为 `assets.filter(...)` 取该类型全部资产；ready 分支对每个 `remote_id` 各建一个任务；类型级 verdict 仍用代表段 `present[0]` 判定 | 同一会议的同一 `asset_type` 可能有多段录制（多个 `remote_id`），Map 塌缩会静默丢弃除最后一段外的所有段 |
+| 7 | T4/T7/T9（`store/db.ts`、`store/index.ts`、`discovery/index.ts`、`executor/index.ts`） | executor 的 `assetId(row)` 用 `${meeting_id}:${remote_id}:${asset_type}:0` 自行重构下载用 assetId，网关下发的自包含 assetId 未落库 | `assets` 表新增可空 `asset_id TEXT` 列；`AssetUpsert`/`AssetRow` 新增 `assetId`/`asset_id`；`upsertAsset` 用 `COALESCE(excluded.asset_id, assets.asset_id)` 落库；discovery 两处 `upsertAsset` 都传 `assetId: a.assetId`（含 `runProbes` 就绪分支）；executor `handleOne` 改为 `assetId: row.asset_id ?? assetId(row)`（旧重构逻辑保留作回退） | 自行重构的 ID 对真实网关取不到下载地址，因为 `meeting_id ≠ meetingRecordId`（网关侧会议记录 ID 与业务 meeting_id 不同源）。改为持久化网关自包含的真实 `assetId` 并优先使用，彻底解决 |
+| 8 | T4/T10（`store/db.ts` `openDb`） | `openDb` 直接 `new Database(path, { create: true })`，从不为 `dbPath` 创建父目录 | `openDb` 在非 `:memory:` 路径时先 `mkdirSync(dirname(path), { recursive: true })` | 全新 `--out` 目标首次运行时其 `.mde` 父目录尚不存在，会直接崩溃。单元测试全程用 `:memory:`，从不走文件路径，因此 42 个测试全绿也未暴露此问题；直到 T10 装配、真跑一次 CLI 冒烟才发现 |
+| 9 | T1/T4/T9（`domain/types.ts`、`store/index.ts`、`executor/index.ts`） | `assetKeyToFilename(key, remoteId, ext)` 不含序号；文本类文件名固定（如 `transcript.pdf`，忽略 remoteId） | `assetKeyToFilename` 新增 `ordinal = 1` 参数：仅当该类文件名不含 remoteId（`FILENAME_HAS_REMOTE_ID[key]` 为假）且 `ordinal > 1` 时追加 `_<ordinal>` 消歧；`store` 新增 `siblingRank(row)` 计算同 `(meeting, sub_meeting, asset_type)` 兄弟中的 1-based 序号；executor `buildRelPath` 调用 `siblingRank` 取 `ordinal` 传入 | 全分支终审发现：discovery 对所有资产类型都按 `remote_id` 各建一个任务（改动 6 的结果），但文本类文件名固定不含 remoteId——同一会议下同一文本类 ≥2 段文件会互相覆盖，或并发下载时 `.part` 文件损坏。单段场景不受影响（ordinal 恒为 1，文件名保持不变） |
+
+前两类改动（parseAssetKeys 的 `Object.hasOwn`、`GatewayClient.getMeeting` 的删除）与改动 3～6（`markSkippedByKey` 状态守卫、`ProbeState` 类型化、`DiscoveryDeps` 死字段清理、discovery 多段塌缩修正）都属于计划编写期的疏漏：正确解法由既有契约（spec 的「不静默忽略」约束、`GatewayClient` 的实际消费者、多段录制的数据模型、T1 已定义的 `ProbeState`）唯一确定，因此在执行中发现后直接修正并原地回同步。改动 7（assetId 持久化）与改动 8（`openDb` 建父目录）则不同：它们是「测试替身比真实依赖更宽容」暴露出的集成缺陷——单测用的假网关/`:memory:` 数据库从不触发这两条路径上的真实约束，只有装配阶段对接近似真实的环境才会失败。改动 9（文件名序号消歧）又是另一类：它不是遗漏，而是改动 6（多段全取）修复后新引入、且只有站在全部改动交叉点的全分支视角才能看见的次生问题。
