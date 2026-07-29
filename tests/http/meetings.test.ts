@@ -376,8 +376,10 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
   const headers = bearer(grace)
   const res = await app(new Request('https://gw/api/v1/meetings/m-g-1/assets', { headers }))
   expect(res.status).toBe(200)
-  const body = (await res.json()) as { assets: Array<{ asset_type: string }> }
+  const body = (await res.json()) as { assets: Array<{ asset_type: string; remote_id: string }> }
   expect(body.assets.map((a) => a.asset_type)).toEqual(['video'])
+  // remote_id 必须是 recordFileId（腾讯会议 record_file_id），而非整个自包含的 asset_id
+  expect(body.assets.map((a) => a.remote_id)).toEqual(['file-g-1'])
   // STS 不可用时 tryGetToken 提前短路，详情接口（AI 纪要来源）完全不应被调用
   expect(detailCalls).toBe(0)
 

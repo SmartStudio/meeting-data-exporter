@@ -29,6 +29,7 @@ function assetToJson(a: Asset): Record<string, unknown> {
     meeting_id: a.meetingId,
     sub_meeting_id: a.subMeetingId,
     asset_type: a.assetType,
+    remote_id: a.recordFileId,
     file_type: a.fileType,
     bytes_expected: a.bytesExpected,
     allow_download: a.allowDownload,
