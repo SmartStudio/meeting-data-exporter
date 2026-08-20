@@ -2,7 +2,7 @@ import type { Store, AssetRow } from '../store'
 import type { DownloadResult, DownloadTask } from '../downloader'
 import type { Storage } from '../storage/types'
 import type { GatewayClient } from '../gateway/client'
-import { FIELD_TO_ASSET_KEY, assetKeyToFilename, ASSET_WAIT_CAP_SEC } from '../domain/types'
+import { GATEWAY_TYPE_TO_ASSET_KEY, assetKeyToFilename, ASSET_WAIT_CAP_SEC } from '../domain/types'
 import { cleanDirName } from '../domain/filename'
 import { judgeReadiness } from '../domain/readiness'
 
@@ -49,7 +49,7 @@ function buildRelPath(deps: ExecutorDeps, row: AssetRow): string | null {
   const yyyy = String(d.getUTCFullYear()), mm = String(d.getUTCMonth() + 1).padStart(2, '0'), dd = String(d.getUTCDate()).padStart(2, '0')
   const hhmm = String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0')
   const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, m.subject ?? '', m.meetingCode ?? row.meeting_id)
-  const key = FIELD_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
+  const key = GATEWAY_TYPE_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
   const { ordinal } = deps.store.siblingRank(row)
   const fname = assetKeyToFilename(key, row.remote_id, row.file_type ?? 'bin', ordinal)
   return `${yyyy}/${mm}/${dir}/${fname}`

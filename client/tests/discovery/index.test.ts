@@ -15,7 +15,7 @@ function fakeGw(assetsByMeeting: Record<string, any[]>): GatewayClient {
 test('就绪资产建 pending 任务；不在清单的想要类型建 probing 探测', async () => {
   const store = createStore(openDb(':memory:'))
   const gw = fakeGw({ m1: [
-    { assetId: 'm1:rf1:download_address:0', assetType: 'download_address', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
+    { assetId: 'm1:rf1:video:0', assetType: 'video', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
   ] })
   // 想要 video + ai_transcript：video 就绪→任务；ai_transcript 不在清单→探测
   const r = await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'ai_transcript'], 1000)
@@ -36,18 +36,18 @@ test('allow_download=false 的想要资产直接 skipped，不建任务不留探
 test('discovery 存网关下发的 assetId，不自行重构', async () => {
   const store = createStore(openDb(':memory:'))
   const gw = fakeGw({ m1: [
-    { assetId: 'mrec9:rf1:download_address:0', assetType: 'download_address', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
+    { assetId: 'mrec9:rf1:video:0', assetType: 'video', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
   ] })
   await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video'], 1000)
   const row = store.claimNext(2000, 300)!
-  expect(row.asset_id).toBe('mrec9:rf1:download_address:0')
+  expect(row.asset_id).toBe('mrec9:rf1:video:0')
 })
 
 test('同类型多段录制 → 每段各建一个任务（不塌缩为一个）', async () => {
   const store = createStore(openDb(':memory:'))
   const gw = fakeGw({ m1: [
-    { assetId: 'm1:rf1:download_address:0', assetType: 'download_address', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
-    { assetId: 'm1:rf2:download_address:1', assetType: 'download_address', remoteId: 'rf2', state: 3, allowDownload: true, bytesExpected: 200, fileType: 'mp4' },
+    { assetId: 'm1:rf1:video:0', assetType: 'video', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
+    { assetId: 'm1:rf2:video:1', assetType: 'video', remoteId: 'rf2', state: 3, allowDownload: true, bytesExpected: 200, fileType: 'mp4' },
   ] })
   await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video'], 1000)
   expect(store.counts().pending).toBe(2)   // 两段各一任务，不塌缩

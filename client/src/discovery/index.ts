@@ -1,7 +1,7 @@
 import type { GatewayClient } from '../gateway/client'
 import type { Store } from '../store'
 import type { AssetKey, MeetingSelector } from '../domain/types'
-import { ASSET_KEY_TO_FIELD, ASSET_WAIT_CAP_SEC } from '../domain/types'
+import { ASSET_KEY_TO_GATEWAY_TYPE, ASSET_WAIT_CAP_SEC } from '../domain/types'
 import { judgeReadiness } from '../domain/readiness'
 import { splitWindow } from '../domain/window'
 
@@ -12,7 +12,7 @@ export async function discover(
 ): Promise<{ meetings: number; tasks: number }> {
   const meetings = await collectMeetings(deps.gw, sel)
   let tasks = 0
-  const wantedFields = new Map(wantedKeys.map((k) => [ASSET_KEY_TO_FIELD[k], k]))
+  const wantedFields = new Map(wantedKeys.map((k) => [ASSET_KEY_TO_GATEWAY_TYPE[k], k]))
   for (const m of meetings) {
     deps.store.upsertMeeting(m, now)
     const assets = await deps.gw.listAssets(m.meetingId, sel.kind !== 'range' ? sel.from : undefined, sel.kind !== 'range' ? sel.to : undefined)

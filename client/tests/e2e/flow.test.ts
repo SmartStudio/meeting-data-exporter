@@ -59,8 +59,8 @@ test('01+02 默认资产集：无 --assets 时下载 4 类默认资产；二次 
     backend.setContent('a-video', video); backend.setContent('a-audio', audio)
     backend.setContent('a-transcript', transcript); backend.setContent('a-ai-transcript', aiTranscript)
     backend.setAssets(meeting.meeting_id, [
-      { asset_id: 'a-video', asset_type: 'download_address', remote_id: 'rf-video', allow_download: true, file_type: 'mp4', bytes_expected: video.length },
-      { asset_id: 'a-audio', asset_type: 'audio_address', remote_id: 'rf-audio', allow_download: true, file_type: 'm4a', bytes_expected: audio.length },
+      { asset_id: 'a-video', asset_type: 'video', remote_id: 'rf-video', allow_download: true, file_type: 'mp4', bytes_expected: video.length },
+      { asset_id: 'a-audio', asset_type: 'audio', remote_id: 'rf-audio', allow_download: true, file_type: 'm4a', bytes_expected: audio.length },
       { asset_id: 'a-transcript', asset_type: 'meeting_summary', remote_id: 'rf-transcript', allow_download: true, file_type: 'txt', bytes_expected: transcript.length },
       { asset_id: 'a-ai-transcript', asset_type: 'ai_meeting_transcripts', remote_id: 'rf-ai', allow_download: true, file_type: 'txt', bytes_expected: aiTranscript.length },
       // 不在默认清单内的资产类型：证明未被请求下载
@@ -106,7 +106,7 @@ test('03 断点续传：中断的 .part 在重跑后续传完成，字节内容�
     backend.setMeetings([meeting])
     const content = makeContent(20000)
     backend.setContent('a-resume', content)
-    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-resume', asset_type: 'download_address', remote_id: 'rf-resume', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
+    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-resume', asset_type: 'video', remote_id: 'rf-resume', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
 
     const e = env(backend.gatewayBase)
     const dcode = await cmdDiscover(parseArgs(['discover', '--from', '2026-07-01', '--to', '2026-07-31', '--out', root]), e)
@@ -143,7 +143,7 @@ test('04 链接过期：首链 403 → 客户端换新链续传，最终完整�
     const content = makeContent(6000)
     backend.setContent('a-expire', content)
     backend.setFlaky('a-expire', 1)
-    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-expire', asset_type: 'download_address', remote_id: 'rf-expire', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
+    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-expire', asset_type: 'video', remote_id: 'rf-expire', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
 
     const e = env(backend.gatewayBase)
     const code = await cmdRun(parseArgs(['run', '--from', '2026-07-01', '--to', '2026-07-31', '--out', root]), e)
@@ -167,7 +167,7 @@ test('05 416：本地 .part 大于远端内容 → 丢弃重下，最终字节�
     backend.setMeetings([meeting])
     const content = makeContent(5000)
     backend.setContent('a-416', content)
-    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-416', asset_type: 'download_address', remote_id: 'rf-416', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
+    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-416', asset_type: 'video', remote_id: 'rf-416', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
 
     const e = env(backend.gatewayBase)
     const dcode = await cmdDiscover(parseArgs(['discover', '--from', '2026-07-01', '--to', '2026-07-31', '--out', root]), e)
@@ -202,7 +202,7 @@ test('06 崩溃恢复：running 且租约已过期的行被下一次 execute 重
     backend.setMeetings([meeting])
     const content = makeContent(3000)
     backend.setContent('a-crash', content)
-    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-crash', asset_type: 'download_address', remote_id: 'rf-crash', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
+    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-crash', asset_type: 'video', remote_id: 'rf-crash', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
 
     const e = env(backend.gatewayBase)
     const dcode = await cmdDiscover(parseArgs(['discover', '--from', '2026-07-01', '--to', '2026-07-31', '--out', root]), e)
@@ -266,7 +266,7 @@ test('08 探测超时：到期仍未就绪的探测被判定 abandoned，不建�
     const nowSec = Math.floor(Date.now() / 1000)
     const db = openDb(dbPathOf(root)); const store = createStore(db)
     store.upsertMeeting({ meetingId, subMeetingId: '', meetingCode: '70001', subject: '超时探测会议', hostUserId: null, startTime: nowSec - 200000, endTime: nowSec - 200000 }, nowSec)
-    store.upsertProbe({ meetingId, subMeetingId: '', assetType: 'download_address', deadlineAt: nowSec - 10, probeAfter: nowSec - 5 })
+    store.upsertProbe({ meetingId, subMeetingId: '', assetType: 'video', deadlineAt: nowSec - 10, probeAfter: nowSec - 5 })
     backend.setAssets(meetingId, [])   // 资产从未出现在网关清单里
 
     const e = env(backend.gatewayBase)
@@ -274,7 +274,7 @@ test('08 探测超时：到期仍未就绪的探测被判定 abandoned，不建�
     expect(code).toBe(0)   // 无崩溃、正常退出
 
     expect(Object.values(store.counts()).reduce((a, b) => a + b, 0)).toBe(0)   // 没有建任何 asset 行
-    const probeRow = db.query(`SELECT state FROM asset_probes WHERE meeting_id=? AND asset_type=?`).get(meetingId, 'download_address') as { state: string }
+    const probeRow = db.query(`SELECT state FROM asset_probes WHERE meeting_id=? AND asset_type=?`).get(meetingId, 'video') as { state: string }
     expect(probeRow.state).toBe('abandoned')
   } finally { backend.stop(); await rm(root, { recursive: true, force: true }) }
 })
@@ -330,7 +330,7 @@ test('10 令牌过期：业务调用中途 401 → 网关客户端透明续期�
     backend.expireFirstTokenOnce()
     const content = makeContent(900)
     backend.setContent('a-token', content)
-    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-token', asset_type: 'download_address', remote_id: 'rf-token', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
+    backend.setAssets(meeting.meeting_id, [{ asset_id: 'a-token', asset_type: 'video', remote_id: 'rf-token', allow_download: true, file_type: 'mp4', bytes_expected: content.length }])
 
     const e = env(backend.gatewayBase)
     const code = await cmdRun(parseArgs(['run', '--from', '2026-07-01', '--to', '2026-07-31', '--out', root]), e)

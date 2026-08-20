@@ -8,14 +8,35 @@ export const ALL_ASSET_KEYS: AssetKey[] = [
 ]
 export const DEFAULT_ASSET_KEYS: AssetKey[] = ['video', 'audio', 'transcript', 'ai_transcript']
 
-export const ASSET_KEY_TO_FIELD: Record<AssetKey, string> = {
-  video: 'download_address', audio: 'audio_address', transcript: 'meeting_summary',
+/**
+ * 客户端资产键 → **网关 `asset_type` 字段的取值**。
+ *
+ * 名字里写「GATEWAY_TYPE」不是修饰，是契约。这里曾叫 `ASSET_KEY_TO_FIELD`、
+ * 值取腾讯的**平台字段名**（`download_address` / `audio_address` …），因为
+ * spec §17 当时推断网关会原样透出平台字段名。M3.5 联调对真实响应核实：网关
+ * emit 的是它自己的领域词汇 `ASSET_TYPES`（src/domain/types.ts）——
+ *
+ *   平台字段            网关 asset_type
+ *   download_address →  video
+ *   audio_address    →  audio
+ *   meeting_summary  →  meeting_summary   ← 恰好同名
+ *   ai_*             →  ai_*              ← 恰好同名
+ *
+ * **只有 video / audio 两项不同**，而这种部分重合让故障伪装成了「视频资产没
+ * 产出」：转写照常下载、视频音频永远匹配不上，最后按 deadline 静默放弃。
+ * 名字误导了推断，所以连名字一起改。
+ *
+ * 「字段驱动、不硬编码封闭联合」的原始意图仍然成立：网关将来新增纪要引擎时
+ * 会 emit 新的 asset_type，`asset_type` 列照存不误。
+ */
+export const ASSET_KEY_TO_GATEWAY_TYPE: Record<AssetKey, string> = {
+  video: 'video', audio: 'audio', transcript: 'meeting_summary',
   ai_transcript: 'ai_meeting_transcripts', ai_minutes: 'ai_minutes',
   ai_topic_minutes: 'ai_topic_minutes', ai_speaker_minutes: 'ai_speaker_minutes',
   ai_ds_minutes: 'ai_ds_minutes',
 }
-export const FIELD_TO_ASSET_KEY: Record<string, AssetKey> = Object.fromEntries(
-  (Object.entries(ASSET_KEY_TO_FIELD) as [AssetKey, string][]).map(([k, f]) => [f, k]),
+export const GATEWAY_TYPE_TO_ASSET_KEY: Record<string, AssetKey> = Object.fromEntries(
+  (Object.entries(ASSET_KEY_TO_GATEWAY_TYPE) as [AssetKey, string][]).map(([k, t]) => [t, k]),
 ) as Record<string, AssetKey>
 
 const H6 = 6 * 3600
@@ -39,7 +60,7 @@ export function parseAssetKeys(csv: string): AssetKey[] {
   for (const raw of trimmed.split(',')) {
     const k = raw.trim()
     // Use Object.hasOwn instead of `in` to avoid prototype chain lookups (constructor, toString, etc.)
-    if (!Object.hasOwn(ASSET_KEY_TO_FIELD, k)) throw new UnknownAssetKeyError(k)
+    if (!Object.hasOwn(ASSET_KEY_TO_GATEWAY_TYPE, k)) throw new UnknownAssetKeyError(k)
     out.push(k as AssetKey)
   }
   return out
