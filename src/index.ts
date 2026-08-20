@@ -126,9 +126,16 @@ async function main(): Promise<void> {
   }
 
   const app = createApp(deps)
+  // PORT / HOST 走 process.env 而非 loadConfig：它们是进程编排参数（由 systemd /
+  // 容器 / 反向代理决定），不是业务配置。HOST 用于把监听面收窄到内网地址——
+  // 例如只让同机的反向代理访问时填其网桥地址，避免服务直接暴露在公网。
   const port = Number(process.env.PORT ?? 3000)
-  const server = Bun.serve({ port, fetch: app })
-  console.log(`meeting-export-gateway listening on :${server.port}`)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`PORT must be an integer in 1..65535, got: ${process.env.PORT}`)
+  }
+  const hostname = process.env.HOST || '0.0.0.0'
+  const server = Bun.serve({ port, hostname, fetch: app })
+  console.log(`meeting-export-gateway listening on ${hostname}:${server.port}`)
 
   // 回调是异步的——不能等到过期才申请（design doc §5.3）。启动时先跑一次，
   // 随后每 5 分钟检查一次剩余有效期，真正发起续期申请的频率由 ensureFresh
