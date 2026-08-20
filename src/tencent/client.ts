@@ -16,7 +16,13 @@ export interface TencentClientConfig {
 export interface TencentClientDeps {
   fetch: typeof fetch
   sleep: (ms: number) => Promise<void>
-  now: () => number
+  /**
+   * **毫秒**时间戳（`Date.now`）。名字里带 Ms 不是修饰，是契约：本字段唯一的
+   * 消费者是令牌桶，而桶按毫秒计算补充速率。曾经这里叫 `now`，装配处传了
+   * 项目里通用的秒级时钟，导致补充速率慢 1000 倍——桶里初始的 qps 个令牌用完
+   * 后，每补 1 个要等 200 秒真实时间，网关就此静默失去调用腾讯的能力。
+   */
+  nowMs: () => number
 }
 
 export interface RequestOptions {
@@ -38,7 +44,7 @@ export function createTencentClient(
   const bucket = createTokenBucket(cfg.qps)
 
   async function acquire(): Promise<void> {
-    while (!bucket.tryTake(deps.now())) {
+    while (!bucket.tryTake(deps.nowMs())) {
       await deps.sleep(1000 / Math.max(1, bucket.currentQps()))
     }
   }

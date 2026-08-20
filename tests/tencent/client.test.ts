@@ -24,7 +24,7 @@ function fakeFetch(responses: Array<{ status: number; body: unknown }>) {
 const deps = (f: typeof fetch) => ({
   fetch: f,
   sleep: async () => {},
-  now: () => 1_700_000_000_000,
+  nowMs: () => 1_700_000_000_000,
 })
 
 test('成功响应直接返回解析后的 body', async () => {
@@ -98,4 +98,39 @@ test('超过重试上限后抛出最后一次错误', async () => {
   const c = createTencentClient(cfg, deps(fn))
   await expect(c.get('/v1/records', {})).rejects.toThrow(TencentApiError)
   expect(calls).toHaveLength(5)
+})
+
+/**
+ * 令牌桶与注入时钟的**量纲一致性**回归。
+ *
+ * M3.5 联调实测到的事故：装配处把项目通用的秒级 now() 传给了按毫秒计速的令牌桶，
+ * 补充速率因此慢 1000 倍——桶里初始的 qps 个令牌一旦用完，每补 1 个要等 200 秒
+ * 真实时间。表现是网关在头几个请求之后静默失去调用腾讯的能力：连接被
+ * Bun.serve 的 idleTimeout 关掉，**不留任何日志**。单元测试原本抓不到它，因为
+ * 每个用例都构造全新的 client，桶永远是满的。
+ *
+ * 这里用「被 sleep 推进的模拟时钟」跑满一轮突发 + 恢复，把速率关系钉死。
+ */
+test('突发耗尽后按 qps 恢复：总模拟耗时符合速率，而非慢若干个数量级', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn, calls } = fakeFetch([{ status: 200, body: { ok: true } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 5 },
+    {
+      fetch: fn,
+      sleep: async (ms: number) => { clockMs += ms },
+      nowMs: () => clockMs,
+    },
+  )
+
+  const startMs = clockMs
+  for (let i = 0; i < 15; i++) await c.get('/v1/records', { page: i })
+  const elapsedMs = clockMs - startMs
+
+  expect(calls).toHaveLength(15)
+  // 容量 5 的桶先放行 5 个，剩余 10 个按 5/秒补充 → 约 2 秒。
+  // 放宽到 4 秒容纳调度粒度；量纲写错时这里会是 2000 秒量级。
+  expect(elapsedMs).toBeLessThan(4_000)
+  // 也不能是 0：真的限了流，而不是压根没生效
+  expect(elapsedMs).toBeGreaterThan(0)
 })

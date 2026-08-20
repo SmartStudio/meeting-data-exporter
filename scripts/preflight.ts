@@ -279,7 +279,7 @@ async function stepTencent(cfg: AppConfig): Promise<boolean> {
   const client = createTencentClient(cfg.tencent, {
     fetch: withTimeout(fetch, 10_000),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    now: () => Math.floor(Date.now() / 1000),
+    nowMs: Date.now,
   })
   const recordsApi = createRecordsApi(client, cfg.tencent.operatorId)
   const now = Math.floor(Date.now() / 1000)
@@ -499,7 +499,7 @@ async function stepWebhook(
   const client = createTencentClient(cfg.tencent, {
     fetch: withTimeout(fetch, 10_000),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    now: () => Math.floor(Date.now() / 1000),
+    nowMs: Date.now,
   })
   const stsStore = createStsStore(pool)
   const now = Math.floor(Date.now() / 1000)

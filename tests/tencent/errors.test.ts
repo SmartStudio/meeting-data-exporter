@@ -67,3 +67,19 @@ test('190310 需要收敛限流的标记', () => {
   })
   expect(e.requiresBackoff).toBe(true)
 })
+
+/**
+ * 500063「该应用没有调用该接口的权限点」——M3.5 联调实测新增。
+ * 自建应用未勾选对应权限点时腾讯返回它。原先落入默认的 transient 分类，
+ * 导致每次调用都白白重试 MAX_ATTEMPTS 次：既拖慢启动，又持续消耗令牌桶配额，
+ * 而重试永远不可能成功（要人去后台勾权限点）。
+ */
+test('500063 权限点缺失归为 fatal，不重试', () => {
+  expect(classify(500063)).toBe('fatal')
+})
+
+test('500063 构造出的错误不要求退避（不该拖慢限流器）', () => {
+  const err = new TencentApiError(500063, 500, '该应用没有调用该接口的权限点')
+  expect(err.classification).toBe('fatal')
+  expect(err.requiresBackoff).toBe(false)
+})

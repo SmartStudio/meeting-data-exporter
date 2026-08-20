@@ -118,7 +118,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
       qps: 50,
       baseUrl: fakeServer.url,
     },
-    { fetch, sleep: () => Promise.resolve(), now },
+    // 令牌桶按毫秒计速：这里必须给毫秒时钟，给秒级的 now 会让补充速率慢 1000 倍
+    { fetch, sleep: () => Promise.resolve(), nowMs: Date.now },
   )
 
   const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID)
@@ -681,7 +682,7 @@ test('假腾讯服务对签名不匹配的请求返回 9042，网关判定为致
       qps: 50,
       baseUrl: fakeServer.url,
     },
-    { fetch, sleep: () => Promise.resolve(), now: () => NOW },
+    { fetch, sleep: () => Promise.resolve(), nowMs: Date.now },
   )
 
   let caught: unknown = null

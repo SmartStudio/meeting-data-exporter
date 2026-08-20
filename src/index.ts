@@ -63,7 +63,8 @@ async function main(): Promise<void> {
   const tencentClient = createTencentClient(config.tencent, {
     fetch,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    now,
+    // 毫秒时钟：项目里通用的 now() 是秒级，喂给令牌桶会让补充速率慢 1000 倍
+    nowMs: Date.now,
   })
   const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId)
   const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
