@@ -103,3 +103,44 @@ test('按 ID 查询但范围内无结果时抛出可区分的错误', async () =
   await expect(api.listMeetings({ kind: 'id', meetingId: 'm-x' }, NOW))
     .rejects.toThrow(MeetingNotFoundInRangeError)
 })
+
+// ---------------------------------------------------------------------------
+// 会议结束时间（M3.5 联调对真实响应核实后修正）
+// /v1/records 的 record_meetings[] 没有会议级结束时间，真实结束时刻在同一条
+// 响应的 record_files[].record_end_time 里。原实现拿 media_start_time 充当
+// end_time，会让客户端的 deadline_at 凭空少掉一整个会议时长。
+// ---------------------------------------------------------------------------
+
+test('endTime 取 record_files 里最大的 record_end_time，而不是开始时间', async () => {
+  const meeting = {
+    ...rawMeeting,
+    media_start_time: 1767225600000,
+    record_files: [
+      { record_file_id: 'f1', record_start_time: 1767225610000, record_end_time: 1767227400000 },
+      { record_file_id: 'f2', record_start_time: 1767227400000, record_end_time: 1767229200000 },
+    ],
+  }
+  const { client } = stubClient([onePage([meeting])])
+  const api = createRecordsApi(client, 'admin')
+  const [m] = await api.listMeetings({ kind: 'range', from: 0, to: 1000 }, NOW)
+
+  expect(m!.startTime).toBe(1767225600)
+  expect(m!.endTime).toBe(1767229200) // 第二段的结束时间，非第一段、非开始时间
+  expect(m!.endTime).toBeGreaterThan(m!.startTime)
+})
+
+test('record_files 为空时回退到 media_start_time，不抛错', async () => {
+  const { client } = stubClient([onePage([{ ...rawMeeting, record_files: [] }])])
+  const api = createRecordsApi(client, 'admin')
+  const [m] = await api.listMeetings({ kind: 'range', from: 0, to: 1000 }, NOW)
+  expect(m!.endTime).toBe(1767225600)
+})
+
+test('record_files 缺失该字段时同样回退，不产生 NaN', async () => {
+  const meeting = { ...rawMeeting, record_files: [{ record_file_id: 'f1' }] }
+  const { client } = stubClient([onePage([meeting])])
+  const api = createRecordsApi(client, 'admin')
+  const [m] = await api.listMeetings({ kind: 'range', from: 0, to: 1000 }, NOW)
+  expect(m!.endTime).toBe(1767225600)
+  expect(Number.isNaN(m!.endTime)).toBe(false)
+})
