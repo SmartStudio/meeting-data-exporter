@@ -81,9 +81,16 @@ export async function wecomCallback(req: Request, ctx: RouteCtx): Promise<Respon
     return html(400, failurePage('登录参数缺失，请重新发起登录。'))
   }
 
+  // 路由层的 WECOM_ROUTES 守卫已挡住企微未配置的情况；这里再判一次是为了让类型
+  // 收窄成立，并覆盖 handler 被直接调用（测试/将来复用）的路径——两道都不该省。
+  const wecomClient = ctx.deps.wecomClient
+  if (wecomClient === null) {
+    return html(501, failurePage('本部署未启用企业微信登录，请使用服务账号认证。'))
+  }
+
   let wecomUser: { userId: string; email: string | null }
   try {
-    wecomUser = await ctx.deps.wecomClient.exchangeCode(code)
+    wecomUser = await wecomClient.exchangeCode(code)
   } catch {
     return html(400, failurePage('企业微信授权码无效或已过期，请重新发起登录。'))
   }

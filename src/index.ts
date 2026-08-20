@@ -93,7 +93,11 @@ async function main(): Promise<void> {
 
   const authStore = createAuthStore(pool)
   const deviceFlow = createDeviceFlow({ store: authStore, baseUrl: config.gatewayBaseUrl })
-  const wecomClient = createWecomClient(config.wecom, { fetch, now })
+  // 企微未配置 = 本次部署不启用扫码登录（合法形态），设备授权流程整体返回 501
+  const wecomClient = config.wecom === null ? null : createWecomClient(config.wecom, { fetch, now })
+  if (wecomClient === null) {
+    console.warn('[startup] WeCom 未配置：设备授权流程（扫码登录）已停用，客户端请使用服务账号认证')
+  }
   const identityMapper = createIdentityMapper(config.identityStrategy, {
     lookupTable: async (wecomUserId) => (await authStore.lookupIdentityMap(wecomUserId))?.tmUserId ?? null,
     lookupByEmail: async (email) => (await authStore.lookupIdentityByEmail(email))?.tmUserId ?? null,

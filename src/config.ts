@@ -1,5 +1,11 @@
 export type IdentityStrategy = 'direct' | 'email' | 'table'
 
+export interface WecomConfig {
+  corpId: string
+  agentId: string
+  secret: string
+}
+
 export interface AppConfig {
   tencent: {
     appId: string
@@ -14,11 +20,15 @@ export interface AppConfig {
     token: string
     aesKey: string
   }
-  wecom: {
-    corpId: string
-    agentId: string
-    secret: string
-  }
+  /**
+   * 企业微信自建应用。**为 null 表示本次部署不启用企微登录**——设备授权流程
+   * （扫码登录）随之整体不可用，客户端只能走服务账号认证。
+   *
+   * 这不是「配置缺失」而是一个合法的部署形态，因此用 null 表达，而不是塞占位符
+   * 字符串：占位符会让代码相信一个假事实，再靠人记住它是假的——preflight 从此
+   * 永远有一项红，而一个永远红的检查和一个坏掉的检查在实践中是同一件事。
+   */
+  wecom: WecomConfig | null
   databaseUrl: string
   jwtSecret: string
   stsEncKey: string
@@ -82,6 +92,27 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     throw new Error('TM_QPS must be a positive integer (>= 1)')
   }
 
+  // 企微三项要么全给、要么全不给。**部分给**几乎一定是打错了变量名或漏配，
+  // 此时若静默按「未启用」处理，管理员会得到一个「扫码登录莫名其妙不可用」的
+  // 系统而毫无提示——所以这里明确报错，把配置错误与部署决策区分开。
+  const wecomKeys = ['WECOM_CORP_ID', 'WECOM_AGENT_ID', 'WECOM_SECRET'] as const
+  const wecomPresent = wecomKeys.filter((k) => optional(env, k) !== undefined)
+  if (wecomPresent.length !== 0 && wecomPresent.length !== wecomKeys.length) {
+    const missing = wecomKeys.filter((k) => optional(env, k) === undefined)
+    throw new Error(
+      `WeCom config is partially set: missing ${missing.join(', ')}. ` +
+        'Set all three to enable WeCom login, or none to disable it.',
+    )
+  }
+  const wecom: WecomConfig | null =
+    wecomPresent.length === wecomKeys.length
+      ? {
+          corpId: required(env, 'WECOM_CORP_ID'),
+          agentId: required(env, 'WECOM_AGENT_ID'),
+          secret: required(env, 'WECOM_SECRET'),
+        }
+      : null
+
   // 用户会话 JWT 签名密钥。弱口令会让整个会话体系可被爆破/猜测，故强制最低长度。
   const jwtSecret = required(env, 'JWT_SECRET')
   if (jwtSecret.length < 32) {
@@ -112,11 +143,7 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       token: webhookToken,
       aesKey: required(env, 'TM_WEBHOOK_AES_KEY'),
     },
-    wecom: {
-      corpId: required(env, 'WECOM_CORP_ID'),
-      agentId: required(env, 'WECOM_AGENT_ID'),
-      secret: required(env, 'WECOM_SECRET'),
-    },
+    wecom,
     databaseUrl: required(env, 'DATABASE_URL'),
     jwtSecret,
     stsEncKey,

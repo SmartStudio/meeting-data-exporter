@@ -345,6 +345,22 @@ function wecomErrorHint(errcode: number | undefined): string {
 }
 
 async function stepWecom(cfg: AppConfig): Promise<void> {
+  // 企微未配置 = 本次部署明确不启用扫码登录（见 config.ts 的 wecom 注释）。
+  // 这是一个合法的部署形态，不是配置缺失，因此判 skip 而非 fail——
+  // 一个永远红的检查会训练人忽略红色，届时真正的红也会被一起忽略。
+  if (cfg.wecom === null) {
+    record(
+      '5',
+      '企微凭证',
+      'skip',
+      '本部署未配置企业微信自建应用（WECOM_* 三项均未设置），扫码登录流程已停用。',
+      '如需启用真人扫码登录，按 docs/deploy.md §4 配置企微自建应用并补齐 ' +
+        'WECOM_CORP_ID / WECOM_AGENT_ID / WECOM_SECRET 三项。' +
+        '仅用服务账号认证的部署无需理会本项。',
+    )
+    return
+  }
+
   const url =
     `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(cfg.wecom.corpId)}` +
     `&corpsecret=${encodeURIComponent(cfg.wecom.secret)}`

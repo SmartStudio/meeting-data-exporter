@@ -11,6 +11,12 @@ import type { RouteCtx } from '../router'
  * （US-2.1 的前提）。桌面端将来可用内嵌 webview 覆盖更顺滑的体验。
  */
 export async function devicePage(req: Request, ctx: RouteCtx): Promise<Response> {
+  // 与 wecomCallback 同理：路由层已有守卫，这里再判一次以收窄类型并覆盖直接调用。
+  const wecomClient = ctx.deps.wecomClient
+  if (wecomClient === null) {
+    return html(501, errorPage('本部署未启用企业微信登录，请使用服务账号认证。'))
+  }
+
   const url = new URL(req.url)
   const userCode = url.searchParams.get('user_code')
   if (!userCode) {
@@ -26,7 +32,7 @@ export async function devicePage(req: Request, ctx: RouteCtx): Promise<Response>
   }
 
   const redirectUri = `${ctx.deps.gatewayBaseUrl}/auth/wecom/callback`
-  const authorizeUrl = ctx.deps.wecomClient.buildAuthorizeUrl(redirectUri, record.state)
+  const authorizeUrl = wecomClient.buildAuthorizeUrl(redirectUri, record.state)
   return new Response(null, { status: 302, headers: { Location: authorizeUrl } })
 }
 

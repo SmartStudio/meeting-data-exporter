@@ -29,7 +29,8 @@ export interface AppDeps {
   policyEngine: PolicyEngine
   auditRecorder: AuditRecorder
   deviceFlow: DeviceFlow
-  wecomClient: WecomClient
+  /** 企微未配置时为 null——WECOM_ROUTES 里的路由会因此统一返回 501 */
+  wecomClient: WecomClient | null
   identityMapper: IdentityMapper
   serviceAuth: ServiceAuth
   authStore: AuthStore
@@ -93,6 +94,22 @@ const ROUTES: Route[] = [
   compile('GET', '/healthz', async () => json(200, { status: 'ok' })),
 ]
 
+/**
+ * 依赖企业微信的路由。企微未配置（`deps.wecomClient === null`）时统一返回 501。
+ *
+ * 为什么 device/code 与 device/token 也在列：设备授权只能由 wecomCallback 完成
+ * （`completeAuthorization` 仅在那里被调用），没有企微就永远走不完。发一个注定
+ * 无法被授权的 device_code，比直接说「本部署未启用」更糟。
+ *
+ * 放在路由表而非各 handler 内：新增设备流程路由时不会漏掉这道守卫。
+ */
+const WECOM_ROUTES = new Set([
+  'POST /api/v1/auth/device/code',
+  'POST /api/v1/auth/device/token',
+  'GET /auth/wecom/callback',
+  'GET /device',
+])
+
 /** 仅对写型登录端点限流（webhook 是腾讯侧调用、GET /device 是浏览器页，均不在此列） */
 const RATE_LIMITED = new Set([
   'POST /api/v1/auth/device/code',
@@ -133,6 +150,10 @@ export function createApp(deps: AppDeps): (req: Request) => Promise<Response> {
       if (!deps.loginRateLimiter.allow(`ip:${url.pathname}|${clientIp(req, deps.trustedProxyHops)}`, deps.now())) {
         return json(429, { error: 'rate_limited' })
       }
+    }
+
+    if (deps.wecomClient === null && WECOM_ROUTES.has(`${req.method} ${url.pathname}`)) {
+      return json(501, { error: 'wecom_not_configured' })
     }
 
     for (const route of ROUTES) {

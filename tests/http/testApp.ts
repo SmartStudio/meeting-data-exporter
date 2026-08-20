@@ -64,6 +64,8 @@ export interface TestAppOptions {
   tencentGet?: (path: string, query: QueryParams, opts?: RequestOptions) => unknown
   tencentPost?: (path: string, body: object) => unknown
   wecomExchangeCode?: (code: string) => Promise<WecomUser>
+  /** 置 true 模拟「本部署未配置企业微信」（config.wecom === null 的运行时形态） */
+  wecomDisabled?: boolean
   identityStrategy?: IdentityStrategy
   jwtSecret?: string
 }
@@ -106,7 +108,7 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
 
   const authStore = createAuthStore(pool)
   const deviceFlow = createDeviceFlow({ store: authStore, baseUrl: 'https://gw.example', ttlSec: 300 })
-  const wecomClient = stubWecomClient(
+  const wecomClient = opts.wecomDisabled === true ? null : stubWecomClient(
     opts.wecomExchangeCode ?? (async () => ({ userId: 'ww-default', email: null })),
   )
   const identityMapper = createIdentityMapper(opts.identityStrategy ?? 'direct', {

@@ -126,3 +126,50 @@ test('TM_QPS 非数字时启动期报错', () => {
 test('TRUSTED_PROXY_HOPS 为空串时回落到默认值 1', () => {
   expect(loadConfig({ ...validEnv, TRUSTED_PROXY_HOPS: '' }).trustedProxyHops).toBe(1)
 })
+
+// ---------------------------------------------------------------------------
+// 企微为可选：未配置是一种合法部署形态，不是配置缺失
+// ---------------------------------------------------------------------------
+
+const envWithoutWecom = (() => {
+  const { WECOM_CORP_ID, WECOM_AGENT_ID, WECOM_SECRET, ...rest } = validEnv
+  return rest
+})()
+
+test('三项企微配置全部缺失时 wecom 为 null，而非报错', () => {
+  const cfg = loadConfig(envWithoutWecom)
+  expect(cfg.wecom).toBeNull()
+})
+
+test('三项企微配置齐全时正常装配', () => {
+  expect(loadConfig(validEnv).wecom).toEqual({
+    corpId: 'ww-corp',
+    agentId: '1000002',
+    secret: 'wecom-secret',
+  })
+})
+
+/**
+ * 「只配了一半」几乎一定是打错变量名或漏配，而不是「想停用企微」。若静默按未启用
+ * 处理，管理员会得到一个扫码登录莫名不可用、却毫无提示的系统——所以必须报错，
+ * 并且要点名缺的是哪几个。
+ */
+test('企微配置只给一部分时报错并点名缺失项', () => {
+  expect(() => loadConfig({ ...envWithoutWecom, WECOM_CORP_ID: 'ww-corp' }))
+    .toThrow('WECOM_AGENT_ID')
+})
+
+test('企微配置只缺一项时同样报错', () => {
+  const { WECOM_SECRET, ...partial } = validEnv
+  expect(() => loadConfig(partial)).toThrow('WECOM_SECRET')
+})
+
+test('企微项为空串等同于未设置（与 TM_QPS 同一套语义）', () => {
+  const cfg = loadConfig({
+    ...validEnv,
+    WECOM_CORP_ID: '',
+    WECOM_AGENT_ID: '',
+    WECOM_SECRET: '',
+  })
+  expect(cfg.wecom).toBeNull()
+})
