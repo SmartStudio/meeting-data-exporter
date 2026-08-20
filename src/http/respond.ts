@@ -8,6 +8,18 @@ export function json(status: number, body: unknown): Response {
   })
 }
 
+/**
+ * 纯文本响应。腾讯会议的 webhook 契约要求响应体是**裸字符串**——
+ * URL 校验回显解密后的明文、事件回调回 `successfully received callback`，
+ * 官方明确写了「不能加引号、换行符」，因此这两处不能走 `json()`。
+ */
+export function text(status: number, body: string): Response {
+  return new Response(body, {
+    status,
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+  })
+}
+
 export function html(status: number, body: string): Response {
   return new Response(body, {
     status,

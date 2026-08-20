@@ -134,6 +134,9 @@ function stsAvailable(token = 'sts-tok'): StsManager {
     async pruneStale() { return 0 },
     async getToken() { return token },
     async handleWebhook() {},
+    verifyUrlChallenge(): { plain: string; candidate: number } {
+      throw new Error('not used in these tests')
+    },
   }
 }
 
@@ -143,6 +146,9 @@ function stsUnavailable(): StsManager {
     async pruneStale() { return 0 },
     async getToken(): Promise<string> { throw new StsTokenUnavailableError() },
     async handleWebhook() {},
+    verifyUrlChallenge(): { plain: string; candidate: number } {
+      throw new Error('not used in these tests')
+    },
   }
 }
 

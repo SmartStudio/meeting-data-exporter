@@ -51,6 +51,7 @@ const deps = (store: StsStore, posts: string[] = []) => ({
   decrypt: (s: string) => s.replace(/^enc\(|\)$/g, ''),
   verify: () => true,
   decryptEvent: (_k: string, c: string) => c,
+  decryptCheckStr: (_k: string, c: string) => `plain(${c})`,
 })
 
 test('无有效 token 时 getToken 抛出可识别错误', async () => {

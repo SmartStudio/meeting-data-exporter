@@ -13,7 +13,7 @@
  * （与 Task 14 一致——WeCom 侧本就不在本任务范围内）。
  */
 import { afterEach, beforeAll, afterAll, expect, test } from 'bun:test'
-import { createHash, createCipheriv, randomBytes } from 'node:crypto'
+import { createHash, createCipheriv } from 'node:crypto'
 import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../src/store/db'
 import type { WecomUser } from '../../src/auth/wecom'
@@ -34,7 +34,7 @@ import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
 import { createStsStore } from '../../src/store/sts'
 import { createStsManager } from '../../src/sts/manager'
-import { verifySignature, decryptEvent } from '../../src/sts/crypto'
+import { verifySignature, decryptEvent, decryptCheckStr } from '../../src/sts/crypto'
 import { createPolicyStore } from '../../src/store/policy'
 import { createPolicyEngine } from '../../src/policy/engine'
 import { createAuditStore } from '../../src/store/audit'
@@ -135,6 +135,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     decrypt: (s) => s.replace(/^enc\(/, '').replace(/\)$/, ''),
     verify: verifySignature,
     decryptEvent,
+    decryptCheckStr,
   })
 
   const catalog = createCatalog({ addressesApi, stsManager, now })
@@ -236,27 +237,28 @@ function encryptStsEvent(aesKey: string, reqId: string, stsToken: string, expire
       },
     ],
   })
+  // 官方《事件加解密》的明文结构：`msg + $key`——JSON 之后直接拼 $key，
+  // 没有企业微信那套 16 随机字节 + 4 字节长度头的前缀
   const key = Buffer.from(`${aesKey}=`, 'base64')
   const iv = key.subarray(0, 16)
-  const msg = Buffer.from(json, 'utf8')
-  const msgLen = Buffer.alloc(4)
-  msgLen.writeUInt32BE(msg.length, 0)
-  const plain = Buffer.concat([randomBytes(16), msgLen, msg, Buffer.from('tail-corpid', 'utf8')])
+  const plain = Buffer.from(`${json}TailKey0123456789`, 'utf8')
   const cipher = createCipheriv('aes-256-cbc', key, iv)
   return Buffer.concat([cipher.update(plain), cipher.final()]).toString('base64')
 }
 
+/** 官方契约：验签三参数在 Header，密文在 body 的 `data` 字段 */
 function webhookRequest(encrypted: string, now: number): Request {
   const timestamp = String(now)
   const nonce = 'nonce-e2e'
-  const url = new URL('https://gw/webhook/tencent-meeting')
-  url.searchParams.set('timestamp', timestamp)
-  url.searchParams.set('nonce', nonce)
-  url.searchParams.set('signature', makeWebhookSignature(WEBHOOK_TOKEN, timestamp, nonce, encrypted))
-  return new Request(url.toString(), {
+  return new Request('https://gw/webhook/tencent-meeting', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ encrypt: encrypted }),
+    headers: {
+      'content-type': 'application/json',
+      timestamp,
+      nonce,
+      signature: makeWebhookSignature(WEBHOOK_TOKEN, timestamp, nonce, encrypted),
+    },
+    body: JSON.stringify({ data: encrypted }),
   })
 }
 

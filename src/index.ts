@@ -11,7 +11,7 @@ import { createRecordsApi } from './tencent/records'
 import { createAddressesApi } from './tencent/addresses'
 import { createCatalog } from './catalog/index'
 import { createStsManager } from './sts/manager'
-import { verifySignature, decryptEvent } from './sts/crypto'
+import { verifySignature, decryptEvent, decryptCheckStr } from './sts/crypto'
 import { createPolicyEngine } from './policy/engine'
 import { createAuditRecorder } from './audit/recorder'
 import { createDeviceFlow } from './auth/device'
@@ -80,6 +80,7 @@ async function main(): Promise<void> {
     decrypt: tokenCipher.decrypt,
     verify: verifySignature,
     decryptEvent,
+    decryptCheckStr,
   })
 
   const catalog = createCatalog({ addressesApi, stsManager, now })

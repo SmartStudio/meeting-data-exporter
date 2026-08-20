@@ -85,6 +85,9 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/meetings/:meetingId/assets', meetingsHandlers.listAssets),
   compile('POST', '/api/v1/assets/:assetId/download-url', meetingsHandlers.downloadUrl),
 
+  // 同一路径两个方法：GET 是事件订阅配置时的 URL 有效性校验（腾讯要求回调服务
+  // 必须同时支持 GET 与 POST），POST 才是事件推送。缺 GET 则后台连保存都保存不上。
+  compile('GET', '/webhook/tencent-meeting', webhookHandlers.handleWebhookVerify),
   compile('POST', '/webhook/tencent-meeting', webhookHandlers.handleWebhook),
 
   compile('GET', '/healthz', async () => json(200, { status: 'ok' })),

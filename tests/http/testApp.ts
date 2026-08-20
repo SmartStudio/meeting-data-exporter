@@ -20,7 +20,7 @@ import { createIdentityMapper } from '../../src/auth/identity'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createStsStore } from '../../src/store/sts'
 import { createStsManager } from '../../src/sts/manager'
-import { verifySignature, decryptEvent } from '../../src/sts/crypto'
+import { verifySignature, decryptEvent, decryptCheckStr } from '../../src/sts/crypto'
 import { createRecordsApi } from '../../src/tencent/records'
 import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
@@ -93,6 +93,7 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     decrypt: (s) => s.replace(/^enc\(/, '').replace(/\)$/, ''),
     verify: verifySignature,
     decryptEvent,
+    decryptCheckStr,
   })
 
   const catalog = createCatalog({ addressesApi, stsManager, now })
