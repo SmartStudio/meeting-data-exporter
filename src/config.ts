@@ -37,6 +37,22 @@ function required(env: Record<string, string | undefined>, key: string): string 
   return v
 }
 
+/**
+ * 可选配置项：**空串与未设置等价**。
+ *
+ * `.env.example` 里这类变量写作 `TM_QPS=`（留空表示用默认值），而 Bun 会把它读成
+ * 空字符串而不是 undefined——`env.TM_QPS ?? 5` 只挡 undefined，于是空串会一路
+ * 穿到 `Number('')` = 0。qps=0 会让令牌桶永远补不满，**所有腾讯 API 调用被静默
+ * 卡死**，且不抛异常、不打日志，排障时极易误判成网络或凭证问题。
+ *
+ * 「空」与「不存在」在环境变量这一层是两个状态，而模板文件天生只能表达前者；
+ * 差异必须在读取处抹平，不能靠使用方各自记得用 `||` 而不是 `??`。
+ */
+function optional(env: Record<string, string | undefined>, key: string): string | undefined {
+  const v = env[key]
+  return v === undefined || v === '' ? undefined : v
+}
+
 export function loadConfig(env: Record<string, string | undefined>): AppConfig {
   const webhookToken = required(env, 'TM_WEBHOOK_TOKEN')
   if (webhookToken.length !== 25) {
@@ -54,10 +70,16 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
   // docs/deploy.md）：填多了会取到攻击者可伪造的 XFF 段，导致登录限流被绕过（安全问题）；
   // 填 0/空/非数字会使 Number() 得到 0/NaN，router.ts 的下标运算越界，等价于把全体
   // 客户端合并进同一个限流桶——单个攻击者即可打满全局登录桶。故在启动期强制校验。
-  const trustedProxyHopsRaw = env.TRUSTED_PROXY_HOPS ?? '1'
-  const trustedProxyHops = Number(trustedProxyHopsRaw)
+  const trustedProxyHops = Number(optional(env, 'TRUSTED_PROXY_HOPS') ?? '1')
   if (!Number.isInteger(trustedProxyHops) || trustedProxyHops < 1) {
     throw new Error('TRUSTED_PROXY_HOPS must be a positive integer (>= 1)')
+  }
+
+  // 令牌桶速率。0 会让桶永远补不满（tryTake 恒为 false），表现是所有腾讯 API 调用
+  // 静默卡死而非报错——必须在启动期挡住，不能等到线上排障时才发现。
+  const qps = Number(optional(env, 'TM_QPS') ?? '5')
+  if (!Number.isInteger(qps) || qps < 1) {
+    throw new Error('TM_QPS must be a positive integer (>= 1)')
   }
 
   // 用户会话 JWT 签名密钥。弱口令会让整个会话体系可被爆破/猜测，故强制最低长度。
@@ -83,8 +105,8 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       secretId: required(env, 'TM_SECRET_ID'),
       secretKey: required(env, 'TM_SECRET_KEY'),
       operatorId: required(env, 'TM_OPERATOR_ID'),
-      qps: Number(env.TM_QPS ?? 5),
-      baseUrl: env.TM_BASE_URL ?? 'https://api.meeting.qq.com',
+      qps,
+      baseUrl: optional(env, 'TM_BASE_URL') ?? 'https://api.meeting.qq.com',
     },
     webhook: {
       token: webhookToken,

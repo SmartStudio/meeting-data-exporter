@@ -94,3 +94,35 @@ test('loadConfig 缺失 STS_ENC_KEY 时报出字段名', () => {
   const { STS_ENC_KEY, ...incomplete } = validEnv
   expect(() => loadConfig(incomplete)).toThrow('STS_ENC_KEY')
 })
+
+// ---------------------------------------------------------------------------
+// 可选项的「空串 == 未设置」
+// .env.example 里这些变量写作 `TM_QPS=`（留空表示用默认值），而 Bun 会把它读成
+// 空字符串。若沿用 `??` 判定，空串会一路穿到 Number('') = 0——qps=0 会让令牌桶
+// 永远补不满，所有腾讯 API 调用静默卡死。这几条用例锁住修复后的语义。
+// ---------------------------------------------------------------------------
+
+test('TM_QPS 为空串时回落到默认值 5，而不是 0', () => {
+  expect(loadConfig({ ...validEnv, TM_QPS: '' }).tencent.qps).toBe(5)
+})
+
+test('TM_BASE_URL 为空串时回落到默认域名，而不是空字符串', () => {
+  expect(loadConfig({ ...validEnv, TM_BASE_URL: '' }).tencent.baseUrl)
+    .toBe('https://api.meeting.qq.com')
+})
+
+test('TM_QPS 显式设置时生效', () => {
+  expect(loadConfig({ ...validEnv, TM_QPS: '12' }).tencent.qps).toBe(12)
+})
+
+test('TM_QPS 为 0 时启动期报错，不允许一个永不放行的令牌桶进入运行期', () => {
+  expect(() => loadConfig({ ...validEnv, TM_QPS: '0' })).toThrow('TM_QPS')
+})
+
+test('TM_QPS 非数字时启动期报错', () => {
+  expect(() => loadConfig({ ...validEnv, TM_QPS: 'fast' })).toThrow('TM_QPS')
+})
+
+test('TRUSTED_PROXY_HOPS 为空串时回落到默认值 1', () => {
+  expect(loadConfig({ ...validEnv, TRUSTED_PROXY_HOPS: '' }).trustedProxyHops).toBe(1)
+})
