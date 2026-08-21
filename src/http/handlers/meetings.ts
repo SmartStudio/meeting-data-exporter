@@ -230,13 +230,23 @@ interface ParsedAssetId {
  * index 段的存在性只做校验、不单独返回——真正解析下载地址的逻辑仍完全
  * 委托给 catalog.resolveDownloadUrl，本函数不重复实现那部分。
  */
+/**
+ * assetId 末段是**定位键**（file_type，或 `idx<n>` 回退，或 M3.5 之前的纯数字下标），
+ * 见 catalog/assets.ts。这里只做形状与字符集的基本校验，不限定它必须是数字——
+ * 原实现的 `/^\d+$/` 是按「末段恒为数组下标」写的，改用 file_type 定位后会把
+ * 全部合法 assetId 判成 400。
+ *
+ * 末段内容不授予任何权限：真正的安全边界是下面对 meetingRecordId 的缓存查找与
+ * policyEngine 判定；定位键选不中条目时由 catalog 抛 AssetUrlMissingError → 404。
+ * 因此这里只需挡住畸形输入（空段、超长、含分隔符或路径字符）。
+ */
 function parseAssetId(assetId: string): ParsedAssetId | null {
   const parts = assetId.split(':')
   if (parts.length < 4) return null
-  const [meetingRecordId, recordFileId, assetType, index] = parts
-  if (!meetingRecordId || !recordFileId || !assetType || !index) return null
+  const [meetingRecordId, recordFileId, assetType, selector] = parts
+  if (!meetingRecordId || !recordFileId || !assetType || !selector) return null
   if (!ASSET_TYPE_SET.has(assetType)) return null
-  if (!/^\d+$/.test(index)) return null
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(selector)) return null
   return { meetingRecordId, recordFileId, assetType: assetType as AssetType }
 }
 

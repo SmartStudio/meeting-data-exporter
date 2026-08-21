@@ -23,11 +23,19 @@ test('提取全部八类资产', () => {
   ])
 })
 
-test('assetId 唯一且含字段名与索引（防六类纪要被压成一行）', () => {
+test('assetId 唯一且含字段名与定位键（防六类纪要被压成一行）', () => {
   const assets = extractAssets('m1', '', 'rec-1', detail, true)
   const ids = assets.map((a) => a.assetId)
   expect(new Set(ids).size).toBe(ids.length)
-  expect(ids).toContain('rec-1:f1:ai_minutes:0')
+  // 末段是 file_type 而非数组下标：平台返回的数组顺序每次调用都可能不同，
+  // 用下标定位会在「列资产」与「签发下载地址」两次独立请求之间错位。
+  expect(ids).toContain('rec-1:f1:ai_minutes:txt')
+})
+
+test('数组条目缺 file_type 时回退为 idx<n>，形式上可辨认', () => {
+  const noType = { ...detail, ai_minutes: [{ download_address: 'a' }] }
+  const ids = extractAssets('m1', '', 'rec-1', noType, true).map((a) => a.assetId)
+  expect(ids).toContain('rec-1:f1:ai_minutes:idx0')
 })
 
 test('assetId 以 meetingRecordId 为前缀（自包含，支持无状态解析）', () => {

@@ -67,14 +67,34 @@ interface UrlSource {
 }
 
 /**
- * assetId 形如 <meetingRecordId>:<recordFileId>:<assetType>:<index>，末段恒为 index，
- * 仅数组型字段需要取出它。
+ * assetId 形如 `<meetingRecordId>:<recordFileId>:<assetType>:<selector>`，
+ * 末段是数组型字段的定位键（见 catalog/assets.ts 的说明）。
+ *
+ * 定位优先按 **file_type 匹配**：腾讯返回的数组顺序每次调用都可能不同，用下标
+ * 定位会在「列资产」与「签发下载地址」这两次独立请求之间错位——实测同一个
+ * assetId 连续请求两次分别解析到 .txt 和 .docx。file_type 在同一数组内唯一，
+ * 是唯一稳定的定位键。
+ *
+ * `idx<n>` 形式是条目本身缺 file_type 时的回退，仍按下标解析（不稳定，但那种
+ * 条目本来也无从稳定定位）。纯数字末段是 M3.5 之前签发的历史 assetId，同样按
+ * 下标解析以保持兼容——客户端里可能还存着它们。
  */
 function pickUrl(source: UrlSource, asset: Asset): string | undefined {
   if (asset.assetType === 'video') return source.download_address
   if (asset.assetType === 'audio') return source.audio_address
-  const idx = Number(asset.assetId.split(':').at(-1))
-  return source[asset.assetType]?.[idx]?.download_address
+
+  const entries = source[asset.assetType]
+  if (!Array.isArray(entries)) return undefined
+
+  const selector = asset.assetId.split(':').at(-1) ?? ''
+
+  const byFileType = entries.find((e) => e.file_type !== undefined && e.file_type === selector)
+  if (byFileType?.download_address !== undefined) return byFileType.download_address
+
+  // 回退：`idx<n>` 或历史遗留的纯数字末段
+  const idx = Number(selector.startsWith('idx') ? selector.slice(3) : selector)
+  if (!Number.isInteger(idx) || idx < 0) return undefined
+  return entries[idx]?.download_address
 }
 
 /**
