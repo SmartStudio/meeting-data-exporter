@@ -2,7 +2,7 @@ import type { Store, AssetRow } from '../store'
 import type { DownloadResult, DownloadTask } from '../downloader'
 import type { Storage } from '../storage/types'
 import type { GatewayClient } from '../gateway/client'
-import { GATEWAY_TYPE_TO_ASSET_KEY, assetKeyToFilename, ASSET_WAIT_CAP_SEC } from '../domain/types'
+import { GATEWAY_TYPE_TO_ASSET_KEY, assetKeyToFilename, isTextAssetType, ASSET_WAIT_CAP_SEC } from '../domain/types'
 import { cleanDirName } from '../domain/filename'
 import { judgeReadiness } from '../domain/readiness'
 
@@ -34,7 +34,7 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   if (row.bytes_expected != null && !(await deps.storage.ensureFreeSpace(row.bytes_expected))) { deps.store.markSkipped(row.id, 'disk_full', now()); result.skipped++; return }
   deps.store.setTargetPath(row.id, relPath, row.file_type, now())
 
-  const isText = !['download_address', 'audio_address'].includes(row.asset_type)
+  const isText = isTextAssetType(row.asset_type)
   const res = await deps.download({ assetId: row.asset_id ?? assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => deps.store.touchProgress(row.id, b, now(), leaseSec))
   if (res.status === 'completed') { deps.store.markCompleted(row.id, res.contentHash, now()); result.completed++; return }
   if (row.attempts >= MAX_ATTEMPTS) { deps.store.markDead(row.id, res.error, now()); result.failed++; return }

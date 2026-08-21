@@ -39,6 +39,20 @@ export const GATEWAY_TYPE_TO_ASSET_KEY: Record<string, AssetKey> = Object.fromEn
   (Object.entries(ASSET_KEY_TO_GATEWAY_TYPE) as [AssetKey, string][]).map(([k, t]) => [t, k]),
 ) as Record<string, AssetKey>
 
+/**
+ * 大文件资产：视频与音频。它们**不做整文件哈希**——`downloader` 对文本类小文件
+ * 会把 `.part` 全量读进内存算 sha256，对一段 2GB 的录制这么做会直接吃爆内存。
+ *
+ * 判定入参是**网关的 asset_type**，不是客户端的 AssetKey：调用方拿到的是 DB 里
+ * 存的原值。未知类型一律按二进制处理（不整读），是这里更安全的默认值。
+ */
+const BINARY_ASSET_KEYS: ReadonlySet<AssetKey> = new Set<AssetKey>(['video', 'audio'])
+
+export function isTextAssetType(gatewayType: string): boolean {
+  const key = GATEWAY_TYPE_TO_ASSET_KEY[gatewayType]
+  return key !== undefined && !BINARY_ASSET_KEYS.has(key)
+}
+
 const H6 = 6 * 3600
 const H48 = 48 * 3600
 export const ASSET_WAIT_CAP_SEC: Record<AssetKey, number> = {

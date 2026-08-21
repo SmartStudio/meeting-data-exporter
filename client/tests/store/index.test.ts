@@ -59,3 +59,62 @@ test('siblingRank：同类多段按 id 升序给 1-based 序号', () => {
   expect(s.siblingRank(a)).toEqual({ ordinal: 1, total: 2 })
   expect(s.siblingRank(b)).toEqual({ ordinal: 2, total: 2 })
 })
+
+// ---------------------------------------------------------------------------
+// 多格式去重（M3.5：唯一键加入 file_type）
+// 腾讯对同一份录制会同时给出 txt/docx/pdf 多种导出格式，它们**共享同一个
+// record_file_id**。旧唯一键 (meeting, sub, asset_type, remote_id) 区分不了，
+// 三条折叠成一条；又因平台返回顺序不稳定，同一条命令重复执行会拿到不同格式。
+// ---------------------------------------------------------------------------
+
+test('同一 remote_id 的多种格式各建一行，不再互相折叠', () => {
+  const store = createStore(openDb(':memory:'))
+  for (const ft of ['txt', 'docx', 'pdf']) {
+    store.upsertAsset(
+      { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rf1', fileType: ft },
+      1,
+    )
+  }
+  const claimed = [store.claimNext(1, 60), store.claimNext(1, 60), store.claimNext(1, 60)]
+  expect(claimed.every((r) => r !== null)).toBe(true)
+  expect(claimed.map((r) => r!.file_type).sort()).toEqual(['docx', 'pdf', 'txt'])
+  expect(store.claimNext(1, 60)).toBeNull()
+})
+
+test('重复 upsert 同一 (remote_id, file_type) 仍然幂等，不产生第二行', () => {
+  const store = createStore(openDb(':memory:'))
+  const a = { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rf1', fileType: 'pdf' }
+  store.upsertAsset(a, 1)
+  store.upsertAsset(a, 2)
+  expect(store.claimNext(1, 60)).not.toBeNull()
+  expect(store.claimNext(1, 60)).toBeNull()
+})
+
+test('siblingRank 按 file_type 分组：多格式不加序号', () => {
+  const store = createStore(openDb(':memory:'))
+  for (const ft of ['txt', 'docx', 'pdf']) {
+    store.upsertAsset(
+      { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rf1', fileType: ft },
+      1,
+    )
+  }
+  for (let i = 0; i < 3; i++) {
+    const row = store.claimNext(1, 60)!
+    // 每种格式在自己的 file_type 分组里都是「唯一一份」→ total=1，文件名不该带序号
+    expect(store.siblingRank(row)).toEqual({ ordinal: 1, total: 1 })
+  }
+})
+
+test('siblingRank 对同格式的多段录制仍然给出序号', () => {
+  const store = createStore(openDb(':memory:'))
+  for (const rid of ['rf1', 'rf2']) {
+    store.upsertAsset(
+      { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: rid, fileType: 'pdf' },
+      1,
+    )
+  }
+  const first = store.claimNext(1, 60)!
+  const second = store.claimNext(1, 60)!
+  expect(store.siblingRank(first)).toEqual({ ordinal: 1, total: 2 })
+  expect(store.siblingRank(second)).toEqual({ ordinal: 2, total: 2 })
+})

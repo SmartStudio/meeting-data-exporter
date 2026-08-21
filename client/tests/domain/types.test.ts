@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import {
-  DEFAULT_ASSET_KEYS, ALL_ASSET_KEYS, ASSET_KEY_TO_GATEWAY_TYPE, GATEWAY_TYPE_TO_ASSET_KEY,
+  DEFAULT_ASSET_KEYS, ALL_ASSET_KEYS, ASSET_KEY_TO_GATEWAY_TYPE, GATEWAY_TYPE_TO_ASSET_KEY, isTextAssetType,
   parseAssetKeys, UnknownAssetKeyError, assetKeyToFilename,
 } from '../../src/domain/types'
 
@@ -61,4 +61,18 @@ test('video / audio 映射到网关领域名，而非腾讯平台字段名', () 
   expect(ASSET_KEY_TO_GATEWAY_TYPE.audio).toBe('audio')
   expect(ASSET_KEY_TO_GATEWAY_TYPE.video).not.toBe('download_address')
   expect(ASSET_KEY_TO_GATEWAY_TYPE.audio).not.toBe('audio_address')
+})
+
+test('isTextAssetType：视频音频不整读，文本与 AI 纪要整读', () => {
+  expect(isTextAssetType('video')).toBe(false)
+  expect(isTextAssetType('audio')).toBe(false)
+  expect(isTextAssetType('meeting_summary')).toBe(true)
+  expect(isTextAssetType('ai_meeting_transcripts')).toBe(true)
+  expect(isTextAssetType('ai_ds_minutes')).toBe(true)
+})
+
+test('isTextAssetType：未知类型按二进制处理（不把未知大文件整读进内存）', () => {
+  expect(isTextAssetType('some_future_engine_minutes')).toBe(false)
+  // 旧的平台字段名现在也属于「未知」——保证不会因为残留写法而误判成文本
+  expect(isTextAssetType('download_address')).toBe(false)
 })
