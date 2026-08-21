@@ -182,3 +182,36 @@ test('hasRecentPending：无任何在窗口内的 pending 时为 false', async (
   const store = createStsStore(pool)
   expect(await store.hasRecentPending(999_999_999)).toBe(false)
 })
+
+/**
+ * 重复投递**完全相同**的回调内容必须幂等成功。
+ *
+ * MySQL 的 affectedRows 统计的是实际变更的行数：第二次投递时
+ * state/token_cipher/expire_ts/fulfilled_at 全都没变，返回 0。若把它当成
+ * 「req_id 不存在」，路由层会回 500，而腾讯对非 200 会在 1/3/6 分钟后各重试
+ * 一次——重复投递本就是回调的常态，于是每次都变成 4 次投递 + 3 条 500 日志。
+ * M3.5 联调实测到该现象（req_id 6a82d4ba… 已 fulfilled 却报 unknown req_id）。
+ *
+ * 注意与既有用例的分工：真正未知的 req_id 仍必须抛错，不能静默接受一个来路
+ * 不明的 STS-Token。
+ */
+test('重复投递同一份回调（各列值完全相同）幂等成功，不误判为未知 req_id', async () => {
+  const store = createStsStore(pool)
+  const reqId = `req-dup-identical-${Date.now()}`
+  await store.createRequest(reqId, 1000)
+
+  // expire_ts 取一个远大于本文件其它用例的值：sts_token_requests 表在文件内共享，
+  // getActive() 语义是「返回过期最晚的一条」，必须确保读到的就是本用例写入的。
+  await store.fulfill(reqId, 'cipher-x', 9_999_999_999, 1001)
+  // 第二次：四个列的值逐字相同 → MySQL affectedRows = 0
+  await store.fulfill(reqId, 'cipher-x', 9_999_999_999, 1001)
+
+  const active = await store.getActive(1002)
+  expect(active?.reqId).toBe(reqId)
+  expect(active?.tokenCipher).toBe('cipher-x')
+})
+
+test('真正未知的 req_id 仍然抛错（不因幂等放宽而静默接受）', async () => {
+  const store = createStsStore(pool)
+  await expect(store.fulfill('req-never-requested', 'c', 1, 1)).rejects.toThrow('unknown req_id')
+})
