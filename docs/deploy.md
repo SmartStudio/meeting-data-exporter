@@ -57,6 +57,10 @@ MySQL 的历史默认字符集 `utf8` 只有 3 字节，无法容纳会议主题
 炸。建库时必须显式指定：
 
 ```sql
+-- 排序规则用该 MySQL 版本的默认值即可（8.0 是 utf8mb4_0900_ai_ci，
+-- 5.7 是 utf8mb4_general_ci）——preflight 只硬性要求字符集为 utf8mb4，
+-- 排序规则只要同属 utf8mb4_* 就通过：它影响比较与排序语义，不影响能否
+-- 存下 4 字节字符，本项目也没有依赖特定排序语义的查询。
 CREATE DATABASE meeting_gateway
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 

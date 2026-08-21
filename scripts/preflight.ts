@@ -176,17 +176,29 @@ async function stepCharset(pool: Pool): Promise<void> {
     )
     const cs = rows[0]?.cs ?? ''
     const co = rows[0]?.co ?? ''
-    if (cs === 'utf8mb4' && co === 'utf8mb4_unicode_ci') {
-      record('2b', '数据库字符集', 'pass', `字符集 ${cs} / 排序规则 ${co}，符合要求。`)
+
+    // 硬要求只有一条：字符集必须是 utf8mb4。会议主题里的中文与 emoji 是 4 字节
+    // 字符，MySQL 历史默认的 utf8（3 字节）会插入失败。
+    //
+    // 排序规则只要与字符集配套（utf8mb4_*）即可，**不限定具体变体**：
+    // MySQL 8.0 建库时的默认值是 utf8mb4_0900_ai_ci（基于 Unicode 9.0，比
+    // utf8mb4_unicode_ci 的 Unicode 4.0 更新），5.7 时代才默认 utf8mb4_general_ci。
+    // 它影响的是比较与排序语义，不影响「能不能存下 4 字节字符」——本项目没有
+    // 依赖特定排序语义的查询。早先把 utf8mb4_unicode_ci 写成硬判据，会让任何
+    // 按 MySQL 8 默认建的库（含阿里云 RDS）判 FAIL，且修复指引直接建议
+    // 「重建数据库」——一个会误导人去动生产库的假红。
+    if (cs === 'utf8mb4' && co.startsWith('utf8mb4_')) {
+      const note = co === 'utf8mb4_unicode_ci' ? '' : '（非 utf8mb4_unicode_ci，但同属 utf8mb4，不影响 4 字节字符存储）'
+      record('2b', '数据库字符集', 'pass', `字符集 ${cs} / 排序规则 ${co}，符合要求${note}。`)
     } else {
       record(
         '2b',
         '数据库字符集',
         'fail',
-        `当前字符集为 "${cs || '未知'}" / 排序规则为 "${co || '未知'}"，不是要求的 utf8mb4 / utf8mb4_unicode_ci。`,
+        `当前字符集为 "${cs || '未知'}" / 排序规则为 "${co || '未知'}"，字符集必须是 utf8mb4。`,
         '会议主题里的中文与 emoji 属于 4 字节字符，MySQL 默认的 utf8（3 字节）会插入失败——' +
           '测试数据多为 ASCII，不会提前暴露这个问题，真实数据上线后才会报错。' +
-          '修复：重建数据库为 `CREATE DATABASE ... CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`；' +
+          '修复：重建数据库为 `CREATE DATABASE ... CHARACTER SET utf8mb4`（排序规则用该版本默认值即可）；' +
           '阿里云 RDS 还需确认实例参数 character_set_server = utf8mb4。详见 docs/deploy.md「MySQL 准备」。',
       )
     }
