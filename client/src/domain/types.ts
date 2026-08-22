@@ -98,10 +98,35 @@ const FILENAME_HAS_REMOTE_ID: Record<AssetKey, boolean> = {
  * 1-based 序号：仅当文件名不含 remoteId（文本类）且 ordinal>1 时追加 `_<ordinal>` 消歧，
  * 保证单段场景文件名保持干净（transcript.pdf），多段场景不互相覆盖（transcript_2.pdf）。
  */
-export function assetKeyToFilename(key: AssetKey, remoteId: string, ext: string, ordinal = 1): string {
+/**
+ * 平台 file_type → 落盘扩展名的归一化。
+ *
+ * 只做**有明确依据**的修正，不做主观美化：
+ * - `docs` → `docx`：腾讯对 AI 纪要给的是 `docs`（同一响应里转写给的却是 `docx`），
+ *   而实测文件魔数是 `50 4B 03 04`（ZIP/OOXML），确系标准 docx。`.docs` 不是
+ *   任何系统认识的扩展名，双击打不开。
+ * - `htm` → `html`：同理，两者是同一格式的新旧写法。
+ *
+ * 空 file_type 回落 `bin`：DB 里该列是 NOT NULL DEFAULT ''（见 store/db.ts），
+ * 未知格式存的是**空串而不是 null**，`?? 'bin'` 这类写法挡不住它，会生成
+ * `transcript.` 这种带尾点的文件名。
+ *
+ * 已知的理论风险：若平台某天对同一资产同时给出 `docs` 与 `docx`，归一化后两者
+ * 会争同一个文件名（唯一键按原始 file_type 分组，不会合并成一行）。届时内容
+ * 本就相同，覆盖无实质损失；真出现再按 file_type 加后缀消歧。
+ */
+const EXTENSION_ALIASES: Record<string, string> = { docs: 'docx', htm: 'html' }
+
+export function normalizeExtension(fileType: string | null | undefined): string {
+  const raw = (fileType ?? '').trim().toLowerCase()
+  if (raw === '') return 'bin'
+  return EXTENSION_ALIASES[raw] ?? raw
+}
+
+export function assetKeyToFilename(key: AssetKey, remoteId: string, ext: string | null | undefined, ordinal = 1): string {
   const base = FILENAME_BASE[key](remoteId)
   const suffix = !FILENAME_HAS_REMOTE_ID[key] && ordinal > 1 ? `_${ordinal}` : ''
-  return `${base}${suffix}.${ext}`
+  return `${base}${suffix}.${normalizeExtension(ext)}`
 }
 
 export interface Meeting {

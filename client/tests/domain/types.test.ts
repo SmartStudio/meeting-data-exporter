@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import {
-  DEFAULT_ASSET_KEYS, ALL_ASSET_KEYS, ASSET_KEY_TO_GATEWAY_TYPE, GATEWAY_TYPE_TO_ASSET_KEY, isTextAssetType,
+  DEFAULT_ASSET_KEYS, ALL_ASSET_KEYS, ASSET_KEY_TO_GATEWAY_TYPE, GATEWAY_TYPE_TO_ASSET_KEY, isTextAssetType, normalizeExtension,
   parseAssetKeys, UnknownAssetKeyError, assetKeyToFilename,
 } from '../../src/domain/types'
 
@@ -75,4 +75,28 @@ test('isTextAssetType：未知类型按二进制处理（不把未知大文件�
   expect(isTextAssetType('some_future_engine_minutes')).toBe(false)
   // 旧的平台字段名现在也属于「未知」——保证不会因为残留写法而误判成文本
   expect(isTextAssetType('download_address')).toBe(false)
+})
+
+test('normalizeExtension：只做有依据的修正', () => {
+  // 腾讯对 AI 纪要给 docs、对转写给 docx，实测魔数都是 50 4B 03 04（ZIP/OOXML）
+  expect(normalizeExtension('docs')).toBe('docx')
+  expect(normalizeExtension('htm')).toBe('html')
+  // 其余原样保留，不做主观美化
+  expect(normalizeExtension('pdf')).toBe('pdf')
+  expect(normalizeExtension('txt')).toBe('txt')
+  expect(normalizeExtension('mp4')).toBe('mp4')
+})
+
+test('normalizeExtension：空串与 null 都回落 bin，不生成带尾点的文件名', () => {
+  // DB 里 file_type 是 NOT NULL DEFAULT ''，未知格式存的是空串而不是 null
+  expect(normalizeExtension('')).toBe('bin')
+  expect(normalizeExtension('   ')).toBe('bin')
+  expect(normalizeExtension(null)).toBe('bin')
+  expect(normalizeExtension(undefined)).toBe('bin')
+  expect(assetKeyToFilename('transcript', 'rf1', '')).toBe('transcript.bin')
+})
+
+test('assetKeyToFilename 应用归一化', () => {
+  expect(assetKeyToFilename('ai_topic_minutes', 'rf1', 'docs')).toBe('ai_topic_minutes.docx')
+  expect(assetKeyToFilename('video', 'rf1', 'mp4')).toBe('recording_rf1.mp4')
 })

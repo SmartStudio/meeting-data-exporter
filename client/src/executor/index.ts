@@ -51,7 +51,7 @@ function buildRelPath(deps: ExecutorDeps, row: AssetRow): string | null {
   const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, m.subject ?? '', m.meetingCode ?? row.meeting_id)
   const key = GATEWAY_TYPE_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
   const { ordinal } = deps.store.siblingRank(row)
-  const fname = assetKeyToFilename(key, row.remote_id, row.file_type ?? 'bin', ordinal)
+  const fname = assetKeyToFilename(key, row.remote_id, row.file_type, ordinal)  // 归一化与空值回落都在 assetKeyToFilename 里
   return `${yyyy}/${mm}/${dir}/${fname}`
 }
 function assetId(row: AssetRow): string { return `${row.meeting_id}:${row.remote_id}:${row.asset_type}:0` }
