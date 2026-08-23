@@ -23,7 +23,7 @@
 | 设计文档 | spec 1052 行 + 用户故事 353 行 + 实现计划 3974 行 |
 | 交付形态 | 可 `docker build` 的镜像 + preflight 上线自检 |
 
-技术栈：Bun + TypeScript（strict）+ MySQL 8.0+（utf8mb4）。多实例可横向扩展。
+技术栈：Bun + TypeScript（strict）+ MySQL 8.0.19+（utf8mb4）。多实例可横向扩展。
 （版本下限从 5.7+ 提到 8.0+：服务端归档队列的领取逻辑用
 `SELECT … FOR UPDATE SKIP LOCKED`，这是 MySQL 8.0 才支持的语法。）
 
