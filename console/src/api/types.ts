@@ -22,7 +22,7 @@ export type AssetKey =
   | 'ai_ds_minutes'
 
 export type FetchState = 'done' | 'running' | 'blocked' | 'none'
-export type ArchiveState = 'done' | 'running' | 'failed' | 'off' | 'blocked'
+export type ArchiveState = 'done' | 'running' | 'failed' | 'off' | 'blocked' | 'none'
 export type AllowState = 'allow' | 'deny'
 
 /**

@@ -42,7 +42,7 @@ describe('mock', () => {
     expect(ms.filter((m) => m.archive === 'failed').length).toBe(1)
   })
 
-  test('nas-down 不改变已经是 failed / blocked / off 的会议', async () => {
+  test('nas-down 不改变已经是 failed / blocked / none 的会议', async () => {
     const before = await mockApi('ok').listMeetings()
     const after = await mockApi('nas-down').listMeetings()
     for (const id of ['m3', 'm4', 'm5']) {

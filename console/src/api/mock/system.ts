@@ -11,7 +11,7 @@ export function loadFailedError(): Error {
  * - 它们的保留窗口清零：`archivedAt`/`expiresAt` 归 null（本来就不该开始计时）
  * - 它们的授权撤下：`grants` 清空（没归档成功的东西不该对外可见）
  *
- * 不改变已经是 `failed` / `blocked` / `off` 的会议——它们的状态跟 NAS 无关。
+ * 不改变已经是 `failed` / `blocked` / `none` 的会议——它们的状态跟 NAS 无关。
  */
 export function applyNasDown(meetings: Meeting[]): Meeting[] {
   const alreadyFailed = meetings.filter((m) => m.archive === 'failed').length

@@ -318,8 +318,11 @@ export const MEETINGS: Meeting[] = [
     // 没有产生录制，八类资产都不适用——空对象。
     assets: {},
     fetch: 'none',
-    // ArchiveState 没有 'none'——没有录制、无从归档，用 'off'（未执行）表达。
-    archive: 'off',
+    // 没有录制、无从归档，用 'none'——跟 'off'（归档规则不执行，是规则做出的决定）
+    // 含义不同，不能互相顶替：这场会议压根没有规则参与判断。原型确实有
+    // archive:'none' 这个取值（gate-console.html 的 STAGE_LABEL.none = '无录制'，
+    // 该 map 是 fetch/archive 两阶段共用的），是 spec.md §6.1 的类型声明漏收了它。
+    archive: 'none',
     allow: 'deny',
     grants: [],
     hand: [],
