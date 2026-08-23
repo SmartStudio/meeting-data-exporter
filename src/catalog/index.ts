@@ -30,7 +30,7 @@ export interface Catalog {
 }
 
 /**
- * assetId 不符合 <meetingRecordId>:<recordFileId>:<assetType>:<index> 格式时抛出。
+ * assetId 不符合 <meetingRecordId>:<recordFileId>:<assetType>:<selector> 格式时抛出。
  *
  * 网关是多实例部署的服务端组件，`GET /meetings/{id}/assets` 与
  * `POST /assets/{assetId}/download-url` 是两次独立的 HTTP 请求，可能落到不同实例，
@@ -42,7 +42,7 @@ export class InvalidAssetIdError extends Error {
   constructor(readonly assetId: string) {
     super(
       `malformed assetId ${JSON.stringify(assetId)}: expected ` +
-        '<meetingRecordId>:<recordFileId>:<assetType>:<index>',
+        '<meetingRecordId>:<recordFileId>:<assetType>:<selector>',
     )
     this.name = 'InvalidAssetIdError'
   }

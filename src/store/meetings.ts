@@ -3,7 +3,7 @@ import type { Pool } from './db'
 import type { Meeting, RecordState } from '../domain/types'
 
 /**
- * assetId 格式为 <meetingRecordId>:<recordFileId>:<assetType>:<index>，自包含
+ * assetId 格式为 <meetingRecordId>:<recordFileId>:<assetType>:<selector>，自包含
  * meetingRecordId 足以解析下载地址（见 catalog/index.ts），但不含 meeting_id /
  * host_user_id / start_time 等策略判定（policyEngine.decide）所需的会议属性——
  * 而这些属性只能来自 GET /v1/records（按 meeting_id 或时间窗口查询），该接口不支持
