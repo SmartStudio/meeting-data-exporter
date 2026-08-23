@@ -625,8 +625,21 @@ grep -rn "\.\(upsertMeeting\|upsertAsset\|claimNext\|markCompleted\|markFailed\|
 2. `executor` 的 `touchProgress` 在**回调里**：
    `(b) => deps.store.touchProgress(row.id, b, now(), leaseSec)` ——
    `downloader` 的 `onProgress` 签名是 `(bytes: number) => void`，返回 Promise 不报错但
-   会成为**未处理的 floating promise**。改成 `(b) => { void deps.store.touchProgress(...) }`
-   并在该行写明：进度回写是尽力而为，失败不该中断下载。
+   会成为**未处理的 floating promise**。
+
+   **不要用 `void`**（本计划初稿如此，T3 的评审证明是错的）：`void` 不挂 rejection
+   handler，写库失败会被彻底吞掉——异步化之前这个错误会冒泡到 `downloader` 的 catch、
+   把资产落成 `failed` 从而可被 `retry` 重置；用 `void` 之后同一个错误变成「资产标成
+   completed，但 bytes_written 停在出错前的值，且没有任何日志」。SQLite 宿主下几乎不
+   触发，MySQL 宿主下这是按下载块高频触发的池化连接 UPDATE，deadlock / connection
+   reset / pool timeout 都很现实——而那正是本计划存在的理由。
+
+   写成：
+   ```ts
+   (b) => { deps.store.touchProgress(row.id, b, now(), leaseSec)
+              .catch((e) => console.warn(`progress write failed: ${e}`)) }
+   ```
+   注释写明：进度回写是尽力而为，失败不中断下载，**但必须留下痕迹**。
 3. 测试里 `expect(store.counts()).toEqual(...)` 之类要改成 `expect(await store.counts())`。
    **漏掉 await 时 `toEqual` 会拿 Promise 去比对象而失败**，不会静默通过——这点是安全的。
 
