@@ -282,8 +282,8 @@ html, body { overflow-x: clip; }
 button, input, select, textarea { font: inherit; color: inherit; }
 
 :focus-visible {
-  outline: 2px solid var(--brand);
-  outline-offset: 2px;
+  outline: var(--s-0) solid var(--brand);
+  outline-offset: var(--s-0);
   /* 焦点环不做出现动画——它必须在按下 Tab 的那一帧就在 */
   transition: none;
 }
@@ -460,7 +460,7 @@ export type AssetKey =
   | 'ai_minutes' | 'ai_topic_minutes' | 'ai_speaker_minutes' | 'ai_ds_minutes'
 
 export type FetchState   = 'done' | 'running' | 'blocked' | 'none'
-export type ArchiveState = 'done' | 'running' | 'failed' | 'off' | 'blocked'
+export type ArchiveState = 'done' | 'running' | 'failed' | 'off' | 'blocked' | 'none'
 export type AllowState   = 'allow' | 'deny'
 
 /**

@@ -369,7 +369,7 @@ join === 'and'（默认）         → 全部条件成立才匹配
   when, host, dur,            // 8-21 14:00 · 邹研发 · 1:52
   assets, total,              // 已拿到 / 应有
   fetch:   'done' | 'running' | 'blocked' | 'none',
-  archive: 'done' | 'running' | 'failed' | 'off' | 'blocked',
+  archive: 'done' | 'running' | 'failed' | 'off' | 'blocked' | 'none',
   allow:   'allow' | 'deny',
   grants:  ['知识库索引器', ...],   // 只有 allow 且在保留期内才有意义
   hand:    [],                      // 被人工改写过的阶段
