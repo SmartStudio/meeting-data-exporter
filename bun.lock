@@ -5,6 +5,7 @@
     "": {
       "name": "meeting-data-exporter",
       "dependencies": {
+        "@yaowu/mde-engine": "workspace:*",
         "mysql2": "^3.23.1",
       },
       "devDependencies": {
