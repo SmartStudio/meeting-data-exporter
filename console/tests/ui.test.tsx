@@ -280,6 +280,16 @@ describe('ProgressBar', () => {
     const trackRule = ruleBody(progressCss, '.track {')
     expect(trackRule).toMatch(/border-radius:\s*var\(--r-pill\)/)
   })
+
+  test('.fill 自己不带 border-radius——圆角只由 .track + overflow:hidden 裁剪，防止 scaleX 把端帽压成椭圆', () => {
+    // 回归守卫：评审发现过 .fill 曾经也带 border-radius:var(--r-pill)，
+    // 而 border-radius 按未缩放的布局尺寸计算，scaleX(pct/100) 会把包括端帽
+    // 在内的整个渲染结果水平压缩——低百分比时圆角变椭圆/方头，且这个失真
+    // getComputedStyle/jsdom 测不出来（jsdom 不做真实渲染），只能靠这条
+    // "根本不引入圆角声明"的结构性断言来防止它被加回去。
+    const fillRule = ruleBody(progressCss, '.fill {')
+    expect(fillRule).not.toMatch(/border-radius/)
+  })
 })
 
 describe('Skeleton', () => {

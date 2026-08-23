@@ -15,11 +15,16 @@
   height: var(--s-2);
 }
 
+/* .fill 故意不设 border-radius——它按未缩放的布局尺寸算圆角，scaleX 会把端帽
+ * 也一起水平压缩：低百分比时圆角变椭圆，pct 越小越明显（这类基元恰恰经常
+ * 停在低百分比：容量几乎全空、保留期刚开始计时）。整条胶囊的圆角形状完全
+ * 交给 .track 的 border-radius + overflow: hidden 裁剪，.fill 前沿在
+ * pct<100% 时是方头，这是进度条常见且可接受的视觉惯例。不要为了"看起来更
+ * 圆润"把这行加回去。 */
 .fill {
   display: block;
   width: 100%;
   height: 100%;
-  border-radius: var(--r-pill);
   transform-origin: left center;
   transition: transform var(--dur-2) var(--ease-out);
 }
