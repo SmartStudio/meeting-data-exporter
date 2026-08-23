@@ -7,10 +7,7 @@ import { parseArgs } from '../../src/cli'
 import { cmdRun } from '../../src/cli/commands/run'
 import { cmdExecute } from '../../src/cli/commands/execute'
 import { cmdDiscover } from '../../src/cli/commands/discover'
-import { openDb } from '../../src/store/db'
-import { createStore } from '../../src/store'
-import { cleanDirName } from '../../src/domain/filename'
-import { assetKeyToFilename, type AssetKey } from '../../src/domain/types'
+import { openDb, createStore, cleanDirName, assetKeyToFilename, type AssetKey } from '@yaowu/mde-engine'
 import { startFakeBackend, type RawAsset, type RawMeeting } from './fixture'
 
 /**

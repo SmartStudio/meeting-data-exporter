@@ -1,11 +1,11 @@
-import type { GatewayClient } from '../gateway/client'
+import type { AssetSource } from '../source/types'
 import type { Store } from '../store'
 import type { AssetKey, MeetingSelector } from '../domain/types'
 import { ASSET_KEY_TO_GATEWAY_TYPE, ASSET_WAIT_CAP_SEC } from '../domain/types'
 import { judgeReadiness } from '../domain/readiness'
 import { splitWindow } from '../domain/window'
 
-export interface DiscoveryDeps { gw: GatewayClient; store: Store }
+export interface DiscoveryDeps { gw: AssetSource; store: Store }
 
 export async function discover(
   deps: DiscoveryDeps, sel: MeetingSelector, wantedKeys: AssetKey[], now: number,
@@ -43,7 +43,7 @@ export async function discover(
   return { meetings: meetings.length, tasks }
 }
 
-async function collectMeetings(gw: GatewayClient, sel: MeetingSelector) {
+async function collectMeetings(gw: AssetSource, sel: MeetingSelector) {
   // range 模式按 31 天切窗；点选模式网关自带默认窗口
   const windows = sel.kind === 'range' ? splitWindow(sel.from, sel.to) : [null]
   const all = []

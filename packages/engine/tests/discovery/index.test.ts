@@ -2,9 +2,9 @@ import { expect, test } from 'bun:test'
 import { openDb } from '../../src/store/db'
 import { createStore } from '../../src/store'
 import { discover } from '../../src/discovery'
-import type { GatewayClient } from '../../src/gateway/client'
+import type { AssetSource } from '../../src/source/types'
 
-function fakeGw(assetsByMeeting: Record<string, any[]>): GatewayClient {
+function fakeGw(assetsByMeeting: Record<string, any[]>): AssetSource {
   return {
     listMeetings: async () => ({ meetings: [{ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }], nextCursor: null }),
     listAssets: async (id) => assetsByMeeting[id] ?? [],

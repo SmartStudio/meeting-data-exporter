@@ -1,10 +1,8 @@
 import { loadConfig } from '../../config'
-import { openDb } from '../../store/db'
-import { createStore } from '../../store'
+import { openDb, createStore, discover } from '@yaowu/mde-engine'
 import { createGatewayClient } from '../../gateway/client'
-import { discover } from '../../discovery'
 import type { ParsedCommand } from '../index'
-import type { MeetingSelector } from '../../domain/types'
+import type { MeetingSelector } from '@yaowu/mde-engine'
 
 /** discover = 只发现并把资产写入队列（pending/probing），不下载；打印发现摘要 */
 export async function cmdDiscover(cmd: ParsedCommand, env: Record<string, string | undefined>): Promise<number> {

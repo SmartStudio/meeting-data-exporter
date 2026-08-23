@@ -1,10 +1,6 @@
 import { loadConfig } from '../../config'
-import { openDb } from '../../store/db'
-import { createStore } from '../../store'
+import { openDb, createStore, createLocalStorage, downloadAsset, runExecutor, runProbes } from '@yaowu/mde-engine'
 import { createGatewayClient } from '../../gateway/client'
-import { createLocalStorage } from '../../storage/local'
-import { downloadAsset } from '../../downloader'
-import { runExecutor, runProbes } from '../../executor'
 import type { ParsedCommand } from '../index'
 
 export async function cmdExecute(cmd: ParsedCommand, env: Record<string, string | undefined>): Promise<number> {
