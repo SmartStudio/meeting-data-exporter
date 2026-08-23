@@ -37,7 +37,7 @@
   `qyapi.weixin.qq.com` 的服务器（阿里云 ECS / 容器服务均可）。
 - 有一个公网可访问、配有 HTTPS 证书的域名，作为 `GATEWAY_BASE_URL`。腾讯会议的
   Webhook 回调与企业微信的登录跳转都要求 HTTPS，自签名证书不可用。
-- 有一个 MySQL 实例（自建或阿里云 RDS），版本 ≥ 5.7（推荐 8.0+）。
+- 有一个 MySQL 实例（自建或阿里云 RDS），版本 ≥ 8.0。
 - 有腾讯会议企业管理后台的管理员权限，能创建企业自建应用。
 - 有企业微信管理后台的管理员权限，能创建自建应用。
 
@@ -47,8 +47,9 @@
 
 ### 2.1 版本
 
-要求 MySQL ≥ 5.7，推荐 8.0 及以上。网关依赖 JSON 列类型（`policy_rules` 表的
-`resource_expr` / `asset_types` 字段）与部分 5.7+ 才稳定的行为。
+要求 MySQL ≥ 8.0。网关依赖 JSON 列类型（`policy_rules` 表的
+`resource_expr` / `asset_types` 字段）；服务端归档队列（`meeting_assets`）的领取逻辑
+用 `SELECT … FOR UPDATE SKIP LOCKED`，这是 MySQL 8.0 才支持的语法，5.7 不行。
 
 ### 2.2 建库时必须显式指定 utf8mb4
 
