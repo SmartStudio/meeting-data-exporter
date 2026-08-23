@@ -29,6 +29,10 @@ export type AllowState = 'allow' | 'deny'
  * 判定理由的来源。呈现样式由它决定：
  * rule 中性 · hand 琥珀 · fail 红 · expired/wait/na 是生命周期原因，
  * 优先级高于权限原因（详见 spec.md §6.1）。
+ *
+ * deny 专指「有一条规则明确拒绝」，只能配 allow: 'deny' 用。
+ * 状态说准许、理由却标 deny 会渲染成「被拒绝」的样式，与状态自相矛盾——
+ * 「规则允许但还没授权给任何程序」属于 rule，不属于 deny。
  */
 export type WhyKind = 'rule' | 'hand' | 'fail' | 'expired' | 'wait' | 'na' | 'deny'
 export interface Why {

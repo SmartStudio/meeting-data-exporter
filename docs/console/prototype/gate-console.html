@@ -1875,7 +1875,7 @@ let MEETINGS = [
              allow: denied ? { by:'deny', text:'权限规则 #200「标题含「面试」「薪酬」「绩效」→ 禁止采集」' }
                   : expired ? { by:'expired', text:'保留期已结束，本地文件已清理。请到 NAS 取。' }
                   : grants.length ? RULE
-                  : { by:'deny', text:'权限规则允许采集，但还没有授权给任何程序——外部现在取不到。' } },
+                  : { by:'rule', text:'权限规则允许采集，但还没有授权给任何程序——外部现在取不到。' } },
       hist: [[ '0' + mon + '-' + day + ' 1' + (i % 9) + ':20', '归档成功，' + (9 + i * 1.7).toFixed(1) + ' MB' ]]
     });
   });

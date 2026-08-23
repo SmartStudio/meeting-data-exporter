@@ -121,7 +121,7 @@ export const MEETINGS: Meeting[] = [
     why: {
       fetch: { by: 'rule', text: '拉取规则 #100' },
       archive: { by: 'rule', text: '归档规则 #100，已成功写入 NAS' },
-      allow: { by: 'deny', text: '权限规则允许采集，但还没有授权给任何程序——外部现在取不到。' },
+      allow: { by: 'rule', text: '权限规则允许采集，但还没有授权给任何程序——外部现在取不到。' },
     },
     history: [
       { at: ts(2026, 8, 22, 9, 15), text: '知识库索引器 尝试取用完整转写，被拒绝：未授权' },
