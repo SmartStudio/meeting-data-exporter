@@ -373,8 +373,13 @@ join === 'and'（默认）         → 全部条件成立才匹配
   id, title, code,            // 会议号 881-123-40
   when, host, dur,            // 8-21 14:00 · 邹研发 · 1:52
   assets, total,              // 已拿到 / 应有
-  fetch:   'done' | 'running' | 'blocked' | 'none',
+  fetch:   'done' | 'running' | 'blocked' | 'none' | 'off',
   archive: 'done' | 'running' | 'failed' | 'off' | 'blocked' | 'none',
+  // 'off' = 被人工关掉（圆点即开关，见原型 toggleStage）——既不是 blocked（规则拒绝），
+  //         也不是 none（没东西可做）。两个阶段都有这个取值。
+  // 'none' = 压根没有录制，无从决定。
+  // 这两个取值原本都漏在本表外，因为种子数据里没有、只在运行时产生：
+  //   ArchiveState 的 'none' 由 F1 Task 2 发现，FetchState 的 'off' 由 F1 Task 6 发现。
   allow:   'allow' | 'deny',
   grants:  ['知识库索引器', ...],   // 只有 allow 且在保留期内才有意义
   hand:    [],                      // 被人工改写过的阶段

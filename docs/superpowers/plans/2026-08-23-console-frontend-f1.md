@@ -461,7 +461,7 @@ export type AssetKey =
   | 'video' | 'audio' | 'transcript' | 'ai_transcript'
   | 'ai_minutes' | 'ai_topic_minutes' | 'ai_speaker_minutes' | 'ai_ds_minutes'
 
-export type FetchState   = 'done' | 'running' | 'blocked' | 'none'
+export type FetchState   = 'done' | 'running' | 'blocked' | 'none' | 'off'
 export type ArchiveState = 'done' | 'running' | 'failed' | 'off' | 'blocked' | 'none'
 export type AllowState   = 'allow' | 'deny'
 
