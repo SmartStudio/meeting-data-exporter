@@ -542,7 +542,7 @@ effect    结果    allow | deny
 
 ### 5.8 数据模型
 
-MySQL 5.7+ / InnoDB / utf8mb4。下为设计意图的示意结构，**完整建表语句以实现计划 T4 为准**。
+MySQL 8.0+ / InnoDB / utf8mb4。下为设计意图的示意结构，**完整建表语句以实现计划 T4 为准**。
 
 三条 MySQL 特有约束贯穿全表：主键与唯一索引字段必须为 `VARCHAR(n)`（TEXT 不可索引）；数组语义由 `JSON` 列承载（MySQL 无数组类型）；字符集必须 `utf8mb4`——会议主题含中文与 emoji，3 字节 utf8 会插入失败。
 
