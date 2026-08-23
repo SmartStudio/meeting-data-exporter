@@ -74,6 +74,12 @@ export function createMysqlStore(pool: Pool): Store {
         //
         // 不带 SESSION 的 `SET TRANSACTION` 只影响紧接着的下一个事务，
         // 所以不会污染这条连接回池后的其它用途。
+        //
+        // 一个边角：若紧接着的 `beginTransaction()` 自己抛错，这条已经 armed 的
+        // 「下一个事务用 RC」会跟着连接回到池子里，落到该连接的下一个事务上。
+        // 今天影响为零——`claimNext` 是 src/ 里唯一开事务的地方，而 arming 会被
+        // 下一条 autocommit 语句消耗掉。但 Task 7 之后如果有别的事务写入者共用
+        // 这个池，这句话就有用了。
         await conn.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
         await conn.beginTransaction()
         const id = await pickClaimable(conn, now)
@@ -266,6 +272,12 @@ export function createMysqlStore(pool: Pool): Store {
  * 可领取集合与优先级都没变，两个宿主不分叉。第二条查询即使这次用不上也照跑，
  * 就是为了保住这个「跨两个集合取全局最小 id」的语义；它多锁的那一行在几微秒后
  * 的 COMMIT 就释放，足迹依然是常数。
+ *
+ * **与 SQLite 单语句语义唯一残留的差别**：这是两条语句，而 READ COMMITTED 下每条
+ * 语句取自己的快照，两条之间不共享。若恰好在 Q1 与 Q2 之间提交了一条 id 比 Q2 结果
+ * 更小的 pending，本轮会领走 expired 那条而不是它。**只影响单轮的挑选顺序**——
+ * 不会重复领取（行锁保证），也不会漏活（那条 pending 下一轮就取到了）。
+ * 写在这里免得将来有人拿它当 bug 查。
  */
 async function pickClaimable(conn: PoolConnection, now: number): Promise<number | undefined> {
   const [pending] = await conn.query<RowDataPacket[]>(

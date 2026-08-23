@@ -126,11 +126,13 @@ describe('createMysqlStore', () => {
    * 它们全跳过、拿到 null，而 runExecutor 的 `if (!row) return` 让 worker 就此退出：
    * **队列里还有 200 条活，worker 却集体收工**。
    *
-   * 所以断言是「20 路并发每一路都领到活」，而不是「没有重复领取」——重复领取
+   * 所以断言是「每一路并发都领到活」，而不是「没有重复领取」——重复领取
    * 是另一个失效模式，那个上面的用例管。
    *
-   * 20000 这个数字不是随手写的：实测 5000 条历史时优化器仍选主键（用例会变成
-   * 一条什么都测不到的绿灯），20000 才翻过去。造数据约 300ms。
+   * HISTORY = 20000 是这条用例的**承重结构**，不是随手写的常数：实测 5000 条历史时
+   * 优化器仍选主键，一次只锁 1 行，坏代码照样绿灯。所以下面在造完数据之后先立一道
+   * 守卫，把「数据量够不够」这件事也做成断言——谁为了让测试跑快把 HISTORY 调小，
+   * 守卫会直接指着 fixture 报错，而不是让这条用例悄悄退化成永远绿的摆设。
    */
   test('领取的加锁足迹不随队列长度增长——生产数据分布下并发 worker 不会集体空转', async () => {
     await withDb(async (pool) => {
@@ -160,12 +162,31 @@ describe('createMysqlStore', () => {
       // 不 ANALYZE 的话优化器可能还拿着空表时的统计信息，测不到真实计划
       await pool.query('ANALYZE TABLE meeting_assets')
 
+      // ---- fixture 守卫：确认数据量真的把优化器逼离了主键 ----
+      // 这里 EXPLAIN 的是**旧的 OR 形式**，不是实现现在用的语句。故意的：这条守卫
+      // 量的是 fixture 而不是实现——「历史行多到让优化器放弃主键、改走
+      // range + filesort」正是本用例赖以成立的前提，而 OR 形式是对这个前提最敏感的
+      // 探针（5000 行时它走 PRIMARY，20000 行时才翻成 range + filesort）。
+      // 实现自己的两条查询已经从结构上不会 filesort 了，拿它们探不出数据量够不够。
+      const [plan] = await pool.query<RowDataPacket[]>(
+        `EXPLAIN SELECT id FROM meeting_assets
+          WHERE status='pending' OR (status='running' AND lease_expires_at < ?)
+          ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+        [200],
+      )
+      const extra = String(plan[0]?.Extra ?? '')
+      const key = String(plan[0]?.key ?? '')
+      expect(`${key} / ${extra}`).toContain('filesort')
+
+      // CLAIMERS 大于 createPool 的 connectionLimit(10)，所以实际是 10 路真并发 +
+      // 10 路在连接池里排队。这不影响判别力（坏代码下实测只有 1~3 路领到活），
+      // 但别把它读成「20 路同时打进数据库」。
       const CLAIMERS = 20
       const got = await Promise.all(
         Array.from({ length: CLAIMERS }, () => s.claimNext(200, 60)),
       )
       const rows = got.filter((r) => r !== null)
-      // 200 条待领 vs 20 路并发，每一路都该领到活。锁住整个集合时这里会塌成个位数。
+      // 200 条待领 vs 20 次领取，每一次都该领到活。锁住整个集合时这里会塌成个位数。
       expect(rows.length).toBe(CLAIMERS)
       expect(new Set(rows.map((r) => r.id)).size).toBe(CLAIMERS)
     })
