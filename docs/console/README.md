@@ -6,8 +6,8 @@
 - 日期：2026-08-23
 - 状态：**原型已定稿，后端未开工**
 - 所属：yaowu-ai / meeting-data-exporter
-- 定位：新的子项目（暂记为**子项目 5**）。与路线图 M5「子项目 4 桌面应用」
-  服务同一批人，两者关系待决策——见 [`backend-gap.md` §6](backend-gap.md#6-与路线图的关系待你决策)
+- 定位：新的子项目（**子项目 5**）。路线图 M5「子项目 4 桌面应用」已决定
+  **无限期推迟**——见 [`backend-gap.md` §6](backend-gap.md#6-与路线图的关系已决策)
 
 ---
 
@@ -18,6 +18,7 @@
 | [`spec.md`](spec.md) | **功能说明书**。逐页的行为、规则引擎语义、数据模型、状态机 | 写后端和前端的人 |
 | [`design-system.md`](design-system.md) | 设计系统。令牌、排版、颜色语义、状态规范、无障碍基线 | 写前端的人 |
 | [`backend-gap.md`](backend-gap.md) | **原型要求 vs 现有网关能力**，逐条带落点 | 排开发计划的人 |
+| [`dev-plan.md`](dev-plan.md) | **研发计划**。阶段拆解、并行编排、CLI 整合方案、开工前的七处冲突 | 排开发计划的人 |
 | `prototype/gate-console.html` | 可运行的单文件原型，所有交互都是真的 | 所有人 |
 | `prototype/tokens.css` | 设计令牌，可直接被前端工程引入 | 写前端的人 |
 | `screens/*.webp` | 22 张原型图，含全部异常态 | 所有人 |
@@ -46,6 +47,7 @@ open docs/console/prototype/gate-console.html
    三个「与」条件是所有界面的骨架
 2. `spec.md` §5 规则引擎语义 —— 最需要逐字实现的一节
 3. `backend-gap.md` —— 知道现在有什么、缺什么，再决定先做哪块
+4. `dev-plan.md` —— 怎么排、谁先谁后、`mde` CLI 怎么并进来
 
 ## 重要前提
 
