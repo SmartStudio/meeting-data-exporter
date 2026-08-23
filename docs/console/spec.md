@@ -310,6 +310,16 @@ argon2id 哈希）。这一点必须在后端保持。
 
 **第一条命中的说了算**，不做合并、不做叠加。
 
+两条必须写死的细节：
+
+1. **同优先级的平局**：按 `id` 升序，先建的先命中。不按 effect 决定平局——
+   「deny 优先」是另一套语义（合并式），与本节的「第一条说了算」互斥，混用会让
+   规则列表的顺序不再是判定顺序，管理员就读不出结果了。
+2. **与现有实现相反**：`src/policy/engine.ts` 当前按 priority **升序**取第一条，
+   且同优先级 deny 优先。阶段 3 的 R1 以本节为准重写，**并且必须写迁移**：
+   迁移跑完后拿迁移前的规则集与会议集重算一遍，判定结果逐条比对，不一致的列出来
+   交人工确认——不许脚本自行决定。
+
 ### 5.2 单条规则的匹配
 
 ```
@@ -330,6 +340,12 @@ join === 'and'（默认）         → 全部条件成立才匹配
 | 会议时长 `dur` | 大于 / 小于 | 分钟 |
 | 录制结束 `age` | 在最近 N 天内 / 早于 N 天 | 天 |
 | 归档状态 `arch` | 已写入 NAS / 未归档 | 无值 |
+
+> **`dept` 依赖企微通讯录，网关目前没有这份数据。** 它是归档规则最自然的写法
+> （「财务部的会议归到 /nas/meetings-finance/」），所以**不删这个字段**，而是把
+> 「接企微通讯录 API + 部门同步」立成阶段 3 的前置任务 R0。
+> 在 R0 落地前，规则编辑器里这个字段应当可见但禁用，并写明原因——
+> 不要让它看起来能用却静默不匹配。
 
 ### 5.4 人工改写
 
@@ -369,16 +385,23 @@ join === 'and'（默认）         → 全部条件成立才匹配
 
 ### 6.2 八类资产
 
-| key | 名称 | 腾讯侧类型 |
+| key | 名称 | 网关 `asset_type` |
 | --- | --- | --- |
 | `summary` | AI 纪要 | `ai_minutes` |
-| `transcript` | 完整转写 | `transcript` |
+| `transcript` | 完整转写 | `meeting_summary` |
 | `speaker` | 发言人纪要 | `ai_speaker_minutes` |
 | `topic` | 话题纪要 | `ai_topic_minutes` |
-| `aitr` | AI 转写 | `ai_transcript` |
+| `aitr` | AI 转写 | `ai_meeting_transcripts` |
 | `digest` | 会议摘要 | `ai_ds_minutes` |
-| `video` | 录像 | `video`（体积最大） |
+| `video` | 录像 | `video` |
 | `audio` | 音频 | `audio` |
+
+**这一列的权威在代码里，不在本表**：`packages/engine/src/domain/types.ts` 的
+`ASSET_KEY_TO_GATEWAY_TYPE` 是唯一事实源，本表只是它的人类可读副本。两处不一致时以代码为准。
+
+左列那套短名（`summary` / `aitr` / `digest`）**只是原型 HTML 内部的显示用键**。
+前端工程化（F1）时必须直接采用 `AssetKey`，**不要把这套短名带进代码**——同一批资产
+已经有过三套叫法，M3.5 为此吃过一次亏（见 `dev-plan.md` §5 C7）。
 
 同一份录制的多种导出格式（txt / docx / pdf）**共享同一个 `record_file_id`**，
 只有 `file_type` 能区分它们——这个坑已经在 `client/src/store/db.ts` 的 schema v2
@@ -392,6 +415,17 @@ join === 'and'（默认）         → 全部条件成立才匹配
   note,          // 说明，会出现在规则列表和每场会议的判定理由里
   author, on }   // 谁在什么时候建的
 ```
+
+**主体（谁）在三栈里的含义不同**：
+
+| 栈 | 主体 | 说明 |
+| --- | --- | --- |
+| 拉取 `fetch` | **无** | 系统级行为，不针对任何人 |
+| 归档 `archive` | **无** | 同上 |
+| 采集权限 `allow` | **采集程序** | 不是人。对应 `service_accounts.id` |
+
+现有 `policy_rules.subject_type` 只认 `user`，需增加 `program` 取值；fetch / archive
+两栈的主体列留空，并在引擎里**显式忽略**（不是「恰好匹配不上」）。
 
 ### 6.4 采集程序
 

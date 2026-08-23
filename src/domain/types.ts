@@ -25,12 +25,14 @@ export interface Meeting {
   /** unix 秒 UTC */
   startTime: number
   /**
-   * unix 秒 UTC——当前恒等于 startTime，不是真实的会议结束时间。
+   * unix 秒 UTC——取自 `record_files[].record_end_time` 的最大值
+   * （见 tencent/records.ts 的 meetingEndTime）。`record_files` 全部缺该字段时
+   * 回落到 `media_start_time`，此时 endTime === startTime、时长算出来是 0。
    *
-   * 平台 /v1/records 只返回 media_start_time，没有结束时间字段（见
-   * tencent/records.ts）；真实 endTime 需要从 record_files 聚合，是另一个
-   * 需求，本次未做。策略引擎（policy/expr.ts）因此故意不开放 end_time 作为
-   * 可查询字段，避免管理员以为按结束时间管控、实际却在按开始时间比对。
+   * 策略引擎（policy/expr.ts）目前仍未开放 end_time 作为可查询字段——
+   * 那是历史决定（当时 endTime 确实是 startTime 的镜像），条件是
+   * **M3.5 联调用真实响应确认 record_end_time 存在**，确认后即可开放。
+   * 在此之前不要开放：回落路径下「按时长管控」会静默变成恒不匹配。
    */
   endTime: number
   state: RecordState
