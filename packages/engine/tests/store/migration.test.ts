@@ -41,17 +41,17 @@ function makeV1Db(path: string): void {
   db.close()
 }
 
-function withTmpDb(fn: (path: string) => void): void {
+async function withTmpDb(fn: (path: string) => void | Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'mde-mig-'))
   try {
-    fn(join(dir, 'queue.sqlite'))
+    await fn(join(dir, 'queue.sqlite'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 }
 
-test('v1 老库被就地升级为 v2：唯一键含 file_type', () => {
-  withTmpDb((path) => {
+test('v1 老库被就地升级为 v2：唯一键含 file_type', async () => {
+  await withTmpDb((path) => {
     makeV1Db(path)
     const db = openDb(path)
 
@@ -67,8 +67,8 @@ test('v1 老库被就地升级为 v2：唯一键含 file_type', () => {
   })
 })
 
-test('升级不丢数据：已完成记录的状态、路径、哈希原样保留', () => {
-  withTmpDb((path) => {
+test('升级不丢数据：已完成记录的状态、路径、哈希原样保留', async () => {
+  await withTmpDb((path) => {
     makeV1Db(path)
     const db = openDb(path)
     const rows = db.query<{ asset_type: string; status: string; target_path: string | null; content_hash: string | null; file_type: string }, []>(
@@ -85,33 +85,33 @@ test('升级不丢数据：已完成记录的状态、路径、哈希原样保�
   })
 })
 
-test('升级后老库立刻具备多格式能力，且不重下已完成的那一份', () => {
-  withTmpDb((path) => {
+test('升级后老库立刻具备多格式能力，且不重下已完成的那一份', async () => {
+  await withTmpDb(async (path) => {
     makeV1Db(path)
     const store = createStore(openDb(path))
 
     // 老库里只有 pdf 这一份；补齐另外两种格式
     for (const ft of ['txt', 'docx']) {
-      store.upsertAsset(
+      await store.upsertAsset(
         { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rf1', fileType: ft },
         2,
       )
     }
     // 已完成的 pdf 再 upsert 一次也不该被翻回 pending
-    store.upsertAsset(
+    await store.upsertAsset(
       { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rf1', fileType: 'pdf' },
       2,
     )
 
-    const counts = store.counts()
+    const counts = await store.counts()
     expect(counts.completed).toBe(1)
     // video(1，老库遗留) + 新增的 txt/docx(2) = 3 条待办
     expect(counts.pending).toBe(3)
   })
 })
 
-test('重复调用 openDb 幂等：已是 v2 的库不再重建表', () => {
-  withTmpDb((path) => {
+test('重复调用 openDb 幂等：已是 v2 的库不再重建表', async () => {
+  await withTmpDb((path) => {
     makeV1Db(path)
     openDb(path).close()
     const db = openDb(path)

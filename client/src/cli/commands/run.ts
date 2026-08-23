@@ -2,7 +2,7 @@ import { loadConfig } from '../../config'
 import { openDb, createStore, createLocalStorage, downloadAsset, discover, runExecutor, runProbes } from '@yaowu/mde-engine'
 import { createGatewayClient } from '../../gateway/client'
 import type { ParsedCommand } from '../index'
-import type { MeetingSelector } from '@yaowu/mde-engine'
+import type { MeetingSelector, DownloadTask } from '@yaowu/mde-engine'
 
 /** run = discover（按 --from/--to 时间范围）+ execute（紧接着排空队列） */
 export async function cmdRun(cmd: ParsedCommand, env: Record<string, string | undefined>): Promise<number> {
@@ -18,15 +18,11 @@ export async function cmdRun(cmd: ParsedCommand, env: Record<string, string | un
   console.log(`discovered meetings=${d.meetings} tasks=${d.tasks}`)
 
   // 发现之后才能建 meetingsById（拿到刚写入的会议元数据用于拼路径）
-  const meetingsById = loadMeetings(db)
+  const meetingsById = await store.meetingsForPaths()
   const deps = { store, gw, storage, meetingsById,
-    download: (task: any, onProgress: any) => downloadAsset({ storage, gw, onProgress }, task, now) }
-  await runProbes(deps as any, now)
-  const r = await runExecutor(deps as any, { concurrency: cfg.concurrency, leaseSec: 900 }, now)
+    download: (task: DownloadTask, onProgress: (b: number) => void) => downloadAsset({ storage, gw, onProgress }, task, now) }
+  await runProbes(deps, now)
+  const r = await runExecutor(deps, { concurrency: cfg.concurrency, leaseSec: 900 }, now)
   console.log(`completed=${r.completed} failed=${r.failed} skipped=${r.skipped}`)
   return r.failed > 0 ? 1 : 0
-}
-function loadMeetings(db: any) {
-  const rows = db.query('SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time FROM meetings').all()
-  return new Map(rows.map((r: any) => [r.meeting_id, { subject: r.subject, meetingCode: r.meeting_code, startTime: r.start_time, endTime: r.end_time, subMeetingId: r.sub_meeting_id }]))
 }

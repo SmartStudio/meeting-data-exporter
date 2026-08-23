@@ -69,8 +69,8 @@ test('01+02 默认资产集：无 --assets 时下载 4 类默认资产；二次 
     expect(code).toBe(0)
 
     const db = openDb(dbPathOf(root)); const store = createStore(db)
-    expect(store.counts().completed).toBe(4)
-    expect(Object.values(store.counts()).reduce((a, b) => a + b, 0)).toBe(4)   // 恰好 4 个任务，ai_minutes 未建行
+    expect((await store.counts()).completed).toBe(4)
+    expect(Object.values(await store.counts()).reduce((a, b) => a + b, 0)).toBe(4)   // 恰好 4 个任务，ai_minutes 未建行
 
     for (const [key, remoteId, expected] of [
       ['video', 'rf-video', video] as const, ['audio', 'rf-audio', audio] as const,
@@ -88,7 +88,7 @@ test('01+02 默认资产集：无 --assets 时下载 4 类默认资产；二次 
     const code2 = await cmdExecute(parseArgs(['execute', '--out', root]), e)
     expect(code2).toBe(0)
     expect(backend.calls.byteHits.get('a-video') ?? 0).toBe(before)
-    expect(store.counts().completed).toBe(4)
+    expect((await store.counts()).completed).toBe(4)
   } finally { backend.stop(); await rm(root, { recursive: true, force: true }) }
 })
 
@@ -124,7 +124,7 @@ test('03 断点续传：中断的 .part 在重跑后续传完成，字节内容�
     expect(starts.some((s) => s > 0)).toBe(true)   // 证明确实发生了 Range 续传，而非整档重下
 
     const store = createStore(openDb(dbPathOf(root)))
-    expect(store.counts().completed).toBe(1)
+    expect((await store.counts()).completed).toBe(1)
   } finally { backend.stop(); await rm(root, { recursive: true, force: true }) }
 })
 
@@ -184,7 +184,7 @@ test('05 416：本地 .part 大于远端内容 → 丢弃重下，最终字节�
     expect(starts.some((s) => s >= content.length)).toBe(true)   // 证明确实触发过一次超范围请求（416）
 
     const store = createStore(openDb(dbPathOf(root)))
-    expect(store.counts().completed).toBe(1)
+    expect((await store.counts()).completed).toBe(1)
   } finally { backend.stop(); await rm(root, { recursive: true, force: true }) }
 })
 
@@ -217,7 +217,7 @@ test('06 崩溃恢复：running 且租约已过期的行被下一次 execute 重
     expect(code).toBe(0)
 
     const store = createStore(openDb(dbPathOf(root)))
-    expect(store.counts().completed).toBe(1)
+    expect((await store.counts()).completed).toBe(1)
     const rel = expectedRelPath(meeting, 'video', 'rf-crash', 'mp4')
     expect((await Bun.file(join(root, rel)).arrayBuffer()).byteLength).toBe(content.length)
   } finally { backend.stop(); await rm(root, { recursive: true, force: true }) }
@@ -262,15 +262,15 @@ test('08 探测超时：到期仍未就绪的探测被判定 abandoned，不建�
     const meetingId = 'm-timeout'
     const nowSec = Math.floor(Date.now() / 1000)
     const db = openDb(dbPathOf(root)); const store = createStore(db)
-    store.upsertMeeting({ meetingId, subMeetingId: '', meetingCode: '70001', subject: '超时探测会议', hostUserId: null, startTime: nowSec - 200000, endTime: nowSec - 200000 }, nowSec)
-    store.upsertProbe({ meetingId, subMeetingId: '', assetType: 'video', deadlineAt: nowSec - 10, probeAfter: nowSec - 5 })
+    await store.upsertMeeting({ meetingId, subMeetingId: '', meetingCode: '70001', subject: '超时探测会议', hostUserId: null, startTime: nowSec - 200000, endTime: nowSec - 200000 }, nowSec)
+    await store.upsertProbe({ meetingId, subMeetingId: '', assetType: 'video', deadlineAt: nowSec - 10, probeAfter: nowSec - 5 })
     backend.setAssets(meetingId, [])   // 资产从未出现在网关清单里
 
     const e = env(backend.gatewayBase)
     const code = await cmdExecute(parseArgs(['execute', '--out', root]), e)
     expect(code).toBe(0)   // 无崩溃、正常退出
 
-    expect(Object.values(store.counts()).reduce((a, b) => a + b, 0)).toBe(0)   // 没有建任何 asset 行
+    expect(Object.values(await store.counts()).reduce((a, b) => a + b, 0)).toBe(0)   // 没有建任何 asset 行
     const probeRow = db.query(`SELECT state FROM asset_probes WHERE meeting_id=? AND asset_type=?`).get(meetingId, 'video') as { state: string }
     expect(probeRow.state).toBe('abandoned')
   } finally { backend.stop(); await rm(root, { recursive: true, force: true }) }
@@ -287,14 +287,14 @@ test('09 探测就绪：资产第一次探测缺席，延迟出现后被后续�
     const meeting: RawMeeting = { meeting_id: meetingId, meeting_code: '80001', subject: '延迟纪要会议', start_time: epoch(2026, 7, 18), end_time: epoch(2026, 7, 18) + 3600 }
     const nowSec = Math.floor(Date.now() / 1000)
     const db = openDb(dbPathOf(root)); const store = createStore(db)
-    store.upsertMeeting({ meetingId, subMeetingId: '', meetingCode: meeting.meeting_code!, subject: meeting.subject!, hostUserId: null, startTime: meeting.start_time!, endTime: meeting.end_time! }, nowSec)
-    store.upsertProbe({ meetingId, subMeetingId: '', assetType: 'ai_meeting_transcripts', deadlineAt: nowSec + 3600, probeAfter: nowSec - 5 })
+    await store.upsertMeeting({ meetingId, subMeetingId: '', meetingCode: meeting.meeting_code!, subject: meeting.subject!, hostUserId: null, startTime: meeting.start_time!, endTime: meeting.end_time! }, nowSec)
+    await store.upsertProbe({ meetingId, subMeetingId: '', assetType: 'ai_meeting_transcripts', deadlineAt: nowSec + 3600, probeAfter: nowSec - 5 })
     backend.setAssets(meetingId, [])   // 第一次探测：仍未出现
 
     const e = env(backend.gatewayBase)
     const code1 = await cmdExecute(parseArgs(['execute', '--out', root]), e)
     expect(code1).toBe(0)
-    expect(Object.values(store.counts()).reduce((a, b) => a + b, 0)).toBe(0)   // 仍在等待，未建任务
+    expect(Object.values(await store.counts()).reduce((a, b) => a + b, 0)).toBe(0)   // 仍在等待，未建任务
     let probeRow = db.query(`SELECT state FROM asset_probes WHERE meeting_id=? AND asset_type=?`).get(meetingId, 'ai_meeting_transcripts') as { state: string }
     expect(probeRow.state).toBe('probing')
 
@@ -302,11 +302,11 @@ test('09 探测就绪：资产第一次探测缺席，延迟出现后被后续�
     const content = makeContent(700)
     backend.setContent('a-ready-later', content)
     backend.setAssets(meetingId, [{ asset_id: 'a-ready-later', asset_type: 'ai_meeting_transcripts', remote_id: 'rf-ready-later', allow_download: true, file_type: 'txt', bytes_expected: content.length }])
-    store.bumpProbe({ meetingId, subMeetingId: '', assetType: 'ai_meeting_transcripts' }, nowSec - 1)
+    await store.bumpProbe({ meetingId, subMeetingId: '', assetType: 'ai_meeting_transcripts' }, nowSec - 1)
 
     const code2 = await cmdExecute(parseArgs(['execute', '--out', root]), e)
     expect(code2).toBe(0)
-    expect(store.counts().completed).toBe(1)
+    expect((await store.counts()).completed).toBe(1)
     probeRow = db.query(`SELECT state FROM asset_probes WHERE meeting_id=? AND asset_type=?`).get(meetingId, 'ai_meeting_transcripts') as { state: string }
     expect(probeRow.state).toBe('resolved')
 
