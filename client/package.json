@@ -9,6 +9,6 @@
     "typecheck": "tsc --noEmit",
     "mde": "bun bin/mde.ts"
   },
-  "devDependencies": { "@types/bun": "latest", "typescript": "^5.6.0" },
+  "devDependencies": { "@types/bun": "1.3.14", "typescript": "^5.6.0" },
   "dependencies": { "@yaowu/mde-engine": "workspace:*" }
 }
