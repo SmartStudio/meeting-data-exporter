@@ -14,7 +14,7 @@ export async function discover(
   let tasks = 0
   const wantedFields = new Map(wantedKeys.map((k) => [ASSET_KEY_TO_GATEWAY_TYPE[k], k]))
   for (const m of meetings) {
-    deps.store.upsertMeeting(m, now)
+    await deps.store.upsertMeeting(m, now)
     const assets = await deps.gw.listAssets(m.meetingId, sel.kind !== 'range' ? sel.from : undefined, sel.kind !== 'range' ? sel.to : undefined)
     for (const [field, key] of wantedFields) {
       const present = assets.filter((a) => a.assetType === field)
@@ -23,20 +23,20 @@ export async function discover(
       const verdict = judgeReadiness({ present: present.length > 0, state: rep?.state, allowDownload: rep?.allowDownload, now, deadlineAt })
       if (verdict === 'ready') {
         for (const a of present) {
-          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId, bytesExpected: a.bytesExpected, fileType: a.fileType }, now)
+          await deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId, bytesExpected: a.bytesExpected, fileType: a.fileType }, now)
           tasks++
         }
       } else if (verdict === 'skip_disallowed') {
         // 建行后直接置 skipped（平台明示不可得，不留探测、不空等）
         for (const a of present) {
-          deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId }, now)
+          await deps.store.upsertAsset({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, remoteId: a.remoteId, assetId: a.assetId }, now)
         }
-        deps.store.markSkippedByKey({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'download_not_allowed', now)
+        await deps.store.markSkippedByKey({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'download_not_allowed', now)
       } else if (verdict === 'skip_timeout') {
-        deps.store.upsertProbe({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, deadlineAt, probeAfter: 0 })
-        deps.store.abandonProbe({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'upstream_timeout')
+        await deps.store.upsertProbe({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, deadlineAt, probeAfter: 0 })
+        await deps.store.abandonProbe({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'upstream_timeout')
       } else { // wait
-        deps.store.upsertProbe({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, deadlineAt, probeAfter: now })
+        await deps.store.upsertProbe({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field, deadlineAt, probeAfter: now })
       }
     }
   }

@@ -7,7 +7,7 @@ export async function cmdRetry(cmd: ParsedCommand, env: Record<string, string | 
   const cfg = loadConfig(env, {}, { out: cmd.out })
   const now = () => Math.floor(Date.now() / 1000)
   const store = createStore(openDb(cfg.dbPath))
-  const n = store.resetFailed(now())
+  const n = await store.resetFailed(now())
   console.log(`reset=${n}`)
   return 0
 }
