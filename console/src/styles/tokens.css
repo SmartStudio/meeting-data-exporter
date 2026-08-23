@@ -1,0 +1,194 @@
+/* 控制台设计令牌 —— 94 个。
+ *
+ * 权威在**本文件**。docs/console/prototype/tokens.css 与 gate-console.html 里的
+ * 内联令牌块从此是历史快照，只用于回看原型，不再跟着改。（早前文档写的
+ * 103 / 104 是旧计数，以本文件实际的 --变量 声明数为准；发现不一致以此为准修正。）
+ *
+ * 三条硬规矩（详见 docs/console/design-system.md §1）：
+ *   1. 组件里不许出现裸的 px / hex / rgba。缺值就来这里加一个具名令牌。
+ *   2. --ink-4 是图形专用（描边/分隔/填充）。白底 3.72:1，禁止用于文字。
+ *   3. 颜色只在本文件定义。不许写进 @media 或 [data-theme] 块——
+ *      那样在「跟随系统」状态下不生效，而那是默认状态。
+ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   YAO-DATA · 会议数据管理 — 设计令牌
+   本文件是令牌的权威来源（见上）。以下正文内容迁自 docs/console/prototype/tokens.css，
+   原型那份现在只是快照，不要反向同步。
+
+   用法
+     <link rel="stylesheet" href="tokens.css">   放在所有组件样式之前
+     .foo { padding: var(--s-4); font-size: var(--t-sm); }
+
+   三条硬规矩
+     1. 组件里不许出现裸的 px / hex / rgba。缺什么值就来这里加一个具名令牌，
+        而不是在组件里写死——原型重构前有 105 个互不相同的 padding 取值，
+        改一处间距要在里面翻半天。
+     2. --ink-4 是**图形专用**（描边 / 分隔 / 填充）。它在白底上只有 3.72:1，
+        用于文字必然不达 AA。文字梯度到 --ink-3 为止。
+     3. 主题有三态：未标记（跟随系统）、[data-theme="light"]、[data-theme="dark"]。
+        颜色只在这个文件里定义，组件永远只引用令牌名，不要把颜色写进
+        @media 或 [data-theme] 块——那样的颜色在「跟随系统」下不会生效。
+
+   排版
+     全中文界面。不使用 uppercase 与宽字距，那是拉丁字母的排版手法，
+     套在方块字上只会让字散开。负字距同理，只在等宽数字上用。
+     Archivo 零 CJK 覆盖，只作用于拉丁字母和数字；中文由 Noto Sans SC 接管，
+     两者的加载顺序在 --sans 里，不能对调。字体在页面 <head> 里引入：
+       fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700
+         &family=IBM+Plex+Mono:wght@400;500;600
+         &family=Noto+Sans+SC:wght@400..700&display=swap
+     Noto Sans SC 走变体字重区间（400..700），不要展开成四个静态字重——
+     中文按 unicode-range 分成上百个分片，静态字重会让请求数翻四倍。
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --brand:       #0066FF;
+  --brand-press: #0050CC;
+  --brand-soft:  #E6EFFF;
+  --brand-line:  #B9D3FF;
+  --brand-text:  #0061F2;   /* 蓝字：#0066FF 在 brand-soft 上只有 4.18 */
+  --on-brand:    #FFFFFF;
+  --on-fail:     #FFFFFF;
+  /* 反相表面（toast / batch / tip）上的强调色。它必须跟随主题**反向**
+     取值：浅色模式下那块底是近黑，要亮蓝；深色模式下底是近白，要深蓝。 */
+  --accent-invert: #6BA3FF;   /* 压在 --fail 实底上的字。深色模式下 --fail 变浅，
+                               这里必须跟着翻黑，否则白字压浅红只有 2.52:1 */
+
+  --ground:    #F1F4F9;
+  --surface:   #FFFFFF;
+  --surface-2: #F7F9FC;
+  --rail:      #E9EDF4;
+  --line:      #DCE2EC;
+  --line-soft: #E9EDF3;
+
+  --ink:   #080A0F;
+  --ink-2: #39414F;
+  --ink-3: #666F80;   /* 文字梯度到此为止：再浅就过不了 4.5:1 */
+  --ink-4: #7C8595;   /* 图形专用：描边 / 分隔 / 填充。禁止用于文字 */
+
+  --warn:      #9A5B00;
+  --warn-soft: #FBEFD9;
+  --warn-line: #E6C88C;
+
+  --fail:      #BE2B1E;
+  --fail-soft: #FBE9E7;
+  --fail-line: #EEB3AC;
+
+  --ease-out:    cubic-bezier(.22, .8, .3, 1);
+  --ease-in:     cubic-bezier(.55, 0, .9, .35);
+  --ease-in-out: cubic-bezier(.62, 0, .28, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 260ms;
+
+  /* z 轴七级命名尺度，不再出现临时数字 */
+  --z-sticky: 30;  --z-float: 40;  --z-scrim: 50;
+  --z-panel:  60;  --z-modal: 70;  --z-top:   90;  --z-gate: 100;
+
+
+  --shadow:    0 1px 2px rgba(8,10,15,.05), 0 6px 18px -8px rgba(8,10,15,.16);
+  --shadow-lg: 0 2px 6px rgba(8,10,15,.08), 0 28px 64px -20px rgba(8,10,15,.34);
+
+
+  /* ── 间距标尺 ──────────────────────────────────────
+     4pt 基准。低端保留 2 / 6 两个半档——密集型控制台的 chrome
+     确实需要，硬凑纯 4 的倍数只会让边框和文字贴死。
+     --s-px 是「借位分隔线」：网格 gap 露出底色当分割线用。 */
+  --s-px:   1px;
+  --s-0:    2px;
+  --s-1:    4px;
+  --s-2:    6px;
+  --s-3:    8px;
+  --s-4:    12px;
+  --s-5:    16px;
+  --s-6:    20px;
+  --s-7:    24px;
+  --s-8:    32px;
+  --s-9:    40px;
+  --s-10:   56px;
+  --s-11:   72px;
+
+  /* ── 字号标尺 ──────────────────────────────────────
+     八级，全整数。原先 19 个取值里有六个半像素档（9.5 / 10.5 /
+     11.5 / 12.5 / 13.5 / 14.5）——中文字形是实心方块，没有拉丁
+     字母的负空间来吃掉这半个像素，只会糊。11px 是中文可读下限。 */
+  --t-2xs:  11px;
+  --t-xs:   12px;
+  --t-sm:   13px;
+  --t-md:   14px;
+  --t-lg:   16px;
+  --t-xl:   18px;
+  --t-2xl:  21px;
+  --t-3xl:  26px;
+
+  /* ── 圆角 ───────────────────────────────────────── */
+  --r-xs:   2px;
+  --r-sm:   6px;
+  --r:      8px;
+  --r-lg:   12px;
+  --r-xl:   16px;
+  --r-pill: 999px;
+
+  /* ── 骨架尺寸 ──────────────────────────────────── */
+
+  --rail-w: 196px;   /* 左栏宽。此前硬编码 4 处，其中 2 处是心算结果 */
+  --gbar-h: 48px;    /* 顶栏高。sysbar 的 sticky top 依赖它 */
+  --pad-x:  var(--s-7);  /* 主区左右留白（24px），toast 的左偏移依赖它 */
+
+  /* ── 内容表面（不跟随主题）────────────────────── */
+
+  /* 播放器与代码块刻意不跟随主题——它们是「内容本身」的底，不是界面的底。
+     但那也该是一组具名令牌，而不是散在十八行里的 rgba(255,255,255,.72)。 */
+  --video-ground:  #0A0E14;
+  --video-chrome:  #10151D;
+  --video-glow:    #1A212C;
+  --video-cam-a:   #263143;
+  --video-cam-b:   #131A24;
+  --video-ink:     rgba(255,255,255,.92);
+  --video-ink-2:   rgba(255,255,255,.72);
+  --video-ink-3:   rgba(255,255,255,.60);
+  --video-line:    rgba(255,255,255,.15);
+  --video-mark:    rgba(255,255,255,.55);
+  --video-hover:   rgba(255,255,255,.10);
+  --video-press:   rgba(255,255,255,.26);
+  --video-cc-bg:   rgba(8,11,17,.78);
+  --video-cc-ink:  #F2F5F9;
+  --video-knob:    #FFFFFF;
+  --video-shade:   rgba(0,0,0,.5);
+
+  --code-ground: #0E131A;
+  --code-ink:    #C9D3E0;
+  --code-key:    #7FB2FF;
+  --code-str:    #9ED9A8;
+  --code-note:   #7E8CA0;   /* 原 #6B7A8C 实测 4.29:1，未达 AA */
+
+  --scrim:   rgba(6,9,14,.38);
+  --inset:   rgba(8,10,15,.08);   /* 分段控件选中态的 1px 内投影 */
+
+  /* Archivo 零 CJK 覆盖，只吃拉丁字母和数字；中文由 Noto Sans SC 接管。
+     顺序不能反。系统字在后面兜底。 */
+  --sans: "Archivo", "Noto Sans SC", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, "Noto Sans SC", "PingFang SC", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #3D86FF; --on-brand: #04101F;
+    --ground: #080B11; --surface: #10151D; --surface-2: #161C26; --rail: #0B0F16; --line: #232B37; --line-soft: #1A212B;
+    --ink: #EDF0F5; --ink-2: #B7BFCC; --ink-3: #87909F; --ink-4: #6A7484;
+    --warn: #E3A653; --warn-soft: #33270F; --warn-line: #5E4820;
+    --fail: #F0857A; --fail-soft: #351815; --fail-line: #63302B; --on-fail: #300D08; --accent-invert: #0050CC;
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 6px 18px -8px rgba(0,0,0,.7);
+    --shadow-lg: 0 2px 6px rgba(0,0,0,.6), 0 28px 64px -20px rgba(0,0,0,.85);
+  }
+}
+:root[data-theme="dark"] {
+  --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #3D86FF; --on-brand: #04101F;
+  --ground: #080B11; --surface: #10151D; --surface-2: #161C26; --rail: #0B0F16; --line: #232B37; --line-soft: #1A212B;
+  --ink: #EDF0F5; --ink-2: #B7BFCC; --ink-3: #87909F; --ink-4: #6A7484;
+  --warn: #E3A653; --warn-soft: #33270F; --warn-line: #5E4820;
+  --fail: #F0857A; --fail-soft: #351815; --fail-line: #63302B; --on-fail: #300D08; --accent-invert: #0050CC;
+  --shadow: 0 1px 2px rgba(0,0,0,.5), 0 6px 18px -8px rgba(0,0,0,.7);
+  --shadow-lg: 0 2px 6px rgba(0,0,0,.6), 0 28px 64px -20px rgba(0,0,0,.85);
+}

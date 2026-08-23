@@ -1,0 +1,12 @@
+# console/ 是独立的 npm 工程，用 vitest 跑自己的测试（见 console/package.json 的
+# "test" 脚本），不属于仓库根这个 bun 项目。根 `bun test` 默认会递归发现所有
+# *.test.* 文件，包括 console/tests/theme.test.tsx——但那份测试用了 vitest 的
+# API（vi.mock 等语义与 bun:test 不完全兼容），用 bun 的 runner 跑必然失败。
+# 这条规则不是历史遗留，也不能删：只要 console/ 还是独立 npm 工程，就需要它把
+# console/ 排除在根 `bun test` 的发现范围之外，console 自己的测试请用
+# `cd console && npm run test` 跑。
+#
+# 注意：键名必须是 pathIgnorePatterns，不是 testPathIgnorePatterns——后者在
+# bun 里静默不生效（不报错，但过滤不会发生）。
+[test]
+pathIgnorePatterns = ["console/**"]

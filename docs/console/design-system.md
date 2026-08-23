@@ -1,11 +1,14 @@
 # 控制台设计系统
 
 - 日期：2026-08-23
-- 令牌文件：[`prototype/tokens.css`](prototype/tokens.css)（103 个令牌，可直接引入前端工程）
-- 原型：[`prototype/gate-console.html`](prototype/gate-console.html)
+- 令牌文件（权威）：`console/src/styles/tokens.css`（94 个令牌，F1 Task 1 迁入并成为权威来源）
+- 令牌文件（快照，不再跟着改）：[`prototype/tokens.css`](prototype/tokens.css)
+- 原型（行为仍以此为准）：[`prototype/gate-console.html`](prototype/gate-console.html)
 
-`tokens.css` 与原型 HTML 里的内联令牌块是**同一份提取**。两边不要分别改值——
-改了就从原型重新提取一次。
+自 F1 Task 1 起，令牌的权威转移到 `console/src/styles/tokens.css`；
+`prototype/tokens.css` 与原型 HTML 里的内联令牌块降级为历史快照，只用于回看，
+不再跟着改。**行为规格仍以原型为唯一权威**（`docs/console/spec.md` §0），
+只有令牌这一项转移了权威。
 
 ---
 

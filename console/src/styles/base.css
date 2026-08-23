@@ -1,0 +1,38 @@
+/* reset + 排版基线 + 焦点环 + reduced-motion。
+ * 全部值取自 ./tokens.css —— 这里不许出现裸的 px / hex / rgba。
+ * 依赖顺序：main.tsx 里必须先 import tokens.css 再 import 本文件。
+ */
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--ground);          /* 必须显式指定：宿主会在自己的主题下画底 */
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--t-md);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+/* 横向溢出用 clip 不用 hidden——hidden 会让 position: sticky 失效 */
+html, body { overflow-x: clip; }
+/* [hidden] 的 UA display:none 会被任何 class 级 display 盖掉 */
+[hidden] { display: none !important; }
+/* button 不继承页面文字色，漏写在深色模式下就是黑字压深底（实测 1.07:1） */
+button, input, select, textarea { font: inherit; color: inherit; }
+
+:focus-visible {
+  outline: var(--s-0) solid var(--brand);
+  outline-offset: var(--s-0);
+  /* 焦点环不做出现动画——它必须在按下 Tab 的那一帧就在 */
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
