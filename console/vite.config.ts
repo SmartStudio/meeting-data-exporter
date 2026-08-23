@@ -32,6 +32,11 @@ export default defineConfig({
     // signal 做 instanceof 检查认的是它自己那份 Node 原生 AbortSignal，两边对
     // 不上就抛 "Expected signal ... to be an instance of AbortSignal"（Node 24+
     // 通用问题，见 vitest-dev/vitest#8374，vitest 4 之前没有修）。
+    //
+    // 退出条件：升级到 vitest ^4.0.0 之后，删掉本 test.pool 段与
+    // tests/preload-native-fetch.mjs，跑一遍 `npm run test -- shell`——
+    // 点击导航那几条能过就说明上游修好了，这个补丁可以走。
+    // 没有退出条件的 workaround 会无限期滞留，所以写在这里而不是提交信息里。
     // 预加载脚本赶在 jsdom 接管 globalThis 之前，把 Node 原生的 AbortController /
     // AbortSignal 存一份副本；`tests/setup.ts` 里再用它们把这两个全局换回来。
     poolOptions: {

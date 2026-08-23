@@ -91,7 +91,7 @@ export function MeetingsPlaceholder() {
       )}
 
       {/* 仅供测试/调试确认当前系统状态，不承担产品文案职责 */}
-      <p className={styles.debugState} data-testid="current-system-state" hidden>
+      <p data-testid="current-system-state" hidden>
         {state}
       </p>
     </div>
