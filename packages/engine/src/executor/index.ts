@@ -35,8 +35,10 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   await deps.store.setTargetPath(row.id, relPath, row.file_type, now())
 
   const isText = isTextAssetType(row.asset_type)
-  // 进度回写是尽力而为：写库失败不该中断下载，故不 await，只 void 掉这个 floating promise
-  const res = await deps.download({ assetId: row.asset_id ?? assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => { void deps.store.touchProgress(row.id, b, now(), leaseSec) })
+  // 进度回写是尽力而为：写库失败不中断下载，但必须留下痕迹（不能用静默的 .catch(() => {})）
+  const res = await deps.download({ assetId: row.asset_id ?? assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => {
+    deps.store.touchProgress(row.id, b, now(), leaseSec).catch((e) => console.warn(`progress write failed: ${e}`))
+  })
   if (res.status === 'completed') { await deps.store.markCompleted(row.id, res.contentHash, now()); result.completed++; return }
   if (row.attempts >= MAX_ATTEMPTS) { await deps.store.markDead(row.id, res.error, now()); result.failed++; return }
   await deps.store.markFailed(row.id, res.error, now()); result.failed++
