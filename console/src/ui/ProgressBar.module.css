@@ -1,0 +1,52 @@
+/* 进度/容量条基元。高度复用 4pt 间距标尺（--s-2/--s-3）——这类条状 chrome 的
+ * 粗细本就该跟着间距节奏走，不需要另开一档专属尺寸令牌。
+ */
+
+.track {
+  display: block;
+  width: 100%;
+  height: var(--s-3);
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.sm {
+  height: var(--s-2);
+}
+
+/* .fill 故意不设 border-radius——它按未缩放的布局尺寸算圆角，scaleX 会把端帽
+ * 也一起水平压缩：低百分比时圆角变椭圆，pct 越小越明显（这类基元恰恰经常
+ * 停在低百分比：容量几乎全空、保留期刚开始计时）。整条胶囊的圆角形状完全
+ * 交给 .track 的 border-radius + overflow: hidden 裁剪，.fill 前沿在
+ * pct<100% 时是方头，这是进度条常见且可接受的视觉惯例。不要为了"看起来更
+ * 圆润"把这行加回去。 */
+.fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.brand {
+  background: var(--brand);
+}
+
+.warn {
+  background: var(--warn);
+}
+
+.fail {
+  background: var(--fail);
+}
+
+.neutral {
+  background: var(--ink-4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+}

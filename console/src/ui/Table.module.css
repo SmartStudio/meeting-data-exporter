@@ -1,0 +1,58 @@
+/* 表格基元。横向滚动发生在 .scroll 自己的容器里，不冒泡到页面 body——
+ * body 的溢出策略是 clip（design-system.md §8：overflow-x:hidden 会让
+ * position:sticky 失效，这里不重复踩那个坑，只在自己的容器内处理）。
+ */
+
+.wrap {
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table thead th {
+  text-align: left;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-3);
+  padding: var(--s-3) var(--s-5);
+  border-bottom: var(--s-px) solid var(--line);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.table tbody td {
+  padding: var(--s-3) var(--s-5);
+  border-bottom: var(--s-px) solid var(--line-soft);
+  vertical-align: middle;
+  color: var(--ink);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table tbody tr:hover td {
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+}
+
+.table tbody tr[data-selected='true'] td {
+  background: color-mix(in oklab, var(--brand) 8%, transparent);
+}
+
+.table tbody tr[data-cursor='true'] td:first-child {
+  box-shadow: inset var(--s-1) 0 0 var(--brand);
+}
+
+.table tbody tr[data-dim='true'] td {
+  color: var(--ink-3);
+}

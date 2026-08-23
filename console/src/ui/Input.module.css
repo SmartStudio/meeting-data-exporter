@@ -1,0 +1,42 @@
+/* 输入框基元。min-height 用 --tap-min（44px 触控下限）而不是裸值——
+ * 边框宽度在任何状态下都保持 1px，状态切换只走背景 / 边框色 / 阴影，
+ * 改宽度会让相邻元素跟着跳。
+ */
+
+.input {
+  font: inherit;
+  font-size: var(--t-md);
+  color: var(--ink);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-3) var(--s-4);
+  min-height: var(--tap-min);
+  width: 100%;
+}
+
+.input::placeholder {
+  color: var(--ink-3);
+}
+
+.input:hover:not(:disabled) {
+  border-color: var(--ink-4);
+}
+
+/* 键盘焦点环由全局 base.css 的 :focus-visible 提供（品牌蓝、≥3:1、不做出现动画），
+ * 这里只在 :focus 上换一下边框色做轻量呼应，不重复造一圈发光——
+ * 那需要一个不落在间距标尺上的裸像素宽度，而全局环已经满足无障碍基线。 */
+.input:focus {
+  border-color: var(--brand);
+}
+
+.input:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+  background: var(--ground);
+}
+
+.invalid {
+  border-color: var(--fail);
+  background: var(--fail-soft);
+}

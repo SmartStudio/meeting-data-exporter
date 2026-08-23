@@ -1,0 +1,45 @@
+/* 骨架屏基元。动 transform 而不是 background-position：后者是非合成属性，
+ * 每帧触发 paint，骨架屏满屏十条时会一直占着主线程（design-system.md §8）。
+ * 高度复用 4pt 间距标尺（--s-2/--s-3），没有另开一档"骨架条高度"专属令牌——
+ * 这两个值本来就没有独立的设计含义，只是"看起来像一行字/一行次要字"。
+ */
+
+.skel {
+  display: block;
+  width: 100%;
+  height: var(--s-3);
+  border-radius: var(--r-xs);
+  background: var(--rail);
+  position: relative;
+  overflow: hidden;
+}
+
+.skel + .skel {
+  margin-top: var(--s-2);
+}
+
+.sm {
+  height: var(--s-2);
+  opacity: .7;
+}
+
+.skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--line-soft), transparent);
+  animation: skelSweep var(--dur-loop) var(--ease-in-out) infinite;
+  transform: translateX(-100%);
+}
+
+@keyframes skelSweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel::after {
+    animation: none !important;
+    opacity: 0;
+  }
+}

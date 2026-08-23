@@ -1,0 +1,37 @@
+/* 筛选切换基元。选中态用 aria-pressed 驱动样式，颜色只表达"是否为选中态"，
+ * 不表达 Chip 承载的具体语义（那是 Pill / StatusDot 的活）。
+ */
+
+.chip {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  padding: var(--s-1) var(--s-4);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.chip:hover {
+  border-color: var(--ink-4);
+}
+
+.chip:active {
+  transform: translateY(var(--s-px));
+  transition: none;
+}
+
+.chip[aria-pressed='true'] {
+  background: var(--brand);
+  color: var(--on-brand);
+  border-color: var(--brand);
+  font-weight: 500;
+}
