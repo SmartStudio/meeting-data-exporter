@@ -1,0 +1,66 @@
+/* 徽标基元。条状/胶囊元素统一用 --r-pill（语义是「半高」，不是某个像素值）。 */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--t-xs);
+  padding: var(--s-0) var(--s-2);
+  border-radius: var(--r-pill);
+  border: var(--s-px) solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.neutral {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.brand {
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
+  color: var(--brand-text);
+  font-weight: 500;
+}
+.brand.solid {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--on-brand);
+}
+
+.warn {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.fail {
+  border-color: var(--fail-line);
+  background: var(--fail-soft);
+  color: var(--fail);
+  font-weight: 500;
+}
+.fail.solid {
+  border-color: var(--fail);
+  background: var(--fail);
+  color: var(--on-fail);
+}
+
+.remove {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  opacity: .6;
+  cursor: pointer;
+  font-size: var(--t-xs);
+  line-height: 1;
+}
+.remove:hover {
+  opacity: 1;
+}

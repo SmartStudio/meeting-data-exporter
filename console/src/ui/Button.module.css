@@ -1,0 +1,86 @@
+/* 按钮基元。颜色只引用 tokens.css 里的具名令牌，此文件不出现裸 px / hex / rgba。
+ * 每个变体都显式写 color——<button> 不继承页面文字色，漏写在深色模式下就是黑字压深底。
+ */
+
+.btn {
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 500;
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-2) var(--s-4);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  white-space: nowrap;
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+/* 按下反馈必须是即时的：不继承上面的过渡，也不额外补一条 transform 过渡。 */
+.btn:active:not(:disabled) {
+  transform: translateY(var(--s-px));
+  transition: none;
+}
+
+.btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.sm {
+  font-size: var(--t-xs);
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-sm);
+}
+
+.default {
+  background: var(--surface);
+  color: var(--ink);
+}
+.default:hover:not(:disabled) {
+  border-color: var(--ink-4);
+}
+
+.primary {
+  background: var(--brand);
+  color: var(--on-brand);
+  border-color: var(--brand);
+}
+.primary:hover:not(:disabled) {
+  background: var(--brand-press);
+  border-color: var(--brand-press);
+}
+
+.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--ink-3);
+}
+.quiet:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+/* 红：失败 / 摧毁性操作专用，不要为了视觉强调把它派给别的意思。 */
+.danger {
+  color: var(--fail);
+  border-color: var(--fail-line);
+  background: var(--fail-soft);
+}
+.danger:hover:not(:disabled) {
+  border-color: var(--fail);
+}
+
+/* 琥珀：人工改写规则相关操作专用。 */
+.warn {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+.warn:hover:not(:disabled) {
+  border-color: var(--warn);
+}

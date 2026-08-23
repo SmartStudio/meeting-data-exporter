@@ -1,0 +1,89 @@
+/* 状态点基元。图形描边/填充用 --ink-4（图形专用，白底 3.72:1，禁止用于文字——
+ * 这里只用它画圈，不承载文字信息，符合它的用法边界）。
+ * 循环动画只动 opacity（合成属性），不动 fill/stroke。
+ */
+
+.dot {
+  display: inline-flex;
+  line-height: 0;
+}
+
+button.dot {
+  background: none;
+  border: 0;
+  padding: var(--s-0) var(--s-1);
+  margin: 0;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+button.dot:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--brand) 12%, transparent);
+}
+button.dot:active:not(:disabled) {
+  background: color-mix(in oklab, var(--brand) 22%, transparent);
+  transform: translateY(var(--s-px));
+  transition: none;
+}
+button.dot:disabled {
+  cursor: not-allowed;
+}
+
+.glyphDone {
+  fill: var(--ink);
+}
+
+.glyphFailed {
+  fill: var(--fail);
+}
+.glyphFailedMark {
+  stroke: var(--surface);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.glyphRunningRing {
+  fill: none;
+  stroke: var(--ink-2);
+  stroke-width: 1.3;
+}
+.glyphRunningPulse {
+  fill: var(--ink-2);
+  animation: statusDotPulse var(--dur-loop) var(--ease-in-out) infinite;
+}
+
+.glyphBlocked {
+  fill: none;
+  stroke: var(--ink-4);
+  stroke-width: 1.3;
+  stroke-dasharray: 2.4 2;
+}
+
+.glyphOff {
+  fill: none;
+  stroke: var(--ink-4);
+  stroke-width: 1.3;
+}
+
+.glyphNone {
+  fill: var(--ink-4);
+  opacity: .5;
+}
+
+/* 人工改写外圈：只表示"有人手动改写了规则"这一件事，颜色恒定用 --warn。 */
+.overrideRing {
+  fill: none;
+  stroke: var(--warn);
+  stroke-width: 1.5;
+}
+
+@keyframes statusDotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glyphRunningPulse {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+}

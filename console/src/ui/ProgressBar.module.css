@@ -1,0 +1,47 @@
+/* 进度/容量条基元。高度复用 4pt 间距标尺（--s-2/--s-3）——这类条状 chrome 的
+ * 粗细本就该跟着间距节奏走，不需要另开一档专属尺寸令牌。
+ */
+
+.track {
+  display: block;
+  width: 100%;
+  height: var(--s-3);
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.sm {
+  height: var(--s-2);
+}
+
+.fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-pill);
+  transform-origin: left center;
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.brand {
+  background: var(--brand);
+}
+
+.warn {
+  background: var(--warn);
+}
+
+.fail {
+  background: var(--fail);
+}
+
+.neutral {
+  background: var(--ink-4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+}
