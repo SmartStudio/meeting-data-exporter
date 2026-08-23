@@ -1,0 +1,21 @@
+/* 骨架尺寸只用令牌：--rail-w 被 Rail 自己、这里的网格列、以及 ShortcutBar
+   的左偏移三处引用，改一处令牌三处一起变——原型重构前这个宽度硬编码在
+   四处，其中两处是心算值（`calc(50% + 98px)`、`left: 222px`）。 */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 底部留出 --s-11，给固定定位的 ShortcutBar 让位，避免遮住内容区最后一行 */
+.view {
+  flex: 1;
+  padding: var(--s-5) var(--pad-x) var(--s-11);
+  min-width: 0;
+}

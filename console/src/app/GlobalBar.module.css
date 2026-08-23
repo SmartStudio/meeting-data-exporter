@@ -1,0 +1,134 @@
+.gbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  height: var(--gbar-h);
+  padding: 0 var(--s-5) 0 var(--pad-x);
+  background: color-mix(in oklab, var(--ground) 82%, var(--surface));
+  border-bottom: var(--s-px) solid var(--line);
+}
+
+.protoTag {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  border: var(--s-px) dashed var(--line);
+  padding: var(--s-0) var(--s-3);
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+
+.statePick {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-1) var(--s-2);
+  cursor: pointer;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.search {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-1) var(--s-3);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.search:hover {
+  border-color: var(--ink-4);
+  color: var(--ink-3);
+}
+
+.kbd {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 0 var(--s-1);
+}
+
+.themeGroup {
+  display: flex;
+  gap: var(--s-0);
+  background: var(--surface-2);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-0);
+}
+
+.themeBtn {
+  font: inherit;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  background: none;
+  border: 0;
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.themeBtnActive {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  /* 原型同款分段控件选中态内投影，两个尺寸换成对应的 --s-px / --s-0 */
+  box-shadow: 0 var(--s-px) var(--s-0) var(--inset);
+}
+
+.sep {
+  width: var(--s-px);
+  height: var(--s-5);
+  background: var(--line);
+  margin: 0 var(--s-1);
+}
+
+.user {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  background: none;
+  border: var(--s-px) solid transparent;
+  border-radius: var(--r);
+  padding: var(--s-0) var(--s-2) var(--s-0) var(--s-1);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.user:hover {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.avatar {
+  width: var(--s-6);
+  height: var(--s-6);
+  border-radius: var(--r);
+  display: grid;
+  place-items: center;
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 var(--s-px) var(--line);
+}

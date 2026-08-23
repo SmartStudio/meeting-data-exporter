@@ -22,8 +22,26 @@ export default defineConfig({
     // 已在 KEYS 白名单里才会覆盖已存在的同名全局，而 localStorage 目前不在这份白名单
     // 里，于是 Node 那个不能用的桩会被原样保留，jsdom 的实现永远替换不进去。
     // 关掉这个实验特性就不会有同名全局，vitest 才能正常把 jsdom 的 localStorage 接上。
+    //
+    // --import 指向的预加载脚本解决另一个同类问题（同一套白名单机制，方向相反）：
+    // vitest 的 jsdom 环境把 AbortController / AbortSignal 换成 jsdom 自己的实现
+    // （这两个键在白名单里，会无条件覆盖 Node 原生同名全局），但 Request / fetch
+    // 不在白名单里、始终保留 Node 原生（undici）实现。react-router 的数据路由
+    // 每次导航都会 `new Request(url, {signal: new AbortController().signal})`——
+    // 这时 AbortController 是 jsdom 的，Request 却是 undici 的，undici 内部对
+    // signal 做 instanceof 检查认的是它自己那份 Node 原生 AbortSignal，两边对
+    // 不上就抛 "Expected signal ... to be an instance of AbortSignal"（Node 24+
+    // 通用问题，见 vitest-dev/vitest#8374，vitest 4 之前没有修）。
+    // 预加载脚本赶在 jsdom 接管 globalThis 之前，把 Node 原生的 AbortController /
+    // AbortSignal 存一份副本；`tests/setup.ts` 里再用它们把这两个全局换回来。
     poolOptions: {
-      forks: { execArgv: ['--no-experimental-webstorage'] },
+      forks: {
+        execArgv: [
+          '--no-experimental-webstorage',
+          '--import',
+          fileURLToPath(new URL('./tests/preload-native-fetch.mjs', import.meta.url)),
+        ],
+      },
     },
   },
 })
