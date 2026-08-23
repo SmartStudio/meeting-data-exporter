@@ -1,3 +1,4 @@
+import { parseAssetId } from '../domain/assetid'
 import type { Asset, AssetType, Meeting } from '../domain/types'
 import type { StsManager } from '../sts/manager'
 import { StsTokenUnavailableError } from '../sts/manager'
@@ -97,21 +98,6 @@ function pickUrl(source: UrlSource, asset: Asset): string | undefined {
   return entries[idx]?.download_address
 }
 
-/**
- * 从 assetId 反解出 meetingRecordId，供 resolveDownloadUrl 无状态地调用批量接口——
- * 不假设 assetId 正好四段（meetingRecordId / recordFileId 理论上不含冒号，但不依赖
- * 这个假设去做精确匹配）：只要求至少四段，取前两段分别作为 meetingRecordId 与
- * recordFileId，其余留给 assetType/index。段数不足即视为非法格式。
- */
-function parseAssetId(assetId: string): { meetingRecordId: string; recordFileId: string } {
-  const parts = assetId.split(':')
-  const [meetingRecordId, recordFileId] = parts
-  if (parts.length < 4 || !meetingRecordId || !recordFileId) {
-    throw new InvalidAssetIdError(assetId)
-  }
-  return { meetingRecordId, recordFileId }
-}
-
 export function createCatalog(deps: CatalogDeps): Catalog {
   /** 一次 listAssets 调用内只判断一次 STS 可用性，避免每个 record_file 重复取一次 token */
   async function tryGetToken(now: number): Promise<string | null> {
@@ -183,7 +169,11 @@ export function createCatalog(deps: CatalogDeps): Catalog {
 
       // 无状态解析：meetingRecordId 直接从 assetId 反解，不依赖任何跨请求缓存，
       // 因此本实例即便从未处理过该会议的 listAssets 也能正确解析下载地址。
-      const { meetingRecordId } = parseAssetId(asset.assetId)
+      // parseAssetId 格式不合法时返回 null（不抛异常）——本函数在这里补上
+      // InvalidAssetIdError 语义，与文档注释一致。
+      const parsed = parseAssetId(asset.assetId)
+      if (parsed === null) throw new InvalidAssetIdError(asset.assetId)
+      const { meetingRecordId } = parsed
 
       const files = await deps.addressesApi.listByRecordId(meetingRecordId)
       const file = files.find((f) => f.record_file_id === asset.recordFileId)
