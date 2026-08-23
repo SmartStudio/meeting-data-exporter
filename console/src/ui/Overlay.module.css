@@ -1,0 +1,29 @@
+/* 浮层基座样式。Overlay 本身不做视觉造型——定位/进场方向由 Drawer / Popover /
+ * Sheet / Toast 各自的 module.css 通过 className 叠加在 .root 上。这里只放
+ * 四者真正共用的东西：面板容器的中性复位，以及可选的遮罩。
+ *
+ * 只动 transform 与 opacity 做动画（design-system.md §6）。遮罩淡入淡出用
+ * --dur-2/--ease-out（开）与 --ease-in（关）；pointer-events 是离散切换，
+ * 不参与过渡——它必须和可见性同一帧生效，不能等透明度淡完。
+ */
+
+.root {
+  /* 中性复位：不假设定位方式，交给具体浮层的 CSS 决定 fixed/absolute。 */
+  outline: none;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease-in);
+}
+
+.scrim[data-state='open'] {
+  opacity: 1;
+  pointer-events: auto;
+  transition-timing-function: var(--ease-out);
+}

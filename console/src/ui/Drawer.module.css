@@ -1,0 +1,96 @@
+/* 抽屉：--dur-3（260ms，design-system.md §6 的「抽屉」档）。窄屏用
+ * min(92vw, --drawer-w) 兜底，1440/1050/375 都不能横向溢出。
+ *
+ * 隐藏态同时压 opacity + pointer-events，不单靠 transform——即使这里的
+ * 100% 位移对满高抽屉本就够用，也按 §8 的教训统一处理，别指望某个百分比
+ * 数字自己够用。
+ */
+
+.panel {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: min(92vw, var(--drawer-w));
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-panel);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--dur-3) var(--ease-in),
+    opacity var(--dur-3) var(--ease-in);
+}
+
+.panel[data-state='open'] {
+  opacity: 1;
+  pointer-events: auto;
+  transition-timing-function: var(--ease-out);
+}
+
+.right {
+  right: 0;
+  border-left: var(--s-px) solid var(--line);
+  transform: translateX(100%);
+}
+.right[data-state='open'] {
+  transform: translateX(0);
+}
+
+.left {
+  left: 0;
+  border-right: var(--s-px) solid var(--line);
+  transform: translateX(-100%);
+}
+.left[data-state='open'] {
+  transform: translateX(0);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-5) var(--s-6);
+  border-bottom: var(--s-px) solid var(--line);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.closeBtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  width: var(--tap-min);
+  height: var(--tap-min);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--t-xl);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+.closeBtn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.closeBtn:active {
+  transform: translateY(var(--s-px));
+  transition: none;
+}
+
+.body {
+  flex: 1;
+  overflow: auto;
+  padding: var(--s-6);
+}
