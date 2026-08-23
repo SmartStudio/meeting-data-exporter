@@ -14,7 +14,7 @@
 写两个新实现——MySQL 的 `Store` 与直连 `catalog/`+`tencent/` 的 `AssetSource`，再加一个
 入口把它们装起来。**引擎本身一行逻辑不改。**
 
-**Tech Stack:** Bun + TypeScript(strict) · `bun:sqlite`（CLI 宿主）· MySQL 8.0+ /
+**Tech Stack:** Bun + TypeScript(strict) · `bun:sqlite`（CLI 宿主）· MySQL 8.0.19+ /
 `mysql2/promise`（服务端宿主）· `bun test`
 
 ---
@@ -796,7 +796,12 @@ CREATE TABLE IF NOT EXISTS meeting_assets (
   updated_at       BIGINT        NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uk_asset (meeting_id, sub_meeting_id, asset_type, remote_id, file_type),
-  KEY idx_assets_claimable (status, lease_expires_at, id)
+  -- 列序是正确性依赖，不是性能微调：领取是 status 等值 + ORDER BY id，
+  -- id 必须紧跟 status 才能用索引自带序满足排序。写成 (status, lease_expires_at, id)
+  -- 会 filesort，而 filesort 要先读完并锁住整段可领取集合，于是并发 worker 的
+  -- SKIP LOCKED 把它们全跳过、拿到 null、按 `if (!row) return` 集体收工。
+  -- 实测：正确列序 4 把记录锁，错误列序 406 把。别当性能项优化掉。
+  KEY idx_assets_claimable (status, id, lease_expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS meeting_asset_probes (
