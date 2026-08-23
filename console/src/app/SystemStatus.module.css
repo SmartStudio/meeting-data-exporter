@@ -1,0 +1,98 @@
+/* 系统状态告警条。原型的 `.sysbar`——只在 nas-down / tencent-down 时出现，
+   位置 sticky 在顶栏正下方。 */
+.bar {
+  position: sticky;
+  top: var(--gbar-h);
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--pad-x);
+  border-bottom: var(--s-px) solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.bar[data-sev='fail'] {
+  border-bottom-color: var(--fail-line);
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+
+.icon {
+  flex: none;
+  margin-top: var(--s-0);
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.65;
+}
+
+.text b {
+  font-weight: 600;
+}
+
+.sub {
+  opacity: 0.85;
+}
+
+.acts {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex: none;
+}
+
+.btn {
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 500;
+  background: var(--surface);
+  color: inherit;
+  border: var(--s-px) solid currentColor;
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--surface-2);
+}
+
+.btn:active {
+  transform: translateY(var(--s-px));
+}
+
+.btnQuiet {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: var(--s-2) var(--s-1);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.confirmText {
+  font-size: var(--t-xs);
+  white-space: nowrap;
+}
+
+.pausedTag {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}

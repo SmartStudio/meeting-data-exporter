@@ -1,0 +1,33 @@
+.bar {
+  position: fixed;
+  left: var(--rail-w);
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  background: color-mix(in oklab, var(--ground) 88%, var(--surface));
+  border-top: var(--s-px) solid var(--line);
+  padding: var(--s-1) var(--pad-x);
+  display: flex;
+  gap: var(--s-5);
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  white-space: nowrap;
+}
+
+.kbd {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-2);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 0 var(--s-1);
+}
