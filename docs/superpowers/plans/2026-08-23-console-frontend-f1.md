@@ -732,7 +732,7 @@ git commit -m "feat(console): API 形状的类型与 mock 数据层，三态 use
 - [ ] **Step 1: 先写失败的外壳测试**
 
 ```tsx
-test('左栏七项都在，且当前项有 aria-current', ...)
+test('左栏六项都在，且当前项有 aria-current', ...)
 test('点左栏切路由，内容区跟着换', ...)
 test('顶栏的系统状态下拉能切到五种形态', ...)
 test('顶栏保留「原型 · 全部数字为示例」标记', ...)
@@ -743,9 +743,9 @@ test('rail 宽度取自 --rail-w，不是写死的 196px', ...)   // 查计算�
 
 Run: `cd console && npm run test -- shell`
 
-- [ ] **Step 3: 实现 `Rail`（左栏七项）**
+- [ ] **Step 3: 实现 `Rail`（左栏六项）**
 
-七项与 `spec.md` §3 逐字一致：会议记录 / 采集授权 / 自动规则 / 定时任务 / 归档存储 /
+六项与 `spec.md` §3 逐字一致：会议记录 / 采集授权 / 自动规则 / 定时任务 / 归档存储 /
 操作审计；内容预览不占导航（从会议列表点标题进入）。
 
 **全中文，不要英文行话**——这是既定的产品约束。
@@ -785,13 +785,13 @@ Run: `cd console && npm run test -- shell`
 - [ ] **Step 8: 验证**
 
 Run: `cd console && npm run test -- shell` → PASS
-Run: `cd console && npm run dev` → 七项都能点开，五种系统状态能切
+Run: `cd console && npm run dev` → 六项都能点开，五种系统状态能切
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add console/src/app console/src/pages/_Placeholder.tsx console/tests/shell.test.tsx console/src/App.tsx
-git commit -m "feat(console): 布局外壳、七项路由与五种系统状态"
+git commit -m "feat(console): 布局外壳、六项路由与五种系统状态"
 ```
 
 ---
@@ -1088,7 +1088,7 @@ git commit -m "feat(console): 无障碍与令牌回归检查，可重复跑"
 
 F1 算完成，当且仅当：
 
-1. `cd console && npm run dev` 起得来，七项导航都能点开，会议记录页可操作
+1. `cd console && npm run dev` 起得来，六项导航都能点开，会议记录页可操作
 2. 五种系统状态逐个切都对，且 **`nas-down` 的变化体现在数据里**（保留窗口清零、
    授权撤下），不只是一条横幅
 3. 三态主题（跟随系统 / 浅 / 深）都对，**默认「跟随系统」时根元素上没有任何 `data-theme` 标记**
