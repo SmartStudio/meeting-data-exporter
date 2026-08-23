@@ -1,7 +1,7 @@
 import type { Store, AssetRow } from '../store'
 import type { DownloadResult, DownloadTask } from '../downloader'
 import type { Storage } from '../storage/types'
-import type { GatewayClient } from '../gateway/client'
+import type { AssetSource } from '../source/types'
 import { GATEWAY_TYPE_TO_ASSET_KEY, assetKeyToFilename, isTextAssetType, ASSET_WAIT_CAP_SEC } from '../domain/types'
 import { cleanDirName } from '../domain/filename'
 import { judgeReadiness } from '../domain/readiness'
@@ -10,7 +10,7 @@ export interface ExecutorDeps {
   store: Store
   download: (task: DownloadTask, onProgress: (b: number) => void) => Promise<DownloadResult>
   storage: Pick<Storage, 'ensureFreeSpace' | 'writeMeta'>
-  gw: Pick<GatewayClient, 'listAssets'>
+  gw: Pick<AssetSource, 'listAssets'>
   meetingsById: Map<string, { subject: string | null; startTime: number | null; meetingCode: string | null; endTime: number | null; subMeetingId: string }>
 }
 const MAX_ATTEMPTS = 5

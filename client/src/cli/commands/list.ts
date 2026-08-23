@@ -1,8 +1,8 @@
 import { loadConfig } from '../../config'
 import { createGatewayClient } from '../../gateway/client'
-import { splitWindow } from '../../domain/window'
+import { splitWindow } from '@yaowu/mde-engine'
 import type { ParsedCommand } from '../index'
-import type { MeetingSelector } from '../../domain/types'
+import type { MeetingSelector } from '@yaowu/mde-engine'
 
 /** list = 只调 gw.listMeetings 并打印，不写队列（预览用途，接受 range 或 code/id/target 任一） */
 export async function cmdList(cmd: ParsedCommand, env: Record<string, string | undefined>): Promise<number> {

@@ -1,13 +1,8 @@
 import { loadConfig } from '../../config'
-import { openDb } from '../../store/db'
-import { createStore } from '../../store'
+import { openDb, createStore, createLocalStorage, downloadAsset, discover, runExecutor, runProbes } from '@yaowu/mde-engine'
 import { createGatewayClient } from '../../gateway/client'
-import { createLocalStorage } from '../../storage/local'
-import { downloadAsset } from '../../downloader'
-import { discover } from '../../discovery'
-import { runExecutor, runProbes } from '../../executor'
 import type { ParsedCommand } from '../index'
-import type { MeetingSelector } from '../../domain/types'
+import type { MeetingSelector } from '@yaowu/mde-engine'
 
 /** get = 按会议号/ID 建选择器（优先 --code/--meeting-id，否则用位置参数按纯数字启发式判定），再 discover + execute */
 export async function cmdGet(cmd: ParsedCommand, env: Record<string, string | undefined>): Promise<number> {

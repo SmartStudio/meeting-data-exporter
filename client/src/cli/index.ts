@@ -1,4 +1,4 @@
-import { parseAssetKeys, DEFAULT_ASSET_KEYS, type AssetKey } from '../domain/types'
+import { parseAssetKeys, DEFAULT_ASSET_KEYS, type AssetKey } from '@yaowu/mde-engine'
 
 export interface ParsedCommand {
   command: 'run' | 'discover' | 'list' | 'get' | 'execute' | 'status' | 'retry' | 'help'

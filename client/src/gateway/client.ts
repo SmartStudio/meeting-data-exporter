@@ -1,4 +1,4 @@
-import type { Meeting, MeetingSelector } from '../domain/types'
+import type { Meeting, MeetingSelector, AssetSource, SourceAsset, DownloadUrl } from '@yaowu/mde-engine'
 
 export class GatewayError extends Error {
   constructor(readonly httpStatus: number, readonly code: string, msg?: string) {
@@ -9,18 +9,10 @@ export class MeetingNotFoundInRangeError extends Error {
   constructor() { super('meeting not found in range'); this.name = 'MeetingNotFoundInRangeError' }
 }
 
-export interface GatewayAsset { assetId: string; assetType: string; remoteId: string; state?: number; allowDownload?: boolean; fileType?: string | null; bytesExpected?: number | null }
-export interface DownloadUrl { url: string; expiresAt: number; fileType: string | null; bytesExpected: number | null }
-export interface GatewayClient {
-  listMeetings(sel: MeetingSelector, cursor?: string, limit?: number): Promise<{ meetings: Meeting[]; nextCursor: string | null }>
-  listAssets(meetingId: string, from?: number, to?: number): Promise<GatewayAsset[]>
-  getDownloadUrl(assetId: string): Promise<DownloadUrl>
-}
-
 export function createGatewayClient(
   cfg: { gatewayUrl: string; clientId: string; clientSecret: string },
   deps: { fetch: typeof fetch; now: () => number },
-): GatewayClient {
+): AssetSource {
   let token: { value: string; expiresAt: number } | null = null
 
   async function fetchToken(): Promise<string> {

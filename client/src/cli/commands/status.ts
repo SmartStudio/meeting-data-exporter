@@ -1,6 +1,5 @@
 import { loadConfig } from '../../config'
-import { openDb } from '../../store/db'
-import { createStore } from '../../store'
+import { openDb, createStore } from '@yaowu/mde-engine'
 import type { ParsedCommand } from '../index'
 
 export async function cmdStatus(cmd: ParsedCommand, env: Record<string, string | undefined>): Promise<number> {

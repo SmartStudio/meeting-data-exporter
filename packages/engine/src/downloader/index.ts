@@ -1,9 +1,9 @@
 import type { Storage } from '../storage/types'
-import type { GatewayClient } from '../gateway/client'
+import type { AssetSource } from '../source/types'
 
 export interface DownloadTask { assetId: string; relPath: string; bytesExpected: number | null; isText: boolean }
 export type DownloadResult = { status: 'completed'; contentHash: string | null } | { status: 'failed'; error: string }
-export interface DownloadDeps { storage: Storage; gw: Pick<GatewayClient, 'getDownloadUrl'>; onProgress?: (bytes: number) => void }
+export interface DownloadDeps { storage: Storage; gw: Pick<AssetSource, 'getDownloadUrl'>; onProgress?: (bytes: number) => void }
 
 const PROGRESS_INTERVAL = 8 * 1024 * 1024
 
