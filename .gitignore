@@ -11,3 +11,4 @@ build/
 *.sqlite-shm
 .superpowers/
 .claude/
+.playwright-mcp/
