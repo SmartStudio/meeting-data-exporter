@@ -67,7 +67,7 @@
 }
 
 .themeButton:active {
-  transform: translateY(1px);
+  transform: translateY(var(--s-px));
   transition: none;
 }
 
