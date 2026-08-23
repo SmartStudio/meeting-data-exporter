@@ -1,0 +1,76 @@
+/* Toast：--dur-2（200ms，「浮层」档）。左偏移用 --pad-x，与主区左右留白
+ * 对齐（design-system.md §4.3）。
+ *
+ * 隐藏态：translateY 的位移量在这里刻意给得很小（--s-3，8px）——
+ * design-system.md §8 记录过 translateY(150%) 藏不住矮的固定条（150% 只是
+ * 自身高度的 1.5 倍）。真正负责「藏起来」的是 opacity + pointer-events，
+ * transform 只是一点进场的视觉细节，不能靠它自证不可见。
+ *
+ * 背景用 --ink、文字用 --ground：两者在三态主题里本来就是反向取值
+ * （浅色模式 --ink 近黑、--ground 近白；深色模式反过来），天然就是
+ * design-system.md §2.3 说的「反相表面」，不需要再造一套专门的令牌。
+ *
+ * max-width 额外用 100vw 减去两倍 --pad-x 兜底：--toast-max-w 单独在 375
+ * 视口下会连同左偏移一起超出视口右边——1440/1050/375 都不能横向溢出是
+ * 硬指标（design-system.md §5），不能只在桌面宽度下算过。
+ */
+
+.bar {
+  position: fixed;
+  left: var(--pad-x);
+  bottom: var(--s-7);
+  z-index: var(--z-top);
+  max-width: min(var(--toast-max-w), calc(100vw - 2 * var(--pad-x)));
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-4) var(--s-5);
+  background: var(--ink);
+  color: var(--ground);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--t-sm);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(var(--s-3));
+  transition:
+    transform var(--dur-2) var(--ease-in),
+    opacity var(--dur-2) var(--ease-in);
+}
+
+.bar[data-state='open'] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition-timing-function: var(--ease-out);
+}
+
+.message {
+  flex: 1;
+}
+
+.action {
+  appearance: none;
+  border: none;
+  background: transparent;
+  /* padding: 0 会让这颗按钮的命中盒直接等于文字本身的盒——评审指出同一批
+     交付里 Drawer/Sheet 的 .closeBtn 都老实用了 --tap-min，这颗唯独没有，
+     是不一致的疏漏，不是有意的例外。撤销这类一次性机会，点不中的代价比
+     普通按钮更高（WCAG 2.5.5 的目标尺寸本来就不限定于表单控件）。 */
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  padding: 0 var(--s-2);
+  margin: calc(-1 * var(--s-2)) calc(-1 * var(--s-2)) calc(-1 * var(--s-2)) 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-invert);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.action:active {
+  transform: translateY(var(--s-px));
+  transition: none;
+}

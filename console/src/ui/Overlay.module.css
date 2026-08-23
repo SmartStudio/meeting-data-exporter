@@ -1,0 +1,33 @@
+/* 浮层基座样式。Overlay 本身不做视觉造型——定位/进场方向由 Drawer / Popover /
+ * Sheet / Toast 各自的 module.css 通过 className 叠加在 .root 上。这里只放
+ * 四者真正共用的东西：面板容器（不做任何复位，理由见 .root 内注释）、以及可选的遮罩。
+ *
+ * 只动 transform 与 opacity 做动画（design-system.md §6）。遮罩淡入淡出用
+ * --dur-2/--ease-out（开）与 --ease-in（关）；pointer-events 是离散切换，
+ * 不参与过渡——它必须和可见性同一帧生效，不能等透明度淡完。
+ */
+
+.root {
+  /* 不做任何复位。原来这里有一条 outline: none——审查发现它跟 base.css 的
+     :focus-visible { outline: var(--s-0) solid var(--brand) } specificity
+     相同，组件级 CSS Module 通常晚于全局样式注入，这条重置更可能赢，会在
+     「没有可聚焦子元素、焦点退回面板本身」这条路径上把焦点环吃掉——正好
+     命中「焦点环必须可见」这条不许退的无障碍基线。删掉它，让全局规则
+     生效；不需要复位就不要写一条没有理由的重置。 */
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease-in);
+}
+
+.scrim[data-state='open'] {
+  opacity: 1;
+  pointer-events: auto;
+  transition-timing-function: var(--ease-out);
+}

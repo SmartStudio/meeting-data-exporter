@@ -1,0 +1,81 @@
+/* 底部面板：--dur-3（260ms，与 Drawer 同档——两者都是「抽屉类」大幅位移，
+ * 不是轻量浮层）。translateY(100%) 对贴底面板本身已经够用（面板自身高度就是
+ * 位移基准），但仍然按 §8 的教训同时压 opacity + pointer-events，不单靠
+ * transform 数字自证。
+ */
+
+.panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: var(--sheet-max-h);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-top: var(--s-px) solid var(--line);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-panel);
+  transform: translateY(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--dur-3) var(--ease-in),
+    opacity var(--dur-3) var(--ease-in);
+}
+
+.panel[data-state='open'] {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+  transition-timing-function: var(--ease-out);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-5) var(--s-6);
+  border-bottom: var(--s-px) solid var(--line);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.closeBtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  width: var(--tap-min);
+  height: var(--tap-min);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--t-xl);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+.closeBtn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.closeBtn:active {
+  transform: translateY(var(--s-px));
+  transition: none;
+}
+
+.body {
+  flex: 1;
+  overflow: auto;
+  padding: var(--s-6);
+}

@@ -1,0 +1,53 @@
+/* 弹出层：--dur-2（200ms，「浮层」档，比抽屉快一档）。位移量很小
+ * （--s-1，4px），隐藏时同样压 opacity + pointer-events——这个位移量本来就
+ * 不足以单独藏住任何东西，纯粹是进场的视觉细节。
+ *
+ * 定位：绝对定位在调用方提供的 position: relative 容器里，placement 只决定
+ * 贴哪个角，不做视口边界避让（见 Popover.tsx 顶部注释）。
+ */
+
+.panel {
+  position: absolute;
+  z-index: var(--z-float);
+  min-width: var(--s-11);
+  max-width: var(--popover-max-w);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--s-4);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(var(--s-1)) scale(0.98);
+  transition:
+    transform var(--dur-2) var(--ease-in),
+    opacity var(--dur-2) var(--ease-in);
+}
+
+.panel[data-state='open'] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition-timing-function: var(--ease-out);
+}
+
+.bottom-start {
+  top: 100%;
+  left: 0;
+  margin-top: var(--s-2);
+}
+.bottom-end {
+  top: 100%;
+  right: 0;
+  margin-top: var(--s-2);
+}
+.top-start {
+  bottom: 100%;
+  left: 0;
+  margin-bottom: var(--s-2);
+}
+.top-end {
+  bottom: 100%;
+  right: 0;
+  margin-bottom: var(--s-2);
+}
