@@ -53,7 +53,17 @@
   appearance: none;
   border: none;
   background: transparent;
-  padding: 0;
+  /* padding: 0 会让这颗按钮的命中盒直接等于文字本身的盒——评审指出同一批
+     交付里 Drawer/Sheet 的 .closeBtn 都老实用了 --tap-min，这颗唯独没有，
+     是不一致的疏漏，不是有意的例外。撤销这类一次性机会，点不中的代价比
+     普通按钮更高（WCAG 2.5.5 的目标尺寸本来就不限定于表单控件）。 */
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  padding: 0 var(--s-2);
+  margin: calc(-1 * var(--s-2)) calc(-1 * var(--s-2)) calc(-1 * var(--s-2)) 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font: inherit;
   font-weight: 600;
   color: var(--accent-invert);

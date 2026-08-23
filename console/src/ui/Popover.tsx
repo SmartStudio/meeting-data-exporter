@@ -1,5 +1,5 @@
 import type { ReactNode, RefObject } from 'react'
-import { Overlay } from './Overlay'
+import { Overlay, type OverlayRole } from './Overlay'
 import styles from './Popover.module.css'
 
 export type PopoverPlacement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end'
@@ -10,6 +10,12 @@ export interface PopoverProps {
   children: ReactNode
   /** 弹出层没有可见标题，必须给一个 aria-label 让读屏知道这是什么。 */
   label: string
+  /**
+   * 无障碍角色，默认 'dialog'。「筛选面板」一类确实是 dialog，但「下拉菜单」
+   * 按 WAI-ARIA APG 更精确的是 'menu'/'listbox'——写死 'dialog' 会让菜单类
+   * 用法无路可走，所以这里透传给调用方按场景决定，不在组件里替它判断。
+   */
+  role?: OverlayRole
   /** 相对触发元素的定位角，默认 'bottom-start'。 */
   placement?: PopoverPlacement
   initialFocusRef?: RefObject<HTMLElement | null>
@@ -28,13 +34,22 @@ export interface PopoverProps {
  * inert / Esc / 焦点管理与 Drawer / Sheet 完全共用同一个 Overlay。
  */
 export function Popover(props: PopoverProps) {
-  const { open, onClose, children, label, placement = 'bottom-start', initialFocusRef, className } = props
+  const {
+    open,
+    onClose,
+    children,
+    label,
+    role = 'dialog',
+    placement = 'bottom-start',
+    initialFocusRef,
+    className,
+  } = props
 
   return (
     <Overlay
       open={open}
       onClose={onClose}
-      role="dialog"
+      role={role}
       modal={false}
       label={label}
       initialFocusRef={initialFocusRef}

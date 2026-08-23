@@ -27,7 +27,15 @@ import styles from './Overlay.module.css'
  * 共用的只是这份交互契约。
  */
 
-export type OverlayRole = 'dialog' | 'alertdialog' | 'status' | 'region'
+export type OverlayRole =
+  | 'dialog'
+  | 'alertdialog'
+  | 'status'
+  | 'region'
+  // 菜单/列表这类弹出层用 APG 更精确的角色，不是所有 Popover 都该是 dialog——
+  // 加在这里而不是让调用方直接写字符串，两个都留在受控的枚举里。
+  | 'menu'
+  | 'listbox'
 
 export interface OverlayProps {
   /** 浮层是否处于打开态。false 时整块 inert，但仍然挂载，好让退场动画播完。 */
@@ -69,7 +77,7 @@ export interface OverlayProps {
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
-  'input:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
   'select:not([disabled])',
   'textarea:not([disabled])',
   '[tabindex]:not([tabindex="-1"])',
@@ -80,10 +88,17 @@ const FOCUSABLE_SELECTOR = [
  * 判断可见性——jsdom 不跑布局，这类属性恒为假值，会把测试环境下的一切都
  * 判成不可见。可见性由 inert/hidden/aria-hidden 这些语义属性负责，不是
  * 这里该管的事。
+ *
+ * 排除 `[hidden]` 祖先和 `input[type="hidden"]`——本任务当前的用例都不会
+ * 触发（浮层内容不会自己再嵌一层 `[hidden]`），但既然 `[inert]`/
+ * `aria-hidden` 都排了，留这两个漏洞没有理由，加固成本也是一行。
  */
 function getFocusable(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (el) => !el.closest('[inert]') && el.getAttribute('aria-hidden') !== 'true',
+    (el) =>
+      !el.closest('[inert]') &&
+      !el.closest('[hidden]') &&
+      el.getAttribute('aria-hidden') !== 'true',
   )
 }
 
