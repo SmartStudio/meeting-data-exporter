@@ -1,0 +1,217 @@
+/* 会议行。列宽用 ch 表达"放得下几个字符"，不写死像素——
+ * 表格整体的最小宽度由 MeetingTable 引用 --meetings-table-w 兜底。 */
+
+.check {
+  width: 4ch;
+  padding-right: 0;
+}
+
+.checkbox {
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+/* 标题是进入内容预览的入口，所以要看起来可点。 */
+.title {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+.title:hover {
+  color: var(--brand-text);
+  text-decoration: underline;
+  text-underline-offset: var(--s-0);
+}
+.title:active {
+  opacity: .7;
+}
+tr[data-dim='true'] .title {
+  color: var(--ink-3);
+}
+
+.meta {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  font-family: var(--mono);
+  margin-top: var(--s-px);
+  white-space: nowrap;
+}
+
+.code {
+  font-variant-numeric: tabular-nums;
+}
+
+/* fmtDateTime 不给月/日补零（与原型一致），"9-1 09:00" 比 "12-31 09:00" 少两个
+   字符——等宽数字只能保证每个数字同宽，保证不了字符数。给一个 ch 下限，
+   日期列才不会随月份忽宽忽窄。 */
+.when {
+  display: inline-block;
+  min-width: 11ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.host {
+  white-space: nowrap;
+}
+
+.assets {
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 部分资产没拿到＝有东西缺，需要人看一眼；不适用则退到弱化文字，不是告警。 */
+.assets[data-state='partial'] {
+  color: var(--warn);
+}
+.assets[data-state='na'] {
+  color: var(--ink-3);
+}
+
+.stage {
+  width: 14ch;
+}
+
+.stageRow {
+  display: flex;
+  align-items: center;
+}
+
+/* 两阶段之间的连线。实线＝拉取已完成，虚线＝还没轮到归档。 */
+.link {
+  width: var(--s-7);
+  height: var(--s-px);
+  flex: none;
+  background: var(--line);
+}
+.link[data-done='true'] {
+  background: var(--ink-2);
+}
+
+.keep {
+  width: 22ch;
+}
+
+.keepRow {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.keepBar {
+  flex: 1;
+  min-width: 7ch;
+}
+
+.keepLeft {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+/* 琥珀＝保留期快到了。这是它在这一栏唯一被允许的含义。 */
+.keepLeft[data-soon='true'] {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.keepGone,
+.keepNone,
+.grantNone {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* 延长按钮：平时不占视觉重量，鼠标停在行上或键盘光标落在行上才浮出来。
+   只动 opacity，不动布局属性——否则整行会在 hover 时抖一下。 */
+.extendBtn {
+  font: inherit;
+  font-size: var(--t-2xs);
+  background: none;
+  border: var(--s-px) solid var(--line);
+  color: var(--ink-3);
+  border-radius: var(--r-pill);
+  padding: var(--s-px) var(--s-2);
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+tr:hover .extendBtn,
+tr[data-cursor='true'] .extendBtn,
+.extendBtn:focus-visible {
+  opacity: 1;
+}
+.extendBtn:hover {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.grant {
+  width: 26ch;
+}
+
+.grantRow {
+  display: flex;
+  gap: var(--s-1);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* 虚线描边＝这里还什么都没有，等着被填上。 */
+.grantAdd {
+  font: inherit;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  background: none;
+  border: var(--s-px) dashed var(--line);
+  border-radius: var(--r-pill);
+  padding: var(--s-0) var(--s-3);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.grantAdd:hover {
+  color: var(--brand-text);
+  border-color: var(--brand);
+}
+.grantAdd:active {
+  transform: translateY(var(--s-px));
+}
+
+.act {
+  width: 7ch;
+  text-align: right;
+}
+
+.detailBtn {
+  background: none;
+  border: var(--s-px) solid transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  width: var(--s-8);
+  height: var(--s-8);
+  border-radius: var(--r-sm);
+  display: grid;
+  place-items: center;
+  font-size: var(--t-lg);
+  line-height: 1;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+tr:hover .detailBtn,
+tr[data-cursor='true'] .detailBtn,
+.detailBtn:focus-visible {
+  opacity: 1;
+}
+.detailBtn:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+}

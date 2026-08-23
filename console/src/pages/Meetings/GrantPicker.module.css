@@ -1,0 +1,115 @@
+/* 采集程序选择面板的内容。面板本身（定位/遮罩/焦点）由 ui/Sheet 负责。 */
+
+.lead {
+  margin: 0 0 var(--s-4);
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.7;
+}
+.lead b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.meetings {
+  list-style: none;
+  margin: 0 0 var(--s-5);
+  padding: 0;
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.meeting {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-sm);
+}
+.meeting:last-child {
+  border-bottom: 0;
+}
+/* 会被跳过的那几场退到后面去，但不隐藏——"哪些没改到"和"哪些改到了"同样重要。 */
+.meeting[data-skip='true'] {
+  background: var(--surface-2);
+}
+
+.meetingMain {
+  flex: 1;
+  min-width: 0;
+}
+
+.meetingTitle {
+  font-weight: 500;
+}
+
+.meetingMeta {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  margin-top: var(--s-px);
+}
+
+.consumers {
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.legend {
+  padding: 0;
+  margin-bottom: var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  cursor: pointer;
+  /* 整行都是可点的触控目标，不是只有那个小方块。 */
+  min-height: var(--tap-min);
+}
+.option:hover {
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
+}
+
+.checkbox {
+  accent-color: var(--brand);
+  margin-top: var(--s-1);
+  cursor: pointer;
+}
+
+.optionName {
+  font-size: var(--t-sm);
+  font-weight: 500;
+  display: block;
+}
+
+.optionMeta {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  display: block;
+}
+
+.note {
+  margin: 0 0 var(--s-4);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
