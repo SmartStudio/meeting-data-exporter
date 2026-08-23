@@ -82,7 +82,12 @@ describe('createMysqlStore', () => {
    *
    * 这条用例专门测 SKIP LOCKED：另开一条连接锁住 id 最小的那行，claimNext
    * 必须**跳过**它去领下一条。没有 SKIP LOCKED 时这里会一直等到
-   * innodb_lock_wait_timeout（默认 50s），bun 的 5s 用例超时会先把它判红。
+   * innodb_lock_wait_timeout（默认 50s），用例超时会先把它判红。
+   *
+   * 超时值显式写成 5000 而不是靠 bun 的隐式默认：这条用例的红/绿完全取决于
+   * 「用例超时 < innodb_lock_wait_timeout」，谁要是在 bunfig.toml 里配了更大的
+   * 全局 [test] timeout，它就会退化成一条要等 50s 才现形的用例。用例赖以成立的
+   * 前提就写在用例里。
    */
   test('claimNext 跳过被别人锁住的行，而不是排队等锁', async () => {
     await withDb(async (pool) => {
@@ -106,6 +111,83 @@ describe('createMysqlStore', () => {
         await blocker.rollback()
         blocker.release()
       }
+    })
+  }, 5000)
+
+  /**
+   * 领取语句的**加锁足迹不许随队列长度增长**。
+   *
+   * 这是本文件里唯一一条必须造生产数据分布的用例，原因就是上面两条并发用例
+   * 都在空表上跑，而空表上优化器选主键（`type=index key=PRIMARY rows=1`），
+   * 一次领取只锁 1 行——什么毛病都藏得住。历史 completed 一多，优化器翻到
+   * `range + idx_assets_claimable + filesort`：为了给 ORDER BY id 排序，它必须把
+   * **整个可领取集合**读出来，`FOR UPDATE` 于是把每一行都锁上。实测这个数据量下
+   * 一次领取持有 400 把记录锁。后果不是变慢，是并发 worker 的 SKIP LOCKED 把
+   * 它们全跳过、拿到 null，而 runExecutor 的 `if (!row) return` 让 worker 就此退出：
+   * **队列里还有 200 条活，worker 却集体收工**。
+   *
+   * 所以断言是「20 路并发每一路都领到活」，而不是「没有重复领取」——重复领取
+   * 是另一个失效模式，那个上面的用例管。
+   *
+   * 20000 这个数字不是随手写的：实测 5000 条历史时优化器仍选主键（用例会变成
+   * 一条什么都测不到的绿灯），20000 才翻过去。造数据约 300ms。
+   */
+  test('领取的加锁足迹不随队列长度增长——生产数据分布下并发 worker 不会集体空转', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+
+      const HISTORY = 20_000
+      const PENDING = 200
+      const CHUNK = 2000
+      const COLS = 'meeting_id,sub_meeting_id,asset_type,remote_id,status,file_type,created_at,updated_at'
+      for (let off = 0; off < HISTORY; off += CHUNK) {
+        const ph: string[] = []
+        const vals: unknown[] = []
+        for (let i = 0; i < CHUNK; i++) {
+          ph.push('(?,?,?,?,?,?,?,?)')
+          vals.push(`h${off + i}`, '', 'video', `hr${off + i}`, 'completed', 'mp4', 100, 100)
+        }
+        await pool.query(`INSERT INTO meeting_assets (${COLS}) VALUES ${ph.join(',')}`, vals)
+      }
+      const ph: string[] = []
+      const vals: unknown[] = []
+      for (let i = 0; i < PENDING; i++) {
+        ph.push('(?,?,?,?,?,?,?,?)')
+        vals.push('m1', '', 'video', `pr${i}`, 'pending', 'mp4', 100, 100)
+      }
+      await pool.query(`INSERT INTO meeting_assets (${COLS}) VALUES ${ph.join(',')}`, vals)
+      // 不 ANALYZE 的话优化器可能还拿着空表时的统计信息，测不到真实计划
+      await pool.query('ANALYZE TABLE meeting_assets')
+
+      const CLAIMERS = 20
+      const got = await Promise.all(
+        Array.from({ length: CLAIMERS }, () => s.claimNext(200, 60)),
+      )
+      const rows = got.filter((r) => r !== null)
+      // 200 条待领 vs 20 路并发，每一路都该领到活。锁住整个集合时这里会塌成个位数。
+      expect(rows.length).toBe(CLAIMERS)
+      expect(new Set(rows.map((r) => r.id)).size).toBe(CLAIMERS)
+    })
+  }, 30_000)
+
+  /**
+   * 上一条用例依赖 idx_assets_claimable 的列序是 (status, id, …)：status 等值 +
+   * id 紧随其后，索引才自带 ORDER BY id 需要的顺序，LIMIT 1 才能锁一行就停手。
+   * 列序换回 (status, lease_expires_at, id) 就又要 filesort。
+   *
+   * 单独钉住它，是因为上一条用例红的时候只会说「并发领取塌了」，看不出根因在
+   * 索引列序上；将来有人「顺手优化」这个索引时，这条用例会直接指着列序说话。
+   */
+  test('idx_assets_claimable 的列序把 id 排在 lease_expires_at 之前', async () => {
+    await withDb(async (pool) => {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT column_name FROM information_schema.statistics
+          WHERE table_schema = DATABASE() AND table_name = 'meeting_assets'
+            AND index_name = 'idx_assets_claimable' ORDER BY seq_in_index`,
+      )
+      const cols = rows.map((r) => (r.column_name ?? r.COLUMN_NAME) as string)
+      expect(cols).toEqual(['status', 'id', 'lease_expires_at'])
     })
   })
 
@@ -273,6 +355,32 @@ describe('createMysqlStore', () => {
       })
       expect(map.get('m2')).toEqual({
         subject: null, startTime: null, meetingCode: null, endTime: null, subMeetingId: 's1',
+      })
+    })
+  })
+
+  /**
+   * 钉住「同一 meeting_id 有多个 sub_meeting_id 时谁胜出」的当前行为：
+   * Map 键只有 meeting_id，后一行覆盖前一行，配上 ORDER BY 之后胜出的确定是
+   * sub_meeting_id 最大的那条。
+   *
+   * 这个行为本身是个洞，本任务不修（SQLite 宿主也一样）：周期性会议各场次共享
+   * meeting_id，而胜出行的 start_time 会进目录名，于是所有场次的文件会落进
+   * 某一场次的目录。将来根治那条任务改到这里时，这条用例会明确告诉他改动了什么，
+   * 而不是让他猜原来是什么行为。
+   */
+  test('meetingsForPaths 同 meeting_id 多 sub_meeting 时由 sub_meeting_id 最大的一条胜出', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      // 故意先插 's1' 再插 ''，让「插入顺序」与「sub_meeting_id 序」相反，
+      // 否则两种可能的行序会给出同样的结果，用例就区分不出来了
+      await s.upsertMeeting({ ...M, subMeetingId: 's1', subject: '第二场', startTime: 2000 }, 100)
+      await s.upsertMeeting({ ...M, subMeetingId: '', subject: '第一场', startTime: 1000 }, 100)
+
+      const map = await s.meetingsForPaths()
+      expect(map.size).toBe(1) // 两条会议行，塌成一个 Map 条目——这就是那个洞
+      expect(map.get('m1')).toEqual({
+        subject: '第二场', startTime: 2000, meetingCode: '881', endTime: 2000, subMeetingId: 's1',
       })
     })
   })

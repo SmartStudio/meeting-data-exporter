@@ -45,7 +45,15 @@ CREATE TABLE IF NOT EXISTS meeting_assets (
   updated_at       BIGINT        NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uk_asset (meeting_id, sub_meeting_id, asset_type, remote_id, file_type),
-  KEY idx_assets_claimable (status, lease_expires_at, id)
+  -- 列序是 (status, id, lease_expires_at) 而不是 (status, lease_expires_at, id)，
+  -- 这是 claimNext 的正确性依赖，不是性能微调。领取语句是
+  -- `WHERE status=? [AND lease_expires_at < ?] ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+  -- status 是等值、排序键是 id。id 排在 lease_expires_at 前面时索引自带 id 序，
+  -- LIMIT 1 锁到第一条就停手。反过来（lease_expires_at 在前）索引给不出 id 序，
+  -- 优化器要 filesort，为了排序必须把**整个可领取集合**读出来并逐行加锁——
+  -- 实测 2 万行历史 + 200 条待领时一次领取持有 400 把记录锁，于是并发 worker 的
+  -- SKIP LOCKED 把它们全跳过、拿到 null 就收工，队列还有活却没人干。
+  KEY idx_assets_claimable (status, id, lease_expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS meeting_asset_probes (

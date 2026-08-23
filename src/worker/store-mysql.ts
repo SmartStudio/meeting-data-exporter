@@ -1,4 +1,5 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2'
+import type { PoolConnection } from 'mysql2/promise'
 import type { AssetRow, AssetStatus, ProbeRow, Store } from '@yaowu/mde-engine'
 import type { Pool } from '../store/db'
 
@@ -59,20 +60,23 @@ export function createMysqlStore(pool: Pool): Store {
      * 回读用 `SELECT *`，返回的是 UPDATE 之后的值（同事务内看得见自己的写），
      * 与 SQLite `RETURNING *` 返回更新后行的语义一致。
      *
-     * 需要 MySQL 8.0+（见本仓库 Global Constraints）。
+     * 需要 MySQL 8.0.19+：`SKIP LOCKED` 是 8.0 引入的，upsert 用的
+     * `VALUES (…) AS new` 行别名是 8.0.19 引入的（8.0.0–8.0.18 上会当场语法错误
+     * 而不是降级）。生产 RDS 8.0.36 满足。
      */
     async claimNext(now, leaseSec) {
       const conn = await pool.getConnection()
       try {
+        // READ COMMITTED 不是性能调优，是正确性需要。RR 下 `SELECT … FOR UPDATE`
+        // 会在 status='pending' 区间留间隙锁；队列刚被抽干（稳态）时那把锁覆盖
+        // 整个区间，discovery 插入新发现的资产会被它挡住——实测 2s 后
+        // lock wait timeout。RC 不加间隙锁，同样场景实测 5ms 插入成功。
+        //
+        // 不带 SESSION 的 `SET TRANSACTION` 只影响紧接着的下一个事务，
+        // 所以不会污染这条连接回池后的其它用途。
+        await conn.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
         await conn.beginTransaction()
-        const [picked] = await conn.query<RowDataPacket[]>(
-          `SELECT id FROM meeting_assets
-            WHERE status='pending' OR (status='running' AND lease_expires_at < ?)
-            ORDER BY id LIMIT 1
-            FOR UPDATE SKIP LOCKED`,
-          [now],
-        )
-        const id = picked[0]?.id as number | undefined
+        const id = await pickClaimable(conn, now)
         if (id === undefined) {
           await conn.commit()
           return null
@@ -87,7 +91,10 @@ export function createMysqlStore(pool: Pool): Store {
         await conn.commit()
         return (got[0] as AssetRow | undefined) ?? null
       } catch (err) {
-        await conn.rollback()
+        // 回滚失败是次生错误（连接已经断了之类），不许盖掉真正的根因：
+        // 否则日志里只剩 "Can't add new command when connection is in closed state"，
+        // 而 lock wait timeout / 磁盘满 / DDL 冲突这些真原因被吃掉。
+        try { await conn.rollback() } catch { /* 忽略：根因是 err */ }
         throw err
       } finally {
         conn.release()
@@ -210,10 +217,21 @@ export function createMysqlStore(pool: Pool): Store {
     },
 
     async meetingsForPaths() {
-      // 不加 ORDER BY、不去重——与 SQLite 版同构：同一 meeting_id 有多个
-      // sub_meeting_id 时后一行覆盖前一行。换行序或换去重方式会改掉落盘路径。
+      // 去重方式与 SQLite 版同构：同一 meeting_id 有多个 sub_meeting_id 时
+      // 后一行覆盖前一行，胜出的是 sub_meeting_id 最大的那条。
+      //
+      // ORDER BY 是显式钉住这件事，不是改行为——今天不加 ORDER BY 时 InnoDB 全表扫
+      // 走聚簇索引、恰好也是 (meeting_id, sub_meeting_id) 序，胜出行一模一样。但那是
+      // 当前执行计划的副产物，不是 SQL 语义保证：优化器哪天改挑一个覆盖索引，
+      // 胜出行就会静默换人。把「凑巧确定」写成「明确确定」。
+      //
+      // 注意这个「后行覆盖」本身仍是个洞（两个宿主都有，本任务不修）：周期性会议
+      // 各场次共享 meeting_id、start_time 各不相同，而 start_time 会进目录名
+      // （packages/engine/src/executor/index.ts:51-54），所以后果是**所有场次的文件
+      // 落进某一场次的目录**。已记进台账。
       const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time FROM meetings`,
+        `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time
+           FROM meetings ORDER BY meeting_id, sub_meeting_id`,
       )
       return new Map(rows.map((r) => [r.meeting_id as string, {
         subject: (r.subject ?? null) as string | null,
@@ -224,4 +242,42 @@ export function createMysqlStore(pool: Pool): Store {
       }]))
     },
   }
+}
+
+/**
+ * 挑出「可领取集合里 id 最小的那条」并锁住它，返回它的 id。
+ *
+ * SQLite 版一条 `WHERE status='pending' OR (status='running' AND lease_expires_at < ?)
+ * ORDER BY id LIMIT 1` 就够了。MySQL 这边**必须拆成两条单 status 的查询**，
+ * 原因是加锁足迹会随执行计划翻转：
+ *
+ *   OR 形式在生产数据分布上（历史 completed 远多于待领）会走 range + filesort。
+ *   为了排序，它必须把**整个可领取集合**读出来，而 `FOR UPDATE` 会把读到的每一行
+ *   都锁上——实测 2 万行历史 + 200 条待领时，一次领取持有 400 把记录锁。
+ *   于是并发 worker 的 `SKIP LOCKED` 把它们全跳过、拿到 null，而
+ *   `runExecutor` 的 `if (!row) return` 会让 worker 就此退出：
+ *   **队列里还有活，worker 却集体收工**。空表上测不出来，因为优化器那时选主键。
+ *
+ * 拆开之后两条都是 status 等值查询，配合 `idx_assets_claimable (status, id,
+ * lease_expires_at)` 索引自带 id 序，不再 filesort，`LIMIT 1` 锁到第一条就停手
+ * （同样数据下实测 2 把锁，且不随队列长度增长）。
+ *
+ * 取两条结果里 id 较小的那个，等价于原来的 `OR + ORDER BY id LIMIT 1`——
+ * 可领取集合与优先级都没变，两个宿主不分叉。第二条查询即使这次用不上也照跑，
+ * 就是为了保住这个「跨两个集合取全局最小 id」的语义；它多锁的那一行在几微秒后
+ * 的 COMMIT 就释放，足迹依然是常数。
+ */
+async function pickClaimable(conn: PoolConnection, now: number): Promise<number | undefined> {
+  const [pending] = await conn.query<RowDataPacket[]>(
+    `SELECT id FROM meeting_assets WHERE status='pending'
+      ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+  )
+  const [expired] = await conn.query<RowDataPacket[]>(
+    `SELECT id FROM meeting_assets WHERE status='running' AND lease_expires_at < ?
+      ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+    [now],
+  )
+  const ids = [pending[0]?.id as number | undefined, expired[0]?.id as number | undefined]
+    .filter((v): v is number => v !== undefined)
+  return ids.length > 0 ? Math.min(...ids) : undefined
 }
