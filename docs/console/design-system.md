@@ -199,7 +199,12 @@ CSS 的 `prefers-reduced-motion` 对 SVG SMIL `<animate>` **无效**。所有循
 
 ## 6. 动效
 
-- 只动 `transform` 和 `opacity`，不动布局属性
+- **不动布局属性**（`width` / `height` / `top` / `left` / `margin` / `padding`…）——
+  它们每帧触发 reflow。位移与淡入淡出一律用 `transform` 与 `opacity`
+- 纯绘制属性（`color` / `background-color` / `border-color`）**可以**用于 hover、
+  focus 这类状态反馈，时长限 `--dur-1`。它们不触发 reflow，和上一条不冲突。
+  （原表述是「只动 transform 和 opacity」，与「不动布局属性」并列成了两条规矩，
+  实践中被读成禁止一切颜色过渡——那不是本意，F1 Task 4 的评审撞上了这处歧义）
 - 三个具名缓动：`--ease-out` / `--ease-in` / `--ease-in-out`。**不用浏览器默认的 `ease`**
 - 三档时长：`--dur-1` 120ms（微交互）· `--dur-2` 200ms（浮层）· `--dur-3` 260ms（抽屉）
 - 按下反馈统一是 `transform: translateY(1px)`，且**不加过渡**（按下应当是即时的）

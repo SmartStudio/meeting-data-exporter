@@ -35,8 +35,10 @@ CSS Modules · Vitest + @testing-library/react · Playwright（仅用于回归�
 - **无障碍基线不许退**（`design-system.md` §5，原型已实测通过）：文字对比度 WCAG AA、
   焦点环可见且不做出现动画、隐藏浮层退出 Tab 序列、1440/1050/375 无横向溢出、
   输入类触控目标 ≥44px、`prefers-reduced-motion` 生效。
-- **只动 `transform` 与 `opacity`**，不动布局属性做动画。三档时长 `--dur-1/2/3`、
-  三个具名缓动 `--ease-out/in/in-out`，不用浏览器默认的 `ease`。
+- **不动布局属性做动画**（width/height/top/left/margin/padding——每帧触发 reflow）。
+  位移与淡入淡出用 `transform` 与 `opacity`；纯绘制属性（color / background-color /
+  border-color）可用于 hover、focus 这类状态反馈，时长限 `--dur-1`。
+  三档时长 `--dur-1/2/3`、三个具名缓动 `--ease-out/in/in-out`，不用浏览器默认的 `ease`。
 - **原型里的所有数字都是编的。** 搬 mock 数据时照搬，但不要在任何文档或界面里
   把它们当作真实统计引用。顶栏那个「原型 · 全部数字为示例」的标记要保留。
 
