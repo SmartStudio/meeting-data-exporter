@@ -61,8 +61,13 @@ export type AdminAuthResult =
  * 从 Cookie 头里取指定名字的值。Cookie 头可能同时携带多个 cookie
  * （`foo=bar; mde_admin_session=xxx; baz=qux`），必须按 `;` 拆分后逐个匹配
  * 名字，不能假设目标 cookie 是唯一或第一个。
+ *
+ * 导出而不是留作模块私有：handlers/console/auth.ts 的 logout 也要读同一个 cookie，
+ * 各写一份的代价不是重复代码而是**静默的安全失败**——logout 那份曾经把 cookie 名
+ * 写成正则里的字面量，一旦 ADMIN_SESSION_COOKIE 改名，浏览器侧的 cookie 照样被清掉
+ * （客户端看起来已登出），服务端的会话却再也撤销不掉。要读 cookie 一律走这个函数。
  */
-function readCookie(req: Request, name: string): string | null {
+export function readCookie(req: Request, name: string): string | null {
   const header = req.headers.get('cookie')
   if (!header) return null
   for (const part of header.split(';')) {

@@ -13,7 +13,7 @@
  */
 import { expect, test } from 'bun:test'
 import { login, logout, me, listAccounts, createAccount, deleteAccount } from '../../../src/http/handlers/console/auth'
-import { AdminAuthError, AdminSessionInvalidError } from '../../../src/auth/admin'
+import { AdminAuthError, AdminSessionInvalidError, ADMIN_PASSWORD_MIN_LENGTH } from '../../../src/auth/admin'
 import type { AdminAuth, AdminIdentity } from '../../../src/auth/admin'
 import type { AdminAccount, AdminStore } from '../../../src/store/admin'
 import type { AppDeps, RouteCtx } from '../../../src/http/router'
@@ -422,6 +422,61 @@ test('createAccount：缺少用户名或密码返回 400', async () => {
   const res = await createAccount(req, ctx)
   expect(res.status).toBe(400)
   expect((await res.json()).error).toBe('missing_fields')
+})
+
+test('createAccount：密码短于最小长度返回 400 password_too_short，且不查库、不建号', async () => {
+  // 门槛取自 src/auth/admin.ts 的常量而不是在测试里写死 8：这条用例要锁的是
+  // "两条建号路径共用同一个门槛"，把数字抄一遍就等于又开了第三份定义。
+  let findCalled = false
+  let createCalled = false
+  const ctx = makeCtx({
+    adminStore: {
+      async findByUsername() {
+        findCalled = true
+        return null
+      },
+      async createAccount() {
+        createCalled = true
+      },
+    },
+  })
+  const req = authedRequest('https://gw/api/v1/admin/accounts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'newuser', password: 'x'.repeat(ADMIN_PASSWORD_MIN_LENGTH - 1) }),
+  })
+  const res = await createAccount(req, ctx)
+  expect(res.status).toBe(400)
+  expect(await res.json()).toEqual({ error: 'password_too_short', minLength: ADMIN_PASSWORD_MIN_LENGTH })
+  expect(findCalled).toBe(false)
+  expect(createCalled).toBe(false)
+})
+
+test('createAccount：密码正好等于最小长度时放行（边界不多不少）', async () => {
+  const recorded: { password: string | null } = { password: null }
+  const ctx = makeCtx({
+    adminAuth: {
+      async hashPassword(password) {
+        recorded.password = password
+        return 'hashed'
+      },
+    },
+    adminStore: {
+      async findByUsername() {
+        return null
+      },
+      async createAccount() {},
+    },
+  })
+  const minLengthPassword = 'x'.repeat(ADMIN_PASSWORD_MIN_LENGTH)
+  const req = authedRequest('https://gw/api/v1/admin/accounts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'newuser', password: minLengthPassword }),
+  })
+  const res = await createAccount(req, ctx)
+  expect(res.status).toBe(201)
+  expect(recorded.password).toBe(minLengthPassword)
 })
 
 test('createAccount：用户名已存在返回 409，且不调用 store.createAccount', async () => {

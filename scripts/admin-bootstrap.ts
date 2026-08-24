@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto'
 import { createPool, runMigrations } from '../src/store/db'
 import { createAdminStore } from '../src/store/admin'
-import { createAdminAuth } from '../src/auth/admin'
+import { createAdminAuth, ADMIN_PASSWORD_MIN_LENGTH, isAdminPasswordAcceptable } from '../src/auth/admin'
 
 export function parseArgs(argv: string[]): { username: string; password: string } {
   let username: string | undefined
@@ -23,8 +23,10 @@ export function parseArgs(argv: string[]): { username: string; password: string 
   if (!username || !password) {
     throw new Error('usage: bun scripts/admin-bootstrap.ts --username <name> --password <password>')
   }
-  if (password.length < 8) {
-    throw new Error('password must be at least 8 characters')
+  // 门槛来自 src/auth/admin.ts，与控制台的 POST /api/v1/admin/accounts 是同一个判定，
+  // 不在这里各写一份长度比较
+  if (!isAdminPasswordAcceptable(password)) {
+    throw new Error(`password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters`)
   }
   return { username, password }
 }

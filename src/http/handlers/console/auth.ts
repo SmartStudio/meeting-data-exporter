@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { RouteCtx } from '../../router'
 import { json, readJson } from '../../respond'
-import { requireAdminAuth, ADMIN_SESSION_COOKIE } from '../../middleware'
-import { AdminAuthError } from '../../../auth/admin'
+import { requireAdminAuth, readCookie, ADMIN_SESSION_COOKIE } from '../../middleware'
+import { AdminAuthError, ADMIN_PASSWORD_MIN_LENGTH, isAdminPasswordAcceptable } from '../../../auth/admin'
 
 interface LoginBody { username?: string; password?: string; remember?: boolean }
 
@@ -35,9 +35,13 @@ export async function login(req: Request, ctx: RouteCtx): Promise<Response> {
 }
 
 export async function logout(req: Request, ctx: RouteCtx): Promise<Response> {
-  const cookieHeader = req.headers.get('cookie') ?? ''
-  const match = /(?:^|;\s*)mde_admin_session=([^;]+)/.exec(cookieHeader)
-  if (match?.[1]) await ctx.deps.adminAuth.revokeSession(decodeURIComponent(match[1]))
+  // 读 cookie 走 middleware 的 readCookie + ADMIN_SESSION_COOKIE 常量，不自己写正则：
+  // 之前那份手写正则把 cookie 名写成了字面量，改名之后它会静静地匹配不上——响应里
+  // 清除 cookie 的那一句照常发出（客户端看起来登出了），服务端会话却永远不被撤销。
+  const token = readCookie(req, ADMIN_SESSION_COOKIE)
+  // 空值（`mde_admin_session=;`）不值得往下走一次撤销——与改用 readCookie 之前的
+  // `if (match?.[1])` 行为一致
+  if (token) await ctx.deps.adminAuth.revokeSession(token)
   const res = json(204, null)
   res.headers.append('set-cookie', `${ADMIN_SESSION_COOKIE}=; ${cookieAttrs(ctx.deps.cookieSecure, 0)}`)
   return res
@@ -64,6 +68,13 @@ export async function createAccount(req: Request, ctx: RouteCtx): Promise<Respon
   if (!auth.ok) return auth.response
   const body = await readJson<CreateAccountBody>(req)
   if (!body?.username || !body.password) return json(400, { error: 'missing_fields' })
+  // 密码门槛与 scripts/admin-bootstrap.ts 共用同一个判定（src/auth/admin.ts），
+  // 不在这里另写一个 `.length < 8`：同一套凭证系统不能因为建号入口不同而有两条标准。
+  // minLength 一并回给前端，好让"添加运维人员"的表单能直接说清差多少，
+  // 不用把 8 这个数字在前端再抄一遍。
+  if (!isAdminPasswordAcceptable(body.password)) {
+    return json(400, { error: 'password_too_short', minLength: ADMIN_PASSWORD_MIN_LENGTH })
+  }
   const existing = await ctx.deps.adminStore.findByUsername(body.username)
   if (existing !== null) return json(409, { error: 'username_taken' })
   const id = randomUUID()
