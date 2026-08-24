@@ -865,11 +865,14 @@ async function runLayout(page: Page): Promise<void> {
           `内容溢出到 body 之外：body.scrollWidth=${r.page.bodyScrollWidth} > clientWidth=${r.page.bodyClientWidth}`,
           '    表格自己的 overflow-x 容器不算——那种滚动不会累加到 body 上')
       }
-      if (!vacuityNoted && /^(clip|hidden)$/.test(r.page.htmlOverflowX)) {
+      const bothClipped = /^(clip|hidden)$/.test(r.page.htmlOverflowX) && /^(clip|hidden)$/.test(r.page.bodyOverflowX)
+      if (!vacuityNoted && bothClipped) {
         vacuityNoted = true
         note('3 横向溢出', '口径说明',
-          `html 的 overflow-x 是 ${r.page.htmlOverflowX}，documentElement.scrollWidth 被摁死在 clientWidth 上，`
-          + '那条断言在本工程永远不会红。真正扛横向溢出的是 body.scrollWidth 与「元素在视口内可达」两条。')
+          `html 与 body 的 overflow-x 同为 ${r.page.htmlOverflowX}/${r.page.bodyOverflowX}（base.css 的 \`html, body { overflow-x: clip }\`），`,
+          '    documentElement.scrollWidth 于是被摁死在 clientWidth 上，那条断言在本工程永远不会红。',
+          '    要两个都是 clip 才会这样——放开任意一个它就能报出真实内容宽（实测 375 → 781）。',
+          '    真正扛横向溢出的是 body.scrollWidth 与「元素在视口内可达」两条。')
       }
       /* 只量 scrollWidth 会漏：html/body 是 overflow-x: clip，被切掉的东西
          量不出来，一个只看 scrollWidth 的检查恰恰会给"被裁掉所以够不着"发通行证。 */
@@ -1014,12 +1017,154 @@ async function runMedia(page: Page, tf: TokenFile): Promise<void> {
    ══════════════════════════════════════════════════════════════════ */
 
 const CHECK_TITLES: Array<[string, string]> = [
+  ['0 已知缺口', '已知缺口名单与实际一致（过期的豁免算失败）'],
   ['1 对比度', '两种主题全页对比度 + 语义色令牌'],
   ['2 Tab 泄漏', 'Tab 泄漏 · 无障碍树 · 焦点环'],
   ['3 横向溢出', '1440 / 1050 / 375 无横向溢出且元素可达'],
   ['4 裸值', 'module.css 无裸 px / hex / rgb'],
   ['5 媒体查询', 'reduced-motion 与三态主题真的生效'],
 ]
+
+/* ══════════════════════════════════════════════════════════════════
+   已知缺口名单
+   ══════════════════════════════════════════════════════════════════
+
+   `spec.md` §11 缺口 #2 已经把移动端列为已知缺口（「导航横向滚动、分诊条两列、
+   表格横向滚动。**能看，不好用。**」），brief 明写「F1 不负责 spec §11 的五个缺口」。
+   所以 375px 下那几条不该由 F1 修——但也绝不能悄悄消失。
+
+   这份名单不是「把门槛调哑」的开关，它有三条硬约束，缺一条就退化成静音：
+
+     1. 每条缺口**具名 + 写明理由 + 指向 spec 条目**，并且照常**大声打印**出来。
+        它出现在报告最显眼的一节里，不是被 filter 掉的一行。
+     2. 某条缺口**不再复现**时，门槛**红**。过期的豁免是错误，不是好消息——
+        将来有人顺手把 BatchBar 修好了，豁免却留着，下次它真坏了就没人喊了。
+     3. 任何**不在名单上**的问题，照常红。名单按元素+症状精确匹配，
+        绝不会顺手吃掉一条新问题。
+
+   往这里加一条之前先问：它是不是真的有 spec / 裁定背书？没有就不该进来。 */
+
+interface GapItem {
+  /** 人话：这一条到底是什么。会原样打印。 */
+  what: string
+  /** 属于哪一项检查。那一项没跑（--only）时本条不参与对账，免得误报"豁免过期"。 */
+  check: string
+  /** 形态过滤（`375px/selected` 之类）。 */
+  where: RegExp
+  /** 对失败正文（含定位串那几行）的精确匹配。 */
+  text: RegExp
+}
+
+interface KnownGap {
+  id: string
+  title: string
+  ref: string
+  reason: string[]
+  items: GapItem[]
+}
+
+const NARROW = /^375px\//
+const KNOWN_GAPS: KnownGap[] = [
+  {
+    id: 'gbar-narrow',
+    title: '顶栏在窄屏没有断点',
+    ref: 'docs/console/spec.md §11 缺口 #2（移动端：「能看，不好用」）· brief：F1 不负责 §11 的五个缺口',
+    reason: [
+      '左栏 --rail-w 定宽 196px，AppShell 的 grid-template-columns: var(--rail-w) minmax(0,1fr)',
+      '没有窄屏断点。375px 下内容列只剩 179px，顶栏这几个控件被推到 365–781px，',
+      '再被 base.css 的 `html, body { overflow-x: clip }` 切掉——看不见、也够不着。',
+      '修它是一个窄屏断点决策（左栏折叠 / 顶栏改抽屉），属于 F1 之外。',
+    ],
+    items: [
+      { what: '系统状态下拉跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口[\s\S]*GlobalBar__statePick/ },
+      { what: '全局搜索入口跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口[\s\S]*GlobalBar__search/ },
+      { what: '主题「浅色」按钮跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口、够不着：「浅色」[\s\S]*GlobalBar__themeBtn/ },
+      { what: '主题「深色」按钮跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口、够不着：「深色」[\s\S]*GlobalBar__themeBtn/ },
+      { what: '主题「跟随系统」按钮跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口、够不着：「跟随系统」[\s\S]*GlobalBar__themeBtnActive/ },
+      { what: '用户菜单跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口[\s\S]*GlobalBar__user/ },
+      { what: '上面几条的合成结果：内容溢出到 body 之外', check: '3 横向溢出', where: NARROW, text: /内容溢出到 body 之外/ },
+    ],
+  },
+  {
+    id: 'batchbar-narrow',
+    title: '批量条心算居中，窄屏挤不进内容列',
+    ref: 'docs/console/spec.md §11 缺口 #2 · brief：F1 不负责 §11 的五个缺口',
+    reason: [
+      'BatchBar.module.css:5 用 `left: calc(50% + var(--rail-w)/2)` 心算居中到内容列。',
+      '375px 下这个偏移把可用宽度砍到 89.5px，条被挤成 97px 宽的竖柱（六个按钮各占一行），',
+      '中心落在视口 76% 处。它**既不横滚也不越界**——「页面横滚」和「元素跑出视口」两条都会放行，',
+      '只有第三条判据（渲染宽 > 视口宽 − 自身 left）抓得到。',
+      '修它要么给窄屏断点，要么改成 left/right 双锚定 + max-width，都是 F1 之外的决策。',
+    ],
+    items: [
+      { what: '批量条被自身 left 偏移挤成竖柱', check: '3 横向溢出', where: /^375px\/selected$/, text: /挤不进自己的位置[\s\S]*BatchBar__bar/ },
+    ],
+  },
+]
+
+interface AbsorbedItem { item: GapItem; hits: Finding[] }
+interface GapResult { gap: KnownGap; absorbed: AbsorbedItem[]; stale: GapItem[]; skipped: GapItem[] }
+
+/** 把名单上的失败从 failures 里摘出来；名单上却不再复现的，反过来变成一条失败。 */
+function reconcileGaps(): GapResult[] {
+  const out: GapResult[] = []
+  for (const gap of KNOWN_GAPS) {
+    const res: GapResult = { gap, absorbed: [], stale: [], skipped: [] }
+    for (const item of gap.items) {
+      if (!enabled(item.check[0] ?? '')) { res.skipped.push(item); continue }
+      const hits = failures.filter(
+        (f) => f.check === item.check && item.where.test(f.where) && item.text.test(f.lines.join('\n')),
+      )
+      if (hits.length === 0) {
+        res.stale.push(item)
+        continue
+      }
+      for (const h of hits) failures.splice(failures.indexOf(h), 1)
+      res.absorbed.push({ item, hits })
+    }
+    out.push(res)
+  }
+  /* 过期的豁免是错误。放在这里而不是 note 里，就是要它计入退出码。 */
+  for (const r of out) {
+    for (const item of r.stale) {
+      fail('0 已知缺口', r.gap.id,
+        `已知缺口「${item.what}」不再复现了`,
+        '    豁免过期了：要么它被修好了，要么它的症状变了、名单上的匹配已经指不中。',
+        `    请把这一条从 scripts/a11y-check.ts 的 KNOWN_GAPS[${r.gap.id}] 里删掉。`,
+        '    留着一条永不命中的豁免，等于给这块地方永久静音——下次它真坏了没人会喊。')
+    }
+  }
+  return out
+}
+
+function printGaps(results: GapResult[]): void {
+  const shown = results.filter((r) => r.absorbed.length > 0 || r.stale.length > 0)
+  if (shown.length === 0) return
+  const bar = '─'.repeat(78)
+  console.log('\n' + bar)
+  console.log('已知缺口（已裁定不由 F1 修——但每一条都必须仍然复现，否则上面会红）')
+  console.log(bar)
+  for (const r of shown) {
+    const total = r.absorbed.reduce((n, a) => n + a.hits.length, 0)
+    console.log(`\n▣ ${r.gap.id}　${r.gap.title}`)
+    console.log(`  依据：${r.gap.ref}`)
+    r.gap.reason.forEach((line, i) => console.log(`  ${i === 0 ? '理由：' : '　　　'}${line}`))
+    console.log(`  仍在复现 ${r.absorbed.length} 条 / ${total} 次命中：`)
+    for (const a of r.absorbed) {
+      const wheres = [...new Set(a.hits.map((h) => h.where))]
+      console.log(`    · ${a.item.what}`)
+      console.log(`      ${(a.hits[0]?.lines[0] ?? '').trim()}`)
+      console.log(`      形态：${wheres.join('、')}`)
+    }
+    if (r.stale.length) {
+      console.log(`  ✖ 已过期 ${r.stale.length} 条（见上面的失败明细）：`)
+      for (const item of r.stale) console.log(`    · ${item.what}`)
+    }
+    if (r.skipped.length) {
+      console.log(`  ○ 本次未对账 ${r.skipped.length} 条（所属检查被 --only 跳过）`)
+    }
+  }
+}
 
 /* 同一处问题会在十几个形态里各报一遍。原样打出来是 66 行几乎一样的文字，
    没人会去读，更没人会去修。按「抹掉元素名之后相同」归成"同型"，
@@ -1032,6 +1177,10 @@ function report(): number {
   const width = 78
   const bar = '─'.repeat(width)
 
+  /* 顺序要紧：先对账，它会把名单上的失败摘出去、把过期的豁免变成新的失败，
+     下面的分组统计才是最终口径。 */
+  const gapResults = reconcileGaps()
+
   if (notes.length) {
     console.log('\n' + bar)
     console.log('提示（不计入成败，但值得看一眼）')
@@ -1041,6 +1190,8 @@ function report(): number {
       for (const l of n.lines) console.log(`    ${l}`)
     }
   }
+
+  printGaps(gapResults)
 
   const byCheck = new Map<string, Finding[]>()
   for (const f of failures) {
@@ -1104,6 +1255,13 @@ function report(): number {
     kinds += k
     console.log(`  ${arr.length === 0 ? '✔' : '✖'} ${id}　${title}　`
       + (arr.length === 0 ? '通过' : `${k} 类问题 / ${arr.length} 次命中`))
+  }
+  const absorbed = gapResults.reduce((n, r) => n + r.absorbed.reduce((m, a) => m + a.hits.length, 0), 0)
+  const gapItems = gapResults.reduce((n, r) => n + r.absorbed.length, 0)
+  if (absorbed > 0) {
+    console.log('')
+    console.log(`  另有 ${gapItems} 条已知缺口仍在复现（${absorbed} 次命中），已具名列在上面的「已知缺口」一节，`)
+    console.log('  依据 spec.md §11 缺口 #2 不由 F1 修。它们没有被静音：任何一条不再复现，本门槛会红。')
   }
   console.log('')
   if (failures.length === 0) {
