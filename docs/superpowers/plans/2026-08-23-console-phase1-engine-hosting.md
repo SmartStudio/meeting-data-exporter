@@ -27,6 +27,9 @@
   bash 中必须单引号包裹（密码含 `!` 会触发历史展开）。
 - **基线**：本计划开工前 `TEST_DATABASE_URL='…' bun test`（仓库根）= **395 pass / 0 fail**，
   `cd client && bun test` = **75 pass / 0 fail**。每个任务结束后这两个数字只许涨不许跌。
+  > **订正（2026-08-24，T7 复审发现）**：`75` 是**引擎拆包之前**的数，已失效。
+  > 拆包后是 `client` 21 + `packages/engine` 55 = **76**。下面凡写「两处相加 = 75」
+  > 的地方一律按 **76** 执行。实质要求（CLI 行为一字不变）不受影响。
 - 未设 `TEST_DATABASE_URL` 时根目录会有 28 个失败，全部是网关库测试，与本计划无关。
 - **引擎逻辑零改动**：任务 2、3 是纯搬运与纯签名变更。凡是「顺手改一下」的逻辑修改，
   一律不做，记进台账另开任务。
@@ -489,7 +492,8 @@ Expected: 三处均无输出（干净）
 
 Run: `cd packages/engine && bun test 2>&1 | tail -3`
 Run: `cd client && bun test 2>&1 | tail -3`
-Expected: 两处相加 = **75 pass / 0 fail**（搬家前 client 是 75；一条都不许少）
+Expected: 两处相加 = **76 pass / 0 fail**（client 21 + engine 55；一条都不许少）
+**判成败只看退出码**，不要用 `| tail` 的输出判断——管道尾部命令总是退出 0，会把失败吞掉。
 
 Run: `TEST_DATABASE_URL='<连接串>' bun test 2>&1 | tail -3`（仓库根）
 Expected: `395 pass / 0 fail`
@@ -670,8 +674,8 @@ Expected: 干净。`noUncheckedIndexedAccess` + strict 下，漏掉的 await 大
 
 Run: `cd packages/engine && bun test 2>&1 | tail -3`
 Run: `cd client && bun test 2>&1 | tail -3`
-Expected: 两处相加仍是 **75 pass / 0 fail**。测试数量、通过数**都不许变**——变了说明
-不是纯签名改动。
+Expected: 两处相加仍是 **76 pass / 0 fail**。测试数量、通过数**都不许变**——变了说明
+不是纯签名改动。**判成败只看退出码。**
 
 - [ ] **Step 7: 确认没有 floating promise**
 
@@ -1636,7 +1640,7 @@ Expected: PASS
 Run: `bun run typecheck && cd packages/engine && bun run typecheck && cd ../../client && bun run typecheck`
 Run: `TEST_DATABASE_URL='<连接串>' bun test 2>&1 | tail -3`
 Run: `cd client && bun test 2>&1 | tail -3`
-Expected: 全绿，且 client 的 75 pass 一条不少
+Expected: 全绿（**看退出码**），且 client 的 21 pass 一条不少
 
 - [ ] **Step 7: Commit**
 
@@ -1653,7 +1657,7 @@ git commit -m "feat(worker): 归档 worker 入口，引擎在服务端跑通一�
 
 1. `bun run worker --meeting <真实会议号>` 能把该会议的资产拉进 `MDE_ARCHIVE_ROOT`
 2. `meeting_assets` 表里能看到逐条状态、`content_hash`、`target_path`
-3. `mde` CLI 的行为**一个字没变**（`cd client && bun test` 仍是 75 pass）
+3. `mde` CLI 的行为**一个字没变**（`cd client && bun test` 仍是 21 pass）
 4. 三处 typecheck 干净，根目录测试全绿
 5. `src/worker/source-inproc.ts` 顶部那段「为什么绕过策略引擎是对的」的注释在
 
