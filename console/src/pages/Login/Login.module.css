@@ -1,0 +1,144 @@
+/* 登录页。不经过 AppShell（无左栏/顶栏），自己占满视口、自己居中。
+ * body 已经在 base.css 里设了 --ground 底色，这里不重复画。 */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-7);
+  padding: var(--s-8) var(--s-5);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+  text-align: center;
+}
+
+/* 与 Rail.tsx 的 .brandMark 同一套视觉语言（品牌色实底方块 + 粗体字母），
+ * 不引入另一套标志画法——这两处是这个应用里仅有的两个"品牌角标"。 */
+.brandMark {
+  width: var(--s-11);
+  height: var(--s-11);
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-lg);
+  background: var(--brand);
+  color: var(--on-brand);
+  font-weight: 700;
+  font-size: var(--t-2xl);
+}
+
+.brandName {
+  margin: 0;
+  font-size: var(--t-xl);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.brandSub {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+.card {
+  width: min(92vw, var(--login-card-w));
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--s-7);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.remember {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.checkbox {
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+/* 报错行常驻占位：无论 error 是不是 null，这个容器都在——只是文字内容变化。
+ * min-height 按一行 --t-sm 文字的排版高度给死，避免出错前后表单跳一行
+ * （spec.md §4.1 明确要求，登录失败不应该让下面的按钮跟着挪位置）。 */
+.errorSlot {
+  min-height: var(--s-6);
+  display: flex;
+  align-items: center;
+  font-size: var(--t-sm);
+  line-height: 1.4;
+  color: var(--fail);
+}
+
+.submit {
+  width: 100%;
+  justify-content: center;
+}
+
+.hint {
+  margin: 0;
+  text-align: center;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+/* 四阶段点线：纯展示，不接状态（见 index.tsx 里的注释）。每个 <li> 是
+ * "圆点 + 间距 + 文字"，非末项在右侧再接一段短线做视觉连接。 */
+.stages {
+  display: flex;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.stages li {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.stages li::before {
+  content: '';
+  width: var(--s-1);
+  height: var(--s-1);
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+}
+
+.stages li:not(:last-child)::after {
+  content: '';
+  width: var(--s-8);
+  height: var(--s-px);
+  background: var(--line);
+  margin: 0 var(--s-2);
+}

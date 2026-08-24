@@ -322,10 +322,23 @@ const MIME: Record<string, string> = {
 }
 
 /** dist 的静态服务 + SPA 回退。用 node:http 而不是 Bun.serve——
- *  tsconfig 的 types 里没有 bun，用 node: 前缀的模块两边都能跑也能过 tsc。 */
+ *  tsconfig 的 types 里没有 bun，用 node: 前缀的模块两边都能跑也能过 tsc。
+ *
+ *  Task 6 之后 `AppShell` 挂载时会真的 `fetch('/api/v1/admin/auth/me')`。
+ *  这台服务器不挂后端，SPA 回退会把这条请求也答成 200 的 `index.html`——
+ *  `fetchAdminIdentity()` 看 `res.ok` 为真就去 `res.json()`，解析 HTML 必炸，
+ *  `AppShell` 因此落进它的 error 态，下面所有以 `nav[aria-label="主导航"]`
+ *  为挂载标志的场景（几乎全部）会统一超时，而不是各自该有的样子。这里单独
+ *  兜一下这一条路径，答一个真的会通过的管理员身份，让门槛验的还是页面本身
+ *  的无障碍状态，不是这台没有后端的测试服务器答不出登录态这件事。 */
 function serveDist(dir: string): Promise<{ server: Server; port: number }> {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
+    if (url.pathname === '/api/v1/admin/auth/me' && (req.method ?? 'GET') === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ adminId: 'a11y-harness', username: 'a11y-harness' }))
+      return
+    }
     let rel = decodeURIComponent(url.pathname)
     if (rel.endsWith('/')) rel += 'index.html'
     let file = path.join(dir, rel)
