@@ -25,6 +25,12 @@ export interface PoolTuning {
    * 「池耗尽会喊出来」，会失望。归档 worker 用它兜的是 fire-and-forget 的
    * `touchProgress` 堆积（见 src/worker/index.ts 的 poolQueueLimitFor）。
    *
+   * 而**一旦队列真的满了**，mysql2 对**所有**调用方一律以 `Queue limit reached.`
+   * 拒绝，不区分是谁排上来的。对 worker 而言这意味着下一次 `claimNext` 当场抛出
+   * ——整轮失败、退出码 1、已领取的行卡在 `running` 直到租约过期。
+   * 这道闸门把「无界堆积到 OOM」换成了「一轮当场失败」，**不是**换成了
+   * 「继续跑、只是多几行 warn」。
+   *
    * 默认仍是 mysql2 的行为（不限），因为 HTTP 网关那边改成有限值意味着请求高峰
    * 期把「多等一会儿」换成「直接 500」，那是另一个需要单独权衡的决定，不在
    * 归档 worker 的射程内。worker 自己显式传一个够得着的有限值。

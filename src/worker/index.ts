@@ -103,9 +103,14 @@ export async function runWorkerOnce(
 
 /**
  * 默认执行体数量。**上限是连接池给的，不是拍脑袋定的**：
- * `claimNext` 在事务期间独占一条连接，而每个执行体在最坏交错下还可能同时压着
- * 一条未 await 的 `touchProgress`（进度回写是 fire-and-forget），
- * 所以峰值连接需求约等于 `concurrency × 2`。
+ * `claimNext` 在事务期间独占一条连接，而每个执行体在下载期间还会压着一条
+ * 未 await 的 `touchProgress`（进度回写是 fire-and-forget），
+ * 所以稳态的峰值连接需求约等于 `concurrency × 2`。
+ *
+ * ⚠️ **`×2` 是稳态的典型值，不是最坏值。** 真正的最坏是**无界**：`touchProgress`
+ * 不被 await，写库一慢就会一条接一条地堆起来（见 `poolQueueLimitFor`）。
+ * 也就是说 `assertConcurrencyFitsPool` 挡的是「稳态就已经配过头」这一类配置错误，
+ * 它**挡不住在途堆积**——后者是 `queueLimit` 的活。别把这两道闸门读成一件事。
  *
  * `assertConcurrencyFitsPool` 把**硬上限**卡在 `2 × concurrency ≤ 10`，也就是
  * concurrency ≤ 5（5 时余量恰好为零）。默认取 4 是**刻意站在硬上限之下**，
@@ -122,18 +127,36 @@ const LEASE_SEC = 900
  *
  * **先说清楚它挡不住什么，因为这一点很容易被读反。**
  * `queueLimit` 限的是**队列长度，不是等待时长**，而 mysql2 没有取连接超时。
- * 所以：**`claimNext` 的池耗尽仍然会无限期静默挂起**——`assertConcurrencyFitsPool`
- * 已经把同时发起的取连接请求卡在 `2 × 并发度 ≤ 10`，worker 自己**永远排不出**
- * 一条很长的队，一道高高在上的闸门根本够不着。这道防线不覆盖 `claimNext`。
+ * 队列还没满时，排在上面的请求（包括真正阻塞推进的 `claimNext`）照样无限期
+ * 静默等下去，与默认配置**没有任何区别**。这道闸门只在**队列满的那一刻**才起作用。
  *
- * 它真正兜住的是**另一件事**：大文件下载中每 8MB 发一条、fire-and-forget 的
- * `touchProgress`。那条路径不受并发度约束——连接被占住时它会一条接一条地堆进
- * 队列，堆到内存里去。闸门定在 `2 × 并发度 + 2`（稳态之上一点点）才够得着：
- * 稳态最多 `2 × 并发度` 个等待者，队列深度正常是 0，一旦堆积立刻撞线报错。
- * 定成 16 那种够不着的值等于没有这道闸门。
+ * 它真正兜住的是 fire-and-forget 的 `touchProgress`：`downloader` 每 8MB
+ * **同步**触发一次 `onProgress`（packages/engine/src/downloader/index.ts），
+ * 而 executor 的回调**不 await** `touchProgress`
+ * （packages/engine/src/executor/index.ts）。所以在途的 `touchProgress` 数量
+ * **无界**——一个 2GB 的录制能排出 ~250 个等待者。连接被慢查询占住时，
+ * 这些请求会一条接一条地堆进队列，堆到内存里去。这才是这道闸门存在的理由。
  *
- * 代价要一并写明：`touchProgress` 的错误处理是 `.catch(console.warn)`，所以撞线
- * 的表现是**每 8MB 一行 warn**，而真正阻塞推进的 `claimNext` 仍然静默等。
+ * **稳态的等待者是 0，任何等待者都已经是异常。** `discover` /
+ * `meetingsForPaths` / `runProbes` 都在 `runExecutor` 之前串行跑完，执行期每个
+ * 执行体的 await 链严格串行，所以并发的取连接请求 = 并发度（awaited）
+ * + ≤ 并发度（在途 touchProgress）= `2 × 并发度` ≤ 10 = 池上限，全都能拿到连接，
+ * 根本排不出队。`2 × 并发度 + 2` 里的 `+2` 只是给抖动留的一点余量，
+ * 不是「稳态队列深度」。
+ *
+ * 换掉原先硬编码的 16，理由是**随并发度缩放、撞线更早**（并发度 1 时闸门是 4，
+ * 而不是一个与配置无关的 16），不是「16 够不着」——16 在 `touchProgress`
+ * 这条无界路径上完全够得着。
+ *
+ * ⚠️ **撞线的表现，别读错**：mysql2 的 `getConnection` 在队列满时对**所有**调用方
+ * 一律 `cb(new Error('Queue limit reached.'))`，不区分是谁
+ * （node_modules/mysql2/lib/base/pool.js）。而 `claimNext` / `markCompleted` /
+ * `setTargetPath` 都没有被 try/catch 包住，`runExecutor` 的 `Promise.all` 也不 catch。
+ * 所以撞线的真实表现是：**整轮当场抛出、退出码 1、已领取的行卡在 `running`
+ * 直到租约过期**，而不是「进程还在跑、只是每 8MB 多一行 warn」。
+ * （`touchProgress` 自己的那条 `.catch(console.warn)` 只吞掉它自己那次拒绝；
+ * 同一时刻打到 `claimNext` 上的那次没人接。）
+ *
  * 根治要的是「取连接超时」，mysql2 不提供，需要另开任务（见 task-7-report §4）。
  */
 export function poolQueueLimitFor(concurrency: number): number {
@@ -219,9 +242,10 @@ export function parseWorkerArgs(argv: string[], defaultConcurrency: number): Wor
 /**
  * 并发度必须对着连接池的上限定。不校验的后果不是变慢，是**无限期静默挂起**：
  * mysql2 没有取连接超时，排在队列上的 `claimNext` 会一直等下去，没有超时、
- * 没有报错、没有日志（`poolQueueLimitFor` 的注释讲了为什么 queueLimit 救不了
- * 这一条）。既然运行期兜不住，就必须挡在启动期，让配错的人当场看到原因，
- * 而不是对着一台没有任何输出的机器排查。
+ * 没有报错、没有日志。`queueLimit` 救不了这一条：配成 8 时会稳定排出 6 个等待者，
+ * 而闸门在 `2 × 8 + 2 = 18`，**永远撞不到**，于是那 6 个就那么静默地等
+ * （`poolQueueLimitFor` 的注释讲了这道闸门的射程）。既然运行期兜不住，
+ * 就必须挡在启动期，让配错的人当场看到原因，而不是对着一台没有任何输出的机器排查。
  *
  * 这里给的是**硬上限**（`2 × concurrency ≤ 10`，即 concurrency ≤ 5，5 时余量为零），
  * 与 `DEFAULT_CONCURRENCY = 4` 是两件事：上限是「不会立刻出事」，默认值是
@@ -231,13 +255,51 @@ export function assertConcurrencyFitsPool(concurrency: number): void {
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error(`worker concurrency must be a positive integer, got: ${concurrency}`)
   }
-  // ×2：claimNext 的事务连接 + 同一执行体可能仍在途的 touchProgress
+  // ×2：claimNext 的事务连接 + 同一执行体稳态下仍在途的那一条 touchProgress。
+  // （在途 touchProgress 的真实上界是无界的，那部分由 queueLimit 兜，不在这里。）
   if (concurrency * 2 > POOL_CONNECTION_LIMIT) {
     throw new Error(
       `worker concurrency ${concurrency} needs up to ${concurrency * 2} pooled connections ` +
         `but the pool caps at ${POOL_CONNECTION_LIMIT} (claimNext holds one for the whole transaction)`,
     )
   }
+}
+
+/**
+ * 归档区校验里每次 fs 调用的超时。
+ *
+ * 有它的唯一理由：归档根目录在部署上是**网络挂载**，而硬挂载（NFS `hard` /
+ * SMB 默认）掉线时 `stat` 与 `writeFile` 是**挂住**，不是报错。没有超时的话，
+ * 这个「防止 worker 静默挂起」的启动期校验，自己就成了一次无限期的静默挂起
+ * ——正是本任务反复在消灭的那个失效形态。
+ *
+ * 5s 对一次空文件写来说宽到离谱（健康的本地盘与 NAS 都在毫秒级），
+ * 所以它只会在真的挂住时触发，不会误伤慢盘。
+ *
+ * ⚠️ 超时只能让**校验**喊出来并退出，它**不能**把已经卡在内核里的那次
+ * 系统调用取消（fs 调用跑在线程池上，AbortSignal 也救不了已经进入 D 状态的线程）。
+ * 这里靠的是「报错 → 进程退出 → 线程随进程一起没」。
+ */
+const ARCHIVE_PROBE_TIMEOUT_MS = 5_000
+
+/** 单独成类，好让调用方**按类型**而不是按错误话里的子串区分超时与真实的 fs 错误 */
+class FsTimeoutError extends Error {
+  constructor(what: string) {
+    super(`${what} timed out after ${ARCHIVE_PROBE_TIMEOUT_MS}ms — a hung network mount blocks fs calls instead of failing them`)
+    this.name = 'FsTimeoutError'
+  }
+}
+
+function withFsTimeout<T>(p: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  // p 若在输掉竞速之后才拒绝，那次拒绝已经被 Promise.race 自己接住了
+  // （race 给两边都挂了 handler），不会变成 unhandled rejection。
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new FsTimeoutError(what)), ARCHIVE_PROBE_TIMEOUT_MS)
+    }),
+  ]).finally(() => clearTimeout(timer))
 }
 
 /**
@@ -252,8 +314,16 @@ export function assertConcurrencyFitsPool(concurrency: number): void {
  * 预先存在（打错的路径不存在 → 当场报错），只有它下面的年/月/会议子目录才由
  * `createLocalStorage` 按需创建。
  *
- * 可写性用一次真实的写探针判定，不看权限位：只读挂载、磁盘满、NAS 掉线时
- * 权限位可能仍然好看，而写会失败。探针文件带 pid，避免多实例互踩，用完即删。
+ * **写探针能证明什么、不能证明什么**（别把它读大了）：
+ * - 能：**只读挂载**与**权限错配**——这两种情况下权限位可能仍然好看，
+ *   只有真写一次才看得出来（`chmod 0o500` 的用例钉的就是后者）。
+ * - **不能：磁盘满。** 探针写的是**空文件**，多数文件系统只要还有一个 inode
+ *   和一个目录项就能建出来，盘满了照样成功。磁盘空间是下载时逐个资产判的
+ *   （引擎的 `ensureFreeSpace` → `skipped`），不归这里管。
+ * - **不能：把挂死的 NAS 变成一个错误。** 硬挂载掉线时 fs 调用是挂住而不是
+ *   报错，这里靠 `ARCHIVE_PROBE_TIMEOUT_MS` 把它变成一句超时错误。
+ *
+ * 探针文件带 pid，避免多实例互踩，用完即删。
  */
 export async function assertArchiveRootUsable(root: string | undefined): Promise<string> {
   if (root === undefined || root === '') {
@@ -261,8 +331,12 @@ export async function assertArchiveRootUsable(root: string | undefined): Promise
   }
   let st: Stats
   try {
-    st = await stat(root)
-  } catch {
+    // stat 一样要包超时：挂死的网络挂载上它和 writeFile 一样会挂住。
+    st = await withFsTimeout(stat(root), `stat(${root})`)
+  } catch (err) {
+    // 超时与「不存在」是两件不同的故障，错误话必须分开，否则值班的人会去
+    // 检查一个其实存在、只是挂死了的挂载点的拼写。
+    if (err instanceof FsTimeoutError) throw err
     throw new Error(
       `MDE_ARCHIVE_ROOT does not exist: ${root}. ` +
         'It must already exist (it is normally a mount point) — the worker will not create it, ' +
@@ -274,13 +348,18 @@ export async function assertArchiveRootUsable(root: string | undefined): Promise
   }
   const probe = join(root, `.mde-worker-write-probe-${process.pid}`)
   try {
-    await writeFile(probe, '')
+    await withFsTimeout(writeFile(probe, ''), `write probe in MDE_ARCHIVE_ROOT ${root}`)
   } catch (err) {
+    if (err instanceof FsTimeoutError) throw err
     throw new Error(
       `MDE_ARCHIVE_ROOT is not writable: ${root} (${err instanceof Error ? err.message : String(err)})`,
     )
   } finally {
-    await rm(probe, { force: true })
+    // 清理是尽力而为：它自己也可能在挂死的挂载上超时，而一个从 finally 里抛出的
+    // 次生错误会盖掉上面那个真正的根因。留一个空探针文件远比丢掉根因划算。
+    await withFsTimeout(rm(probe, { force: true }), `cleanup write probe in ${root}`).catch(
+      () => {},
+    )
   }
   return root
 }

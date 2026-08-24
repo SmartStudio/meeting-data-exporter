@@ -17,7 +17,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RowDataPacket } from 'mysql2'
-import { DEFAULT_ASSET_KEYS, createLocalStorage } from '@yaowu/mde-engine'
+import { ALL_ASSET_KEYS, DEFAULT_ASSET_KEYS, createLocalStorage } from '@yaowu/mde-engine'
 import type { AssetKey, MeetingSelector } from '@yaowu/mde-engine'
 import { requireTestDatabaseUrl, withTestDb } from '../helpers/testdb'
 import { POOL_CONNECTION_LIMIT, createPool, type Pool } from '../../src/store/db'
@@ -475,6 +475,79 @@ describe('parseWorkerArgs', () => {
     expect(() => parseWorkerArgs(['--from'], 4)).toThrow('flag --from requires a value')
     expect(() => parseWorkerArgs(['--meeting-id'], 4)).toThrow('flag --meeting-id requires a value')
   })
+
+  // 以下四条补的是**成功路径**。此前这里只断言了「不给旗标时回落默认」与
+  // 「给了旗标但缺值时报错」，而报告 §3 给运维的示例命令（`--assets all`、
+  // `--concurrency` 覆盖 env 默认值、`--code` 配 `--from/--to` 缩窗）走的恰恰是
+  // 中间那条谁都没断言过的路。都是纯解析，写用例几乎不要钱。
+
+  test('--assets 真的把资产集换掉：all 展开成全八类，csv 按给的顺序取', () => {
+    // `all` 是报告 §3 示例命令里用的那个值
+    expect(parseWorkerArgs(['--code', 'c', '--assets', 'all'], 4).keys).toEqual(ALL_ASSET_KEYS)
+    expect(parseWorkerArgs(['--code', 'c', '--assets', 'all'], 4).keys.length).toBe(8)
+    // csv：只要给了这个旗标，就不能再回落到 DEFAULT_ASSET_KEYS
+    const csv = parseWorkerArgs(['--code', 'c', '--assets', 'video,ai_minutes'], 4).keys
+    expect(csv).toEqual(['video', 'ai_minutes'])
+    expect(csv).not.toEqual(DEFAULT_ASSET_KEYS)
+    // 未知键必须报错而不是被静默丢掉——静默丢掉等于少归档一类资产且没人知道
+    expect(() => parseWorkerArgs(['--code', 'c', '--assets', 'video,nope'], 4)).toThrow(
+      'unknown asset key: nope',
+    )
+  })
+
+  test('--concurrency 覆盖 env 给的默认值（报告 §3 承诺的行为）', () => {
+    // 第二个参数是 env 默认值。旗标必须赢，否则 MDE_WORKER_CONCURRENCY 一配死，
+    // 临时调并发就只能改环境变量重启。
+    expect(parseWorkerArgs(['--code', 'c', '--concurrency', '2'], 4).concurrency).toBe(2)
+    expect(parseWorkerArgs(['--code', 'c'], 4).concurrency).toBe(4)
+    // 旗标顺序无关：写在选择子前面同样生效
+    expect(parseWorkerArgs(['--concurrency', '5', '--code', 'c'], 4).concurrency).toBe(5)
+    // 这里**不**校验取值范围，那是 assertConcurrencyFitsPool 的活（启动期）。
+    // 解析只负责把数字原样传出去，非数字变成 NaN 交给那道校验去报错。
+    expect(Number.isNaN(parseWorkerArgs(['--code', 'c', '--concurrency', 'x'], 4).concurrency)).toBe(
+      true,
+    )
+  })
+
+  test('--code / --meeting-id 可以配 --from/--to 缩窗，窗口真的被带进选择子', () => {
+    // 报告 §3 明写支持缩窗。此前唯一的点选用例断的是 from/to 都是 undefined，
+    // 也就是说「带上窗口」这条路径一行断言都没有——真丢掉窗口的话，
+    // 一个会议号会把该会议历史上所有场次都拉回来。
+    expect(parseWorkerArgs(['--code', '881-123-40', '--from', '2026-08-01', '--to', '2026-08-02'], 4).sel).toEqual({
+      kind: 'code',
+      meetingCode: '881-123-40',
+      from: Date.UTC(2026, 7, 1) / 1000,
+      to: Date.UTC(2026, 7, 2) / 1000,
+    })
+    expect(parseWorkerArgs(['--meeting-id', 'm-1', '--from', '1787218200', '--to', '1787304600'], 4).sel).toEqual({
+      kind: 'id',
+      meetingId: 'm-1',
+      from: 1787218200,
+      to: 1787304600,
+    })
+    // 点选时窗口是**可选**的：只给一半也不该退化成 range 分支去报「requires --from and --to」
+    expect(parseWorkerArgs(['--code', 'c', '--from', '2026-08-01'], 4).sel).toEqual({
+      kind: 'code',
+      meetingCode: 'c',
+      from: Date.UTC(2026, 7, 1) / 1000,
+      to: undefined,
+    })
+  })
+
+  test('日期解析不掉：既不是 YYYY-MM-DD 又不是数字时报 bad date，而不是悄悄变成 NaN', () => {
+    // NaN 会一路穿进 MeetingSelector，腾讯那边收到 NaN 时间窗的行为无人知晓，
+    // 而这是运维最容易打错的一个值（2026/08/01、Aug 1 2026、08-01 都会走到这里）。
+    expect(() => parseWorkerArgs(['--from', '2026/08/01', '--to', '2026-08-02'], 4)).toThrow(
+      'bad date: 2026/08/01',
+    )
+    expect(() => parseWorkerArgs(['--from', '2026-08-01', '--to', 'tomorrow'], 4)).toThrow(
+      'bad date: tomorrow',
+    )
+    // 月/日必须是两位：'2026-8-1' 不匹配那条正则，也不是数字
+    expect(() => parseWorkerArgs(['--from', '2026-8-1', '--to', '2026-08-02'], 4)).toThrow(
+      'bad date: 2026-8-1',
+    )
+  })
 })
 
 describe('连接池耗尽时的表现', () => {
@@ -486,11 +559,14 @@ describe('连接池耗尽时的表现', () => {
     return () => held.forEach((c) => c.release())
   }
 
-  test('闸门定在稳态之上一点点，够得着才有意义', () => {
-    // 稳态最多 2×并发度 个等待者（claimNext 的事务连接 + 在途的 touchProgress），
-    // 而 assertConcurrencyFitsPool 又把 2×并发度 卡在 10 以内——所以一道定在 16 的
-    // 闸门 worker 自己**永远撞不到**，等于没有。+2 才是「正常永不触发、
-    // touchProgress 堆起来时立刻触发」的位置。
+  test('闸门随并发度缩放，且定在稳态之上一点点', () => {
+    // **稳态的等待者是 0**：discover / meetingsForPaths / runProbes 都在 runExecutor
+    // 之前串行跑完，执行期每个执行体的 await 链严格串行，所以并发的取连接请求
+    // = 并发度（awaited）+ ≤并发度（在途 touchProgress）= 2×并发度 ≤ 10 = 池上限，
+    // 全都能拿到连接，排不出队。任何等待者都已经是异常，+2 只是抖动余量。
+    //
+    // 绑函数而不是绑一个硬编码的数，是因为这道闸门必须**随并发度缩放**：
+    // 并发度 1 时是 4，而不是一个与配置无关的常数——撞线更早，异常更早显形。
     expect(poolQueueLimitFor(1)).toBe(4)
     expect(poolQueueLimitFor(4)).toBe(10)
     expect(poolQueueLimitFor(5)).toBe(12)
@@ -506,11 +582,23 @@ describe('连接池耗尽时的表现', () => {
     const pool = createPool(requireTestDatabaseUrl(), { queueLimit: limit })
     try {
       const release = await saturate(pool)
-      const queued = Array.from({ length: limit }, () => pool.getConnection())
+      // handler 必须**在下面那条断言之前**挂上：断言一旦变红就直接抛出，
+      // 这 limit 个 promise 会一直没人接，随后 finally 里的 pool.end() 用
+      // 「Pool is closed.」拒绝它们 → limit 条 unhandled rejection 糊在同批
+      // 其它用例的输出里，把一条本来清楚的失败变成一堆噪声。
+      const queued = Array.from({ length: limit }, () =>
+        pool.getConnection().then(
+          (c) => ({ ok: true as const, c }),
+          (e: unknown) => ({ ok: false as const, e }),
+        ),
+      )
       // 队列刚好满，再来一个必须立刻被拒绝而不是排上去
       await expect(pool.getConnection()).rejects.toThrow(/[Qq]ueue limit/)
       release()
-      for (const q of queued) (await q).release()
+      for (const q of queued) {
+        const r = await q
+        if (r.ok) r.c.release()
+      }
     } finally {
       await pool.end()
     }
@@ -523,13 +611,22 @@ describe('连接池耗尽时的表现', () => {
     try {
       const release = await saturate(pool)
       const extra = pool.getConnection()
+      // **拒绝原因必须留下来。** 只写 settled=true 的话，这条断言变红时输出只有
+      // 「expected true to be false」，一个字都没说为什么 settle 了；而最可能的
+      // settle 原因根本不是被测行为变了，是环境——比如并发跑的测试库把 MySQL
+      // 连接数顶到上限，getConnection 以 ER_CON_COUNT_ERROR 立刻拒绝。
+      // 那种红必须一眼看得出是环境问题，否则下一个人会去查 mysql2 的队列实现。
       let settled = false
+      let reason: unknown
       extra.then(
         () => { settled = true },
-        () => { settled = true },
+        (e: unknown) => { settled = true; reason = e },
       )
       await new Promise((r) => setTimeout(r, 200))
-      expect(settled).toBe(false)
+      expect({ settled, reason: reason instanceof Error ? reason.message : reason }).toEqual({
+        settled: false,
+        reason: undefined,
+      })
       release()
       ;(await extra).release()
     } finally {
@@ -538,20 +635,26 @@ describe('连接池耗尽时的表现', () => {
   }, 30_000)
 
   test('闸门只兜住排队长度，兜不住等待时长——队列没满时照样静默等下去', async () => {
-    // 这条把 queueLimit 的**射程**钉死，免得注释里那句「把装死换成会喊的错误」
-    // 被读成「池耗尽从此不会挂起」。mysql2 没有取连接超时：只要队列还没满，
-    // 排在上面的请求（真正阻塞推进的是 claimNext）就仍然无限期地等。
+    // 这条把 queueLimit 的**射程**钉死，免得 poolQueueLimitFor 的注释里那句
+    // 「一旦堆积立刻撞线报错」被读成「池耗尽从此不会挂起」。mysql2 没有取连接
+    // 超时：只要队列还没满，排在上面的请求（真正阻塞推进的是 claimNext）
+    // 就仍然无限期地等。撞线是**队列满的那一刻**才发生的事，不是池满那一刻。
     const pool = createPool(requireTestDatabaseUrl(), { queueLimit: poolQueueLimitFor(4) })
     try {
       const release = await saturate(pool)
       const waiting = pool.getConnection() // 队列深度 1，远没到 10
+      // 同上：拒绝原因要留下来，否则这条红了看不出是被测行为变了还是环境炸了
       let settled = false
+      let reason: unknown
       waiting.then(
         () => { settled = true },
-        () => { settled = true },
+        (e: unknown) => { settled = true; reason = e },
       )
       await new Promise((r) => setTimeout(r, 200))
-      expect(settled).toBe(false)
+      expect({ settled, reason: reason instanceof Error ? reason.message : reason }).toEqual({
+        settled: false,
+        reason: undefined,
+      })
       release()
       ;(await waiting).release()
     } finally {
