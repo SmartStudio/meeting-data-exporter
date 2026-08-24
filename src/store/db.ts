@@ -13,15 +13,21 @@ export const POOL_CONNECTION_LIMIT = 10
 
 export interface PoolTuning {
   /**
-   * 连接都被占满后，最多允许多少个请求排队等连接。
+   * 连接都被占满后，最多允许多少个请求**排队**等连接。
    *
-   * mysql2 的默认是 `0` = **不限队列**，配合默认的 `waitForConnections: true`，
+   * mysql2 的默认是 `0` = 不限队列，配合默认的 `waitForConnections: true`，
    * 池耗尽的表现是**无限期静默挂起**：没有超时、没有报错、没有日志，进程看起来
-   * 活着但一件事都不干。给一个有限值，等于把这种故障从「装死」换成「会喊的错误」。
+   * 活着但一件事都不干。
+   *
+   * ⚠️ **它限的是队列长度，不是等待时长**，而 mysql2 **没有取连接超时**。
+   * 所以有限的 queueLimit 只能挡住「等待者无界堆积」，**挡不住「已经排上队的
+   * 请求无限期地等」**——队列没满时行为与默认值完全一样。谁想靠它保证
+   * 「池耗尽会喊出来」，会失望。归档 worker 用它兜的是 fire-and-forget 的
+   * `touchProgress` 堆积（见 src/worker/index.ts 的 poolQueueLimitFor）。
    *
    * 默认仍是 mysql2 的行为（不限），因为 HTTP 网关那边改成有限值意味着请求高峰
    * 期把「多等一会儿」换成「直接 500」，那是另一个需要单独权衡的决定，不在
-   * 归档 worker 的射程内。worker 自己显式传一个有限值。
+   * 归档 worker 的射程内。worker 自己显式传一个够得着的有限值。
    */
   queueLimit?: number
 }

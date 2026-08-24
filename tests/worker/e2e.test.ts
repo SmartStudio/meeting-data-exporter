@@ -13,13 +13,13 @@
  * 流式落盘、finalize）。
  */
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, readFile, stat } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RowDataPacket } from 'mysql2'
 import { DEFAULT_ASSET_KEYS, createLocalStorage } from '@yaowu/mde-engine'
 import type { AssetKey, MeetingSelector } from '@yaowu/mde-engine'
-import { withTestDb } from '../helpers/testdb'
+import { requireTestDatabaseUrl, withTestDb } from '../helpers/testdb'
 import { POOL_CONNECTION_LIMIT, createPool, type Pool } from '../../src/store/db'
 import type { Asset, Meeting } from '../../src/domain/types'
 import type { Catalog } from '../../src/catalog/index'
@@ -27,8 +27,10 @@ import type { RecordsApi } from '../../src/tencent/records'
 import { createInProcSource } from '../../src/worker/source-inproc'
 import { createMysqlStore } from '../../src/worker/store-mysql'
 import {
+  assertArchiveRootUsable,
   assertConcurrencyFitsPool,
   parseWorkerArgs,
+  poolQueueLimitFor,
   runWorkerOnce,
   type WorkerDeps,
 } from '../../src/worker/index'
@@ -460,10 +462,23 @@ describe('parseWorkerArgs', () => {
     expect(() => parseWorkerArgs([], 4)).toThrow('--from and --to')
     expect(() => parseWorkerArgs(['--nope'], 4)).toThrow('unknown flag')
   })
+
+  test('旗标缺值时，错误指着那个旗标，而不是指向一句离题的话', () => {
+    // 给了 --code 但没带值：不做检查的话会落进 range 分支报「requires --from and --to」，
+    // 运维会以为自己忘了给 --code，其实是给了没带值——错误话指向了错误的地方。
+    expect(() => parseWorkerArgs(['--code'], 4)).toThrow('flag --code requires a value')
+    expect(() => parseWorkerArgs(['--code', '--concurrency', '2'], 4)).toThrow(
+      'flag --code requires a value',
+    )
+    // 给了 --assets 但没带值：不做检查的话是 undefined.trim() 的 TypeError
+    expect(() => parseWorkerArgs(['--assets'], 4)).toThrow('flag --assets requires a value')
+    expect(() => parseWorkerArgs(['--from'], 4)).toThrow('flag --from requires a value')
+    expect(() => parseWorkerArgs(['--meeting-id'], 4)).toThrow('flag --meeting-id requires a value')
+  })
 })
 
 describe('连接池耗尽时的表现', () => {
-  /** 占满整池，返回释放函数——两条用例都要先把 10 条连接全握在手里 */
+  /** 占满整池，返回释放函数——三条用例都要先把 10 条连接全握在手里 */
   async function saturate(pool: Pool): Promise<() => void> {
     const held = await Promise.all(
       Array.from({ length: POOL_CONNECTION_LIMIT }, () => pool.getConnection()),
@@ -471,25 +486,40 @@ describe('连接池耗尽时的表现', () => {
     return () => held.forEach((c) => c.release())
   }
 
-  test('worker 传的有限 queueLimit：排不进队的请求当场报错', async () => {
-    const pool = createPool(process.env.TEST_DATABASE_URL!, { queueLimit: 1 })
+  test('闸门定在稳态之上一点点，够得着才有意义', () => {
+    // 稳态最多 2×并发度 个等待者（claimNext 的事务连接 + 在途的 touchProgress），
+    // 而 assertConcurrencyFitsPool 又把 2×并发度 卡在 10 以内——所以一道定在 16 的
+    // 闸门 worker 自己**永远撞不到**，等于没有。+2 才是「正常永不触发、
+    // touchProgress 堆起来时立刻触发」的位置。
+    expect(poolQueueLimitFor(1)).toBe(4)
+    expect(poolQueueLimitFor(4)).toBe(10)
+    expect(poolQueueLimitFor(5)).toBe(12)
+    for (const c of [1, 2, 3, 4, 5]) {
+      expect(poolQueueLimitFor(c)).toBeGreaterThan(c * 2)
+    }
+  })
+
+  test('worker 实际发货的那个 queueLimit：排不进队的请求当场报错', async () => {
+    // 用 poolQueueLimitFor 而不是硬编码的数——否则这条用例证明的只是
+    // 「mysql2 的 queueLimit 机制存在」，不是「worker 配的那个值能救它」。
+    const limit = poolQueueLimitFor(1)
+    const pool = createPool(requireTestDatabaseUrl(), { queueLimit: limit })
     try {
       const release = await saturate(pool)
-      // 队列只容得下 1 个，第 2 个必须立刻被拒绝
-      const queued = pool.getConnection()
+      const queued = Array.from({ length: limit }, () => pool.getConnection())
+      // 队列刚好满，再来一个必须立刻被拒绝而不是排上去
       await expect(pool.getConnection()).rejects.toThrow(/[Qq]ueue limit/)
       release()
-      ;(await queued).release()
+      for (const q of queued) (await q).release()
     } finally {
       await pool.end()
     }
   }, 30_000)
 
   test('mysql2 的默认 queueLimit=0：同样的情形下静默地等下去，永远不报错', async () => {
-    // 这条是上一条的负控制，也是台账第 4 条记的那个失效模式的实物证据：
-    // 默认配置下池耗尽不是"慢"，是**一台看起来还活着、实际什么都不干的机器**——
-    // 没有超时、没有报错、没有日志。worker 因此必须显式传一个有限值。
-    const pool = createPool(process.env.TEST_DATABASE_URL!)
+    // 这条是上一条的负控制，也是台账第 4 条那个失效模式的实物证据：
+    // 默认配置下池耗尽不是"慢"，是**一台看起来还活着、实际什么都不干的机器**。
+    const pool = createPool(requireTestDatabaseUrl())
     try {
       const release = await saturate(pool)
       const extra = pool.getConnection()
@@ -506,16 +536,93 @@ describe('连接池耗尽时的表现', () => {
       await pool.end()
     }
   }, 30_000)
+
+  test('闸门只兜住排队长度，兜不住等待时长——队列没满时照样静默等下去', async () => {
+    // 这条把 queueLimit 的**射程**钉死，免得注释里那句「把装死换成会喊的错误」
+    // 被读成「池耗尽从此不会挂起」。mysql2 没有取连接超时：只要队列还没满，
+    // 排在上面的请求（真正阻塞推进的是 claimNext）就仍然无限期地等。
+    const pool = createPool(requireTestDatabaseUrl(), { queueLimit: poolQueueLimitFor(4) })
+    try {
+      const release = await saturate(pool)
+      const waiting = pool.getConnection() // 队列深度 1，远没到 10
+      let settled = false
+      waiting.then(
+        () => { settled = true },
+        () => { settled = true },
+      )
+      await new Promise((r) => setTimeout(r, 200))
+      expect(settled).toBe(false)
+      release()
+      ;(await waiting).release()
+    } finally {
+      await pool.end()
+    }
+  }, 30_000)
 })
 
 describe('assertConcurrencyFitsPool', () => {
-  // 并发度配过头的表现是无限期静默挂起（mysql2 默认 queueLimit=0 + waitForConnections），
+  // 并发度配过头的表现是无限期静默挂起（mysql2 没有取连接超时），运行期兜不住，
   // 所以它必须在启动期就炸，而不是留一台看起来还活着、实际什么都不干的机器。
   test('并发度 × 2 超过池上限时当场报错，错误里写清楚为什么', () => {
+    // 5 是**硬上限**（5×2 = 10，余量恰好为零），放行是对的；
+    // 默认值取 4 而不是 5，是另一件事——上限是「不会立刻出事」，
+    // 默认值是「还给发现阶段与收尾写库留了两条」。
     expect(() => assertConcurrencyFitsPool(4)).not.toThrow()
     expect(() => assertConcurrencyFitsPool(5)).not.toThrow()
     expect(() => assertConcurrencyFitsPool(6)).toThrow(/pool caps at 10/)
     expect(() => assertConcurrencyFitsPool(0)).toThrow(/positive integer/)
     expect(() => assertConcurrencyFitsPool(2.5)).toThrow(/positive integer/)
+  })
+})
+
+describe('assertArchiveRootUsable', () => {
+  test('已存在且可写的目录通过，并原样返回', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mde-root-'))
+    try {
+      expect(await assertArchiveRootUsable(dir)).toBe(dir)
+      // 写探针必须清干净，不能在归档区里留垃圾
+      expect(await readdir(dir)).toEqual([])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('路径打错（目录不存在）当场报错，而不是把它造出来', async () => {
+    // 这条是本校验存在的全部理由：MDE_ARCHIVE_ROOT=/mnt/archiv（少一个 e）
+    // 若被 mkdir -p 静默造出来，整场会议会归档进一棵没人知道的目录树，退出码 0。
+    // 本系统是「NAS 主存储、本地 30 天后删」，那等于一个月后永久丢失。
+    const parent = await mkdtemp(join(tmpdir(), 'mde-root-'))
+    const typo = join(parent, 'archiv')
+    try {
+      await expect(assertArchiveRootUsable(typo)).rejects.toThrow(/does not exist/)
+      // 关键断言：报错之后它**仍然不存在**——没有被顺手建出来
+      expect(await exists(typo)).toBe(false)
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
+
+  test('指向一个文件、或未设置 / 空串时报错', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mde-root-'))
+    const file = join(dir, 'not-a-dir')
+    try {
+      await writeFile(file, 'x')
+      await expect(assertArchiveRootUsable(file)).rejects.toThrow(/not a directory/)
+      await expect(assertArchiveRootUsable(undefined)).rejects.toThrow(/missing required config/)
+      await expect(assertArchiveRootUsable('')).rejects.toThrow(/missing required config/)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('目录存在但不可写时报错——只看权限位看不出只读挂载/磁盘满，要真写一次', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mde-root-'))
+    try {
+      await chmod(dir, 0o500) // r-x：能进能列，不能写
+      await expect(assertArchiveRootUsable(dir)).rejects.toThrow(/not writable/)
+    } finally {
+      await chmod(dir, 0o700)
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

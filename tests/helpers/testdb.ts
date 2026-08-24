@@ -8,9 +8,23 @@ import { runMigrations, type Pool } from '../../src/store/db'
  * MySQL 没有 PostgreSQL 的 schema 概念，用独立 database 做隔离。
  * 需要 TEST_DATABASE_URL 指向一个有 CREATE DATABASE 权限的实例。
  */
-export async function withTestDb(): Promise<{ pool: Pool; cleanup: () => Promise<void> }> {
+/**
+ * 取测试库连接串，未设置时给一句**说得清**的错。
+ *
+ * 单独导出而不是留在 withTestDb 里，是因为有的用例需要自己建池
+ * （例如验证连接池耗尽时的表现，那要传非默认的 queueLimit），直接读
+ * `process.env.TEST_DATABASE_URL!` 会在未设置时抛一句 mysql 内部错误，
+ * 把「没配测试库」伪装成「数据库有问题」。全局约束里记的「未设该变量时有 28 个
+ * 网关库失败」也会因此变成原因不明的更多条。
+ */
+export function requireTestDatabaseUrl(): string {
   const url = process.env.TEST_DATABASE_URL
   if (!url) throw new Error('TEST_DATABASE_URL not set')
+  return url
+}
+
+export async function withTestDb(): Promise<{ pool: Pool; cleanup: () => Promise<void> }> {
+  const url = requireTestDatabaseUrl()
 
   const dbName = `t_${Math.random().toString(36).slice(2, 10)}`
   const admin = await mysql.createConnection({ uri: url, charset: 'utf8mb4' })

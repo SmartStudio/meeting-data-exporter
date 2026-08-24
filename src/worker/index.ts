@@ -13,6 +13,9 @@ import {
   type Storage,
   type Store,
 } from '@yaowu/mde-engine'
+import { rm, stat, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { Stats } from 'node:fs'
 import { loadConfig } from '../config'
 import { createCatalog } from '../catalog/index'
 import { POOL_CONNECTION_LIMIT, createPool, runMigrations } from '../store/db'
@@ -102,8 +105,12 @@ export async function runWorkerOnce(
  * 默认执行体数量。**上限是连接池给的，不是拍脑袋定的**：
  * `claimNext` 在事务期间独占一条连接，而每个执行体在最坏交错下还可能同时压着
  * 一条未 await 的 `touchProgress`（进度回写是 fire-and-forget），
- * 所以峰值连接需求约等于 `concurrency × 2`。池上限 10，取 4 留两条余量给
- * 发现阶段与收尾写库。
+ * 所以峰值连接需求约等于 `concurrency × 2`。
+ *
+ * `assertConcurrencyFitsPool` 把**硬上限**卡在 `2 × concurrency ≤ 10`，也就是
+ * concurrency ≤ 5（5 时余量恰好为零）。默认取 4 是**刻意站在硬上限之下**，
+ * 给发现阶段与收尾写库留两条连接——上限是「不会立刻出事」，默认值是「留了余量」，
+ * 两者不是同一个数。
  */
 const DEFAULT_CONCURRENCY = 4
 
@@ -111,15 +118,27 @@ const DEFAULT_CONCURRENCY = 4
 const LEASE_SEC = 900
 
 /**
- * 排队等连接的上限。mysql2 默认 `queueLimit: 0` = 不限队列，配合默认的
- * `waitForConnections: true`，池耗尽时进程**无限期静默挂起**：没有超时、没有
- * 报错、没有日志，机器看起来还活着、实际什么都不干。给一个有限值，故障就从
- * 「装死」变成「会喊出来的错误」。
+ * 排队等连接的上限 = `2 × 并发度 + 2`。
  *
- * 16 是"正常绝不会碰到、异常一定会碰到"的位置：并发度已被
- * `assertConcurrencyFitsPool` 卡在 `2 × concurrency ≤ 10`，稳态队列深度应当是 0。
+ * **先说清楚它挡不住什么，因为这一点很容易被读反。**
+ * `queueLimit` 限的是**队列长度，不是等待时长**，而 mysql2 没有取连接超时。
+ * 所以：**`claimNext` 的池耗尽仍然会无限期静默挂起**——`assertConcurrencyFitsPool`
+ * 已经把同时发起的取连接请求卡在 `2 × 并发度 ≤ 10`，worker 自己**永远排不出**
+ * 一条很长的队，一道高高在上的闸门根本够不着。这道防线不覆盖 `claimNext`。
+ *
+ * 它真正兜住的是**另一件事**：大文件下载中每 8MB 发一条、fire-and-forget 的
+ * `touchProgress`。那条路径不受并发度约束——连接被占住时它会一条接一条地堆进
+ * 队列，堆到内存里去。闸门定在 `2 × 并发度 + 2`（稳态之上一点点）才够得着：
+ * 稳态最多 `2 × 并发度` 个等待者，队列深度正常是 0，一旦堆积立刻撞线报错。
+ * 定成 16 那种够不着的值等于没有这道闸门。
+ *
+ * 代价要一并写明：`touchProgress` 的错误处理是 `.catch(console.warn)`，所以撞线
+ * 的表现是**每 8MB 一行 warn**，而真正阻塞推进的 `claimNext` 仍然静默等。
+ * 根治要的是「取连接超时」，mysql2 不提供，需要另开任务（见 task-7-report §4）。
  */
-const POOL_QUEUE_LIMIT = 16
+export function poolQueueLimitFor(concurrency: number): number {
+  return concurrency * 2 + 2
+}
 
 export interface WorkerArgs {
   sel: MeetingSelector
@@ -151,14 +170,31 @@ export function parseWorkerArgs(argv: string[], defaultConcurrency: number): Wor
   let keys: AssetKey[] = DEFAULT_ASSET_KEYS
   let concurrency = defaultConcurrency
 
+  /**
+   * 取旗标的值，缺值时**指着那个旗标**报错。
+   *
+   * 不做这一步的话，缺值会被后面的逻辑翻译成一句指向别处的错误话：
+   * `--code`（没带值）会落进 range 分支报「requires --from and --to」，运维会以为
+   * 自己忘了给 `--code`，其实是给了没带值；`--assets`（没带值）会以
+   * `undefined.trim()` 抛 TypeError 而不是 UnknownAssetKeyError。
+   *
+   * 以 `--` 开头一律当作「下一个旗标」而不是值：本命令的合法值（日期、会议号、
+   * meeting_id、资产 csv、数字）没有一个长这样。
+   */
+  const value = (i: number, flag: string): string => {
+    const v = argv[i]
+    if (v === undefined || v.startsWith('--')) throw new Error(`flag ${flag} requires a value`)
+    return v
+  }
+
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!
-    if (a === '--from') from = parseDate(argv[++i]!)
-    else if (a === '--to') to = parseDate(argv[++i]!)
-    else if (a === '--code') code = argv[++i]!
-    else if (a === '--meeting-id') meetingId = argv[++i]!
-    else if (a === '--assets') keys = parseAssetKeys(argv[++i]!)
-    else if (a === '--concurrency') concurrency = Number(argv[++i]!)
+    if (a === '--from') from = parseDate(value(++i, a))
+    else if (a === '--to') to = parseDate(value(++i, a))
+    else if (a === '--code') code = value(++i, a)
+    else if (a === '--meeting-id') meetingId = value(++i, a)
+    else if (a === '--assets') keys = parseAssetKeys(value(++i, a))
+    else if (a === '--concurrency') concurrency = Number(value(++i, a))
     else throw new Error(`unknown flag: ${a}`)
   }
 
@@ -181,9 +217,15 @@ export function parseWorkerArgs(argv: string[], defaultConcurrency: number): Wor
 }
 
 /**
- * 并发度必须对着连接池的上限定。不校验的后果不是变慢，是
- * **无限期静默挂起**（见 POOL_QUEUE_LIMIT 的注释）——把它挡在启动期，
- * 让配错的人当场看到原因，而不是对着一台没有任何输出的机器排查。
+ * 并发度必须对着连接池的上限定。不校验的后果不是变慢，是**无限期静默挂起**：
+ * mysql2 没有取连接超时，排在队列上的 `claimNext` 会一直等下去，没有超时、
+ * 没有报错、没有日志（`poolQueueLimitFor` 的注释讲了为什么 queueLimit 救不了
+ * 这一条）。既然运行期兜不住，就必须挡在启动期，让配错的人当场看到原因，
+ * 而不是对着一台没有任何输出的机器排查。
+ *
+ * 这里给的是**硬上限**（`2 × concurrency ≤ 10`，即 concurrency ≤ 5，5 时余量为零），
+ * 与 `DEFAULT_CONCURRENCY = 4` 是两件事：上限是「不会立刻出事」，默认值是
+ * 「还留了余量」。
  */
 export function assertConcurrencyFitsPool(concurrency: number): void {
   if (!Number.isInteger(concurrency) || concurrency < 1) {
@@ -196,6 +238,51 @@ export function assertConcurrencyFitsPool(concurrency: number): void {
         `but the pool caps at ${POOL_CONNECTION_LIMIT} (claimNext holds one for the whole transaction)`,
     )
   }
+}
+
+/**
+ * 归档区根目录的启动期校验：**必须已经存在、是目录、且真的可写**。
+ *
+ * 只查非空是不够的，而**用 `mkdir -p` 把它建出来更糟**——那恰好会放过这里要挡的
+ * 那个错误：`MDE_ARCHIVE_ROOT=/mnt/archiv`（少一个 e）会被静默造出一棵新目录树，
+ * 整场会议归档进去，退出码 0。而本系统的产品模型是「NAS 是主存储、本地 30 天后
+ * 删」，归档到了错的地方且没人知道，一个月后就是永久丢失。
+ *
+ * 归档根目录在部署上是一个**挂载点**，本来就该先于 worker 存在。所以这里要求它
+ * 预先存在（打错的路径不存在 → 当场报错），只有它下面的年/月/会议子目录才由
+ * `createLocalStorage` 按需创建。
+ *
+ * 可写性用一次真实的写探针判定，不看权限位：只读挂载、磁盘满、NAS 掉线时
+ * 权限位可能仍然好看，而写会失败。探针文件带 pid，避免多实例互踩，用完即删。
+ */
+export async function assertArchiveRootUsable(root: string | undefined): Promise<string> {
+  if (root === undefined || root === '') {
+    throw new Error('missing required config: MDE_ARCHIVE_ROOT')
+  }
+  let st: Stats
+  try {
+    st = await stat(root)
+  } catch {
+    throw new Error(
+      `MDE_ARCHIVE_ROOT does not exist: ${root}. ` +
+        'It must already exist (it is normally a mount point) — the worker will not create it, ' +
+        'because auto-creating a mistyped path would silently archive into the wrong place.',
+    )
+  }
+  if (!st.isDirectory()) {
+    throw new Error(`MDE_ARCHIVE_ROOT is not a directory: ${root}`)
+  }
+  const probe = join(root, `.mde-worker-write-probe-${process.pid}`)
+  try {
+    await writeFile(probe, '')
+  } catch (err) {
+    throw new Error(
+      `MDE_ARCHIVE_ROOT is not writable: ${root} (${err instanceof Error ? err.message : String(err)})`,
+    )
+  } finally {
+    await rm(probe, { force: true })
+  }
+  return root
 }
 
 async function main(): Promise<number> {
@@ -218,14 +305,11 @@ async function main(): Promise<number> {
   // 归档区根目录走 process.env 而非 loadConfig：它是 worker 独有的进程编排参数
   // （由 systemd / 容器挂载决定），网关进程不需要它，塞进 loadConfig 会让网关
   // 也被迫配一个用不到的变量。与 src/index.ts 处理 PORT / HOST 的口径一致。
-  const archiveRoot = process.env.MDE_ARCHIVE_ROOT
-  if (archiveRoot === undefined || archiveRoot === '') {
-    throw new Error('missing required config: MDE_ARCHIVE_ROOT')
-  }
+  const archiveRoot = await assertArchiveRootUsable(process.env.MDE_ARCHIVE_ROOT)
 
   const now = (): number => Math.floor(Date.now() / 1000)
 
-  const pool = createPool(config.databaseUrl, { queueLimit: POOL_QUEUE_LIMIT })
+  const pool = createPool(config.databaseUrl, { queueLimit: poolQueueLimitFor(args.concurrency) })
   try {
     await runMigrations(pool)
     const store = createMysqlStore(pool)
