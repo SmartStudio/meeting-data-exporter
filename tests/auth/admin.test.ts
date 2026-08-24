@@ -66,7 +66,13 @@ function memAdminStore(opts: { accounts?: AdminAccount[] } = {}): AdminStore {
       return true
     },
     async createSession(input) {
-      sessions.set(input.tokenHash, { adminId: input.adminId, expiresAt: input.expiresAt })
+      // createdAt 照真实 store 的语义存 input.now——verifySession 靠
+      // expiresAt - createdAt 区分长短会话，这里丢掉它等于测不出那条判定
+      sessions.set(input.tokenHash, {
+        adminId: input.adminId,
+        expiresAt: input.expiresAt,
+        createdAt: input.now,
+      })
     },
     async findSessionByTokenHash(tokenHash) {
       return sessions.get(tokenHash) ?? null
@@ -207,30 +213,46 @@ test('verifySession：账号已被移除（findById 返回 null）时会话立�
   await expect(auth.verifySession(token, 1_000_000)).rejects.toThrow(AdminSessionInvalidError)
 })
 
-test('verifySession：剩余有效期低于阈值时触发滑动续期', async () => {
+const REMEMBER_TTL_SEC = ADMIN_SESSION_REMEMBER_DAYS * 86400
+const SHORT_TTL_SEC = ADMIN_SESSION_SHORT_HOURS * 3600
+
+test('verifySession：长会话剩余有效期低于阈值时触发滑动续期', async () => {
   const baseStore = memAdminStore({ accounts: [baseAccount()] })
   const { store, touchCalls } = withTouchSpy(baseStore)
   const now = 1_000_000
   const token = 'about-to-expire-token'
-  // 剩余有效期 400000s < 阈值 432000s (5 天)
-  await store.createSession({ tokenHash: hashToken(token), adminId: 'admin-1', expiresAt: now + 400_000, now })
+  // 一个"记住此设备"的 30 天会话，签发于 now - (30天 - 400000s)：
+  // 剩余有效期 400000s < 阈值 432000s (5 天)，且总时长正好是 30 天
+  const issuedAt = now + 400_000 - REMEMBER_TTL_SEC
+  await store.createSession({
+    tokenHash: hashToken(token),
+    adminId: 'admin-1',
+    expiresAt: now + 400_000,
+    now: issuedAt,
+  })
   const auth = createAdminAuth({ store })
 
   await auth.verifySession(token, now)
 
   expect(touchCalls()).toBe(1)
   const session = await store.findSessionByTokenHash(hashToken(token))
-  expect(session?.expiresAt).toBe(now + ADMIN_SESSION_REMEMBER_DAYS * 86400)
+  expect(session?.expiresAt).toBe(now + REMEMBER_TTL_SEC)
 })
 
-test('verifySession：剩余有效期高于阈值时不触发滑动续期', async () => {
+test('verifySession：长会话剩余有效期高于阈值时不触发滑动续期', async () => {
   const baseStore = memAdminStore({ accounts: [baseAccount()] })
   const { store, touchCalls } = withTouchSpy(baseStore)
   const now = 1_000_000
   const token = 'freshly-issued-token'
-  // 剩余有效期 1000000s > 阈值 432000s (5 天)
+  // 同样是 30 天的长会话（把"是不是长会话"这个变量固定住），只是剩余有效期
+  // 1000000s > 阈值 432000s (5 天)——这条用例考的是阈值本身
   const originalExpiresAt = now + 1_000_000
-  await store.createSession({ tokenHash: hashToken(token), adminId: 'admin-1', expiresAt: originalExpiresAt, now })
+  await store.createSession({
+    tokenHash: hashToken(token),
+    adminId: 'admin-1',
+    expiresAt: originalExpiresAt,
+    now: originalExpiresAt - REMEMBER_TTL_SEC,
+  })
   const auth = createAdminAuth({ store })
 
   await auth.verifySession(token, now)
@@ -238,6 +260,54 @@ test('verifySession：剩余有效期高于阈值时不触发滑动续期', asyn
   expect(touchCalls()).toBe(0)
   const session = await store.findSessionByTokenHash(hashToken(token))
   expect(session?.expiresAt).toBe(originalExpiresAt)
+})
+
+/**
+ * 下面两条是 issueSession → verifySession 的**组合**用例，不是各自孤立地测。
+ * 这个漏洞正是从这道缝里漏过去的：两侧分开看都对（短会话确实签了 12 小时、
+ * 续期确实只在剩余不足阈值时发生），组合起来才暴露——短会话的整个生命周期
+ * （12 小时）本来就短于续期阈值（5 天），于是"剩余不足阈值"从签发那一刻起就成立。
+ */
+test('remember=false 的短会话：verifySession 之后有效期仍是 12 小时，不被悄悄续成 30 天', async () => {
+  const baseStore = memAdminStore({ accounts: [baseAccount()] })
+  const { store, touchCalls } = withTouchSpy(baseStore)
+  const auth = createAdminAuth({ store })
+  const now = 1_000_000
+
+  // 操作员明确不勾"记住此设备"（共用机器、借来的笔记本）
+  const { token, expiresAt } = await auth.issueSession('admin-1', false, now)
+  expect(expiresAt).toBe(now + SHORT_TTL_SEC)
+
+  // 登录后的第一个认证请求——控制台 AppShell 一挂载就会打 /auth/me，
+  // 也就是说这一步在真实使用里必然发生，且发生在第一次页面加载时
+  await auth.verifySession(token, now)
+
+  expect(touchCalls()).toBe(0)
+  const session = await store.findSessionByTokenHash(hashToken(token))
+  expect(session?.expiresAt).toBe(now + SHORT_TTL_SEC)
+  // 说得更直白些：绝不能变成 30 天
+  expect(session?.expiresAt).not.toBe(now + REMEMBER_TTL_SEC)
+
+  // 12 小时一到就是真的过期，不因为中途用过而顺延
+  await expect(auth.verifySession(token, now + SHORT_TTL_SEC)).rejects.toThrow(AdminSessionInvalidError)
+})
+
+test('remember=true 的长会话：临近到期时 verifySession 仍然滑动续期到新的 30 天', async () => {
+  const baseStore = memAdminStore({ accounts: [baseAccount()] })
+  const { store, touchCalls } = withTouchSpy(baseStore)
+  const auth = createAdminAuth({ store })
+  const loginAt = 1_000_000
+
+  const { token, expiresAt } = await auth.issueSession('admin-1', true, loginAt)
+  expect(expiresAt).toBe(loginAt + REMEMBER_TTL_SEC)
+
+  // 26 天后再来访问：剩余 4 天 < 阈值 5 天
+  const laterOn = loginAt + 26 * 86400
+  await auth.verifySession(token, laterOn)
+
+  expect(touchCalls()).toBe(1)
+  const session = await store.findSessionByTokenHash(hashToken(token))
+  expect(session?.expiresAt).toBe(laterOn + REMEMBER_TTL_SEC)
 })
 
 test('revokeSession：吊销后该 token 无法再通过 verifySession', async () => {

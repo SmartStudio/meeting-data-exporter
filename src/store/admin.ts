@@ -11,6 +11,10 @@ export interface AdminAccount {
 export interface AdminSession {
   adminId: string
   expiresAt: number
+  /** 签发时刻。与 expiresAt 一起才能还原出"当初签的是多长的窗口"——
+   *  AdminAuth.verifySession 靠 expiresAt - createdAt 判断这是不是一个
+   *  "记住此设备"的长会话，从而不把短会话悄悄续成长会话（见 src/auth/admin.ts）。 */
+  createdAt: number
 }
 
 export interface AdminStore {
@@ -39,6 +43,7 @@ interface AdminAccountRow extends RowDataPacket {
 interface AdminSessionRow extends RowDataPacket {
   admin_id: string
   expires_at: number
+  created_at: number
 }
 
 interface CountRow extends RowDataPacket {
@@ -58,6 +63,7 @@ function mapAdminSessionRow(r: AdminSessionRow): AdminSession {
   return {
     adminId: r.admin_id,
     expiresAt: Number(r.expires_at),
+    createdAt: Number(r.created_at),
   }
 }
 
@@ -130,7 +136,7 @@ export function createAdminStore(pool: Pool): AdminStore {
 
     async findSessionByTokenHash(tokenHash) {
       const [rows] = await pool.execute<AdminSessionRow[]>(
-        `SELECT admin_id, expires_at
+        `SELECT admin_id, expires_at, created_at
            FROM admin_sessions
           WHERE token_hash = ?`,
         [tokenHash],

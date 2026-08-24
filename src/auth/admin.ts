@@ -31,8 +31,26 @@ export const ADMIN_SESSION_SHORT_HOURS = 12
 /**
  * 剩余有效期低于此阈值才续期（而不是每次请求都续期）——避免管理员面板这种
  * 低频访问场景下，每次请求都触发一次 UPDATE，没有必要的写放大。
+ *
+ * 注意这个阈值只对"记住此设备"的长会话有意义：它比短会话的整个生命周期
+ * （ADMIN_SESSION_SHORT_HOURS = 12 小时）还长得多，所以短会话从签发那一刻起
+ * 剩余有效期就已经在阈值之下。滑动续期必须先判断"这是不是一个长会话"，
+ * 不能只看剩余时间，见 verifySession 里 isRememberSession 的说明。
  */
 const TOUCH_THRESHOLD_SEC = 5 * 24 * 3600
+
+/**
+ * 管理员密码最小长度。两条建号路径共用同一条门槛：
+ * scripts/admin-bootstrap.ts（首个账号引导）与 POST /api/v1/admin/accounts
+ * （控制台"添加运维人员"）。同一套凭证系统只能有一个门槛——两处各写各的，
+ * 结果就是"命令行建的号必须 8 位、控制台建的号一个字符也能过"。
+ */
+export const ADMIN_PASSWORD_MIN_LENGTH = 8
+
+/** 密码是否满足最小长度要求。两条建号路径都调它，别再各自写 `.length < 8`。 */
+export function isAdminPasswordAcceptable(password: string): boolean {
+  return password.length >= ADMIN_PASSWORD_MIN_LENGTH
+}
 
 // 与 auth/service.ts 相同的枚举防御：账号不存在时仍跑一次等时哈希校验，
 // 使"账号不存在"与"密码错误"两种失败在响应时序上不可区分。
@@ -84,11 +102,20 @@ export function createAdminAuth(deps: AdminAuthDeps): AdminAuth {
       const account = await deps.store.findById(session.adminId)
       if (account === null) throw new AdminSessionInvalidError() // 账号已被移除
 
-      // 滑动续期：只在剩余有效期跌破阈值时才写库。续期到的新有效期固定用
-      // "记住此设备"的 30 天窗口——本函数拿不到当初登录时是否勾选了记住，
-      // 而滑动续期这个动作本身只在长会话上才有意义（短会话 12 小时内用完即弃，
-      // 走不到这条续期分支也无妨）。
-      if (session.expiresAt - now < TOUCH_THRESHOLD_SEC) {
+      // 滑动续期：只对"记住此设备"签发的长会话生效，且只在剩余有效期跌破阈值时
+      // 才写库。
+      //
+      // 判据是会话的**总时长**（expiresAt - createdAt），不是剩余时长：签发时勾没勾
+      // "记住此设备"没有单独落库，但两种会话的窗口长度本来就是两个数量级
+      // （30 天 vs 12 小时），总时长足以还原当初签的是哪一种。
+      //
+      // 只看剩余时长是一个真实的安全漏洞（本轮修复的就是它）：短会话的整个生命周期
+      // 12 小时 < 阈值 5 天，于是"剩余不足阈值"从签发那一刻起就成立，登录后的第一个
+      // 请求（控制台 AppShell 一挂载就打 /auth/me）就会把一个操作员**明确拒绝**了
+      // 30 天持久化的会话，悄悄续成 30 天——共用机器、借来的笔记本上尤其危险，
+      // 而且当事人完全无从察觉。短会话就该 12 小时后干脆地过期，不进这条分支。
+      const isRememberSession = session.expiresAt - session.createdAt >= ADMIN_SESSION_REMEMBER_DAYS * 86400
+      if (isRememberSession && session.expiresAt - now < TOUCH_THRESHOLD_SEC) {
         await deps.store.touchSessionExpiry(tokenHash, now + ADMIN_SESSION_REMEMBER_DAYS * 86400)
       }
 

@@ -129,7 +129,9 @@ test('createSession + findSessionByTokenHash 往返', async () => {
     })
 
     const session = await store.findSessionByTokenHash('token-hash-1')
-    expect(session).toEqual({ adminId: 'admin-sess-1', expiresAt: 5000 })
+    // createdAt 一并往返：AdminAuth.verifySession 靠 expiresAt - createdAt 判断
+    // 这是不是"记住此设备"的长会话，这一列漏映射会让短会话被当成长会话续期
+    expect(session).toEqual({ adminId: 'admin-sess-1', expiresAt: 5000, createdAt: 1000 })
   } finally {
     await cleanup()
   }
@@ -246,6 +248,7 @@ test('deleteSessionsByAdminId 删除该管理员的全部会话，且不影响�
     expect(await store.findSessionByTokenHash('cascade-b-1')).toEqual({
       adminId: 'admin-cascade-2',
       expiresAt: 7000,
+      createdAt: 1000,
     })
   } finally {
     await cleanup()
