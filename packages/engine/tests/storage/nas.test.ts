@@ -82,21 +82,26 @@ test('ensureFreeSpace 对着不存在的 root 目录（真实 statfs 失败）�
 // ---------------------------------------------------------------------------
 // NAS 特有场景：挂起的挂载。
 //
-// 用无读者的 FIFO 在本地确定性地模拟"挂起"，已用脚本逐一实测过每个会被
+// 用无读者/无写者的 FIFO 在本地确定性地模拟"挂起"，已用脚本逐一实测过每个会被
 // wrap() 包住的 fs 调用在 FIFO 上到底是"挂住"还是"瞬间返回/瞬间报错"：
 //   - node:fs/promises 的 open()：挂住（POSIX 语义，O_WRONLY 打开无读者的 FIFO
 //     阻塞在 open）——appendChunk 的第二个 wrap 调用踩的正是这一条。
+//   - Bun.file(...).arrayBuffer()：同样挂住——对无写者的 FIFO 发起读取，走的是
+//     真实的阻塞 open（不像 Bun.write 那样有非阻塞快速失败的路径）——readPart
+//     的 wrap 调用踩的正是这一条，也是本轮 review 补的那处修复要堵的场景。
 //   - node:fs/promises 的 stat()/mkdir()/rename()：全部瞬间返回（<1ms），不会
 //     被 FIFO 挂住——它们不需要为 I/O 打开目标，只是目录项/元数据操作。
 //   - Bun.write()：对无读者的 FIFO 走的是非阻塞 open，瞬间返回 ENXIO 这个
-//     真实错误，同样不会挂住。
+//     真实错误，不会挂住——读、写两条路径在 Bun 里不对称，别想当然地以为二者
+//     行为一致。
 //
-// 结论：appendChunk 是这份实现里唯一能用本地 FIFO 真正触发"挂起→超时"分支的
-// 调用点；finalize（mkdir/rename）与 writtenSize/ensureFreeSpace（stat/statfs）
-// 没法用这个技巧在本地复现挂起，只能证明它们的判别式/wrap() 对一个真实的
-// FsTimeoutError（分别来自 appendChunk 这条真挂起，或来自 fs-timeout.test.ts
-// 对 withFsTimeout 本身的证明）不会误吞、也不会把一个真实的普通错误误判成
-// 超时——这两条分别由上面"对照组"与下面 writeMeta 的 ENXIO 用例覆盖。
+// 结论：appendChunk 与 readPart 是这份实现里能用本地 FIFO 真正触发"挂起→超时"
+// 分支的两个调用点；finalize（mkdir/rename）与 writtenSize/ensureFreeSpace
+// （stat/statfs）没法用这个技巧在本地复现挂起，只能证明它们的判别式/wrap() 对
+// 一个真实的 FsTimeoutError（分别来自 appendChunk/readPart 这两条真挂起，或来自
+// fs-timeout.test.ts 对 withFsTimeout 本身的证明）不会误吞、也不会把一个真实的
+// 普通错误误判成超时——这两条分别由上面"对照组"与下面 writeMeta 的 ENXIO 用例
+// 覆盖。
 // ---------------------------------------------------------------------------
 
 test('appendChunk 遇到挂起的挂载（FIFO 模拟无读者管道）在超时后抛出 FsTimeoutError，而不是永久挂起', async () => {
@@ -108,6 +113,28 @@ test('appendChunk 遇到挂起的挂载（FIFO 模拟无读者管道）在超时
 
     const s = createNasStorage(root, 50)
     const err = await s.appendChunk('f.mp4', 0, new Uint8Array([1, 2, 3])).then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).name).toBe('FsTimeoutError')
+    expect((err as Error).message).toContain('timed out after 50ms')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('readPart 遇到挂起的挂载（FIFO 模拟无写者管道）在超时后抛出 FsTimeoutError，而不是永久挂起', async () => {
+  // downloader/index.ts 的 hashFile() 几乎每次文本资产下载完成都会调 readPart——
+  // 这里没有超时的话，NAS 一挂就是 worker 无声卡死，正是本任务要堵的失效形态。
+  const root = await tmp()
+  try {
+    const fifo = join(root, 'f.bin.part') // 与 readPart 内部 part(rel) 算出的路径完全一致
+    const mkfifo = Bun.spawnSync(['mkfifo', fifo])
+    expect(mkfifo.exitCode).toBe(0) // 造不出 FIFO 就别假装测过了
+
+    const s = createNasStorage(root, 50)
+    const err = await s.readPart('f.bin').then(
       () => null,
       (e: unknown) => e,
     )

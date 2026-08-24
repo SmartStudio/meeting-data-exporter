@@ -21,7 +21,7 @@ export function createNasStorage(root: string, timeoutMs: number = NAS_TIMEOUT_M
         return 0
       }
     },
-    async readPart(rel) { return Bun.file(part(rel)).arrayBuffer() },
+    async readPart(rel) { return wrap(Bun.file(part(rel)).arrayBuffer(), `readPart(${part(rel)})`) },
     async appendChunk(rel, offset, chunk) {
       await wrap(mkdir(dirname(part(rel)), { recursive: true }), `mkdir(${dirname(part(rel))})`)
       const fh = await wrap(open(part(rel), offset === 0 ? 'w' : 'r+'), `open(${part(rel)})`)
