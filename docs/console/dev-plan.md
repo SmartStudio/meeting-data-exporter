@@ -213,10 +213,10 @@ spec §1.4 说「采集权限规则是数据离开企业边界的唯一闸门」
 
 | 任务 | 内容 | 落点 | 规模 |
 | --- | --- | --- | --- |
-| **P1** | NAS 存储适配器（= M4 的 NAS 部分） | `packages/engine/storage/nas.ts`，实现同一个 `Storage` 接口 | 中 |
-| **P2** | 归档流水线：本地 → NAS，校验哈希，写归档记录 | `src/worker/archive.ts` + `meeting_archives` 表 | 中 |
-| **P3** | 保留窗口与到期清理 | `src/worker/retention.ts`，**自归档成功日起算** | 中 |
-| **P4** | NAS 连通与容量探测 | `src/worker/nas-probe.ts` | 小 |
+| ~~P1~~ | ~~NAS 存储适配器（= M4 的 NAS 部分）~~ | `packages/engine/src/storage/nas.ts`，实现同一个 `Storage` 接口 | ✅ **已完成，2026-08-24** |
+| ~~P2~~ | ~~归档流水线：本地 → NAS，校验哈希，写归档记录~~ | `src/store/archives.ts` + `src/worker/archive.ts` + `meeting_archives`/`archived_assets` 表 | ✅ **已完成，2026-08-24** |
+| ~~P3~~ | ~~保留窗口与到期清理~~ | `src/worker/retention.ts`，**自归档成功日起算** | ✅ **已完成，2026-08-24** |
+| ~~P4~~ | ~~NAS 连通与容量探测~~ | `src/worker/nas-probe.ts` | ✅ **已完成，2026-08-24** |
 
 **P1 与 M4 合并，且只做 NAS。** M4 原本要做 OSS + NAS 两个适配器；OSS 现在没有
 需求方，等真有再说。
@@ -246,7 +246,7 @@ spec 相反（§5 冲突 C1）——这不是「改个符号」：旧数据是�
 
 | 任务 | 内容 | 落点 | 规模 |
 | --- | --- | --- | --- |
-| **A1** | 管理员会话 | `src/auth/admin.ts` + `admin_accounts` 表，argon2id 复用 `auth/service.ts` | 小 |
+| ~~A1~~ | ~~管理员会话~~ | `src/store/admin.ts` + `src/auth/admin.ts` + `admin_accounts`/`admin_sessions` 表，argon2id 复用 `auth/service.ts` | ✅ **已完成，2026-08-24** |
 | **A2** | 会议查询 API（G7） | `src/http/handlers/console/meetings.ts` | 大 |
 | **A3** | 规则 / 授权 / 任务 / 存储 API | `src/http/handlers/console/*.ts` | 中 |
 | **A4** | 定时任务调度器（G5） | `src/worker/scheduler.ts` | 中 |
@@ -296,11 +296,11 @@ F7 的五个缺口：只读角色 · 移动端卡片化降级 · 新建定时任
          E3 进程内 AssetSource                 │
             │                                  │
             ▼                                  │
-阶段 2   P1 NAS 适配器 ─┐                      │
-         P2 归档流水线 ─┤ 串行                 │
-         P3 保留与清理 ─┘                      │
-         P4 NAS 探测     ← 与 P2/P3 并行        │
-         A1 管理员会话   ← 可提前到这里 ────────┤（前端就能真登录）
+阶段 2   P1 NAS 适配器 ─┐                      │  ✅ 已完成
+         P2 归档流水线 ─┤ 串行                 │  ✅ 已完成
+         P3 保留与清理 ─┘                      │  ✅ 已完成
+         P4 NAS 探测     ← 与 P2/P3 并行        │  ✅ 已完成
+         A1 管理员会话   ← 可提前到这里 ────────┤（前端就能真登录）✅ 已完成
             │                                  │
             ▼                                  │
 阶段 3   R1 三栈引擎 → R2 影响预览              │
