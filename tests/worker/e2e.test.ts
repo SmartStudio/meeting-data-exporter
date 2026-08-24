@@ -24,6 +24,7 @@ import { POOL_CONNECTION_LIMIT, createPool, type Pool } from '../../src/store/db
 import type { Asset, Meeting } from '../../src/domain/types'
 import type { Catalog } from '../../src/catalog/index'
 import type { RecordsApi } from '../../src/tencent/records'
+import { createArchivesStore } from '../../src/store/archives'
 import { createInProcSource } from '../../src/worker/source-inproc'
 import { createMysqlStore } from '../../src/worker/store-mysql'
 import {
@@ -185,6 +186,7 @@ function stubCatalog(
 function makeDeps(
   pool: Pool,
   root: string,
+  nasRoot: string,
   server: FileServer,
   assets: Asset[],
   now: () => number,
@@ -201,6 +203,10 @@ function makeDeps(
     storage: createLocalStorage(root),
     concurrency: 2,
     leaseSec: 900,
+    // 归档流水线（P2）依赖：与 storage 用同一个本地根目录，NAS 目的地另开一个临时目录
+    archives: createArchivesStore(pool),
+    localRoot: root,
+    nasRoot,
     ...rest,
   }
 }
@@ -224,19 +230,21 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** 每个用例一套独立的库 + 归档目录 + 文件服务，跑完全部拆掉 */
+/** 每个用例一套独立的库 + 本地归档目录 + NAS 目录 + 文件服务，跑完全部拆掉 */
 async function withRig(
   files: Record<string, string>,
-  fn: (rig: { pool: Pool; root: string; server: FileServer }) => Promise<void>,
+  fn: (rig: { pool: Pool; root: string; nasRoot: string; server: FileServer }) => Promise<void>,
 ): Promise<void> {
   const { pool, cleanup } = await withTestDb()
   const root = await mkdtemp(join(tmpdir(), 'mde-worker-'))
+  const nasRoot = await mkdtemp(join(tmpdir(), 'mde-worker-nas-'))
   const server = startFileServer(files)
   try {
-    await fn({ pool, root, server })
+    await fn({ pool, root, nasRoot, server })
   } finally {
     server.stop()
     await rm(root, { recursive: true, force: true })
+    await rm(nasRoot, { recursive: true, force: true })
     await cleanup()
   }
 }
@@ -245,9 +253,9 @@ const FILES = { '/file/f-sum-1': TRANSCRIPT_BODY, '/file/f-video-1': VIDEO_BODY 
 
 describe('runWorkerOnce', () => {
   test('一轮把一场会议的两个资产拉进归档区，状态与哈希落进 MySQL', async () => {
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
 
       const res = await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
       expect(res).toEqual({
@@ -257,6 +265,9 @@ describe('runWorkerOnce', () => {
         completed: 2,
         failed: 0,
         skipped: 0,
+        // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
+        // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
+        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0 },
       })
 
       // ① 文件真的落在归档区，且路径是按 <year>/<month>/<cleanDirName>/<文件名> 拼出来的那个
@@ -298,9 +309,9 @@ describe('runWorkerOnce', () => {
   }, 30_000)
 
   test('同一场会议跑第二遍不重新下载：已 completed 的行不再被领取', async () => {
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
 
       await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
       const afterFirst = server.requests.length
@@ -329,9 +340,9 @@ describe('runWorkerOnce', () => {
   }, 30_000)
 
   test('断点续传：上一轮只下到一半，下一轮带 Range 接着下而不是从头来', async () => {
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET], now)
       const keys: AssetKey[] = ['transcript']
 
       // 第一轮：服务端只发前 5 字节，downloader 因 size mismatch 判失败，.part 保留
@@ -375,9 +386,9 @@ describe('runWorkerOnce', () => {
   test('服务端无视 Range 时退回全量重下——上一条用例的 sent=6 因此是有判别力的', async () => {
     // 这条不是为了测「无视 Range」这个场景本身，是给上一条用例当负控制：
     // 如果没有它，谁也说不清 sent=6 那个断言换成一个不支持续传的服务端会不会照样绿。
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET], now)
       const keys: AssetKey[] = ['transcript']
 
       server.truncateTo = 5
@@ -405,11 +416,11 @@ describe('runWorkerOnce', () => {
     // 冻结时钟下 lease_expires_at 恒等于「本轮开始时刻 + leaseSec」，一轮跑够久
     // （大文件很正常）之后，别的实例按自己的活时钟一看就判定租约过期，把还在下载中的
     // 任务抢走——两个进程同时写同一个 .part。把时钟换成函数这条用例才可能通过。
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       let clock = START + 100
       const now = () => clock
       const seenLease: number[] = []
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now, {
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now, {
         concurrency: 1, // 串行领取，任一时刻只有一行是 running
         onResolve: async () => {
           const [rows] = await pool.query<RowDataPacket[]>(
@@ -426,6 +437,60 @@ describe('runWorkerOnce', () => {
       expect(seenLease.length).toBe(2)
       expect(seenLease[0]).toBe(START + 100 + 900)
       expect(seenLease[1]).toBe(START + 100 + 600 + 900)
+    })
+  }, 30_000)
+
+  test('归档步骤按 (meeting_id, sub_meeting_id) 精确枚举，不按 meeting_id 去重：同一 meeting_id 下两个 sub_meeting_id 都有完成资产时，一轮之后两个都被归档', async () => {
+    // 这是 code review 抓出的 Critical 的回归用例：归档步骤最初错误复用了
+    // Store.meetingsForPaths()（专为本地路径命名设计，按 meeting_id 去重，见
+    // tests/worker/store-mysql.test.ts:393 那条钉住"后一行覆盖前一行"的既有用例）
+    // 当枚举源。周期性会议共享 meeting_id、各场次有不同的 sub_meeting_id 是真实场景
+    // （meetings 表主键就是 (meeting_id, sub_meeting_id)），去重会让除"胜出"那条之外
+    // 的场次永远不被传给 archiveMeeting——静默地永远不归档、永远不进
+    // meeting_archives、Task 8 的到期清理也永远看不到。
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
+      // 直接往 meeting_assets 插两条"已完成下载"的行，分属同一个 meeting_id 下的
+      // 两个不同 sub_meeting_id——不经过 discover/下载：这个 bug 完全在归档步骤的
+      // 枚举逻辑里，不需要、也不应该跟 createInProcSource 聚合周期性会议资产那个
+      // （另一处、与本次修复无关的）行为纠缠在一起。
+      await pool.execute(
+        `INSERT INTO meeting_assets
+           (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, bytes_written, created_at, updated_at)
+         VALUES ('m-periodic', 's1', 'video', 'r-1', 'mp4', 'completed', 's1.bin', 0, 1000, 1000)`,
+      )
+      await pool.execute(
+        `INSERT INTO meeting_assets
+           (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, bytes_written, created_at, updated_at)
+         VALUES ('m-periodic', 's2', 'video', 'r-1', 'mp4', 'completed', 's2.bin', 0, 1000, 1000)`,
+      )
+      await writeFile(join(root, 's1.bin'), 'content for s1')
+      await writeFile(join(root, 's2.bin'), 'content for s2')
+
+      const now = () => START + 100
+      // 本轮不需要真的发现/下载任何东西：用一个查不到会议的空 source，让这一轮
+      // 唯一有意义的活动落在归档步骤上。
+      const emptySource = createInProcSource({
+        recordsApi: { listMeetings: async () => [] },
+        catalog: {
+          listAssets: async () => [],
+          resolveDownloadUrl: async () => { throw new Error('unexpected download in this test') },
+        },
+        now,
+      })
+      const deps = makeDeps(pool, root, nasRoot, server, [], now, { source: emptySource })
+
+      const res = await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
+      expect(res.meetings).toBe(0)
+      expect(res.tasks).toBe(0)
+
+      // 两个 sub_meeting_id 都被归档了，不是只有一个
+      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0 })
+
+      const archives = createArchivesStore(pool)
+      expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's1', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)
+      expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's2', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)
+      expect(await archives.findMeetingArchive('m-periodic', 's1')).not.toBeNull()
+      expect(await archives.findMeetingArchive('m-periodic', 's2')).not.toBeNull()
     })
   }, 30_000)
 })

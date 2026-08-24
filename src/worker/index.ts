@@ -28,6 +28,8 @@ import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
 import { createAddressesApi } from '../tencent/addresses'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
+import { createArchivesStore, type ArchivesStore } from '../store/archives'
+import { archivePendingMeetings, type ArchiveDeps } from './archive'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore } from './store-mysql'
 
@@ -39,6 +41,14 @@ export interface WorkerDeps {
   concurrency: number
   /** 领取任务时写进 lease_expires_at 的租约时长（秒） */
   leaseSec: number
+  /** 归档流水线（P2）依赖：归档记录存取 */
+  archives: ArchivesStore
+  /** 本地归档区根目录（MDE_ARCHIVE_ROOT）——与 storage 指向同一棵目录树。
+   *  Storage 接口本身不暴露自己的根路径，archiveMeeting 拼本地源文件路径
+   *  （join(localRoot, target_path)）需要单独拿到它，所以在这里另传一份。 */
+  localRoot: string
+  /** 归档目的地根目录（MDE_NAS_ROOT，NAS 挂载点） */
+  nasRoot: string
 }
 
 export interface WorkerRound {
@@ -50,6 +60,11 @@ export interface WorkerRound {
   completed: number
   failed: number
   skipped: number
+  /** 本轮归档流水线（P2）的汇总：对 ArchivesStore.listMeetingsNeedingArchive() 给出的
+   *  每场"有未归档完成资产"的会议累加。failed 是逐会议错误隔离之后没能正常归档完的
+   *  会议数（archiveMeeting 本身抛出，不是可以放心忽略的数字，见 archive.ts 的
+   *  ArchiveRoundOutcome 注释）。 */
+  archived: { newlyArchived: number; verificationFailed: number; failed: number }
 }
 
 /**
@@ -96,7 +111,26 @@ export async function runWorkerOnce(
     now,
   )
 
-  return { ...found, probes, ...ran }
+  // 归档：把（本轮以及此前遗留、这一轮才终于补齐的）已完成下载的资产搬到 NAS。
+  //
+  // 枚举源是 ArchivesStore.listMeetingsNeedingArchive()，不是上面的 meetingsById——
+  // meetingsById 是 Store.meetingsForPaths() 给的，按 meeting_id 去重，专为本地落盘
+  // 路径命名设计（一次只需要一个"代表"元数据的场次）。周期性会议同一 meeting_id 下
+  // 还有其它 sub_meeting_id 时，去重会把它们静默丢掉，永远不会被传给 archiveMeeting，
+  // 对应场次因此永远不会归档、永远进不了 meeting_archives（这个去重行为本身是对的，
+  // 被 tests/worker/store-mysql.test.ts:393 的既有回归测试钉住了；错的是把它复用成
+  // 归档流水线的枚举源）。listMeetingsNeedingArchive() 直接按 (meeting_id,
+  // sub_meeting_id) 这个真实主键枚举，不丢会议；它还只返回"completed 数量 > 已归档
+  // 数量"的那些，顺带给出"没有待办事项就不必再查"的早退，不会对早就归档完的会议
+  // 每轮都重新查一遍。
+  //
+  // 逐会议错误隔离（一场会议的 archiveMeeting 抛出不连累其它会议）与
+  // "archived_at 不被空转重跑推着走"的守卫都在 archivePendingMeetings /
+  // archiveMeeting 内部，见 archive.ts 的注释。
+  const archiveDeps: ArchiveDeps = { archives: deps.archives, localRoot: deps.localRoot, nasRoot: deps.nasRoot }
+  const archived = await archivePendingMeetings(archiveDeps, now)
+
+  return { ...found, probes, ...ran, archived }
 }
 
 // ---------------------------------------------------------------------------
@@ -378,12 +412,27 @@ async function main(): Promise<number> {
   // 也被迫配一个用不到的变量。与 src/index.ts 处理 PORT / HOST 的口径一致。
   const archiveRoot = await assertArchiveRootUsable(process.env.MDE_ARCHIVE_ROOT)
 
+  // NAS 根目录（归档流水线 P2 的搬运目的地）同样是 worker 独有的进程编排参数，
+  // 与 archiveRoot 相同的理由不塞进 loadConfig。这里只做"必须已配置"的最小校验，
+  // 不做 assertArchiveRootUsable 那一整套存在性/目录/可写性 + 超时探测——那一整套
+  // 运行期可重复调用的版本是 Task 4 的 probeNas（src/worker/nas-probe.ts），
+  // 服务的是控制台"归档存储"页；本任务的 Step 5 只负责把归档流水线接进主循环，
+  // 不重新实现一遍 NAS 侧的启动期硬校验。真正把 probeNas 接到这里（或做一次等价的
+  // 启动期强校验）留给消费 probeNas 的那个后续任务。空着不配的后果与 MDE_ARCHIVE_ROOT
+  // 打错一样是"静默用一个不存在/错误的路径"，所以至少必须显式配置，不能悄悄回落成
+  // undefined 一路穿到 join(undefined, ...) 才在很远的地方炸出一个不知所云的错误。
+  const nasRoot = process.env.MDE_NAS_ROOT
+  if (nasRoot === undefined || nasRoot === '') {
+    throw new Error('missing required config: MDE_NAS_ROOT')
+  }
+
   const now = (): number => Math.floor(Date.now() / 1000)
 
   const pool = createPool(config.databaseUrl, { queueLimit: poolQueueLimitFor(args.concurrency) })
   try {
     await runMigrations(pool)
     const store = createMysqlStore(pool)
+    const archives = createArchivesStore(pool)
 
     const tencentClient = createTencentClient(config.tencent, {
       fetch,
@@ -418,7 +467,10 @@ async function main(): Promise<number> {
     const storage = createLocalStorage(archiveRoot)
 
     const res = await runWorkerOnce(
-      { store, source, storage, concurrency: args.concurrency, leaseSec: LEASE_SEC },
+      {
+        store, source, storage, concurrency: args.concurrency, leaseSec: LEASE_SEC,
+        archives, localRoot: archiveRoot, nasRoot,
+      },
       args.sel,
       args.keys,
       now,
@@ -428,7 +480,14 @@ async function main(): Promise<number> {
       `probes resolved=${res.probes.resolved} abandoned=${res.probes.abandoned} new=${res.probes.newTasks}`,
     )
     console.log(`completed=${res.completed} failed=${res.failed} skipped=${res.skipped}`)
-    return res.failed > 0 ? 1 : 0
+    console.log(
+      `archived newlyArchived=${res.archived.newlyArchived} ` +
+        `verificationFailed=${res.archived.verificationFailed} failed=${res.archived.failed}`,
+    )
+    // 归档失败（archiveMeeting 本身抛出）与下载失败一样必须让退出码变非零——
+    // dev-plan.md 的全局约束把"归档失败"列为最高级别告警，一个盯着 cron/systemd
+    // 退出码的监控系统如果只看 res.failed，会把"某场会议归档不了"误判成本轮成功。
+    return res.failed > 0 || res.archived.failed > 0 ? 1 : 0
   } finally {
     // 关停顺序：一轮跑完（或抛出）→ 关连接池 → 进程退出。
     // 进度回写是 fire-and-forget，池关掉时可能还有一两条在途，它们会被
