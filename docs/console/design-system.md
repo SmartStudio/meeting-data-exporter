@@ -1,7 +1,10 @@
 # 控制台设计系统
 
 - 日期：2026-08-23
-- 令牌文件（权威）：`console/src/styles/tokens.css`（94 个令牌，F1 Task 1 迁入并成为权威来源）
+- 令牌文件（权威）：`console/src/styles/tokens.css`（F1 Task 1 迁入并成为权威来源）
+  > 这里原先写着「94 个令牌」。**这个数字已经错过三次**，所以不再写死——
+  > 要准确数目就跑 `cd console && npm run a11y`，它每次都会报当前的令牌总数。
+  > 冻在散文里的数字会随代码腐烂，而且腐烂时没人知道。
 - 令牌文件（快照，不再跟着改）：[`prototype/tokens.css`](prototype/tokens.css)
 - 原型（行为仍以此为准）：[`prototype/gate-console.html`](prototype/gate-console.html)
 
@@ -178,14 +181,20 @@ unicode-range 切成上百个分片，静态字重会让请求数翻四倍。
 
 以下是**已实测通过的**，改动后必须保持：
 
-| 项 | 标准 | 实测 |
+> **订正（2026-08-24，F1 的 `npm run a11y` 门槛立起来之后）**
+> 下表原先整列写着「✅ 已实测」，其中**两行是假保证**，已就地改掉。
+> 教训是同一条：**一次性脚本量出来的「✅」会随代码一起腐烂，而它腐烂时不会有人知道。**
+> 现在这张表由 `cd console && npm run a11y` 每次真实构建 + 真实 Chromium 复核。
+
+| 项 | 标准 | 现状（由 `npm run a11y` 守） |
 | --- | --- | --- |
-| 文字对比度 | WCAG AA（正文 4.5:1，大字 3:1） | 浅色 / 深色全页**零失败** |
-| 焦点环 | `:focus-visible` 可见、≥3:1、**不做出现动画** | ✅ |
-| 隐藏浮层 | 必须退出 Tab 序列与无障碍树 | Tab 泄漏 **0** |
-| 横向溢出 | 1440 / 1050 / 375 均无 | ✅ |
+| 文字对比度 | WCAG AA（正文 4.5:1，大字 3:1） | 两种主题各扫一遍。**颜色必须过 canvas 解析**——现代浏览器返回 `oklab(…)`，正则抠数字当 RGB 会得到假比值（原型阶段实测抠出过 1.06 和 4.15 两个假数） |
+| **语义色令牌本身** | 色相带 + 饱和度 + 两两色相差 | **原先整个没在守。** `tokenPx()` 只匹配 `\d+px`，从未用于任何颜色型令牌——`--fail` 若被误改成蓝色，所有断言「引用了 `var(--fail)`」的测试**依然全绿**，而「红＝归档失败＝一个月后永久丢失」是本系统最严重的语义 |
+| 焦点环 | `:focus-visible` 可见、≥3:1、**不做出现动画** | 真实浏览器 `focus({focusVisible:true})` 探针。注意 `Overlay.module.css` 的 `.root{outline:none}` 与 `base.css` 的 `:focus-visible` **同优先级，谁赢取决于打包注入顺序**——所以门槛必须跑在 `vite build` 产物上，不是 dev server |
+| 隐藏浮层 | 必须退出 Tab 序列与无障碍树 | Tab 走查 + CDP `Accessibility.getFullAXTree` 取 Chromium 真树。jsdom 不实现 `inert` 的行为语义，`userEvent.tab()` 也不认它 |
+| 横向溢出 | 1440 / 1050 均无；**375 是已知缺口**（见 [`spec.md` §11 #2](spec.md)） | ⚠️ **原写「1440/1050/375 均无 ✅」是假的，两重意义上的假。** 其一，那次测量用的是 `documentElement.scrollWidth`，而本页面实测 `documentElement.scrollWidth = 375 = clientWidth` 却 `body.scrollWidth = 781`——裁剪链 `div.wrap{overflow-x:hidden}` → `body{overflow-x:clip}` 把它吃掉了，**那条断言在这个页面上不可能红**。其二，375px 下实际有 8 类元素跑出视口够不着。**只量 `scrollWidth` 会给「被裁掉所以量不出来」发通行证**，必须同时验证元素在视口内可达 |
 | 触控目标 | 输入类 ≥44px | ✅ |
-| 减少动效 | `prefers-reduced-motion` 生效 | ✅ |
+| 减少动效 | `prefers-reduced-motion` 生效 | 真实媒体查询下复测，不是断言样式表文本里「包含」某段声明 |
 
 ### 5.1 隐藏浮层必须 inert —— 这条最容易漏
 
