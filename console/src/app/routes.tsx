@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate, type RouteObject } from 'react-router-dom'
-import Placeholder, { MeetingsPlaceholder } from '@/pages/_Placeholder'
+import MeetingsPage from '@/pages/Meetings'
+import Placeholder from '@/pages/_Placeholder'
 import AppShell from './AppShell'
 
 /**
@@ -16,7 +17,7 @@ export const routes: RouteObject[] = [
     element: <AppShell />,
     children: [
       { index: true, element: <Navigate to="/meetings" replace /> },
-      { path: 'meetings', element: <MeetingsPlaceholder /> },
+      { path: 'meetings', element: <MeetingsPage /> },
       { path: 'consumers', element: <Placeholder title="采集授权" phase="F4" /> },
       { path: 'rules', element: <Placeholder title="自动规则" phase="F3" /> },
       { path: 'jobs', element: <Placeholder title="定时任务" phase="F5" /> },

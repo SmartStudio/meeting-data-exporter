@@ -1,0 +1,199 @@
+/* 会议记录页的版式。表格自身的列宽/行样式在 MeetingTable / MeetingRow 里。 */
+
+/* 左右留白与底部给快捷键条让位的空间由 AppShell 的 .view 统一提供，
+   这里不重复加一层——加了就是双份内边距。 */
+.page {
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--t-2xl);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  max-width: 62ch;
+  line-height: 1.7;
+}
+.note b {
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-4);
+}
+
+.search {
+  /* 放得下"搜标题 / 会议号 / 主持人"这句占位文案，不写死像素。
+     用 min() 兜底：窄屏下内容列可能比这句话还窄，硬给下限就会顶出去
+     ——而外壳的 overflow-x: clip 会把顶出去的部分直接切掉、够不着。 */
+  min-width: min(26ch, 100%);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* Popover 是绝对定位在调用方给的 relative 容器里的，这个 span 就是那个容器。 */
+.rangeWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.rangeOpt {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-5);
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: var(--s-2) var(--s-3);
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: var(--tap-min);
+}
+.rangeOpt:hover {
+  background: var(--surface-2);
+}
+.rangeOpt[aria-checked='true'] {
+  color: var(--brand-text);
+  font-weight: 500;
+}
+
+.rangeCount {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.legend {
+  display: flex;
+  gap: var(--s-6);
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  border: var(--s-px) solid var(--line-soft);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* ── 详情抽屉（F1 只放判定理由）───────────────────────────── */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.detailMeta {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.detailHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.detailState {
+  font-size: var(--t-xs);
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.detailText {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: 1.7;
+}
+
+.detailFoot {
+  margin: 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+/* 判定理由：`why.by` 决定样式。中性是默认，琥珀＝人工改写 / 规则明确拒绝，
+   红＝失败。生命周期原因（expired / wait / na）保持中性——那不是谁的过错。 */
+.why {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r);
+  border: var(--s-px) solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.why b {
+  display: block;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  margin-bottom: var(--s-px);
+  color: var(--ink-3);
+}
+
+.why[data-tone='warn'] {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.why[data-tone='warn'] b {
+  color: var(--warn);
+}
+
+.why[data-tone='fail'] {
+  border-color: var(--fail-line);
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+.why[data-tone='fail'] b {
+  color: var(--fail);
+}

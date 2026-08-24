@@ -8,6 +8,18 @@ import { routes } from '../src/app/routes'
 import { SystemStateProvider, useMeetings, useSystemState } from '../src/app/SystemStatus'
 
 /**
+ * 顶栏下方那条系统告警条。
+ *
+ * 不能再用 `getByRole('status')` 抓它了：会议记录页（T6）里常驻着一个
+ * `role="status"` 的 Toast——真实浏览器里它关闭时是 inert、不在无障碍树里，
+ * 但 jsdom 不实现 inert 的行为语义，按角色查照样查得到。用告警条自己的
+ * `data-sev` 定位，既避开这一点，也让断言指向真正要测的那个元素。
+ */
+function systemBanner(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[role="status"][data-sev]')
+}
+
+/**
  * 挂起完整外壳（`SystemStateProvider` + 内存路由），供集成测试用。
  * `initialState`/`initialPath` 让每条测试从想要的起点开始，不用先经过
  * 一轮点击才能到达要测的状态。
@@ -30,7 +42,7 @@ describe('AppShell · 左栏与路由', () => {
     renderApp('/meetings')
     // 等 useMeetings() 的首轮请求落地，避免测试结束后才 resolve 触发
     // 「未包在 act 里的状态更新」告警——这跟本测试要断言的东西无关。
-    await waitFor(() => expect(screen.getByTestId('stat-failed')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
 
     const labels = ['会议记录', '采集授权', '自动规则', '定时任务', '归档存储', '操作审计']
     for (const label of labels) {
@@ -82,7 +94,7 @@ describe('AppShell · 顶栏', () => {
     renderApp('/meetings')
     expect(screen.getByText('原型 · 全部数字为示例')).toBeInTheDocument()
     // 同上：等首轮请求落地再结束，不留悬空的状态更新告警。
-    await waitFor(() => expect(screen.getByTestId('stat-failed')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
   })
 
   test('系统状态下拉能切到六种形态', async () => {
@@ -92,41 +104,43 @@ describe('AppShell · 顶栏', () => {
     const picker = screen.getByRole('combobox', { name: /系统状态/ })
 
     // ok：无告警条，分诊数字来自真实 mock 数据（1 场归档失败，即 m3）
-    await waitFor(() => expect(screen.getByTestId('stat-failed')).toHaveTextContent('1'))
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1'))
+    expect(systemBanner()).toBeNull()
 
     // selectOptions 按 <option> 的 value 或可见文本匹配；用 value（英文短名）
     // 而不是中文标签，免得标签文案一改这条测试就跟着碎。
 
     // loading：内容区给出加载中提示，不是空白
     await user.selectOptions(picker, 'loading')
-    expect(await screen.findByTestId('meetings-status')).toHaveTextContent('正在读取')
+    expect(await screen.findByTestId('meetings-loading')).toHaveTextContent('正在读取')
 
     // load-failed：错误详情 + 重试，不是「暂无数据」
     await user.selectOptions(picker, 'load-failed')
-    const status = await screen.findByTestId('meetings-status')
+    const status = await screen.findByTestId('meetings-error')
     expect(status.textContent).toMatch(/失败|错误|不可用|503/)
     expect(within(status).getByRole('button', { name: '重试' })).toBeInTheDocument()
 
     // empty：一场会议都没有，出口文案存在
     await user.selectOptions(picker, 'empty')
-    expect(await screen.findByTestId('meetings-status')).toHaveTextContent('还没有拉取过任何会议')
+    expect(await screen.findByTestId('meetings-empty')).toHaveTextContent('还没有拉取过任何会议')
 
     // nas-down：告警条 sev=fail，且有「暂停到期清理」
     await user.selectOptions(picker, 'nas-down')
-    const nasBar = await screen.findByRole('status')
+    await waitFor(() => expect(systemBanner()).not.toBeNull())
+    const nasBar = systemBanner()!
     expect(nasBar).toHaveAttribute('data-sev', 'fail')
     expect(within(nasBar).getByRole('button', { name: '暂停到期清理' })).toBeInTheDocument()
 
     // tencent-down：告警条 sev=warn，没有暂停按钮（那是 NAS 专属的动作）
     await user.selectOptions(picker, 'tencent-down')
-    const tencentBar = await screen.findByRole('status')
+    await waitFor(() => expect(systemBanner()).toHaveAttribute('data-sev', 'warn'))
+    const tencentBar = systemBanner()!
     expect(tencentBar).toHaveAttribute('data-sev', 'warn')
     expect(within(tencentBar).queryByRole('button', { name: '暂停到期清理' })).not.toBeInTheDocument()
 
     // 切回正常，告警条消失
     await user.selectOptions(picker, 'ok')
-    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+    await waitFor(() => expect(systemBanner()).toBeNull())
   })
 
   test('rail 宽度取自 --rail-w，不是写死的 196px', () => {
@@ -146,18 +160,20 @@ describe('SystemStatus · nas-down 必须体现在数据里', () => {
     const user = userEvent.setup()
     renderApp('/meetings', 'ok')
 
-    // 基线：只有 1 场归档失败（m3），保留窗口本来就是 null（未归档成功）
-    await waitFor(() => expect(screen.getByTestId('stat-failed')).toHaveTextContent('1'))
-    expect(screen.getByTestId('stat-keep-cleared')).toHaveTextContent('1')
-    expect(screen.getByTestId('stat-grants-cleared')).toHaveTextContent('1')
+    // 基线：只有 1 场归档失败（m3）。m1 归档成功、保留期在走、还授权给了程序。
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1'))
+    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 28 天')
+    expect(screen.getByTestId('grant-m1')).toHaveTextContent('知识库索引器')
 
     await user.selectOptions(screen.getByRole('combobox', { name: /系统状态/ }), 'nas-down')
 
-    // spec.md §7.2：归档失败从 1 变 5，全部保留窗口清零、授权撤下——
-    // 只断言横幅出现等于没测到这个状态真正的含义，这里直接读数据层的数字。
-    await waitFor(() => expect(screen.getByTestId('stat-failed')).toHaveTextContent('5'))
-    expect(screen.getByTestId('stat-keep-cleared')).toHaveTextContent('5')
-    expect(screen.getByTestId('stat-grants-cleared')).toHaveTextContent('5')
+    // spec.md §7.2：归档失败从 1 变 5，受影响会议的保留窗口清零、授权撤下——
+    // 只断言横幅出现等于没测到这个状态真正的含义，这里逐场读表格里的实际内容。
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('5'))
+    for (const id of ['m1', 'm2', 'm7', 'm9']) {
+      expect(screen.getByTestId(`keep-${id}`)).toHaveTextContent('归档失败，未开始计时')
+      expect(screen.getByTestId(`grant-${id}`)).not.toHaveTextContent('知识库索引器')
+    }
   })
 
   test('nas-down：具体某场会议（m1）的字段真的变了，不是巧合的计数吻合', async () => {
@@ -202,7 +218,8 @@ describe('SystemStatus · nas-down 必须体现在数据里', () => {
     const user = userEvent.setup()
     renderApp('/meetings', 'nas-down')
 
-    const bar = await screen.findByRole('status')
+    await waitFor(() => expect(systemBanner()).not.toBeNull())
+    const bar = systemBanner()!
     const pauseBtn = within(bar).getByRole('button', { name: '暂停到期清理' })
     await user.click(pauseBtn)
 

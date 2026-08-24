@@ -21,7 +21,18 @@ export type AssetKey =
   | 'ai_speaker_minutes'
   | 'ai_ds_minutes'
 
-export type FetchState = 'done' | 'running' | 'blocked' | 'none'
+/**
+ * 拉取阶段的状态。
+ *
+ * `'off'` 是 F1 Task 6 补上的：拉取的圆点本身就是开关（spec.md §4.2「圆点即开关，
+ * 点一下就能重跑该阶段」），把一个已完成的拉取人工关掉之后，这个阶段就既不是
+ * `'blocked'`（那是规则做出的决定）也不是 `'none'`（那是压根没有录制），必须有
+ * 自己的取值——原型的 `toggleStage()` 正是把 `m.fetch` 置成 `'off'`，它的
+ * `STAGE_LABEL` 也是 fetch/archive 两阶段共用、`off = '未执行'`。
+ * spec.md §6.1 的类型声明漏收了它，与 T2 当初给 `ArchiveState` 补 `'none'` 是
+ * 同一类缺口（见 task-2-report §6.2）。
+ */
+export type FetchState = 'done' | 'running' | 'blocked' | 'off' | 'none'
 export type ArchiveState = 'done' | 'running' | 'failed' | 'off' | 'blocked' | 'none'
 export type AllowState = 'allow' | 'deny'
 

@@ -1,0 +1,71 @@
+/* 批量条：反相表面（近黑底 / 浅字），浮在内容区下沿。
+ * 进出场只动 transform + opacity。 */
+
+.bar {
+  position: fixed;
+  left: calc(50% + var(--rail-w) / 2);
+  bottom: var(--s-9);
+  transform: translateX(-50%) translateY(150%);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  background: var(--ink);
+  color: var(--ground);
+  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-5);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-float);
+  opacity: 0;
+  pointer-events: none;
+  flex-wrap: wrap;
+  transition:
+    transform var(--dur-3) var(--ease-out),
+    opacity var(--dur-2) var(--ease-out);
+}
+
+.bar[data-show='true'] {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.count {
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.scope {
+  font-family: var(--sans);
+  font-size: var(--t-2xs);
+  opacity: .75;
+}
+
+.sep {
+  width: var(--s-px);
+  height: var(--s-6);
+  background: color-mix(in oklab, var(--ground) 25%, transparent);
+  flex: none;
+}
+
+/* 压在反相表面上的按钮：底色透明、描边和字色都从 --ground 里调，
+   不能沿用为浅底准备的 --line / --ink。 */
+.btn {
+  background: transparent;
+  border-color: color-mix(in oklab, var(--ground) 28%, transparent);
+  color: var(--ground);
+}
+.btn:hover {
+  background: color-mix(in oklab, var(--ground) 14%, transparent);
+  border-color: color-mix(in oklab, var(--ground) 45%, transparent);
+}
+
+.quiet {
+  color: color-mix(in oklab, var(--ground) 70%, transparent);
+  border-color: transparent;
+}
+.quiet:hover {
+  color: var(--ground);
+  border-color: color-mix(in oklab, var(--ground) 28%, transparent);
+}
