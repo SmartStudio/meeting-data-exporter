@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test'
-import { requireAuth } from '../../src/http/middleware'
+import { requireAuth, requireAdminAuth, ADMIN_SESSION_COOKIE } from '../../src/http/middleware'
 import { signAccessToken } from '../../src/auth/tokens'
+import { AdminSessionInvalidError } from '../../src/auth/admin'
+import type { AdminAuth, AdminIdentity } from '../../src/auth/admin'
 import type { ActorIdentity } from '../../src/domain/types'
 
 const SECRET = 'x'.repeat(32)
@@ -67,4 +69,112 @@ test('Authorization 头不是 Bearer 形式时返回 401 missing_token', async (
   if (!r.ok) {
     expect((await r.response.json()).error).toBe('missing_token')
   }
+})
+
+// ---------------------------------------------------------------------------
+// requireAdminAuth（Task 3 / A1）
+// ---------------------------------------------------------------------------
+
+const ADMIN_IDENTITY: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+
+/** 只需要 verifySession 这一个方法被 requireAdminAuth 调用；其余方法在这些用例里不应被触碰 */
+function fakeAdminAuth(verifySession: AdminAuth['verifySession']): AdminAuth {
+  const notExpected = (name: string) => () => {
+    throw new Error(`unexpected call to AdminAuth.${name} in this test`)
+  }
+  return {
+    authenticate: notExpected('authenticate'),
+    hashPassword: notExpected('hashPassword'),
+    issueSession: notExpected('issueSession'),
+    verifySession,
+    revokeSession: notExpected('revokeSession'),
+    revokeAllSessionsFor: notExpected('revokeAllSessionsFor'),
+  }
+}
+
+test('requireAdminAuth：无 cookie 返回 401 missing_admin_session', async () => {
+  const adminAuth = fakeAdminAuth(async () => ADMIN_IDENTITY)
+  const req = new Request('https://gw/api/v1/admin/accounts')
+  const r = await requireAdminAuth(req, adminAuth, 1000)
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.response.status).toBe(401)
+    expect((await r.response.json()).error).toBe('missing_admin_session')
+  }
+})
+
+test('requireAdminAuth：token 校验失败（AdminSessionInvalidError）返回 401 invalid_admin_session', async () => {
+  const adminAuth = fakeAdminAuth(async () => {
+    throw new AdminSessionInvalidError()
+  })
+  const req = new Request('https://gw/api/v1/admin/accounts', {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=some-invalid-token` },
+  })
+  const r = await requireAdminAuth(req, adminAuth, 1000)
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.response.status).toBe(401)
+    expect((await r.response.json()).error).toBe('invalid_admin_session')
+  }
+})
+
+test('requireAdminAuth：verifySession 抛出非 AdminSessionInvalidError 的异常时向上抛出，不吞掉', async () => {
+  const boom = new Error('unexpected db failure')
+  const adminAuth = fakeAdminAuth(async () => {
+    throw boom
+  })
+  const req = new Request('https://gw/api/v1/admin/accounts', {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=some-token` },
+  })
+  await expect(requireAdminAuth(req, adminAuth, 1000)).rejects.toBe(boom)
+})
+
+test('requireAdminAuth：校验成功返回 ok:true 并带回 identity', async () => {
+  const adminAuth = fakeAdminAuth(async (token, now) => {
+    expect(token).toBe('valid-token')
+    expect(now).toBe(1234)
+    return ADMIN_IDENTITY
+  })
+  const req = new Request('https://gw/api/v1/admin/accounts', {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=valid-token` },
+  })
+  const r = await requireAdminAuth(req, adminAuth, 1234)
+  expect(r.ok).toBe(true)
+  expect(r.ok && r.identity).toEqual(ADMIN_IDENTITY)
+})
+
+test('requireAdminAuth：cookie 头混了其他 cookie 时仍能正确取到目标值', async () => {
+  const adminAuth = fakeAdminAuth(async (token) => {
+    expect(token).toBe('xxx')
+    return ADMIN_IDENTITY
+  })
+  const req = new Request('https://gw/api/v1/admin/accounts', {
+    headers: { cookie: `foo=bar; ${ADMIN_SESSION_COOKIE}=xxx; baz=qux` },
+  })
+  const r = await requireAdminAuth(req, adminAuth, 1000)
+  expect(r.ok).toBe(true)
+})
+
+test('requireAdminAuth：目标 cookie 在头部最前面时仍能正确取到值', async () => {
+  const adminAuth = fakeAdminAuth(async (token) => {
+    expect(token).toBe('first')
+    return ADMIN_IDENTITY
+  })
+  const req = new Request('https://gw/api/v1/admin/accounts', {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=first; other=second` },
+  })
+  const r = await requireAdminAuth(req, adminAuth, 1000)
+  expect(r.ok).toBe(true)
+})
+
+test('requireAdminAuth：cookie 值经过 URL 编码时正确解码', async () => {
+  const adminAuth = fakeAdminAuth(async (token) => {
+    expect(token).toBe('a/b+c')
+    return ADMIN_IDENTITY
+  })
+  const req = new Request('https://gw/api/v1/admin/accounts', {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=${encodeURIComponent('a/b+c')}` },
+  })
+  const r = await requireAdminAuth(req, adminAuth, 1000)
+  expect(r.ok).toBe(true)
 })

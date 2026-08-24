@@ -17,6 +17,8 @@ import { createAuthStore } from '../../src/store/auth'
 import { createDeviceFlow } from '../../src/auth/device'
 import { createServiceAuth } from '../../src/auth/service'
 import { createIdentityMapper } from '../../src/auth/identity'
+import { createAdminStore } from '../../src/store/admin'
+import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createStsStore } from '../../src/store/sts'
 import { createStsManager } from '../../src/sts/manager'
@@ -118,10 +120,16 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const serviceAuth = createServiceAuth({ store: authStore })
   const meetingsCache = createMeetingCacheStore(pool)
 
+  // 管理员会话与账号管理（Task 3，A1）——与上面企微/服务账号认证线完全独立，
+  // 装配方式跟随 src/index.ts：真实 AdminStore/AdminAuth，接到同一个测试库
+  const adminStore = createAdminStore(pool)
+  const adminAuth = createAdminAuth({ store: adminStore })
+  const gatewayBaseUrl = 'https://gw.example'
+
   const deps: AppDeps = {
     now,
     jwtSecret,
-    gatewayBaseUrl: 'https://gw.example',
+    gatewayBaseUrl,
     recordsApi,
     catalog,
     policyEngine,
@@ -136,6 +144,10 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     // 每个测试 app 一个独立桶（不跨测试共享），保持测试间隔离
     loginRateLimiter: createLoginRateLimiter(),
     trustedProxyHops: 1,
+    adminAuth,
+    adminStore,
+    // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
+    cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
   }
 
   return { app: createApp(deps), deps, pool }

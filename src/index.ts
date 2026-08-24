@@ -3,6 +3,7 @@ import { createPool, runMigrations } from './store/db'
 import { createStsStore } from './store/sts'
 import { createPolicyStore } from './store/policy'
 import { createAuthStore } from './store/auth'
+import { createAdminStore } from './store/admin'
 import { createAuditStore } from './store/audit'
 import { createMeetingCacheStore } from './store/meetings'
 import { createTencentClient } from './tencent/client'
@@ -18,6 +19,7 @@ import { createDeviceFlow } from './auth/device'
 import { createWecomClient } from './auth/wecom'
 import { createIdentityMapper } from './auth/identity'
 import { createServiceAuth } from './auth/service'
+import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
 import { createLoginRateLimiter } from './http/ratelimit'
 
@@ -78,6 +80,19 @@ async function main(): Promise<void> {
   const meetingsCache = createMeetingCacheStore(pool)
   const loginRateLimiter = createLoginRateLimiter()
 
+  // 管理员会话与账号管理（Task 3，A1）——与企微/服务账号认证完全独立的第三条认证线，
+  // 不共用 authStore/上面任何一张登录相关表（见 migrations/003_console_stage2.sql 的注释）
+  const adminStore = createAdminStore(pool)
+  const adminAuth = createAdminAuth({ store: adminStore })
+  // cookie 的 Secure 属性：本仓库目前没有任何「是否生产环境」的既有判断机制
+  // （既无 NODE_ENV 读取，也无 config.ts 里的同类字段），因此不引入 NODE_ENV
+  // 这第一套判断逻辑，而是复用已经校验过的 config.gatewayBaseUrl——它就是本次
+  // 部署对外可见的地址，协议是 https 即视为可以安全下发 Secure cookie。
+  // 本地 http 开发环境 gatewayBaseUrl 一般是 http://localhost:3000 之类，此时
+  // cookieSecure=false，避免"浏览器悄悄丢弃 cookie"这种排查成本极高的静默失败
+  // （见 http/handlers/console/auth.ts 的 cookieAttrs 注释）。
+  const cookieSecure = new URL(config.gatewayBaseUrl).protocol === 'https:'
+
   const deps: AppDeps = {
     now,
     jwtSecret: config.jwtSecret,
@@ -95,6 +110,9 @@ async function main(): Promise<void> {
     meetingsCache,
     loginRateLimiter,
     trustedProxyHops: config.trustedProxyHops,
+    adminAuth,
+    adminStore,
+    cookieSecure,
   }
 
   const app = createApp(deps)
