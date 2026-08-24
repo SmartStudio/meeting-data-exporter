@@ -50,17 +50,32 @@
   color: var(--on-fail);
 }
 
+/* 撤回授权的角标。它是**控件**，不是装饰——静息态就必须达标。
+ *
+ * 原来这里是 `opacity: .6`，实测浅色 2.45:1 / 深色 2.53:1，两种主题都不达 AA
+ * （F1 Task 7 的门槛抓出来的）。opacity 压的是**文字本身**，它把前景色朝底色
+ * 方向拉，对比度一定跟着掉——「轻」只能从别处拿，不能从对比度上拿。这和
+ * MeetingRow 的 `.extendBtn` 当初把琥珀换成中性加重是同一条道理。
+ *
+ * 现在颜色纯粹继承徽标自己的语义色（`.brand` 就是 --brand-text，`.fail` 就是
+ * --fail…），于是 ✕ 与它旁边的标签同色同重：**它永远不可能比标签更差**。
+ * 徽标标签本身的对比度已经在门槛的全页扫描里逐个形态验过，这个不变式因此是
+ * 白拿的，不需要为每个色调各挑一个数。
+ *
+ * 视觉层级改由 hover 的一层中性底承担（paint-only，不触发重排；和 Rail 的
+ * `.navItem:hover` 是同一套语言），不再由透明度承担。 */
 .remove {
   background: none;
   border: 0;
-  padding: 0;
+  padding: 0 var(--s-0);
   margin: 0;
   color: inherit;
-  opacity: .6;
   cursor: pointer;
   font-size: var(--t-xs);
   line-height: 1;
+  border-radius: var(--r-pill);
+  transition: background-color var(--dur-1) var(--ease-out);
 }
 .remove:hover {
-  opacity: 1;
+  background: color-mix(in oklab, var(--ink) 12%, transparent);
 }
