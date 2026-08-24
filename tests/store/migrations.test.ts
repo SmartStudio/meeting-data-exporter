@@ -83,19 +83,17 @@ describe('runMigrations', () => {
       expect(cols).toEqual(['username'])
 
       // 测试重复插入会报错
+      const now = Math.floor(Date.now() / 1000)
       await pool.query(
         `INSERT INTO admin_accounts (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
-        ['admin1', 'testuser', 'hash1', Date.now()],
+        ['admin1', 'testuser', 'hash1', now],
       )
-      try {
-        await pool.query(
+      await expect(
+        pool.query(
           `INSERT INTO admin_accounts (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
-          ['admin2', 'testuser', 'hash2', Date.now()],
-        )
-        throw new Error('should have failed on duplicate username')
-      } catch (e: any) {
-        expect(e.message).toMatch(/duplicate|unique/i)
-      }
+          ['admin2', 'testuser', 'hash2', now],
+        ),
+      ).rejects.toThrow(/duplicate|unique/i)
     } finally {
       await cleanup()
     }
@@ -113,19 +111,18 @@ describe('runMigrations', () => {
       expect(cols).toEqual(['token_hash'])
 
       // 测试重复插入会报错
+      const now = Math.floor(Date.now() / 1000)
+      const expiresAt = now + 3600
       await pool.query(
         `INSERT INTO admin_sessions (token_hash, admin_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
-        ['token_hash_1', 'admin1', Date.now() + 3600000, Date.now()],
+        ['token_hash_1', 'admin1', expiresAt, now],
       )
-      try {
-        await pool.query(
+      await expect(
+        pool.query(
           `INSERT INTO admin_sessions (token_hash, admin_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
-          ['token_hash_1', 'admin2', Date.now() + 3600000, Date.now()],
-        )
-        throw new Error('should have failed on duplicate token_hash')
-      } catch (e: any) {
-        expect(e.message).toMatch(/duplicate|unique/i)
-      }
+          ['token_hash_1', 'admin2', expiresAt, now],
+        ),
+      ).rejects.toThrow(/duplicate|unique/i)
     } finally {
       await cleanup()
     }
@@ -143,21 +140,19 @@ describe('runMigrations', () => {
       expect(cols).toEqual(['meeting_id', 'sub_meeting_id', 'asset_type', 'remote_id', 'file_type'])
 
       // 测试重复插入会报错
+      const now = Math.floor(Date.now() / 1000)
       await pool.query(
         `INSERT INTO archived_assets (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, local_path, nas_path, nas_hash, archived_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ['meet1', '', 'video', 'remote1', 'mp4', 'local.mp4', 'nas.mp4', 'hash1', Date.now()],
+        ['meet1', '', 'video', 'remote1', 'mp4', 'local.mp4', 'nas.mp4', 'hash1', now],
       )
-      try {
-        await pool.query(
+      await expect(
+        pool.query(
           `INSERT INTO archived_assets (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, local_path, nas_path, nas_hash, archived_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          ['meet1', '', 'video', 'remote1', 'mp4', 'local2.mp4', 'nas2.mp4', 'hash2', Date.now()],
-        )
-        throw new Error('should have failed on duplicate natural key')
-      } catch (e: any) {
-        expect(e.message).toMatch(/duplicate|unique/i)
-      }
+          ['meet1', '', 'video', 'remote1', 'mp4', 'local2.mp4', 'nas2.mp4', 'hash2', now],
+        ),
+      ).rejects.toThrow(/duplicate|unique/i)
     } finally {
       await cleanup()
     }
