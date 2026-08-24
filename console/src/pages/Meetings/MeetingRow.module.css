@@ -153,16 +153,23 @@ tr[data-dim='true'] .title {
   cursor: pointer;
   white-space: nowrap;
   opacity: 0;
-  transition: opacity var(--dur-1) var(--ease-out);
+  transition:
+    opacity var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
 }
 tr:hover .extendBtn,
 tr[data-cursor='true'] .extendBtn,
 .extendBtn:focus-visible {
   opacity: 1;
 }
+/* hover 只是"鼠标停在这儿"，**不是**一条语义。琥珀在 design-system.md §2.2 里
+   只有两个含义（有人手动改写了规则 / 保留期快到了），拿它当强调色用，会让
+   同一栏里"还剩 3 天"的那个琥珀降一级——一直响的警报等于没有警报。
+   改成中性加重（描边 ink-4 + 文字 ink），和分诊格 `.card:hover` 是同一套语言。 */
 .extendBtn:hover {
-  border-color: var(--warn);
-  color: var(--warn);
+  border-color: var(--ink-4);
+  color: var(--ink);
 }
 
 .grant {

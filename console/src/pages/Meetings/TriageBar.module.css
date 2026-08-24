@@ -45,6 +45,17 @@
   gap: var(--s-2);
 }
 
+/* 口径副标。`flex-basis: 100%` 让它自己占满一行落到五格下面，不去跟卡片抢宽度
+   ——也就不需要再套一层容器、不动 `.bar` 的外边距和 testid。
+   `--s-3` 的 gap 已经把它和上一行隔开了，这里不再加 margin。 */
+.scope {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.4;
+}
+
 .count {
   font-family: var(--mono);
   font-size: var(--t-2xl);

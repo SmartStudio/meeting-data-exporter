@@ -18,16 +18,34 @@ export type MeetingKeyAction =
   | { type: 'close-overlay' }
 
 /**
+ * `<input>` 里**不吃字符输入**的那些 type。它们是控件不是输入框：勾选框、单选钮、
+ * 三种按钮型 input，敲 `j` 在它们身上什么也不会发生。
+ *
+ * 单独列出来是因为漏掉这一条的后果是静默的：鼠标点一下某行的勾选框，焦点就留在
+ * 它上面，此后 `j`/`k`/`1`/`e` 全部不响应——键盘用户看不到任何反馈，也猜不到
+ * 是"页面以为你在打字"。
+ *
+ * `range`/`color`/`file`/`date` 这些**故意不在表里**：方向键、空格、回车都是它们
+ * 自己的键，页面接管过来会砸掉控件本身的操作。
+ */
+const NON_TEXT_INPUT_TYPES = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'image'])
+
+/**
  * 焦点是否落在会吞掉字母键的控件里。**在搜索框里打 `j` 必须是打字，不是跳行**
  * ——漏掉这一条，页面上唯一的搜索框就没法用了。
  *
  * `contentEditable` 也算：富文本区域同样在吃字符输入。
+ *
+ * 但**不是所有 `<input>` 都在打字**（见 `NON_TEXT_INPUT_TYPES`）：按 tagName 一刀切
+ * 会把勾选框也算成输入框，于是点过勾选框之后整页键位静默失效。这些控件改走
+ * `ownsKey`，只让它们真正拥有的键（空格 / 方向键）留在自己手里。
  */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
   const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+  if (tag === 'INPUT') return !NON_TEXT_INPUT_TYPES.has((target as HTMLInputElement).type)
+  return tag === 'TEXTAREA' || tag === 'SELECT'
 }
 
 /**
@@ -42,9 +60,34 @@ export function isTypingTarget(target: EventTarget | null): boolean {
  * jsdom 不给按钮合成 click，测不出「按 Enter 会不会激活按钮」，所以守卫写在
  * 这里（纯函数）并由 `defaultPrevented` 反向断言。
  */
+const ACTIVATION_SELECTOR =
+  'button, a[href], [role="button"], summary,' +
+  'input[type="button"], input[type="submit"], input[type="reset"], input[type="image"]'
+
 export function isActivationTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
-  return target.closest('button, a[href], [role="button"], summary') !== null
+  return target.closest(ACTIVATION_SELECTOR) !== null
+}
+
+/**
+ * 焦点控件**自己拥有**哪一批键——页面对这些键一律不接管。
+ *
+ * 拥有的键因控件而异，一刀切会错在两个方向上：
+ * - 按钮 / 链接 / `[role=button]` / `summary` / 按钮型 input：Enter 与空格是激活键。
+ * - 勾选框：**只有空格**。原生 checkbox 不响应 Enter，把 Enter 也闸掉，
+ *   就成了"按下去什么都不发生"的死键。
+ * - 单选钮：空格，外加四个方向键——方向键在同一组里换选项，抢走它等于
+ *   让单选组没法用键盘选。
+ *
+ * 其余的键（`j`/`k`/`1`/`2`/`3`/`e`/`p`/`/`）不是任何原生控件的键，
+ * 焦点落在哪儿都照旧由页面接管。
+ */
+export function ownsKey(target: EventTarget | null, key: string): boolean {
+  if (!(target instanceof Element)) return false
+  if (isActivationTarget(target)) return key === 'Enter' || key === ' '
+  if (target.closest('input[type="checkbox"]')) return key === ' '
+  if (target.closest('input[type="radio"]')) return key === ' ' || key.startsWith('Arrow')
+  return false
 }
 
 /** `resolveMeetingKey` 只需要键盘事件的这几个字段——测试可以直接喂一个字面量。 */
@@ -63,9 +106,10 @@ export interface MeetingKeyEvent {
  * 1. **带修饰键（⌘ / Ctrl / Alt）的一律不接管**——`⌘K` 是全局搜索，
  *    `⌘F` 是浏览器查找，把它们抢过来会砸掉用户既有的肌肉记忆。
  * 2. **焦点在输入类控件里时只放行 `Esc`**——其余全部还给输入框。
- * 3. **焦点在按钮 / 链接上时不接管 Enter 与空格**——那是这些控件自己的激活键，
- *    抢走等于让整页的按钮都按不动（见 `isActivationTarget`）。
- *    `j`/`k`/`1`/`2`/`3`/`e`/`p`/`/` 不是任何原生控件的激活键，照旧接管。
+ * 3. **焦点在原生控件上时不接管它自己的那批键**——按钮/链接的 Enter 与空格、
+ *    勾选框的空格、单选钮的空格与方向键（见 `ownsKey`）。抢走等于让整页的
+ *    按钮都按不动。`j`/`k`/`1`/`2`/`3`/`e`/`p`/`/` 不是任何原生控件的键，照旧接管
+ *    ——包括焦点停在某行勾选框上的时候。
  */
 export function resolveMeetingKey(e: MeetingKeyEvent): MeetingKeyAction | null {
   if (e.metaKey || e.ctrlKey || e.altKey) return null
@@ -75,7 +119,7 @@ export function resolveMeetingKey(e: MeetingKeyEvent): MeetingKeyAction | null {
 
   if (isTypingTarget(e.target ?? null)) return null
 
-  if ((e.key === 'Enter' || e.key === ' ') && isActivationTarget(e.target ?? null)) return null
+  if (ownsKey(e.target ?? null, e.key)) return null
 
   switch (e.key) {
     case 'j':

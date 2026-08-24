@@ -5,17 +5,28 @@ import { useResource, type Resource } from '@/lib/useResource'
 import styles from './SystemStatus.module.css'
 
 /**
- * 六种取值，对应顶栏下拉的六个选项。「正常」是基线，不算故障态；
- * 另外五种是 spec.md §7、§8 说的「五种系统状态」。
+ * 六种取值的显示名。「正常」是基线，不算故障态；另外五种是 spec.md §7、§8
+ * 说的「五种系统状态」。
+ *
+ * **写成 `Record<SystemState, string>` 是刻意的**：少一种、多一种都编译不过。
+ * 顶栏下拉声称"六种全在这里"，测试也拿它当 `SystemState` 的全枚举来源
+ * （不变量测试要对每一种系统状态取一遍种子数据）。手抄一张名单迟早会漏掉
+ * 新加的取值，而漏掉的那一种恰恰是没人测过的那一种。
  */
-export const SYSTEM_STATE_OPTIONS: Array<{ value: SystemState; label: string }> = [
-  { value: 'ok', label: '正常' },
-  { value: 'loading', label: '加载中' },
-  { value: 'load-failed', label: '加载失败' },
-  { value: 'empty', label: '一场会议都没有' },
-  { value: 'nas-down', label: 'NAS 断连' },
-  { value: 'tencent-down', label: '腾讯会议不可达' },
-]
+const SYSTEM_STATE_LABEL: Record<SystemState, string> = {
+  ok: '正常',
+  loading: '加载中',
+  'load-failed': '加载失败',
+  empty: '一场会议都没有',
+  'nas-down': 'NAS 断连',
+  'tencent-down': '腾讯会议不可达',
+}
+
+/** `SystemState` 的全枚举，顺序就是对象字面量的书写顺序（也是下拉的顺序）。 */
+export const SYSTEM_STATES = Object.keys(SYSTEM_STATE_LABEL) as SystemState[]
+
+export const SYSTEM_STATE_OPTIONS: Array<{ value: SystemState; label: string }> =
+  SYSTEM_STATES.map((value) => ({ value, label: SYSTEM_STATE_LABEL[value] }))
 
 interface SystemStateContextValue {
   state: SystemState

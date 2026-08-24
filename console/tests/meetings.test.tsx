@@ -6,10 +6,10 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import type { Meeting, SystemState } from '../src/api/types'
+import { mockApi } from '../src/api/mock'
 import { CONSUMERS } from '../src/api/mock/consumers'
 import { MEETINGS, MOCK_NOW } from '../src/api/mock/meetings'
-import { applyNasDown } from '../src/api/mock/system'
-import { SystemStateProvider } from '../src/app/SystemStatus'
+import { SYSTEM_STATES, SystemStateProvider } from '../src/app/SystemStatus'
 import MeetingsPage from '../src/pages/Meetings'
 import { MeetingTable } from '../src/pages/Meetings/MeetingTable'
 import { emptyKind } from '../src/pages/Meetings/MeetingTable'
@@ -66,6 +66,47 @@ function rowIds(): string[] {
   return Array.from(document.querySelectorAll<HTMLElement>('tbody tr[data-id]')).map(
     (tr) => tr.dataset.id ?? '',
   )
+}
+
+/** `loading` 的 promise 永不 resolve、`load-failed` 直接抛——用它做哨兵把两者滤掉。 */
+const NO_DATA = Symbol('no-data')
+
+/**
+ * 某个系统状态下的种子数据；这一态压根不给数据时返回 `null`。
+ *
+ * 用「宏任务哨兵 + race」判"给不给数据"，而不是手写一张"哪几种有数据"的名单：
+ * 名单会漏，race 不会。有数据的那几态在**微任务**里就 resolve（`listMeetings`
+ * 是 async 函数直接 return），稳定跑赢 `setTimeout(…, 0)` 这个宏任务。
+ */
+async function seedsOf(state: SystemState): Promise<Meeting[] | null> {
+  const noData = new Promise<typeof NO_DATA>((r) => setTimeout(() => r(NO_DATA), 0))
+  try {
+    const got = await Promise.race([mockApi(state).listMeetings(), noData])
+    return got === NO_DATA ? null : got
+  } catch {
+    return null // load-failed：抛错，同样没有种子可查
+  }
+}
+
+/**
+ * **对 `SystemState` 全枚举**取种子数据。
+ *
+ * 原来这里硬编码 `MEETINGS` 与 `applyNasDown(MEETINGS)` 两份。再加一个会改会议
+ * 数据的系统状态变形，它不会自动进这个循环——而 `applyNasDown` 正是本计划抓出的
+ * 第四处同类 bug（改状态不改理由），数据层确实会出这种事。
+ * `SYSTEM_STATES` 由 `Record<SystemState, …>` 派生，少一种编译就不过，
+ * 于是这张网不用谁记得去手维护。
+ */
+async function allSeeds(): Promise<{ seeds: Array<[SystemState, Meeting]>; states: SystemState[] }> {
+  const seeds: Array<[SystemState, Meeting]> = []
+  const states: SystemState[] = []
+  for (const state of SYSTEM_STATES) {
+    const rows = await seedsOf(state)
+    if (rows === null) continue
+    states.push(state)
+    for (const m of rows) seeds.push([state, m])
+  }
+  return { seeds, states }
 }
 
 describe('会议记录页 · 分诊条', () => {
@@ -615,6 +656,69 @@ describe('会议记录页 · 键盘操作', () => {
     // 焦点不在控件上时，Enter 仍然是"打开详情"
     const plain = document.createElement('div')
     expect(resolveMeetingKey({ key: 'Enter', target: plain })).toEqual({ type: 'open-detail' })
+
+    // **勾选框不是输入框。** 按 tagName 一刀切会把它算成"正在打字"，于是鼠标点过
+    // 一次行首的勾选框之后，j/k/1/e 全部静默失效——用户看不到任何反馈。
+    // 它该走的是"控件拥有自己那批键"这一关，而且只拥有空格。
+    const box = document.createElement('input')
+    box.type = 'checkbox'
+    expect(isTypingTarget(box), '勾选框被当成了输入框').toBe(false)
+    expect(resolveMeetingKey({ key: ' ', target: box })).toBeNull() // 空格归勾选框自己
+    expect(resolveMeetingKey({ key: 'j', target: box })).toEqual({ type: 'move', delta: 1 })
+    expect(resolveMeetingKey({ key: 'k', target: box })).toEqual({ type: 'move', delta: -1 })
+    expect(resolveMeetingKey({ key: '1', target: box })).toEqual({ type: 'stage', stage: 'fetch' })
+    expect(resolveMeetingKey({ key: 'e', target: box })).toEqual({ type: 'extend' })
+    // 原生 checkbox 不响应 Enter，把 Enter 也闸掉就成了死键
+    expect(resolveMeetingKey({ key: 'Enter', target: box })).toEqual({ type: 'open-detail' })
+
+    // 单选钮同样不是输入框，但它比勾选框多拥有方向键（同组内换选项）。
+    const radio = document.createElement('input')
+    radio.type = 'radio'
+    expect(isTypingTarget(radio)).toBe(false)
+    expect(resolveMeetingKey({ key: ' ', target: radio })).toBeNull()
+    expect(resolveMeetingKey({ key: 'ArrowDown', target: radio })).toBeNull()
+    expect(resolveMeetingKey({ key: 'j', target: radio })).toEqual({ type: 'move', delta: 1 })
+
+    // 对照组：真的会吃字符的 input 一个都不许放行，否则上面几行等于把守卫拆了
+    const text = document.createElement('input')
+    text.type = 'search'
+    expect(isTypingTarget(text)).toBe(true)
+    expect(resolveMeetingKey({ key: 'j', target: text })).toBeNull()
+    expect(resolveMeetingKey({ key: 'ArrowDown', target: text })).toBeNull()
+    const area = document.createElement('textarea')
+    expect(isTypingTarget(area)).toBe(true)
+    expect(resolveMeetingKey({ key: 'e', target: area })).toBeNull()
+  })
+
+  test('点过一行的勾选框之后，j/k 照旧跳行——焦点留在勾选框上不该让键位静默失效', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+
+    const box = screen.getByRole('checkbox', { name: '选择 产品周会' })
+    await user.click(box)
+    // 点完之后焦点就留在勾选框上，这是鼠标用户的常态
+    expect(document.activeElement).toBe(box)
+
+    const cursorId = () =>
+      document.querySelector<HTMLElement>("tbody tr[data-cursor='true']")?.dataset.id ?? null
+    const before = cursorId()
+
+    const press = (key: string) => {
+      const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+      act(() => {
+        box.dispatchEvent(ev)
+      })
+      return ev.defaultPrevented
+    }
+
+    expect(press('j'), 'j 没被接管——页面以为你在打字').toBe(true)
+    expect(cursorId()).not.toBe(before)
+    expect(press('k')).toBe(true)
+    expect(cursorId()).toBe(before)
+
+    // 对照组：空格仍然归勾选框自己，页面不许抢（抢走会连勾选都点不动）
+    expect(press(' '), '空格被页面抢走了').toBe(false)
   })
 
   test('页面级监听不抢按钮的 Enter / 空格——抢走了整页的按钮就都按不动', async () => {
@@ -808,6 +912,41 @@ describe('会议记录页 · 分诊条与表格不许互相矛盾', () => {
     // 出口真的解决了问题：那一场找到了
     expect(rowIds()).toEqual(['m8'])
   })
+
+  test('分诊计数说的是全系统口径——「计数 5、表里 3 行」当场有解释', async () => {
+    const user = userEvent.setup()
+    renderPage('nas-down')
+    await ready()
+
+    // NAS 断连下归档失败是 5 场；点它会把时间范围一并放到"全部时间"，5 场全在表里
+    await user.click(screen.getByTestId('triage-archfail'))
+    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('5')
+    expect(rowIds()).toHaveLength(5)
+
+    // 再手动把范围收到近 7 天：5 场里只有 3 场落在窗口内
+    await user.click(screen.getByRole('button', { name: /全部时间/ }))
+    await user.click(screen.getByRole('menuitemradio', { name: /近 7 天/ }))
+    expect(rowIds()).toHaveLength(3)
+    // 计数一点没变——它数的是全部会议，不是当前窗口
+    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('5')
+    // 表格非空，所以空态不会出来解释这件事（空态那一支有「改为全部时间」兜着）。
+    // 屏幕上两个数字打架，解释只能由分诊条自己给。
+    expect(screen.queryByTestId('meetings-empty')).not.toBeInTheDocument()
+
+    const scope = screen.getByTestId('triage-scope')
+    expect(scope).toHaveTextContent('全部会议')
+    expect(scope).toHaveTextContent('时间范围')
+    // 分诊格自己也说得出口径，鼠标停在数字上就问得到
+    expect(screen.getByTestId('triage-archfail').getAttribute('title')).toContain('全部会议里有 5 场归档失败')
+  })
+
+  test('口径副标是常驻的——加载中也占着位，不是打架那一刻才冒出来', async () => {
+    renderPage('loading')
+    const scope = await screen.findByTestId('triage-scope')
+    expect(scope).toHaveTextContent('全部会议')
+    // 骨架态：五格还在，说明副标不是靠"有数据"才渲染的
+    expect(screen.getByTestId('triage-bar')).toHaveAttribute('data-loading', 'true')
+  })
 })
 
 describe('会议记录页 · 跨页选择不许留下两个数字', () => {
@@ -902,10 +1041,20 @@ describe('会议记录页 · 状态与理由的不变量', () => {
 
     // 人工改写环与理由必须互相印证。少任何一半，抽屉里就会出现
     // "状态说没执行过、理由说已成功写入 NAS 并校验了哈希"。
-    for (const stage of ['fetch', 'archive'] as const) {
+    //
+    // **三个环都要遍历，不只 fetch / archive**：`hand` 的类型里有 'allow'
+    // （types.ts），漏掉它，"角标写着人工改写、理由却是规则口径"这一支就查不出来。
+    // 反过来若哪天有写路径让 allow 的理由不再是 hand，**hand 环也要跟着清**，
+    // 不是把这条放宽——那正是这张网存在的理由。
+    for (const stage of ['fetch', 'archive', 'allow'] as const) {
       if (m.hand.includes(stage) !== (m.why[stage].by === 'hand'))
         say(`${stage}: hand=${m.hand.includes(stage)} 但 why.by=${m.why[stage].by}`)
     }
+    // `'off'` 这个取值存在的**全部理由**就是"人工关掉了"（方案 §2.1）：规则系统
+    // 关不掉拉取——它要么判成 `blocked`，要么压根没有录制。archive 那边有
+    // `archiveWhyKind` 兜着，fetch 这边没有，今天只靠 `setStage` 构造性保证。
+    if (m.fetch === 'off' && m.why.fetch.by !== 'hand')
+      say(`fetch=off 但 why.by=${m.why.fetch.by}（off 只可能是人工关掉的）`)
     // 没有录制 ⇔ 理由是"不适用"
     if ((m.fetch === 'none') !== (m.why.fetch.by === 'na'))
       say(`fetch=${m.fetch} 却说 ${m.why.fetch.by}`)
@@ -918,9 +1067,13 @@ describe('会议记录页 · 状态与理由的不变量', () => {
     // 人工改写优先于所有规则（spec.md §5），是这条唯一的豁免
     if (ak !== null && m.why.archive.by !== ak && m.why.archive.by !== 'hand')
       say(`archive=${m.archive} 的理由应是 ${ak}，实际 ${m.why.archive.by}`)
-    // 授权理由完全由状态定死
+    // 授权理由完全由状态定死。豁免必须和生产规则**一样窄**：`nextAllowWhy`
+    // （write.ts）只在分类是 `deny` 时才保留人工改写的原文，其余分类一律改写。
+    // 少了 `alk === 'deny' &&` 这一段，豁免会连"本地文件已清理、理由本该是
+    // expired"这类情形一起放过去——网比它要守的规则还宽，就挡不住第六次。
     const alk = allowWhyKind(m)
-    if (m.why.allow.by !== alk && !(m.why.allow.by === 'hand' && m.hand.includes('allow')))
+    const handKeptByRule = alk === 'deny' && m.why.allow.by === 'hand' && m.hand.includes('allow')
+    if (m.why.allow.by !== alk && !handKeptByRule)
       say(`allow 理由应是 ${alk}，实际 ${m.why.allow.by}`)
     // 判定为 deny 的会议不许落到"可授权"（画成「＋ 授权给…」还真能授权出去）
     if (m.allow === 'deny' && grantCellKind(m).kind === 'grantable') say('allow=deny 却算可授权')
@@ -932,30 +1085,79 @@ describe('会议记录页 · 状态与理由的不变量', () => {
     return bad
   }
 
+  /**
+   * 每个反例都**只钉一条规则**：断言落在那条规则自己的措辞上，不是 `.length > 0`。
+   *
+   * 差别很实在——`.length > 0` 之下，把被钉的那条整条删掉，反例还是会因为别的
+   * 规则转红，于是"我测过这条规则"是假的。下面每一条都验过：**只删它自己那一条，
+   * 对应的断言就转绿**（红/绿演练见报告）。
+   */
   test('这条不变量真的会红：只改状态、不改理由就会被抓出来', () => {
     const m3 = MEETINGS.find((m) => m.id === 'm3')!
-    // 批量"重跑归档"之前干的正是这件事：把 archive 置成 done、keep 重新起算，
-    // why 一个字不动。
+    const m6 = MEETINGS.find((m) => m.id === 'm6')!
+
+    // ① 状态 ⇔ 理由：批量"重跑归档"之前干的正是这件事——把 archive 置成 done、
+    //    keep 重新起算，why 一个字不动（原文还写着"归档失败：NAS 写入超时"）。
     const naive: Meeting = {
       ...m3,
       archive: 'done',
       keep: { archivedAt: MOCK_NOW, expiresAt: MOCK_NOW + 86400, extended: 0, filesGone: false },
     }
-    expect(contradictions(naive).length).toBeGreaterThan(0)
+    expect(contradictions(naive).join('\n')).toMatch(/archive=done 却说 fail/)
 
-    // 关掉拉取却只记 fetch 一个人工改写环，也会被抓出来
-    const halfHand: Meeting = { ...m3, fetch: 'off', archive: 'off', hand: ['fetch'] }
-    expect(contradictions(halfHand).length).toBeGreaterThan(0)
-  })
-
-  test('种子数据本身不矛盾（正常态与 NAS 断连态）', () => {
-    for (const m of [...MEETINGS, ...applyNasDown(structuredClone(MEETINGS))]) {
-      expect(contradictions(m), `种子 ${m.id}`).toEqual([])
+    // ② hand ⟺ hand：关掉拉取连带把归档也关了、理由也换成了人工口径，
+    //    **却只记了 fetch 一个人工改写环**。这一支只有 hand ⟺ hand 那条查得出来。
+    const halfHand: Meeting = {
+      ...m3,
+      fetch: 'off',
+      archive: 'off',
+      hand: ['fetch'],
+      why: {
+        ...m3.why,
+        fetch: { by: 'hand', text: '陈运维 刚刚手动关闭了拉取，覆盖了规则。' },
+        archive: { by: 'hand', text: '陈运维 关闭了拉取，归档随之失效。' },
+      },
     }
+    expect(contradictions(halfHand).join('\n')).toMatch(/archive: hand=false 但 why\.by=hand/)
+
+    // ③ hand 环的第三个取值：角标写着"人工改写"，理由却是规则口径的 deny。
+    //    循环只遍历 fetch/archive 时，这一支静悄悄地过。
+    const handAllow: Meeting = { ...m6, hand: [...m6.hand, 'allow'] }
+    expect(contradictions(handAllow).join('\n')).toMatch(/allow: hand=true 但 why\.by=deny/)
+
+    // ④ fetch='off' 只可能是人工关掉的。配成规则口径今天不可达（`setStage`
+    //    构造性地挡着），但网必须查得出来。
+    const offByRule: Meeting = {
+      ...m3,
+      fetch: 'off',
+      why: { ...m3.why, fetch: { by: 'rule', text: '拉取规则 #100 关掉了它。' } },
+    }
+    expect(contradictions(offByRule).join('\n')).toMatch(/fetch=off 但 why\.by=rule/)
+
+    // ⑤ 人工改写的豁免只在分类是 deny 时成立（write.ts 的 `nextAllowWhy`）。
+    //    本地文件已到期清理，理由**必须**翻成 expired；放宽的豁免会把它放过去。
+    const goneButHand: Meeting = {
+      ...m6,
+      keep: { ...m6.keep, filesGone: true },
+      hand: [...m6.hand, 'allow'],
+      why: { ...m6.why, allow: { by: 'hand', text: '陈运维 手动设为禁止。' } },
+    }
+    expect(contradictions(goneButHand).join('\n')).toMatch(/allow 理由应是 expired，实际 hand/)
   })
 
-  test('任何写操作之后（含两步组合）状态与理由都不矛盾', () => {
-    const seeds = [...MEETINGS, ...applyNasDown(structuredClone(MEETINGS))]
+  test('种子数据本身不矛盾——对 SystemState 全枚举，不手维护这张名单', async () => {
+    const { seeds, states } = await allSeeds()
+    for (const [state, m] of seeds) {
+      expect(contradictions(m), `${state} 的种子 ${m.id}`).toEqual([])
+    }
+    // 不是空转：真的查过行；而且 NAS 断连那一态在里面——本计划第四处同类 bug
+    // （`applyNasDown` 改状态不改理由）正是从它身上抓出来的。
+    expect(seeds.length).toBeGreaterThan(0)
+    expect(states).toContain('nas-down')
+  })
+
+  test('任何写操作之后（含两步组合）状态与理由都不矛盾', async () => {
+    const seeds = (await allSeeds()).seeds.map(([, m]) => m)
     for (const seed of seeds) {
       for (const a of WRITES) {
         const one = applyWrite(seed, a, CTX)
@@ -1085,5 +1287,19 @@ describe('会议记录页 · 语义色只在该出现的地方出现', () => {
 
     // 对照组：琥珀在这个文件里仍然有它唯一合法的用处——保留期快到了
     expect(stripComments(rowCss)).toMatch(/\.keepLeft\[data-soon='true'\]\s*\{[^}]*var\(--warn\)/)
+  })
+
+  test('「延长」按钮的 hover 不是琥珀——hover 只是鼠标停在这儿，不是一条语义', () => {
+    const rowCss = stripComments(css('src/pages/Meetings/MeetingRow.module.css'))
+    const hover = /\.extendBtn:hover\s*\{([^}]*)\}/.exec(rowCss)
+    expect(hover, '找不到 .extendBtn:hover 这一支').not.toBeNull()
+    // 琥珀在 design-system.md §2.2 里只有两个含义（人工改写 / 保留期快到了），
+    // hover 强调不是其中之一；红同理。
+    expect(hover![1]).not.toMatch(/--warn|--fail/)
+    // 而且真的还在强调，不是把整条删了充数
+    expect(hover![1]).toMatch(/border-color|color/)
+
+    // 对照组：同一栏里"还剩 N 天"的琥珀是合法的，不许误伤
+    expect(rowCss).toMatch(/\.keepLeft\[data-soon='true'\]\s*\{[^}]*var\(--warn\)/)
   })
 })
