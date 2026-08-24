@@ -1,0 +1,1172 @@
+#!/usr/bin/env bun
+/**
+ * 无障碍与令牌回归检查 —— 可重复跑的门槛（F1 Task 7）。
+ *
+ * 原型阶段那三项验证（对比度全页扫描、Tab 泄漏计数、三个宽度无横向溢出）
+ * 是一次性脚本。工程化之后必须变成能重复跑的门槛，否则下一次改样式就会
+ * 悄悄退回去。任一项失败即非零退出，可直接进 CI。
+ *
+ * ── 为什么跑在 `vite build` 的产物上，不是 dev server ────────────────
+ * 因为要验的东西里有一条是**打包注入顺序**：`Overlay.module.css` 的
+ * `.root{outline:none}` 与 `base.css` 的 `:focus-visible` 同优先级，谁赢
+ * 完全取决于两段 CSS 谁后注入。dev server 与生产构建的注入顺序不保证相同，
+ * 跑 dev server 等于没验到要验的那件事。本脚本自己跑一次生产构建。
+ *
+ * 唯一与 `npm run build` 的差别：CSS Module 的类名生成器改成
+ * `[name]__[local]`（默认是哈希）。它不改变规则顺序、不改变优先级——两者都是
+ * 单个类选择器——只是让报告能说出「MeetingRow__extendBtn」而不是「_1f3x9」。
+ * brief Step 5：只报「有 3 处失败」的脚本没人会去修。
+ *
+ * ── 五项检查 ──────────────────────────────────────────────────────
+ *   1 对比度      两种主题 × 多个页面形态全页扫描；含语义色令牌的色相/配对
+ *                 断言，以及「--ink-4 不许用于文字」
+ *   2 Tab 泄漏    真键盘 Tab 走一遍；含关闭态浮层在 Chromium 无障碍树里的缺席、
+ *                 以及每一站的焦点环可见性（含浮层基座退化聚焦那条路径）
+ *   3 横向溢出    1440 / 1050 / 375；不只量 scrollWidth——被 overflow-x: clip
+ *                 切掉的元素量不出来，必须同时验「元素在视口内可达」；
+ *                 含进度条/骨架条的实际渲染几何
+ *   4 裸值扫描    module.css 里的裸 px / hex / rgb / 半像素字号（纯文本）；
+ *                 含构建产物里的裸 outline 复位、@keyframes 里的布局属性、
+ *                 深色两处定义的逐字一致
+ *   5 媒体查询    prefers-reduced-motion 与三态主题在真实浏览器下真的生效
+ *
+ * 用法：
+ *   npm run a11y                 完整跑（含构建）
+ *   npm run a11y -- --skip-build 复用上次的 a11y 构建产物（改样式后不要用）
+ *   npm run a11y -- --only=1,3   只跑其中几项
+ */
+
+import { spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
+import type { Server } from 'node:http'
+import { readFile, readdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { argv, exit } from 'node:process'
+import path from 'node:path'
+import { chromium } from 'playwright'
+import type { Browser, BrowserContext, CDPSession, Page } from 'playwright'
+
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const SRC = path.join(ROOT, 'src')
+const OUT_DIR = path.join(ROOT, 'node_modules', '.a11y-dist')
+const TOKENS_CSS = path.join(SRC, 'styles', 'tokens.css')
+const PAGE_JS = path.join(ROOT, 'scripts', 'a11y-page.js')
+
+const args = argv.slice(2)
+const SKIP_BUILD = args.includes('--skip-build')
+const ONLY = (() => {
+  const a = args.find((x) => x.startsWith('--only='))
+  return a ? new Set(a.slice('--only='.length).split(',').map((s) => s.trim())) : null
+})()
+function enabled(id: string): boolean {
+  return ONLY === null || ONLY.has(id)
+}
+
+/* ── 报告收集 ─────────────────────────────────────────────────────── */
+
+interface Finding {
+  check: string
+  where: string
+  lines: string[]
+}
+const failures: Finding[] = []
+const notes: Finding[] = []
+let checkedCounters: Record<string, number> = {}
+
+function fail(check: string, where: string, ...lines: string[]): void {
+  failures.push({ check, where, lines })
+}
+function note(check: string, where: string, ...lines: string[]): void {
+  notes.push({ check, where, lines })
+}
+function bump(k: string, n = 1): void {
+  checkedCounters[k] = (checkedCounters[k] ?? 0) + n
+}
+
+/* ── 令牌文件解析（纯文本，不需要浏览器） ─────────────────────────── */
+
+interface TokenFile {
+  names: string[]
+  light: Map<string, string>
+  darkMedia: Map<string, string>
+  darkAttr: Map<string, string>
+}
+
+/** 把注释抹成同等长度的空白，而不是删掉。
+ *  注释里满是「原型写死 1020px」「--tap-min（44px 触控下限）」这类说明文字，
+ *  不剥掉就全是假阳性；但直接删掉会让行号错位——多行注释一删，后面每一行的
+ *  行号都往前挪，报出来的位置指向别处，比不报还糟。 */
+function stripCssComments(s: string): string {
+  return s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+}
+
+/** 取出 `sel {` 之后配对到的那一层花括号内容。嵌套（@media）也能正确配平。 */
+function blockAfter(src: string, from: number): { body: string; end: number } | null {
+  const open = src.indexOf('{', from)
+  if (open < 0) return null
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    const c = src[i]
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return { body: src.slice(open + 1, i), end: i }
+    }
+  }
+  return null
+}
+
+function declMap(body: string): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const decl of body.split(';')) {
+    const i = decl.indexOf(':')
+    if (i < 0) continue
+    const name = decl.slice(0, i).trim()
+    if (!name.startsWith('--')) continue
+    m.set(name, decl.slice(i + 1).trim())
+  }
+  return m
+}
+
+async function readTokens(): Promise<TokenFile> {
+  const raw = stripCssComments(await readFile(TOKENS_CSS, 'utf8'))
+  const lightAt = raw.search(/(^|\})\s*:root\s*\{/)
+  const light = (() => {
+    const b = blockAfter(raw, lightAt < 0 ? 0 : lightAt)
+    return b ? declMap(b.body) : new Map<string, string>()
+  })()
+  const mediaAt = raw.indexOf('@media (prefers-color-scheme: dark)')
+  const darkMedia = (() => {
+    if (mediaAt < 0) return new Map<string, string>()
+    const outer = blockAfter(raw, mediaAt)
+    if (!outer) return new Map<string, string>()
+    const inner = blockAfter(outer.body, 0)
+    return inner ? declMap(inner.body) : new Map<string, string>()
+  })()
+  const attrAt = raw.indexOf(':root[data-theme="dark"]')
+  const darkAttr = (() => {
+    if (attrAt < 0) return new Map<string, string>()
+    const b = blockAfter(raw, attrAt)
+    return b ? declMap(b.body) : new Map<string, string>()
+  })()
+  const names = [...new Set([...light.keys(), ...darkMedia.keys(), ...darkAttr.keys()])]
+  return { names, light, darkMedia, darkAttr }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   检查 4：裸值扫描（纯文本，不需要浏览器）
+   ══════════════════════════════════════════════════════════════════ */
+
+async function walkCss(dir: string, out: string[] = []): Promise<string[]> {
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name)
+    if (e.isDirectory()) await walkCss(p, out)
+    else if (e.name.endsWith('.module.css')) out.push(p)
+  }
+  return out
+}
+
+const LAYOUT_ANIM_PROPS = [
+  'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+  'top', 'right', 'bottom', 'left', 'inset',
+  'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+  'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+  'font-size', 'line-height', 'letter-spacing', 'gap', 'row-gap', 'column-gap',
+  'flex', 'flex-basis', 'border-width', 'background-position', 'grid-template-columns',
+]
+
+async function checkNakedValues(tf: TokenFile): Promise<void> {
+  const files = (await walkCss(SRC)).sort()
+  bump('module.css 文件', files.length)
+
+  for (const file of files) {
+    const rel = path.relative(ROOT, file)
+    const raw = await readFile(file, 'utf8')
+    /* 注释里满是「原型写死 1020px」「--tap-min（44px 触控下限）」这类说明文字。
+       不先剥注释，扫出来的全是假阳性。 */
+    const lines = raw.split('\n')
+    const stripped = stripCssComments(raw).split('\n')
+
+    stripped.forEach((line, i) => {
+      const n = i + 1
+      const src = (lines[i] ?? '').trim()
+
+      /* 裸 px：`1px` 边框除外（brief 明确豁免）。var(--x) 里的不算，
+         calc() 里的裸数字也算裸值。 */
+      for (const m of line.matchAll(/(?<![-\w.])(\d*\.?\d+)px\b/g)) {
+        const v = m[1] ?? ''
+        if (v === '1' || v === '0') continue
+        fail('4 裸值', `${rel}:${n}`, `裸像素 ${v}px —— ${src}`, '  尺寸一律走 tokens.css 的具名令牌')
+      }
+      /* 半像素字号：中文字形是实心方块，没有拉丁字母的负空间吃掉那半个像素 */
+      for (const m of line.matchAll(/font-size\s*:\s*[^;]*?(\d+\.\d+)(px|rem|em)/g)) {
+        fail('4 裸值', `${rel}:${n}`, `半像素字号 ${m[1]}${m[2]} —— ${src}`)
+      }
+      for (const m of line.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) {
+        fail('4 裸值', `${rel}:${n}`, `裸 hex ${m[0]} —— ${src}`, '  颜色只在 tokens.css 里定义')
+      }
+      for (const m of line.matchAll(/\brgba?\s*\(/g)) {
+        void m
+        fail('4 裸值', `${rel}:${n}`, `裸 rgb()/rgba() —— ${src}`, '  颜色只在 tokens.css 里定义')
+      }
+      /* 颜色不许写进 @media / [data-theme] 块（design-system.md §1 第 3 条）：
+         那样的颜色在「跟随系统」状态下不生效，而那是默认状态。 */
+      if (/^\s*@media[^{]*prefers-color-scheme/.test(line) || /\[data-theme[^\]]*\]/.test(line)) {
+        note('4 裸值', `${rel}:${n}`, `组件里出现主题条件块 —— ${src}`, '  颜色只该在 tokens.css 里定义；这里若只切非颜色属性则无妨')
+      }
+    })
+
+    /* @keyframes 里出现布局属性 = 每帧 reflow（design-system.md §6） */
+    const noComment = stripCssComments(raw)
+    for (const m of noComment.matchAll(/@keyframes\s+([\w-]+)/g)) {
+      const b = blockAfter(noComment, (m.index ?? 0) + m[0].length)
+      if (!b) continue
+      for (const p of LAYOUT_ANIM_PROPS) {
+        const re = new RegExp(`(^|[;{\\s])${p}\\s*:`, 'm')
+        if (re.test(b.body)) {
+          fail('4 裸值', rel, `@keyframes ${m[1]} 动了布局属性 ${p} —— 每帧触发 reflow`)
+        }
+      }
+    }
+    /* transition 里出现布局属性，同理 */
+    for (const m of noComment.matchAll(/transition(-property)?\s*:\s*([^;}]+)/g)) {
+      const decl = (m[2] ?? '').trim()
+      for (const p of LAYOUT_ANIM_PROPS) {
+        if (new RegExp(`(^|[,\\s])${p}([,\\s]|$)`).test(decl)) {
+          fail('4 裸值', rel, `transition 里有布局属性 ${p} —— ${decl}`)
+        }
+      }
+    }
+  }
+
+  /* 深色两处定义必须逐字一致：design-system.md §7 要求 @media 块与
+     [data-theme="dark"] 块同时存在，两边漂了就是「切换器在某个方向不生效」。 */
+  const a = tf.darkMedia
+  const b = tf.darkAttr
+  if (a.size === 0 || b.size === 0) {
+    fail('4 裸值', 'tokens.css', `三态主题缺块：@media 深色块 ${a.size} 条声明，:root[data-theme="dark"] ${b.size} 条`)
+  } else {
+    for (const [k, v] of a) {
+      if (!b.has(k)) fail('4 裸值', 'tokens.css', `@media 深色块有 ${k}，:root[data-theme="dark"] 没有 —— 显式切深色时这个令牌会退回浅色值`)
+      else if (b.get(k) !== v) fail('4 裸值', 'tokens.css', `${k} 两处深色定义不一致：@media=${v} / [data-theme="dark"]=${b.get(k)}`)
+    }
+    for (const k of b.keys()) {
+      if (!a.has(k)) fail('4 裸值', 'tokens.css', `:root[data-theme="dark"] 有 ${k}，@media 深色块没有 —— 「跟随系统」下这个令牌不会变深`)
+    }
+    bump('深色令牌对照', a.size)
+  }
+  /* 「跟随系统」是移除属性，不是写 data-theme="system" */
+  const themeSrc = await readFile(path.join(SRC, 'theme', 'useTheme.ts'), 'utf8')
+  if (!/removeAttribute\(\s*['"]data-theme['"]\s*\)/.test(themeSrc)) {
+    fail('4 裸值', 'src/theme/useTheme.ts', '「跟随系统」没有走 removeAttribute("data-theme")')
+  }
+}
+
+/** 构建产物里任何裸的 outline 复位。`.root{outline:none}` 与 base.css 的
+ *  `:focus-visible{outline:...}` 同优先级，谁赢取决于注入顺序——不该有人赌这个。 */
+async function checkBuiltCss(cssPath: string): Promise<void> {
+  const css = await readFile(cssPath, 'utf8')
+  for (const m of css.matchAll(/([^{}]+)\{([^}]*outline\s*:\s*(?:none|0)[^}]*)\}/g)) {
+    const sel = (m[1] ?? '').trim()
+    if (/:focus-visible/.test(sel)) continue // 有意在 :focus-visible 上另给环的写法
+    fail('4 裸值', path.relative(ROOT, cssPath),
+      `构建产物里有裸的 outline 复位：${sel} { ${(m[2] ?? '').trim()} }`,
+      '  它与 base.css 的 :focus-visible 同优先级，谁赢只取决于打包注入顺序')
+  }
+  const fvAt = css.indexOf(':focus-visible{outline')
+  if (fvAt < 0) {
+    fail('4 裸值', path.relative(ROOT, cssPath), 'base.css 的 :focus-visible 焦点环规则没进构建产物')
+  } else {
+    bump('构建产物 CSS 字节', css.length)
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   构建 + 静态服务
+   ══════════════════════════════════════════════════════════════════ */
+
+async function buildApp(): Promise<string> {
+  if (!SKIP_BUILD) {
+    /* 单独起一个 vite 进程而不是 import('vite').build()：后者会把 vite 的
+       模块图拉进 bun 进程，和 vitest/config 的类型层纠缠，得不偿失。 */
+    const conf = path.join(ROOT, 'scripts', 'a11y-vite.config.ts')
+    const bin = path.join(ROOT, 'node_modules', '.bin', 'vite')
+    const r = spawnSync(bin, ['build', '--config', conf, '--logLevel', 'warn'], {
+      cwd: ROOT, stdio: 'inherit',
+    })
+    if (r.status !== 0) {
+      console.error('\n✖ vite build 失败——先把构建修好再跑无障碍门槛。')
+      exit(2)
+    }
+  }
+  if (!existsSync(path.join(OUT_DIR, 'index.html'))) {
+    console.error(`\n✖ 构建产物不存在：${OUT_DIR}。去掉 --skip-build 重跑。`)
+    exit(2)
+  }
+  const assets = await readdir(path.join(OUT_DIR, 'assets'))
+  const css = assets.find((f) => f.endsWith('.css'))
+  if (!css) {
+    console.error('\n✖ 构建产物里没有 CSS 文件。')
+    exit(2)
+  }
+  return path.join(OUT_DIR, 'assets', css)
+}
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.json': 'application/json',
+  '.woff2': 'font/woff2',
+}
+
+/** dist 的静态服务 + SPA 回退。用 node:http 而不是 Bun.serve——
+ *  tsconfig 的 types 里没有 bun，用 node: 前缀的模块两边都能跑也能过 tsc。 */
+function serveDist(dir: string): Promise<{ server: Server; port: number }> {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    let rel = decodeURIComponent(url.pathname)
+    if (rel.endsWith('/')) rel += 'index.html'
+    let file = path.join(dir, rel)
+    if (!file.startsWith(dir) || !existsSync(file)) file = path.join(dir, 'index.html')
+    readFile(file).then(
+      (buf) => {
+        res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream' })
+        res.end(buf)
+      },
+      () => { res.writeHead(500); res.end('read error') },
+    )
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      const port = typeof addr === 'object' && addr ? addr.port : 0
+      resolve({ server, port })
+    })
+  })
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   浏览器
+   ══════════════════════════════════════════════════════════════════ */
+
+async function launch(): Promise<Browser> {
+  try {
+    return await chromium.launch()
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('')
+    console.error('✖ 启动不了 Chromium，本门槛的三项检查（对比度 / Tab 泄漏 / 横向溢出）')
+    console.error('  必须在真实浏览器里跑，jsdom 顶不上——它不跑布局、不实现 inert 的行为语义。')
+    console.error('')
+    console.error('  装一次浏览器即可：')
+    console.error('')
+    console.error('      cd console && npx playwright install chromium')
+    console.error('')
+    console.error('  （CI 里加在 `npm ci` 之后；只需要 chromium。Linux runner 上用')
+    console.error('    `npx playwright install --with-deps chromium` 一并补系统库。）')
+    console.error('')
+    console.error('  Playwright 原始报错：')
+    console.error('  ' + msg.split('\n').slice(0, 4).join('\n  '))
+    exit(2)
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   页面形态
+   ══════════════════════════════════════════════════════════════════ */
+
+let BASE = ''
+const STATE_SELECT = 'select[aria-label^="系统状态"]'
+
+interface Scene {
+  id: string
+  why: string
+  route: string
+  setup?: (page: Page) => Promise<void>
+}
+
+const SCENES: Scene[] = [
+  { id: 'ok', why: '正常态', route: '/meetings' },
+  { id: 'nas-down', why: 'NAS 断连（保留窗口清零、授权撤下）', route: '/meetings', setup: (p) => setState(p, 'nas-down') },
+  { id: 'tencent-down', why: '腾讯会议不可达', route: '/meetings', setup: (p) => setState(p, 'tencent-down') },
+  { id: 'load-failed', why: '会议数据读取失败', route: '/meetings', setup: (p) => setState(p, 'load-failed') },
+  { id: 'loading', why: '加载中（骨架屏）', route: '/meetings', setup: (p) => setState(p, 'loading') },
+  { id: 'empty', why: '一场会议都没有', route: '/meetings', setup: (p) => setState(p, 'empty') },
+  { id: 'row-hover', why: 'hover 才浮出的「＋30 天」/ 详情按钮', route: '/meetings', setup: hoverRow },
+  { id: 'selected', why: '选中若干行 → 批量条（反相表面）', route: '/meetings', setup: selectRows },
+  { id: 'drawer', why: '详情抽屉打开', route: '/meetings', setup: openDrawer },
+  { id: 'popover', why: '时间范围菜单打开', route: '/meetings', setup: openPopover },
+  { id: 'grant', why: '授权面板打开', route: '/meetings', setup: openGrant },
+  { id: 'toast', why: '延长保留期后的 toast', route: '/meetings', setup: fireToast },
+  { id: 'placeholder', why: '占位页（采集授权）', route: '/consumers' },
+]
+
+async function setState(page: Page, v: string): Promise<void> {
+  await page.selectOption(STATE_SELECT, v)
+  await page.waitForTimeout(450)
+}
+async function hoverRow(page: Page): Promise<void> {
+  await page.locator('tbody tr').first().hover()
+  await page.waitForTimeout(250)
+}
+async function selectRows(page: Page): Promise<void> {
+  const boxes = page.locator('tbody tr input[type="checkbox"]')
+  const n = Math.min(2, await boxes.count())
+  for (let i = 0; i < n; i++) await boxes.nth(i).check()
+  await page.waitForTimeout(450)
+}
+async function openDrawer(page: Page): Promise<void> {
+  await hoverRow(page)
+  await page.locator('button[aria-label$="的详情"]').first().click()
+  await page.waitForTimeout(450)
+}
+async function openPopover(page: Page): Promise<void> {
+  await page.locator('button[aria-haspopup="menu"]').first().click()
+  await page.waitForTimeout(350)
+}
+async function openGrant(page: Page): Promise<void> {
+  await page.locator('[class*="grantAdd"]').first().click()
+  await page.waitForTimeout(450)
+}
+async function fireToast(page: Page): Promise<void> {
+  await hoverRow(page)
+  const btn = page.locator('button[aria-label^="把「"]').first()
+  if (await btn.count()) {
+    await btn.click()
+    await page.waitForTimeout(400)
+  }
+}
+
+async function open(page: Page, route: string): Promise<void> {
+  await page.goto(BASE + route, { waitUntil: 'load' })
+  await page.waitForSelector('nav[aria-label="主导航"]', { timeout: 15000 })
+  await page.waitForFunction('document.fonts.status === "loaded"', null, { timeout: 6000 }).catch(() => {})
+  await page.waitForTimeout(120)
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   检查 1：对比度（两种主题各扫一遍）+ 语义色令牌
+   ══════════════════════════════════════════════════════════════════ */
+
+interface ScanRow {
+  desc: string; text: string; fg: string; fgEff: string; bg: string
+  opacity: number; size: number; weight: number; large: boolean
+  ratio: number; need: number; imageAt?: string
+}
+interface ScanResult {
+  checked: number; fails: ScanRow[]; unresolved: ScanRow[]
+  largeExempt: ScanRow[]; inkFourText: ScanRow[]
+}
+
+function fmtRow(r: ScanRow): string {
+  return `${r.ratio}:1（要 ${r.need}:1）「${r.text}」 ${r.fg} 压 ${r.bg}`
+    + (r.opacity < 1 ? ` ×opacity ${r.opacity} → 实际 ${r.fgEff}` : '')
+    + ` · ${r.size}px/${r.weight}${r.large ? ' 大字' : ''}\n    ${r.desc}`
+}
+
+async function runContrast(page: Page, theme: 'light' | 'dark'): Promise<void> {
+  for (const s of SCENES) {
+    await open(page, s.route)
+    if (s.setup) {
+      try { await s.setup(page) } catch (e) {
+        fail('1 对比度', `${theme}/${s.id}`, `形态没搭起来：${e instanceof Error ? e.message : String(e)}`)
+        continue
+      }
+    }
+    const r = await page.evaluate('window.__a11y.scanContrast()') as ScanResult
+    bump('对比度：受检文字元素', r.checked)
+    for (const row of r.fails) fail('1 对比度', `${theme}/${s.id}`, fmtRow(row))
+    for (const row of r.inkFourText) {
+      fail('1 对比度', `${theme}/${s.id}`,
+        `--ink-4 用在了文字上（它是图形专用：描边/分隔/填充）「${row.text}」\n    ${row.desc}`)
+    }
+    for (const row of r.unresolved) {
+      note('1 对比度', `${theme}/${s.id}`, `底是背景图，自动判不了（${row.imageAt}）：${fmtRow(row)}`)
+    }
+    for (const row of r.largeExempt) {
+      note('1 对比度', `${theme}/${s.id}`, `按大字 3:1 放行（正文口径会红）：${fmtRow(row)}`)
+    }
+  }
+}
+
+/* ── 语义色令牌：不只是"够不够对比度"，还要"是不是那个色相" ────────── */
+
+interface TokenVal { raw: string; hex: string; rgb: number[]; a: number; h: number; s: number; l: number }
+
+const HUE_RULES: Array<{ token: string; band: [number, number]; minSat: number; role: string }> = [
+  { token: '--fail', band: [340, 26], minSat: 0.35, role: '红＝归档失败＝一个月后永久丢失，本系统最严重的状态' },
+  { token: '--fail-line', band: [335, 32], minSat: 0.15, role: '红系描边' },
+  { token: '--fail-soft', band: [330, 38], minSat: 0.04, role: '红系浅底' },
+  { token: '--warn', band: [22, 62], minSat: 0.30, role: '琥珀＝有人手动改写了规则 / 保留期快到了' },
+  { token: '--warn-line', band: [22, 62], minSat: 0.15, role: '琥珀系描边' },
+  { token: '--warn-soft', band: [18, 72], minSat: 0.04, role: '琥珀系浅底' },
+  { token: '--brand', band: [198, 252], minSat: 0.45, role: '蓝＝数据可被取走 / 主交互' },
+  { token: '--brand-text', band: [198, 252], minSat: 0.45, role: '蓝字' },
+  { token: '--brand-press', band: [198, 252], minSat: 0.40, role: '蓝按下态' },
+  { token: '--brand-line', band: [196, 256], minSat: 0.15, role: '蓝系描边' },
+  { token: '--brand-soft', band: [192, 262], minSat: 0.04, role: '蓝系浅底' },
+]
+
+const NEUTRALS = ['--ink', '--ink-2', '--ink-3', '--ink-4', '--ground', '--surface', '--surface-2', '--rail', '--line', '--line-soft']
+
+const PAIRS: Array<{ fg: string; bg: string; need: number; why: string }> = [
+  { fg: '--on-brand', bg: '--brand', need: 4.5, why: '主按钮文字压品牌实底' },
+  { fg: '--on-fail', bg: '--fail', need: 4.5, why: '压在失败实底上的字（深色下 --fail 变浅，白字只有 2.52:1）' },
+  { fg: '--accent-invert', bg: '--ink', need: 4.5, why: '反相表面（toast / 批量条 / tip）上的强调色' },
+  { fg: '--ground', bg: '--ink', need: 4.5, why: '反相表面上的正文' },
+  { fg: '--brand-text', bg: '--brand-soft', need: 4.5, why: '蓝字压蓝浅底（#0066FF 在这里只有 4.18，所以才有 --brand-text）' },
+  { fg: '--brand-text', bg: '--surface', need: 4.5, why: '蓝字压卡片底' },
+  { fg: '--fail', bg: '--surface', need: 4.5, why: '归档失败的红字压卡片底' },
+  { fg: '--fail', bg: '--ground', need: 4.5, why: '归档失败的红字压页面底' },
+  { fg: '--warn', bg: '--surface', need: 4.5, why: '保留期将至的琥珀字压卡片底' },
+  { fg: '--brand', bg: '--surface', need: 3, why: '焦点环压卡片底' },
+  { fg: '--brand', bg: '--ground', need: 3, why: '焦点环压页面底' },
+  { fg: '--brand', bg: '--rail', need: 3, why: '焦点环压左栏底' },
+  { fg: '--ink-4', bg: '--surface', need: 3, why: '图形专用色（描边/分隔/填充）压卡片底' },
+  { fg: '--code-note', bg: '--code-ground', need: 4.5, why: '代码块注释（内容表面，不跟随主题）' },
+  { fg: '--video-ink-3', bg: '--video-ground', need: 4.5, why: '播放器三级文字（内容表面，不跟随主题）' },
+]
+
+function lum(rgb: number[]): number {
+  const f = (c: number): number => {
+    const x = c / 255
+    return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4)
+  }
+  return 0.2126 * f(rgb[0] ?? 0) + 0.7152 * f(rgb[1] ?? 0) + 0.0722 * f(rgb[2] ?? 0)
+}
+function ratio(a: number[], b: number[]): number {
+  const la = lum(a)
+  const lb = lum(b)
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+}
+function inBand(h: number, band: [number, number]): boolean {
+  const [lo, hi] = band
+  return lo <= hi ? h >= lo && h <= hi : h >= lo || h <= hi
+}
+function hueGap(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360
+  return d > 180 ? 360 - d : d
+}
+
+async function runTokenSemantics(page: Page, theme: 'light' | 'dark'): Promise<void> {
+  await open(page, '/meetings')
+  const res = await page.evaluate('window.__a11y.tokens()') as { values: Record<string, TokenVal>; dataTheme: string | null }
+  const v = res.values
+  bump('语义色令牌断言', HUE_RULES.length + NEUTRALS.length + PAIRS.length)
+
+  for (const r of HUE_RULES) {
+    const t = v[r.token]
+    if (!t) { fail('1 对比度', `${theme}/令牌`, `${r.token} 解析不出颜色`); continue }
+    const h = Math.round(t.h)
+    const s = Math.round(t.s * 100) / 100
+    if (!inBand(t.h, r.band)) {
+      fail('1 对比度', `${theme}/令牌`,
+        `${r.token} = ${t.raw}（${t.hex}）色相 ${h}°，不在 ${r.band[0]}–${r.band[1]}° 内`,
+        `  ${r.role}`,
+        '  语义色的含义是产品语义的一部分：色相跑了，所有「引用了 var(…) 」的测试仍然全绿，但用户看到的意思变了')
+    } else if (t.s < r.minSat) {
+      fail('1 对比度', `${theme}/令牌`,
+        `${r.token} = ${t.raw}（${t.hex}）饱和度 ${s}，低于 ${r.minSat} —— 已经褪成灰，认不出是「${r.role}」`)
+    }
+  }
+
+  for (const n of NEUTRALS) {
+    const t = v[n]
+    if (!t) { fail('1 对比度', `${theme}/令牌`, `${n} 解析不出颜色`); continue }
+    const d = Math.max(...t.rgb) - Math.min(...t.rgb)
+    if (d > 40) {
+      fail('1 对比度', `${theme}/令牌`, `${n} = ${t.raw}（${t.hex}）通道极差 ${d}，不再是中性色`,
+        '  中性色是把品牌蓝抽掉饱和度得到的冷灰，不是一个可以随手改成彩色的位置')
+    } else if (d >= 6 && !inBand(t.h, [190, 262])) {
+      fail('1 对比度', `${theme}/令牌`, `${n} = ${t.raw}（${t.hex}）色相 ${Math.round(t.h)}°，不是冷灰（190–262°，源自品牌色相 222）`)
+    }
+  }
+
+  /* 三个语义色必须互相认得出来 */
+  const trio: Array<[string, string]> = [['--fail', '--warn'], ['--fail', '--brand'], ['--warn', '--brand']]
+  for (const [a, b] of trio) {
+    const ta = v[a]
+    const tb = v[b]
+    if (!ta || !tb) continue
+    const gap = hueGap(ta.h, tb.h)
+    if (gap < 25) {
+      fail('1 对比度', `${theme}/令牌`, `${a}(${ta.hex}, ${Math.round(ta.h)}°) 与 ${b}(${tb.hex}, ${Math.round(tb.h)}°) 色相只差 ${Math.round(gap)}°，两个语义分不开`)
+    }
+  }
+
+  for (const p of PAIRS) {
+    const f = v[p.fg]
+    const b = v[p.bg]
+    if (!f || !b) { fail('1 对比度', `${theme}/令牌`, `${p.fg} / ${p.bg} 解析不出颜色`); continue }
+    const r = Math.round(ratio(f.rgb, b.rgb) * 100) / 100
+    if (r + 0.005 < p.need) {
+      fail('1 对比度', `${theme}/令牌`, `${p.fg}(${f.hex}) 压 ${p.bg}(${b.hex}) = ${r}:1，要 ${p.need}:1 —— ${p.why}`)
+    }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   检查 2：Tab 泄漏 · 无障碍树 · 焦点环
+   ══════════════════════════════════════════════════════════════════ */
+
+interface Stop {
+  key: string; desc: string; name: string; rendered: boolean; focusVisible: boolean
+  rect: { x: number; y: number; w: number; h: number }
+  outlineStyle: string; outlineWidth: number; outlineColor: string
+  outlineRatio: number; aroundBg: string
+  inClosedOverlay: boolean; inert: boolean
+}
+
+async function tabWalk(page: Page, cap = 400): Promise<Stop[]> {
+  await page.evaluate('window.__a11y.blurAll()')
+  const stops: Stop[] = []
+  const seen = new Set<string>()
+  /* 焦点跑出文档（Tab 到浏览器 chrome）时 activeInfo() 给 null。不能就此收工——
+     再按一下通常会从文档开头绕回来，就此 break 会漏掉整整半页的可聚焦元素。
+     连着两次都在文档外才算走完。 */
+  let blanks = 0
+  for (let i = 0; i < cap; i++) {
+    await page.keyboard.press('Tab')
+    const info = await page.evaluate('window.__a11y.activeInfo()') as Stop | null
+    if (!info) {
+      if (++blanks >= 2) break
+      continue
+    }
+    blanks = 0
+    if (seen.has(info.key)) break
+    seen.add(info.key)
+    stops.push(info)
+  }
+  return stops
+}
+
+const COMPONENT_COVERAGE = ['Input__', 'Button__', 'Chip__', 'StatusDot__']
+
+async function runTabAndFocus(page: Page, context: BrowserContext): Promise<void> {
+  const cdp: CDPSession = await context.newCDPSession(page)
+  await cdp.send('Accessibility.enable')
+
+  /* 两个形态：干净页面；以及「浮层开过又关上」——关闭态浮层仍然挂在 DOM 里，
+     那正是 44 个泄漏元素当年藏身的地方。 */
+  const cases: Array<{ id: string; setup: (p: Page) => Promise<void> }> = [
+    { id: 'ok', setup: async () => {} },
+    {
+      id: 'overlay-opened-then-closed',
+      setup: async (p) => {
+        await openDrawer(p)
+        await p.keyboard.press('Escape')
+        await p.waitForTimeout(500)
+        await openPopover(p)
+        await p.keyboard.press('Escape')
+        await p.waitForTimeout(500)
+        await openGrant(p)
+        await p.keyboard.press('Escape')
+        await p.waitForTimeout(500)
+      },
+    },
+  ]
+
+  const covered = new Set<string>()
+
+  for (const c of cases) {
+    await open(page, '/meetings')
+    await c.setup(page)
+
+    /* 顺序要紧：静态口径必须在 Tab 走查**之前**量。走查会把「聚焦即浮出」的
+       按钮逐个点亮，走完之后再量，这条口径就恒等于 0 —— 一个永远绿的假门槛。 */
+    await page.evaluate('window.__a11y.clearProbes()')
+    const st = await page.evaluate('window.__a11y.staticFocusables()') as {
+      total: number; invisible: Array<{ desc: string; name: string; key: string | null }>
+    }
+
+    const stops = await tabWalk(page)
+    bump('Tab 站点', stops.length)
+    if (stops.length < 10) {
+      fail('2 Tab 泄漏', c.id, `只走到 ${stops.length} 个 Tab 站点——页面没起来，或 Tab 走查本身坏了`)
+    }
+
+    for (const s of stops) {
+      for (const k of COMPONENT_COVERAGE) if (s.desc.includes(k)) covered.add(k)
+
+      if (!s.rendered) {
+        fail('2 Tab 泄漏', c.id,
+          `Tab 停在了一个看不见的元素上：「${s.name}」`,
+          `    ${s.desc}`,
+          `    盒子 ${Math.round(s.rect.w)}×${Math.round(s.rect.h)} @ (${Math.round(s.rect.x)}, ${Math.round(s.rect.y)})`
+          + (s.inClosedOverlay ? '，且它在一个 data-state="closed" 的浮层里' : ''))
+        continue
+      }
+      if (s.inClosedOverlay) {
+        fail('2 Tab 泄漏', c.id, `Tab 停在关闭态浮层内的控件上：「${s.name}」\n    ${s.desc}`)
+      }
+      if (!s.focusVisible) {
+        note('2 Tab 泄漏', c.id, `键盘 Tab 过去却没有匹配 :focus-visible：「${s.name}」 ${s.desc}`)
+        continue
+      }
+      if (s.outlineStyle === 'none' || s.outlineWidth < 1) {
+        fail('2 Tab 泄漏', c.id,
+          `焦点环不可见：「${s.name}」 outline-style=${s.outlineStyle} width=${s.outlineWidth}px`,
+          `    ${s.desc}`,
+          '    焦点环必须在按下 Tab 的那一帧就在（design-system.md §5）')
+      } else if (s.outlineRatio + 0.005 < 3) {
+        fail('2 Tab 泄漏', c.id,
+          `焦点环对比度不足：「${s.name}」 ${s.outlineColor} 压 ${s.aroundBg} = ${s.outlineRatio}:1，要 3:1`,
+          `    ${s.desc}`)
+      }
+    }
+
+    /* 关闭态浮层：必须 inert，且不该出现在 Chromium 的无障碍树里。
+       jsdom 不实现 inert 的行为语义，userEvent.tab() 也不认它——
+       这一条只有在真实浏览器里才验得到。 */
+    const closed = await page.evaluate('window.__a11y.closedOverlays()') as Array<{
+      desc: string; inert: boolean; isPanel: boolean
+      controls: Array<{ desc: string; name: string }>
+      texts: string[]
+    }>
+    bump('关闭态浮层', closed.length)
+    if (c.id === 'overlay-opened-then-closed' && closed.length === 0) {
+      fail('2 Tab 泄漏', c.id, '浮层开过又关上之后，页面里一个 data-state="closed" 的浮层都没有——这条检查落空了')
+    }
+
+    const visibleNames = await page.evaluate('window.__a11y.visibleFocusableNames()') as string[]
+    const visible = new Set(visibleNames)
+
+    const ax = await cdp.send('Accessibility.getFullAXTree')
+    const axNames = new Set<string>()
+    for (const n of ax.nodes) {
+      if (n.ignored) continue
+      const nm = n.name && typeof n.name.value === 'string' ? n.name.value.replace(/\s+/g, ' ').trim() : ''
+      if (nm) axNames.add(nm)
+    }
+    bump('无障碍树可见节点名', axNames.size)
+
+    for (const ov of closed) {
+      /* 遮罩（.scrim）也带 data-state，但它是 aria-hidden 的纯装饰、没有可聚焦
+         内容，不需要 inert。只有真正的浮层面板（带 role 的那个）必须 inert。 */
+      if (ov.isPanel && !ov.inert) {
+        fail('2 Tab 泄漏', c.id,
+          `关闭态浮层没有 inert：${ov.desc}`,
+          '    opacity:0 / transform:translateX(100%) 都不会把元素移出 Tab 序列与无障碍树')
+      }
+      for (const ctl of ov.controls) {
+        if (!ctl.name || visible.has(ctl.name)) continue
+        if (axNames.has(ctl.name)) {
+          fail('2 Tab 泄漏', c.id,
+            `关闭态浮层里的控件仍然在无障碍树里：「${ctl.name}」`,
+            `    ${ctl.desc}`,
+            `    所在浮层：${ov.desc}`)
+        }
+      }
+    }
+
+    /* 静态口径与走查结果对账。静止时看不见、但 Tab 停上去就浮出来的按钮
+       （`.extendBtn` / `.detailBtn` 的 :focus-visible 规则）不是泄漏——那是
+       「聚焦即显形」，和藏在关闭浮层里够不着又念得出来的控件是两回事。 */
+    const shownWhenFocused = new Set(stops.filter((x) => x.rendered).map((x) => x.key))
+    const leaked = st.invisible.filter((x) => x.key === null || !shownWhenFocused.has(x.key))
+    for (const x of leaked) {
+      fail('2 Tab 泄漏', c.id,
+        `可聚焦但不可见、没有 inert、Tab 停上去也不浮出：「${x.name}」\n    ${x.desc}`)
+    }
+    note('2 Tab 泄漏', c.id,
+      `可聚焦元素 ${st.total} 个；Tab 实际走过 ${stops.length} 站；静止时「可聚焦但不可见」${st.invisible.length} 个，`
+      + `其中 ${st.invisible.length - leaked.length} 个是聚焦即浮出（Tab 停上去时可见，不算泄漏）；泄漏 ${leaked.length}`)
+  }
+
+  for (const k of COMPONENT_COVERAGE) {
+    if (!covered.has(k)) {
+      fail('2 Tab 泄漏', '焦点环覆盖', `Tab 一圈没走到任何 ${k.replace('__', '')} —— 这个组件的焦点环没有被验到`)
+    }
+  }
+
+  /* 浮层基座退化聚焦：内容为空时焦点落到 .root 本身，环还在不在。
+     `.root{outline:none}` 与 base.css 的 `:focus-visible` 同优先级，
+     谁赢取决于打包注入顺序——这就是本脚本必须跑在构建产物上的原因。 */
+  await open(page, '/meetings')
+  await openDrawer(page)
+  const cls = await page.evaluate('window.__a11y.overlayRootClass()') as string | null
+  if (!cls) {
+    fail('2 Tab 泄漏', '浮层基座', '页面上找不到任何浮层面板，取不到 Overlay 基座的类名')
+  } else {
+    const rootOnly = cls.split(/\s+/).filter((c) => /Overlay__/.test(c)).join(' ')
+    for (const attr of [rootOnly || cls, cls]) {
+      const r = await page.evaluate(`window.__a11y.probeOverlayFocusRing(${JSON.stringify(attr)})`) as {
+        classAttr: string; focused: boolean; focusVisible: boolean
+        outlineStyle: string; outlineWidth: number; outlineColor: string
+        outlineRatio: number; aroundBg: string
+      }
+      if (!r.focused) { fail('2 Tab 泄漏', '浮层基座', `class="${attr}" 的探针元素聚焦失败`); continue }
+      if (!r.focusVisible) {
+        note('2 Tab 泄漏', '浮层基座', `class="${attr}"：focus({focusVisible:true}) 没让它匹配 :focus-visible，本条改由构建产物文本扫描兜底`)
+        continue
+      }
+      bump('浮层基座焦点环探针')
+      if (r.outlineStyle === 'none' || r.outlineWidth < 1) {
+        fail('2 Tab 泄漏', '浮层基座',
+          `空内容浮层退化到聚焦容器本身时，焦点环被吃掉了：class="${attr}"`,
+          `    outline-style=${r.outlineStyle} outline-width=${r.outlineWidth}px`,
+          '    组件级 outline 复位与 base.css 的 :focus-visible 同优先级，本次构建里前者赢了')
+      } else if (r.outlineRatio + 0.005 < 3) {
+        fail('2 Tab 泄漏', '浮层基座',
+          `浮层基座焦点环对比度不足：${r.outlineColor} 压 ${r.aroundBg} = ${r.outlineRatio}:1，要 3:1`)
+      }
+    }
+  }
+  await cdp.detach()
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   检查 3：横向溢出 + 视口内可达 + 条状元素几何
+   ══════════════════════════════════════════════════════════════════ */
+
+const WIDTHS = [1440, 1050, 375]
+
+interface LayoutResult {
+  page: {
+    scrollWidth: number; clientWidth: number; innerWidth: number
+    bodyScrollWidth: number; bodyClientWidth: number
+    htmlOverflowX: string; bodyOverflowX: string
+  }
+  outOfViewport: Array<{ desc: string; name: string; left: number; right: number; width: number; viewport: number; over: number }>
+  occluded: Array<{ desc: string; name: string; hitBy: string }>
+  squeezed: Array<{ desc: string; left: number; avail: number; natural: number; rendered: number; centerPct: number; viewport: number }>
+}
+
+let vacuityNoted = false
+
+async function runLayout(page: Page): Promise<void> {
+  const scenes = SCENES.filter((s) => ['ok', 'selected', 'drawer', 'loading', 'nas-down'].includes(s.id))
+  for (const w of WIDTHS) {
+    await page.setViewportSize({ width: w, height: 900 })
+    for (const s of scenes) {
+      await open(page, s.route)
+      if (s.setup) {
+        try { await s.setup(page) } catch (e) {
+          fail('3 横向溢出', `${w}px/${s.id}`, `形态没搭起来：${e instanceof Error ? e.message : String(e)}`)
+          continue
+        }
+      }
+      const r = await page.evaluate('window.__a11y.scanLayout()') as LayoutResult
+      bump('视口 × 形态')
+
+      if (r.page.scrollWidth > r.page.clientWidth) {
+        fail('3 横向溢出', `${w}px/${s.id}`,
+          `页面横滚：documentElement.scrollWidth=${r.page.scrollWidth} > clientWidth=${r.page.clientWidth}`)
+      }
+      /* html 上的 overflow-x: clip 会把 documentElement.scrollWidth 摁死在
+         clientWidth 上——实测注入一个 5000px 宽的元素，它仍然报 1440。也就是说
+         brief 里那条 `documentElement.scrollWidth <= clientWidth` 在本工程**永远
+         不会红**。body.scrollWidth 不受 clip 影响（clip 不产生滚动容器，
+         scrollWidth 仍然量的是布局溢出），真正扛这条的是它。 */
+      if (r.page.bodyScrollWidth > r.page.bodyClientWidth + 1) {
+        fail('3 横向溢出', `${w}px/${s.id}`,
+          `内容溢出到 body 之外：body.scrollWidth=${r.page.bodyScrollWidth} > clientWidth=${r.page.bodyClientWidth}`,
+          '    表格自己的 overflow-x 容器不算——那种滚动不会累加到 body 上')
+      }
+      if (!vacuityNoted && /^(clip|hidden)$/.test(r.page.htmlOverflowX)) {
+        vacuityNoted = true
+        note('3 横向溢出', '口径说明',
+          `html 的 overflow-x 是 ${r.page.htmlOverflowX}，documentElement.scrollWidth 被摁死在 clientWidth 上，`
+          + '那条断言在本工程永远不会红。真正扛横向溢出的是 body.scrollWidth 与「元素在视口内可达」两条。')
+      }
+      /* 只量 scrollWidth 会漏：html/body 是 overflow-x: clip，被切掉的东西
+         量不出来，一个只看 scrollWidth 的检查恰恰会给"被裁掉所以够不着"发通行证。 */
+      for (const el of r.outOfViewport) {
+        fail('3 横向溢出', `${w}px/${s.id}`,
+          `元素跑出视口、够不着：「${el.name || '(无名)'}」 左 ${el.left} 右 ${el.right}，视口宽 ${el.viewport}（超出 ${el.over}px）`,
+          `    ${el.desc}`,
+          '    页面本身不横滚（overflow-x: clip 把它切掉了），所以只量 scrollWidth 抓不到这一条')
+      }
+      for (const el of r.squeezed) {
+        fail('3 横向溢出', `${w}px/${s.id}`,
+          `固定定位的条挤不进自己的位置：left=${el.left}px 之后只剩 ${el.avail}px 可用，它却要 ${el.rendered}px（已挤到 min-content，内容自然宽 ${el.natural}px）`,
+          `    渲染出来的中心落在视口 ${el.centerPct}% 处，视口宽 ${el.viewport}px`,
+          `    ${el.desc}`,
+          '    页面不横滚、元素左右边也都在视口内——只量 scrollWidth 或"有没有跑出视口"都抓不到这一条')
+      }
+      for (const el of r.occluded) {
+        note('3 横向溢出', `${w}px/${s.id}`,
+          `中心点被别的元素接住：「${el.name || '(无名)'}」 ${el.desc}\n    命中的是 ${el.hitBy}`)
+      }
+
+      if (w === WIDTHS[0]) {
+        const bars = await page.evaluate('window.__a11y.scanBars()') as {
+          problems: Array<Record<string, unknown>>; seen: Array<Record<string, unknown>>
+        }
+        bump('条状元素', bars.seen.length)
+        for (const p of bars.problems) {
+          fail('3 横向溢出', `${w}px/${s.id}`, `条状元素几何：${String(p.why)}`, `    ${String(p.desc)}`)
+        }
+      }
+    }
+  }
+  await page.setViewportSize({ width: WIDTHS[0] ?? 1440, height: 900 })
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   检查 5：prefers-reduced-motion 与三态主题在真实浏览器下真的生效
+   ══════════════════════════════════════════════════════════════════ */
+
+interface MotionScan {
+  anims: Array<{ desc: string; name: string; duration: string; ms: number[]; iterations: string }>
+  trans: Array<{ desc: string; properties: string[]; durations: number[]; maxMs: number; layoutProps: string[] }>
+}
+
+function norm(s: string): string {
+  return s.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+async function runMedia(page: Page, tf: TokenFile): Promise<void> {
+  /* 先在「不减少动效」下确认确实有动画在跑——否则下面那条断言是空的。 */
+  await page.emulateMedia({ reducedMotion: 'no-preference', colorScheme: 'light' })
+  await open(page, '/meetings')
+  await setState(page, 'loading')
+  const full = await page.evaluate('window.__a11y.scanMotion()') as MotionScan
+  const lively = full.anims.filter((a) => Math.max(...a.ms) > 100)
+  bump('动画声明', full.anims.length)
+  bump('过渡声明', full.trans.length)
+  if (lively.length === 0) {
+    fail('5 媒体查询', 'reduced-motion', '常态下一个时长超过 100ms 的动画都没有——"减少动效生效"这条断言是空的，抓不到任何东西')
+  }
+  for (const t of full.trans) {
+    if (t.layoutProps.length > 0) {
+      fail('5 媒体查询', '动效属性', `过渡里有布局属性 ${t.layoutProps.join('/')}（每帧触发 reflow）：${t.properties.join(', ')}`, `    ${t.desc}`)
+    }
+  }
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await open(page, '/meetings')
+  await setState(page, 'loading')
+  const reduced = await page.evaluate('window.__a11y.scanMotion()') as MotionScan
+  for (const a of reduced.anims) {
+    const worst = Math.max(...a.ms)
+    if (worst > 1) {
+      fail('5 媒体查询', 'reduced-motion', `减少动效下动画仍在跑：${a.name} ${a.duration}（${a.iterations} 次）`, `    ${a.desc}`)
+    }
+  }
+  for (const t of reduced.trans) {
+    if (t.maxMs > 1) {
+      fail('5 媒体查询', 'reduced-motion', `减少动效下过渡仍是 ${t.maxMs}ms：${t.properties.join(', ')}`, `    ${t.desc}`)
+    }
+  }
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+
+  /* 三态主题。「跟随系统」＝根元素上**没有** data-theme 属性。 */
+  const darkNames = [...tf.darkAttr.keys()]
+  const probe = async (): Promise<Record<string, string | null>> =>
+    await page.evaluate(`window.__a11y.readVars(${JSON.stringify(darkNames)})`) as Record<string, string | null>
+
+  const expectAll = (got: Record<string, string | null>, want: Map<string, string>, where: string): void => {
+    for (const [k, v] of want) {
+      const g = got[k]
+      if (g === undefined || g === null || norm(g) !== norm(v)) {
+        fail('5 媒体查询', where, `${k} 实测 ${String(g)}，tokens.css 里写的是 ${v}`)
+      }
+    }
+  }
+
+  const lightWanted = new Map<string, string>()
+  for (const k of darkNames) {
+    const lv = tf.light.get(k)
+    if (lv) lightWanted.set(k, lv)
+  }
+
+  await page.emulateMedia({ colorScheme: 'light' })
+  await open(page, '/meetings')
+  let got = await probe()
+  if (got['#data-theme'] !== null) fail('5 媒体查询', '跟随系统', `默认状态下根元素带了 data-theme="${got['#data-theme']}"；「跟随系统」必须是没有这个属性`)
+  expectAll(got, lightWanted, '跟随系统 + 浅色')
+
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await open(page, '/meetings')
+  got = await probe()
+  if (got['#data-theme'] !== null) fail('5 媒体查询', '跟随系统', `跟随系统 + 深色下根元素带了 data-theme="${got['#data-theme']}"`)
+  expectAll(got, tf.darkMedia, '跟随系统 + 深色（@media 块）')
+  bump('三态主题令牌比对', darkNames.length * 4)
+
+  /* 显式浅色必须在系统深色下赢 */
+  await page.getByRole('button', { name: '浅色', exact: true }).click()
+  await page.waitForTimeout(150)
+  got = await probe()
+  if (got['#data-theme'] !== 'light') fail('5 媒体查询', '显式浅色', `点了「浅色」但 data-theme=${String(got['#data-theme'])}`)
+  expectAll(got, lightWanted, '显式浅色（系统为深色）')
+
+  /* 显式深色必须在系统浅色下赢 */
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.getByRole('button', { name: '深色', exact: true }).click()
+  await page.waitForTimeout(150)
+  got = await probe()
+  if (got['#data-theme'] !== 'dark') fail('5 媒体查询', '显式深色', `点了「深色」但 data-theme=${String(got['#data-theme'])}`)
+  expectAll(got, tf.darkAttr, '显式深色（系统为浅色）')
+
+  /* 切回跟随系统必须把属性摘掉 */
+  await page.getByRole('button', { name: '跟随系统', exact: true }).click()
+  await page.waitForTimeout(150)
+  got = await probe()
+  if (got['#data-theme'] !== null) fail('5 媒体查询', '跟随系统', `切回「跟随系统」后 data-theme 仍是 ${String(got['#data-theme'])}；必须是移除属性，不是写 data-theme="system"`)
+  expectAll(got, lightWanted, '切回跟随系统（系统为浅色）')
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   串起来。任一项失败即非零退出。
+   ══════════════════════════════════════════════════════════════════ */
+
+const CHECK_TITLES: Array<[string, string]> = [
+  ['1 对比度', '两种主题全页对比度 + 语义色令牌'],
+  ['2 Tab 泄漏', 'Tab 泄漏 · 无障碍树 · 焦点环'],
+  ['3 横向溢出', '1440 / 1050 / 375 无横向溢出且元素可达'],
+  ['4 裸值', 'module.css 无裸 px / hex / rgb'],
+  ['5 媒体查询', 'reduced-motion 与三态主题真的生效'],
+]
+
+/* 同一处问题会在十几个形态里各报一遍。原样打出来是 66 行几乎一样的文字，
+   没人会去读，更没人会去修。按「抹掉元素名之后相同」归成"同型"，
+   报告里每型最多展开 4 条，其余折成一行计数——具体到哪个元素仍在。 */
+function shape(line: string): string {
+  return line.replace(/「[^」]*」/g, '「…」').replace(/\[aria-label="[^"]*"\]/g, '')
+}
+
+function report(): number {
+  const width = 78
+  const bar = '─'.repeat(width)
+
+  if (notes.length) {
+    console.log('\n' + bar)
+    console.log('提示（不计入成败，但值得看一眼）')
+    console.log(bar)
+    for (const n of notes) {
+      console.log(`  · [${n.check}] ${n.where}`)
+      for (const l of n.lines) console.log(`    ${l}`)
+    }
+  }
+
+  const byCheck = new Map<string, Finding[]>()
+  for (const f of failures) {
+    const arr = byCheck.get(f.check) ?? []
+    arr.push(f)
+    byCheck.set(f.check, arr)
+  }
+
+  if (failures.length) {
+    console.log('\n' + bar)
+    console.log('失败明细')
+    console.log(bar)
+    for (const [id, title] of CHECK_TITLES) {
+      const arr = byCheck.get(id)
+      if (!arr || !arr.length) continue
+
+      const exact = new Map<string, { lines: string[]; wheres: string[] }>()
+      for (const f of arr) {
+        const k = f.lines.join('\n')
+        const g = exact.get(k) ?? { lines: f.lines, wheres: [] }
+        g.wheres.push(f.where)
+        exact.set(k, g)
+      }
+      const groups = new Map<string, Array<{ lines: string[]; wheres: string[] }>>()
+      for (const g of exact.values()) {
+        const k = shape(g.lines[0] ?? '')
+        const a = groups.get(k) ?? []
+        a.push(g)
+        groups.set(k, a)
+      }
+
+      console.log(`\n■ ${id}　${title}　—— ${groups.size} 类 / ${exact.size} 处 / 共 ${arr.length} 次命中`)
+      for (const [, list] of groups) {
+        console.log('')
+        for (const g of list.slice(0, 4)) {
+          console.log(`  ✖ ${g.lines[0] ?? ''}`)
+          for (const l of g.lines.slice(1)) console.log(`  ${l}`)
+          const uniq = [...new Set(g.wheres)]
+          console.log(`      形态：${uniq.slice(0, 6).join('、')}${uniq.length > 6 ? ` 等 ${uniq.length} 个` : ''}`)
+        }
+        if (list.length > 4) {
+          const rest = list.slice(4)
+          const hits = rest.reduce((n, g) => n + g.wheres.length, 0)
+          console.log(`      …以及另外 ${rest.length} 个同型元素（${hits} 次命中），下面列出它们的定位串：`)
+          for (const g of rest) console.log(`        · ${(g.lines[1] ?? g.lines[0] ?? '').trim()}`)
+        }
+      }
+    }
+  }
+
+  console.log('\n' + bar)
+  console.log('无障碍与令牌回归检查')
+  console.log(bar)
+  for (const [k, v] of Object.entries(checkedCounters)) console.log(`  ${k}：${v}`)
+  console.log('')
+  let kinds = 0
+  for (const [id, title] of CHECK_TITLES) {
+    if (!enabled(id[0] ?? '')) { console.log(`  ○ ${id}　${title}　（本次跳过）`); continue }
+    const arr = byCheck.get(id) ?? []
+    const k = new Set(arr.map((f) => shape(f.lines[0] ?? ''))).size
+    kinds += k
+    console.log(`  ${arr.length === 0 ? '✔' : '✖'} ${id}　${title}　`
+      + (arr.length === 0 ? '通过' : `${k} 类问题 / ${arr.length} 次命中`))
+  }
+  console.log('')
+  if (failures.length === 0) {
+    console.log('  全部通过。')
+    return 0
+  }
+  console.log(`  共 ${kinds} 类问题、${failures.length} 次命中。`)
+  return 1
+}
+
+async function main(): Promise<void> {
+  const tf = await readTokens()
+  bump('令牌总数', tf.names.length)
+
+  if (enabled('4')) await checkNakedValues(tf)
+
+  const needsBrowser = ['1', '2', '3', '5'].some((k) => enabled(k))
+
+  /* 构建产物里的裸 outline 复位也归第 4 项——它同样是"文本扫描"，
+     只是扫的是打包之后的 CSS：那条规则赢没赢，只有在产物里才看得出来。 */
+  const cssPath = await buildApp()
+  if (enabled('4')) await checkBuiltCss(cssPath)
+
+  if (!needsBrowser) exit(report())
+
+  const { server, port } = await serveDist(OUT_DIR)
+  BASE = `http://127.0.0.1:${port}`
+
+  const browser: Browser = await launch()
+  const context: BrowserContext = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    colorScheme: 'light',
+    reducedMotion: 'no-preference',
+    deviceScaleFactor: 1,
+  })
+  await context.addInitScript({
+    content: `window.__A11Y_TOKEN_NAMES__ = ${JSON.stringify(tf.names)};`
+      + ` try { localStorage.removeItem('mde-console-theme') } catch (e) {}`,
+  })
+  await context.addInitScript({ path: PAGE_JS })
+
+  const page: Page = await context.newPage()
+  page.on('pageerror', (e) => fail('2 Tab 泄漏', '页面运行时', `页面抛异常，本次扫描的结论都不可信：${e.message.split('\n')[0]}`))
+
+  try {
+    if (enabled('1')) {
+      for (const theme of ['light', 'dark'] as const) {
+        await page.emulateMedia({ colorScheme: theme })
+        await runTokenSemantics(page, theme)
+        await runContrast(page, theme)
+      }
+      await page.emulateMedia({ colorScheme: 'light' })
+    }
+    if (enabled('2')) await runTabAndFocus(page, context)
+    if (enabled('3')) await runLayout(page)
+    if (enabled('5')) await runMedia(page, tf)
+  } finally {
+    await context.close()
+    await browser.close()
+    server.close()
+  }
+
+  exit(report())
+}
+
+await main()
