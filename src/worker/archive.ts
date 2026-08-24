@@ -1,21 +1,29 @@
 import { createReadStream, createWriteStream } from 'node:fs'
-import { createHash } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import { join, dirname } from 'node:path'
 import { mkdir } from 'node:fs/promises'
-import { withFsTimeout } from '@yaowu/mde-engine'
+import { withFsTimeout, sha256File } from '@yaowu/mde-engine'
 import type { ArchivesStore, CompletedAssetRow } from '../store/archives'
 
-const NAS_WRITE_TIMEOUT_MS = 5_000
+/**
+ * 触达 NAS 的单个 fs 操作的超时上限（整段耗时，不是"多久没进展"）。
+ *
+ * 这是"挂住了"的探测器，不是性能指标：网络挂载出问题时 fs 调用会静静地挂着而不是
+ * 报错，这个值回答的是"等到什么时候就断定它挂了"。所以它必须比"最大的那个资产在
+ * 健康 NAS 上整份写完 / 读完"还宽得多——录像资产可以有几个 GB，按到 NAS 的现实
+ * 速率（1GbE 上百来 MB/s）算，一个几 GB 的文件光复制就要好几分钟，读回来重算哈希
+ * 还要再来一遍。
+ *
+ * 沿用 Task 2 给 stat/mkdir 那种小调用定的 5s 是错的口径：5s 只够搬 ~550MB，
+ * 一场小时级录像必然超时，于是那场会议每一轮都在同一个地方失败、永远归档不上，
+ * 而"归档失败"又是最高级别告警——真正的故障信号会被这种必然的超时噪音淹没。
+ * 与 src/worker/retention.ts 的 NAS_READ_TIMEOUT_MS 同一口径、同一个理由。
+ *
+ * mkdir 那种小调用也共用这个预算：它问的是同一个问题（挂载是不是挂住了），
+ * 只是断定得晚一些；为它单列一个小超时只会多一个需要各自维护的常量。
+ */
+const NAS_WRITE_TIMEOUT_MS = 10 * 60_000
 const DEFAULT_RETENTION_DAYS = 30
-
-async function sha256File(path: string): Promise<string> {
-  // 流式读取，不用 arrayBuffer() 一次性载入内存——录像资产可以有几个 GB，
-  // 一次性读入会把归档 worker 的内存打爆。
-  const hash = createHash('sha256')
-  await pipeline(createReadStream(path), hash)
-  return hash.digest('hex')
-}
 
 /**
  * 本阶段（阶段 2）用"按年/月 + 会议 ID"的固定目录规则，不是规则驱动的。
@@ -52,6 +60,11 @@ export interface ArchiveDeps {
    *  用例 3（校验失败分支）在真实文件系统上无法确定性地构造出来
    *  （复制操作本身是正确的，没有天然会失败的路径）。 */
   hashFile?: (path: string) => Promise<string>
+  /** 单个 NAS 文件写入/读回的超时，缺省用 NAS_WRITE_TIMEOUT_MS。开成可注入的理由与
+   *  src/worker/retention.ts 的 nasReadTimeoutMs 一样：默认值要对生产上几个 GB 的
+   *  资产现实（10 分钟），测试要能传一个小值来验证"NAS 挂住了就不算归档成功"这条
+   *  分支，而不是让一条用例真的跑上 10 分钟。 */
+  nasWriteTimeoutMs?: number
 }
 
 export interface ArchiveOutcome {
@@ -76,18 +89,19 @@ async function archiveOneAsset(
   const nasPath = join(nasDir, asset.targetPath) // 沿用与本地一致的相对结构，方便人工按路径核对
 
   const doHash = deps.hashFile ?? sha256File
+  const timeoutMs = deps.nasWriteTimeoutMs ?? NAS_WRITE_TIMEOUT_MS
   const localHash = await doHash(localPath)
 
-  await withFsTimeout(mkdir(dirname(nasPath), { recursive: true }), `mkdir(${dirname(nasPath)})`, NAS_WRITE_TIMEOUT_MS)
+  await withFsTimeout(mkdir(dirname(nasPath), { recursive: true }), `mkdir(${dirname(nasPath)})`, timeoutMs)
   await withFsTimeout(
     pipeline(createReadStream(localPath), createWriteStream(nasPath)),
     `copy to ${nasPath}`,
-    NAS_WRITE_TIMEOUT_MS,
+    timeoutMs,
   )
   // 重新读回 NAS 上刚写的文件算哈希，不信任"写操作没抛异常"——这是 dev-plan.md
   // §6 对不可逆删除那条硬要求（重新校验，不查记录）的同一种精神在归档侧的体现：
   // 校验永远针对"实际在 NAS 上的字节"，不针对"我们以为发生了什么"。
-  const nasHash = await withFsTimeout(doHash(nasPath), `hash ${nasPath}`, NAS_WRITE_TIMEOUT_MS)
+  const nasHash = await withFsTimeout(doHash(nasPath), `hash ${nasPath}`, timeoutMs)
 
   if (localHash !== nasHash) {
     return 'verification_failed'

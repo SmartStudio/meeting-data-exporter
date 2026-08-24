@@ -241,6 +241,35 @@ test('用例5：分两轮跑——第一轮部分资产完成、第二轮剩余�
   })
 })
 
+test('NAS 写得太久（注入一个小超时模拟挂住的挂载）时归档失败——且默认超时必须够真实文件用完', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    // 16MB：流式复制至少要十几毫秒，对着 1ms 的超时必然先超时。用真实的大文件而不是
+    // 0 字节配 0ms，是为了让这条用例不依赖"定时器和第一个 I/O 回调谁先跑"这种没有
+    // 保证的竞速（与 tests/worker/retention.test.ts 的用例 4c 同一手法）。
+    const big = 'x'.repeat(16 * 1024 * 1024)
+    await seedCompletedAsset(pool, { meetingId: 'm-slow-nas', targetPath: 'slow/video.mp4' })
+    await writeLocalFile(localRoot, 'slow/video.mp4', big)
+
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot }
+    await expect(archiveMeeting({ ...deps, nasWriteTimeoutMs: 1 }, 'm-slow-nas', '', 11_000)).rejects.toThrow(
+      /timed out/,
+    )
+
+    // 超时的资产绝不能被当成已归档——下一轮还要重试它
+    expect(await archives.countArchivedAssets('m-slow-nas', '')).toBe(0)
+    expect(await archives.findMeetingArchive('m-slow-nas', '')).toBeNull()
+
+    // 同一场会议、同一个 16MB 文件，用生产默认超时（10 分钟）就正常归档得掉。
+    // 这一半是这条用例的重点：证明上面失败的原因确实是"注入的超时太小"，
+    // 也证明默认值不会把真实大小的文件挡在门外——5s 的旧默认值只够搬 ~550MB，
+    // 一场小时级录像每一轮都会死在这里、永远归档不上。
+    const ok = await archiveMeeting(deps, 'm-slow-nas', '', 12_000)
+    expect(ok.newlyArchived).toBe(1)
+    expect(ok.verificationFailed).toBe(0)
+    expect(ok.fullyArchived).toBe(true)
+  })
+}, 30_000)
+
 test('archivePendingMeetings：一场会议的 archiveMeeting 抛出不连累其它会议，且计入 failed（review Important #2 的回归用例）', async () => {
   await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
     // 两场正常会议 + 一场会在归档时抛出的会议——三场都出现在

@@ -1,9 +1,6 @@
-import { createReadStream } from 'node:fs'
-import { createHash } from 'node:crypto'
-import { pipeline } from 'node:stream/promises'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { withFsTimeout } from '@yaowu/mde-engine'
+import { withFsTimeout, sha256File } from '@yaowu/mde-engine'
 import type {
   ArchivesStore,
   ArchivedAssetRecord,
@@ -36,14 +33,6 @@ import type {
  * 被这种超时噪音淹没，真正的篡改信号反而被埋在里面。
  */
 const NAS_READ_TIMEOUT_MS = 10 * 60_000
-
-async function sha256File(path: string): Promise<string> {
-  // 流式读取，理由同 src/worker/archive.ts：录像资产可以有几个 GB，
-  // 一次性读进内存会把 worker 打爆。
-  const hash = createHash('sha256')
-  await pipeline(createReadStream(path), hash)
-  return hash.digest('hex')
-}
 
 export interface RetentionDeps {
   archives: ArchivesStore
@@ -217,16 +206,22 @@ async function cleanupOneMeeting(
   const failure = await verifyNasCopies(archived, deps.nasReadTimeoutMs ?? NAS_READ_TIMEOUT_MS)
   if (failure !== null) return { kind: 'verification_failed', reason: failure }
 
+  // 校验全部通过——只删本地文件，NAS 副本与数据库记录永久保留（spec.md §4.9）。
+  // asset.localPath 是 Task 7 归档时复制进 archived_assets 的本地相对路径副本，
+  // 不需要跨表回查 meeting_assets。
+  //
+  // 这次读放在暂停复查**之前**，是刻意的顺序：它是一次纯只读的库查询（清理从不写
+  // meeting_assets），放前放后对结果没有任何影响，但放在后面就等于在"确认没暂停"
+  // 与"第一个 rm"之间又插进一次时长不受控的往返（数据库慢、连接池排队时可以是秒
+  // 级）。暂停开关要的效果是"从现在起别再删了"，那就让复查成为不可逆动作之前的
+  // 最后一件事——下面这段 await 与 rm 循环之间不要再插入任何东西。
+  const completed = await deps.archives.listCompletedAssets(rec.meetingId, rec.subMeetingId)
+  const localBytes = localBytesOf(completed, archived)
+
   // 校验一场会议可能要跑很久——每个资产都是一次几 GB 的流式哈希，一场会议可以有
   // 好几个。这段时间里操作员完全可能已经按下暂停。删是不可逆的，动手之前再确认
   // 一次；不然"按下暂停"到"真的不再删"之间就隔着一整场会议的校验时间。
   if (await isPaused(deps.archives)) return { kind: 'paused' }
-
-  // 校验全部通过——只删本地文件，NAS 副本与数据库记录永久保留（spec.md §4.9）。
-  // asset.localPath 是 Task 7 归档时复制进 archived_assets 的本地相对路径副本，
-  // 不需要跨表回查 meeting_assets。
-  const completed = await deps.archives.listCompletedAssets(rec.meetingId, rec.subMeetingId)
-  const localBytes = localBytesOf(completed, archived)
 
   // force: true 让"文件已经不在了"不算错误，这一条顺带保证了重跑安全：万一删到
   // 一半抛出（本地盘 EACCES 之类），markLocalPurged 不会执行，下一轮重新走一遍
@@ -244,6 +239,21 @@ async function cleanupOneMeeting(
   // 这里，紧跟 markLocalPurged：
   //     await deps.grants.revokeForMeeting(rec.meetingId, rec.subMeetingId, now)
   // 现在提前把这个 dep 开进 RetentionDeps，只会造出一个没人实现的接口和一个空实现。
+
+  // 【同一条 spec §7.2 里的"保留窗口清零"：由结构保证，不需要单独的代码路径——
+  //   这是一个刻意的设计判断，不是漏掉了】
+  // 全局约束原文是"NAS 断连时……受影响会议的保留窗口清零"，落到这份实现上分两种情形：
+  //   1. 还没归档完的会议：保留窗口的**起点就是** meeting_archives.archived_at，而
+  //      archiveMeeting 只在整场会议全部资产归档成功之后才写这一行（见 archive.ts 里
+  //      `fullyArchived && newlyArchived > 0` 那段）。NAS 断连时归档根本走不完，那一行
+  //      压根不存在——保留窗口从未开始计时，没有"清零"可做。
+  //   2. 已经归档完、NAS 随后才断连的会议：到期时 verifyNasCopies 读不到 NAS 上那份
+  //      文件，整场会议本轮直接进 verificationFailed 拒删（不是静默跳过），本地文件
+  //      原样保留，等人工处理完再删。效果与"窗口清零"一致：本地副本不会因为 NAS 不
+  //      可达而消失。
+  // 也就是说这条要求不是"没实现"，而是被两处已有机制合起来满足了。改动 archiveMeeting
+  // 的 upsert 时机、或把 verifyNasCopies 的读失败降级成"跳过继续"，都会悄悄破坏它——
+  // 那时才需要在这里补一条显式的清零逻辑。
 
   return {
     kind: 'purged',
