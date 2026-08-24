@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { Consumer, Meeting } from '@/api/types'
 import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
@@ -11,16 +12,22 @@ export type EmptyKind = 'none-at-all' | 'out-of-range' | 'filtered-out' | null
 /**
  * 表格空了是因为什么？**顺序就是因果的粗细**：系统里一场都没有 > 时间范围之外 >
  * 被筛选条件筛没了。粗的那层先答，不然会给出"清除筛选"这种解决不了问题的出口。
+ *
+ * 「时间范围之外」的判据是 `totalMatchingIgnoringRange > 0`——**去掉范围就找得到**，
+ * 而不是"范围内一场会议都没有"。差别是具体的：近 7 天里有 6 场会议、但搜索词
+ * 只命中 40 天前的那一场时，旧判据会算成"被筛选筛没了"，给出的出口是"清除筛选"
+ * ——点完范围没变，那一场还是找不到。
  */
 export function emptyKind(args: {
   totalAll: number
-  totalInRange: number
+  /** 只按筛选与搜索算、不套时间范围的命中数。 */
+  totalMatchingIgnoringRange: number
   totalMatching: number
   rangeDays: number
 }): EmptyKind {
   if (args.totalMatching > 0) return null
   if (args.totalAll === 0) return 'none-at-all'
-  if (args.rangeDays > 0 && args.totalInRange === 0) return 'out-of-range'
+  if (args.rangeDays > 0 && args.totalMatchingIgnoringRange > 0) return 'out-of-range'
   return 'filtered-out'
 }
 
@@ -40,7 +47,14 @@ export interface MeetingTableProps extends RowHandlers {
   onSelectAllMatching: () => void
   /** 从"全部"收回到"只保留本页"。 */
   onSelectPageOnly: () => void
-  selectAllMatching: boolean
+  /**
+   * 符合当前筛选的行**是不是已经一场不落地被选中了**。
+   * 这是从选择集与当前筛选**推出来**的，不是一个"点过跨页全选"的记忆标志位——
+   * 标志位要靠"记得在每个改筛选的地方清一次"，那种约定迟早会漏。
+   */
+  allMatchingSelected: boolean
+  /** 当前筛选下**真正**被选中的场数（＝批量操作会改到的场数）。 */
+  selectedCount: number
 
   /** 符合当前筛选的总数（可能横跨多页）。 */
   totalMatching: number
@@ -74,7 +88,8 @@ export function MeetingTable(props: MeetingTableProps) {
     onSelectPage,
     onSelectAllMatching,
     onSelectPageOnly,
-    selectAllMatching,
+    allMatchingSelected,
+    selectedCount,
     totalMatching,
     page,
     pageSize,
@@ -94,17 +109,25 @@ export function MeetingTable(props: MeetingTableProps) {
 
   const pageIds = rows.map((m) => m.id)
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
+  const somePageSelected = pageIds.some((id) => selected.has(id))
   // 逃生门只在"本页全选了、且外面还有更多"时才有意义。
   const showSelectAllHint = allPageSelected && totalMatching > pageIds.length
+
+  // 本页只选了一部分时表头必须是"半选"，不是"未选"——未选的勾选框在说
+  // "这一页一个都没选"，而屏幕上明明有几行是选中的。
+  const headCheck = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (headCheck.current) headCheck.current.indeterminate = somePageSelected && !allPageSelected
+  }, [somePageSelected, allPageSelected])
 
   return (
     <div className={styles.wrap}>
       {showSelectAllHint && (
         <div className={styles.selectAllHint} data-testid="select-all-hint">
-          {selectAllMatching ? (
+          {allMatchingSelected ? (
             <>
               <span>
-                已选中符合当前筛选的全部 <b className={styles.num}>{totalMatching}</b> 场会议。
+                已选中符合当前筛选的全部 <b className={styles.num}>{selectedCount}</b> 场会议。
               </span>
               <button type="button" className={styles.hintBtn} onClick={onSelectPageOnly}>
                 只保留本页
@@ -112,8 +135,11 @@ export function MeetingTable(props: MeetingTableProps) {
             </>
           ) : (
             <>
+              {/* 说的是**实际选中的场数**，不是本页有几行：跨页选过之后再收窄
+                  筛选，这两个数不一样，而底部批量条报的是前者。同一屏上两个
+                  数字打架，用户没有办法判断按下去会改掉几场。 */}
               <span>
-                已选中本页 <b className={styles.num}>{pageIds.length}</b> 场。
+                已选中 <b className={styles.num}>{selectedCount}</b> 场。
               </span>
               {/* 明说总数：「一次点击选中 300 场并批量改授权」是这个产品里最贵的
                   误操作，所以扩到全部必须是第二次、看得见数字的点击。 */}
@@ -130,6 +156,7 @@ export function MeetingTable(props: MeetingTableProps) {
           <tr>
             <th className={styles.check}>
               <input
+                ref={headCheck}
                 type="checkbox"
                 className={styles.checkbox}
                 checked={allPageSelected}
@@ -231,7 +258,7 @@ function ErrorRow({ error, onRetry }: { error: Error; onRetry: () => void }) {
   return (
     <tr>
       <td colSpan={COL_COUNT}>
-        <div className={styles.big} data-kind="error" data-testid="meetings-status">
+        <div className={styles.big} data-kind="error" data-testid="meetings-error">
           <h3 className={styles.bigTitle}>读不到会议列表</h3>
           {/* 读不出来 ≠ 丢了。这句必须在最显眼的地方——归档到 NAS 的文件
               是不是还在，是看到这一屏的人第一个想知道的事。 */}
@@ -269,7 +296,7 @@ function EmptyRow({
     return (
       <tr>
         <td colSpan={COL_COUNT}>
-          <div className={styles.big} data-testid="meetings-status">
+          <div className={styles.big} data-testid="meetings-empty" data-kind="none-at-all">
             <h3 className={styles.bigTitle}>还没有拉取过任何会议</h3>
             <p className={styles.bigText}>
               拉取任务会自动去腾讯会议找已经产出录屏和智能纪要的会议。第一次运行前，
@@ -291,8 +318,8 @@ function EmptyRow({
     return (
       <tr>
         <td colSpan={COL_COUNT}>
-          <div className={styles.small} data-testid="meetings-status">
-            <span>近 {rangeDays} 天内没有会议记录。</span>
+          <div className={styles.small} data-testid="meetings-empty" data-kind="out-of-range">
+            <span>近 {rangeDays} 天内没有符合条件的会议记录。</span>
             <Button variant="quiet" size="sm" onClick={onClearRange}>
               改为全部时间
             </Button>
@@ -305,7 +332,7 @@ function EmptyRow({
   return (
     <tr>
       <td colSpan={COL_COUNT}>
-        <div className={styles.small} data-testid="meetings-status">
+        <div className={styles.small} data-testid="meetings-empty" data-kind="filtered-out">
           <span>没有符合条件的会议。</span>
           <Button variant="quiet" size="sm" onClick={onClearFilters}>
             清除筛选
@@ -336,7 +363,7 @@ function Pager({
   if (loading) {
     return (
       <div className={styles.pager}>
-        <span className={styles.pagerRange} data-testid="meetings-status">
+        <span className={styles.pagerRange} data-testid="meetings-loading">
           正在读取…
         </span>
       </div>

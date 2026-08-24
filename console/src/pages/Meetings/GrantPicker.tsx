@@ -4,7 +4,8 @@ import { daysLeft, fmtDateTime } from '@/lib/format'
 import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
 import { Sheet } from '@/ui/Sheet'
-import { assetTotals, grantCellKind } from './MeetingRow'
+import { assetTotals } from './MeetingRow'
+import { grantCellKind } from './write'
 import styles from './GrantPicker.module.css'
 
 export interface GrantPickerProps {

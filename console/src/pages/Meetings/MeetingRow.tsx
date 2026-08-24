@@ -3,6 +3,7 @@ import { daysLeft, fmtDateTime, fmtDay } from '@/lib/format'
 import { Pill } from '@/ui/Pill'
 import { ProgressBar } from '@/ui/ProgressBar'
 import { StatusDot } from '@/ui/StatusDot'
+import { consumerName, grantCellKind } from './write'
 import styles from './MeetingRow.module.css'
 
 /** 八类资产的"已拿到 / 应有"合计。某个键不出现＝该类不适用，不参与计数。 */
@@ -14,33 +15,6 @@ export function assetTotals(m: Meeting): { got: number; total: number } {
     total += v.total
   }
   return { got, total }
-}
-
-/**
- * "已授权给"这一栏该画成什么。
- *
- * **生命周期原因优先于权限原因**（spec.md §6.1）：本地文件已经清理、还没归档、
- * 压根没有录制——这三种情况下没有任何规则参与判断，不能画成"规则禁止采集"。
- *
- * 原型的 `grantCell()` 是先看 `m.allow === 'deny'` 再看别的，于是"董事会闭门会"
- * （未拉取，`why.allow.by === 'wait'`）和"销售晨会"（无录制，`by === 'na'`）
- * 都被画成了琥珀色的"规则禁止采集"——而这两场会议根本没有哪条规则拒绝过它们。
- * 状态与理由必须自洽，这里按 `why.allow.by` 判，不按 `allow` 判。
- */
-export type GrantCellKind =
-  | { kind: 'expired' }
-  | { kind: 'na' }
-  | { kind: 'wait' }
-  | { kind: 'denied' }
-  | { kind: 'grantable' }
-
-export function grantCellKind(m: Meeting): GrantCellKind {
-  const by = m.why.allow.by
-  if (by === 'expired' || m.keep.filesGone) return { kind: 'expired' }
-  if (by === 'na') return { kind: 'na' }
-  if (by === 'wait' || m.archive !== 'done') return { kind: 'wait' }
-  if (by === 'deny') return { kind: 'denied' }
-  return { kind: 'grantable' }
 }
 
 export interface MeetingRowProps {
@@ -176,9 +150,14 @@ function KeepCell({ m, now, onExtend }: { m: Meeting; now: Date; onExtend: (id: 
   if (m.keep.archivedAt === null || m.keep.expiresAt === null) {
     // 保留期自**归档成功**起算。没归档成功就没有"还剩几天"这回事——
     // 这里说清楚是哪一种没归档，而不是含糊地画一根空进度条。
+    //
+    // 「归档失败」和「未归档」不是同一件事，不能同一个灰：红＝失败＝一个月后
+    // 永久丢失，是本系统最严重的状态（design-system.md §2.2），原型这一支也
+    // 确实上了 `is-fail`（gate-console.html:2447）。
+    const failed = m.archive === 'failed'
     return (
-      <span className={styles.keepNone}>
-        {m.archive === 'failed' ? '归档失败，未开始计时' : '未归档'}
+      <span className={styles.keepNone} data-fail={failed}>
+        {failed ? '归档失败，未开始计时' : '未归档'}
       </span>
     )
   }
@@ -242,7 +221,9 @@ function GrantCell({
     // 命中是规则系统在正确地干活，绝大多数被拒的会议是故意且永久被拒的。
     // 一个配了隐私规则的组织会有一整列永久琥珀，真正该被看见的琥珀就淹没了。
     // （design-system.md §2.2，控制器 f81a88d 的裁决；原型这处着色作废）
-    return <Pill>规则禁止采集</Pill>
+    //
+    // 是规则拒的还是人工设的，只影响这一句文案——能不能授权由 allow 定死。
+    return <Pill>{cell.hand ? '已人工设为禁止' : '规则禁止采集'}</Pill>
   }
 
   if (m.grants.length === 0) {
@@ -275,9 +256,4 @@ function GrantCell({
       </button>
     </div>
   )
-}
-
-/** `grants` 存的是 `Consumer.id`，显示名要现查——查不到就退回 id，不显示空白。 */
-export function consumerName(consumers: Consumer[], id: string): string {
-  return consumers.find((c) => c.id === id)?.name ?? id
 }

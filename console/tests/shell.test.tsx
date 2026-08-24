@@ -112,17 +112,17 @@ describe('AppShell · 顶栏', () => {
 
     // loading：内容区给出加载中提示，不是空白
     await user.selectOptions(picker, 'loading')
-    expect(await screen.findByTestId('meetings-status')).toHaveTextContent('正在读取')
+    expect(await screen.findByTestId('meetings-loading')).toHaveTextContent('正在读取')
 
     // load-failed：错误详情 + 重试，不是「暂无数据」
     await user.selectOptions(picker, 'load-failed')
-    const status = await screen.findByTestId('meetings-status')
+    const status = await screen.findByTestId('meetings-error')
     expect(status.textContent).toMatch(/失败|错误|不可用|503/)
     expect(within(status).getByRole('button', { name: '重试' })).toBeInTheDocument()
 
     // empty：一场会议都没有，出口文案存在
     await user.selectOptions(picker, 'empty')
-    expect(await screen.findByTestId('meetings-status')).toHaveTextContent('还没有拉取过任何会议')
+    expect(await screen.findByTestId('meetings-empty')).toHaveTextContent('还没有拉取过任何会议')
 
     // nas-down：告警条 sev=fail，且有「暂停到期清理」
     await user.selectOptions(picker, 'nas-down')

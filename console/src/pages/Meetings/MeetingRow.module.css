@@ -65,9 +65,14 @@ tr[data-dim='true'] .title {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* 部分资产没拿到＝有东西缺，需要人看一眼；不适用则退到弱化文字，不是告警。 */
+/* 部分资产还没拿到是**中性**的，不是告警。琥珀在 design-system.md §2.2 里只有
+   两个含义：有人手动改写了规则、保留期快到了——两者都意味着"这需要你看一眼"。
+   "7/19"两者都不是，而且它唯一命中的那行还是 fetch:'running'（分诊语义里
+   "处理中＝中性＝不需要你做什么"），同一行在资产列画琥珀就是一次假警报。
+   （若将来要把"已结束但仍缺资产"单独提出来，那是给 §2.2 提修订，不是在这里
+   就地加第三义。） */
 .assets[data-state='partial'] {
-  color: var(--warn);
+  color: var(--ink-2);
 }
 .assets[data-state='na'] {
   color: var(--ink-3);
@@ -127,6 +132,12 @@ tr[data-dim='true'] .title {
   font-size: var(--t-xs);
   color: var(--ink-3);
   white-space: nowrap;
+}
+/* 归档失败 ≠ 未归档。红＝失败＝一个月后永久丢失，是本系统最严重的状态
+   （design-system.md §2.2）；两者同一个灰，最严重的状态就在表格里消失了。 */
+.keepNone[data-fail='true'] {
+  color: var(--fail);
+  font-weight: 600;
 }
 
 /* 延长按钮：平时不占视觉重量，鼠标停在行上或键盘光标落在行上才浮出来。

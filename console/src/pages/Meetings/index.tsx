@@ -16,12 +16,17 @@ import { Toast } from '@/ui/Toast'
 import { BatchBar, type BatchAction } from './BatchBar'
 import { GrantPicker } from './GrantPicker'
 import { emptyKind, MeetingTable } from './MeetingTable'
-import { consumerName, grantCellKind } from './MeetingRow'
 import { TRIAGE_DEFS, TriageBar, type TriageId } from './TriageBar'
+import {
+  applyWrite,
+  canWrite,
+  consumerName,
+  grantCellKind,
+  KEEP_DAYS,
+  type MeetingWrite,
+  type WriteCtx,
+} from './write'
 import styles from './Meetings.module.css'
-
-/** 本地保留窗口的长度。延长一次多加一个完整窗口。 */
-const KEEP_DAYS = 30
 
 /** 工具条上的三个附加筛选（分诊五格之外的）。 */
 const CHIP_FILTERS = [
@@ -77,12 +82,9 @@ function daysAgo(unixSec: number, now: Date): number {
   return Math.round(diff / 86400000)
 }
 
-function addDays(unixSec: number, days: number): number {
-  const d = new Date(unixSec * 1000)
-  return Math.floor(
-    new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, d.getHours(), d.getMinutes()).getTime() / 1000,
-  )
-}
+/** 还没读到采集程序时的空列表。写成模块级常量，免得每次渲染都换一个引用，
+ *  把下游所有 useMemo / useCallback 的依赖都带着失效一遍。 */
+const NO_CONSUMERS: Consumer[] = []
 
 /** 采集程序列表，同样跟着系统状态走（T3 只导出了 useMeetings，这里照它的写法补一个）。 */
 function useConsumers() {
@@ -111,11 +113,20 @@ export default function MeetingsPage() {
 
   const serverRows = res.state === 'ready' ? res.data : null
   const [rows, setRows] = useState<Meeting[]>([])
-  useEffect(() => {
+  const [mirrored, setMirrored] = useState<Meeting[] | null>(null)
+  // **渲染期派生，不用 effect 镜像。** effect 要等这一帧提交完才跑，而在数据到达
+  // 的那一帧里 `loading` 已经是 false、`rows` 还是空的——`empty` 算成
+  // 'none-at-all'、分诊条与工具条整排卸载、表格画出大空态，下一帧才换回真实数据。
+  // 首屏、重试、每次切系统状态各闪一次，闪的还是"还没有拉取过任何会议"这句
+  // 与事实相反的话，且正是"整页往下跳"要防的那件事。
+  // 在渲染期 setState，React 会丢掉这一次渲染结果、带着新 state 重来，那一帧
+  // 根本不会被提交。
+  if (serverRows !== mirrored) {
+    setMirrored(serverRows)
     setRows(serverRows ?? [])
-  }, [serverRows])
+  }
 
-  const consumers: Consumer[] = consumersRes.state === 'ready' ? consumersRes.data : []
+  const consumers: Consumer[] = consumersRes.state === 'ready' ? consumersRes.data : NO_CONSUMERS
 
   const [filters, setFilters] = useState<ReadonlySet<FilterId>>(new Set())
   const [query, setQuery] = useState('')
@@ -123,7 +134,6 @@ export default function MeetingsPage() {
   const [rangeOpen, setRangeOpen] = useState(false)
 
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
-  const [selectAllMatching, setSelectAllMatching] = useState(false)
   const [cursor, setCursor] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
@@ -151,14 +161,12 @@ export default function MeetingsPage() {
 
   /* ── 筛选 ────────────────────────────────────────────────── */
 
-  const inRange = useMemo(
-    () => rows.filter((m) => rangeDays === 0 || daysAgo(m.startAt, now) <= rangeDays),
-    [rows, rangeDays, now],
-  )
-
-  const matching = useMemo(() => {
+  // 先只按筛选与搜索算一遍（**不套时间范围**）。空态要靠它答"是不是范围把
+  // 它们藏起来了"——差别很具体：搜索词只命中 40 天前的那一场时，出口该是
+  // "改为全部时间"，而不是点了也没用的"清除筛选"。
+  const matchingIgnoringRange = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return inRange.filter((m) => {
+    return rows.filter((m) => {
       if (q && !`${m.title}${m.code}${m.host}`.toLowerCase().includes(q)) return false
       for (const f of filters) {
         const triage = TRIAGE_DEFS.find((t) => t.id === f)
@@ -171,7 +179,12 @@ export default function MeetingsPage() {
       }
       return true
     })
-  }, [inRange, filters, query, now])
+  }, [rows, filters, query, now])
+
+  const matching = useMemo(
+    () => matchingIgnoringRange.filter((m) => rangeDays === 0 || daysAgo(m.startAt, now) <= rangeDays),
+    [matchingIgnoringRange, rangeDays, now],
+  )
 
   const maxPage = Math.max(1, Math.ceil(matching.length / pageSize))
   const safePage = Math.min(page, maxPage)
@@ -192,21 +205,27 @@ export default function MeetingsPage() {
       ? null
       : emptyKind({
           totalAll: rows.length,
-          totalInRange: inRange.length,
+          totalMatchingIgnoringRange: matchingIgnoringRange.length,
           totalMatching: matching.length,
           rangeDays,
         })
 
   /* ── 写操作（F1 只改本地状态）───────────────────────────── */
 
-  const patch = useCallback((id: string, fn: (m: Meeting) => Meeting) => {
-    setRows((prev) => prev.map((m) => (m.id === id ? fn(m) : m)))
-  }, [])
+  // **所有写操作都走 `applyWrite` 这一个口子**（见 write.ts 开头）：状态与
+  // `why` / `hand` / 连带失效在那里一起变。这里只负责决定"改哪些行、改什么"，
+  // 以及前置条件不满足时说人话——不许在这一层自己拼状态。
+  const ctx = useMemo<WriteCtx>(
+    () => ({ nowSec: Math.floor(now.getTime() / 1000), consumers }),
+    [now, consumers],
+  )
 
-  const withHand = (m: Meeting, stage: 'fetch' | 'archive'): Meeting['hand'] =>
-    m.hand.includes(stage) ? m.hand : [...m.hand, stage]
-
-  const clearedKeep: Meeting['keep'] = { archivedAt: null, expiresAt: null, extended: 0, filesGone: false }
+  const patch = useCallback(
+    (id: string, w: MeetingWrite) => {
+      setRows((prev) => prev.map((m) => (m.id === id ? applyWrite(m, w, ctx) : m)))
+    },
+    [ctx],
+  )
 
   const toggleStage = useCallback(
     (id: string, stage: 'fetch' | 'archive') => {
@@ -223,51 +242,10 @@ export default function MeetingsPage() {
         return
       }
       const on = cur === 'done'
-      const nowSec = Math.floor(now.getTime() / 1000)
-      const handWhy: Why = {
-        by: 'hand',
-        text: `陈运维 刚刚手动${on ? '关闭' : '执行'}了${stage === 'fetch' ? '拉取' : '归档到 NAS'}，覆盖了规则。`,
-      }
-
-      patch(id, (prev) => {
-        if (stage === 'fetch') {
-          return {
-            ...prev,
-            fetch: on ? 'off' : 'done',
-            // 关掉拉取，后面所有阶段跟着失效——没拉下来的东西谈不上归档和授权。
-            archive: on ? 'off' : prev.archive,
-            grants: on ? [] : prev.grants,
-            keep: on ? clearedKeep : prev.keep,
-            hand: withHand(prev, 'fetch'),
-            why: {
-              ...prev.why,
-              fetch: handWhy,
-              allow: on ? { by: 'wait', text: '已人工关闭拉取，没有可授权的资产。' } : prev.why.allow,
-            },
-          }
-        }
-        return {
-          ...prev,
-          archive: on ? 'off' : 'done',
-          grants: on ? [] : prev.grants,
-          keep: on
-            ? clearedKeep
-            : { archivedAt: nowSec, expiresAt: addDays(nowSec, KEEP_DAYS), extended: 0, filesGone: false },
-          hand: withHand(prev, 'archive'),
-          why: {
-            ...prev.why,
-            archive: handWhy,
-            allow: on
-              ? { by: 'wait', text: '已人工关闭归档，保留期未开始计时。' }
-              : prev.allow === 'allow'
-                ? { by: 'rule', text: '权限规则准许采集，但还没有授权给任何程序——外部现在取不到。' }
-                : prev.why.allow,
-          },
-        }
-      })
+      patch(id, { op: 'stage', stage, next: on ? 'off' : 'done' })
       notify(`${on ? '已关闭' : '已执行'}${stage === 'fetch' ? '拉取' : '归档'} · ${m.title}`)
     },
-    [rows, now, notify, patch],
+    [rows, notify, patch],
   )
 
   const extend = useCallback(
@@ -282,44 +260,20 @@ export default function MeetingsPage() {
         notify('本地文件已清理，无法延长。历史数据请到 NAS 取。')
         return
       }
-      patch(id, (prev) => ({
-        ...prev,
-        keep: {
-          ...prev.keep,
-          expiresAt: prev.keep.expiresAt === null ? null : addDays(prev.keep.expiresAt, KEEP_DAYS),
-          extended: prev.keep.extended + 1,
-        },
-      }))
+      patch(id, { op: 'extend' })
       notify(`「${m.title}」本地保留期延长 ${KEEP_DAYS} 天`)
     },
     [rows, notify, patch],
-  )
-
-  const applyGrants = useCallback(
-    (m: Meeting, next: string[]): Meeting => ({
-      ...m,
-      grants: next,
-      why: {
-        ...m.why,
-        allow:
-          m.allow === 'allow'
-            ? next.length > 0
-              ? { by: 'rule', text: `权限规则准许采集，已授权给 ${next.map((id) => consumerName(consumers, id)).join('、')}。` }
-              : { by: 'rule', text: '权限规则允许采集，但还没有授权给任何程序——外部现在取不到。' }
-            : m.why.allow,
-      },
-    }),
-    [consumers],
   )
 
   const revoke = useCallback(
     (id: string, consumerId: string) => {
       const m = rows.find((x) => x.id === id)
       if (!m) return
-      patch(id, (prev) => applyGrants(prev, prev.grants.filter((g) => g !== consumerId)))
+      patch(id, { op: 'grants', next: m.grants.filter((g) => g !== consumerId) })
       notify(`已收回 ${consumerName(consumers, consumerId)} 对「${m.title}」的授权`)
     },
-    [rows, consumers, notify, patch, applyGrants],
+    [rows, consumers, notify, patch],
   )
 
   const openGrant = useCallback(
@@ -357,27 +311,46 @@ export default function MeetingsPage() {
     (consumerIds: string[]) => {
       const ids = new Set(grantIds ?? [])
       const single = ids.size === 1
-      let n = 0
+      // 单场是"改成这些程序"（勾选框预置了它现有的授权）；
+      // 批量是"再加上这些程序"，不覆盖各场原有的授权。
+      const nextFor = (m: Meeting) =>
+        single ? consumerIds : Array.from(new Set([...m.grants, ...consumerIds]))
+      const targets = rows.filter((m) => ids.has(m.id) && canWrite(m, { op: 'grants', next: nextFor(m) }))
+      const targetIds = new Set(targets.map((m) => m.id))
       setRows((prev) =>
-        prev.map((m) => {
-          if (!ids.has(m.id)) return m
-          if (grantCellKind(m).kind !== 'grantable') return m
-          n += 1
-          // 单场是"改成这些程序"（勾选框预置了它现有的授权）；
-          // 批量是"再加上这些程序"，不覆盖各场原有的授权。
-          const next = single ? consumerIds : Array.from(new Set([...m.grants, ...consumerIds]))
-          return applyGrants(m, next)
-        }),
+        prev.map((m) => (targetIds.has(m.id) ? applyWrite(m, { op: 'grants', next: nextFor(m) }, ctx) : m)),
       )
       setGrantIds(null)
       if (!single) setSelected(new Set())
       const names = consumerIds.map((id) => consumerName(consumers, id)).join('、')
-      notify(consumerIds.length === 0 ? `已收回 ${n} 场会议的全部授权` : `已把 ${n} 场会议授权给 ${names}`)
+      notify(
+        consumerIds.length === 0
+          ? `已收回 ${targets.length} 场会议的全部授权`
+          : `已把 ${targets.length} 场会议授权给 ${names}`,
+      )
     },
-    [grantIds, consumers, notify, applyGrants],
+    [grantIds, rows, consumers, notify, ctx],
   )
 
   /* ── 选择 ────────────────────────────────────────────────── */
+
+  /**
+   * **唯一有效的选择集：选中 ∩ 当前筛选。**
+   *
+   * 屏幕上的数字和批量真正改到的行都从这里来，所以两者不可能对不上。
+   * 之前是一个"点过跨页全选"的记忆标志位 + 一个自由生长的 id 集合：改筛选
+   * 时忘了清标志位，提示条就会说"已选中符合当前筛选的全部 6 场"、底部批量条
+   * 同时说"9 场已选"；筛到只剩 1 行时提示条整条消失、批量条仍是 9，一按
+   * "收回授权"就改掉了屏幕上看不见的 8 场。**授权是数据出企业边界的闸门，
+   * 而这四个批量按钮没有确认面板**，所以这里不留"记得在每处清一次"的约定，
+   * 直接推。
+   */
+  const effective = useMemo(() => {
+    const ids = new Set(matching.map((m) => m.id))
+    return new Set([...selected].filter((id) => ids.has(id)))
+  }, [selected, matching])
+
+  const allMatchingSelected = matching.length > 0 && matching.every((m) => selected.has(m.id))
 
   const toggleSelect = useCallback((id: string, next: boolean) => {
     setSelected((prev) => {
@@ -386,7 +359,6 @@ export default function MeetingsPage() {
       else s.delete(id)
       return s
     })
-    if (!next) setSelectAllMatching(false)
   }, [])
 
   /** 勾表头**只选本页**。要选全部得再点一次那个明说总数的按钮。 */
@@ -400,69 +372,41 @@ export default function MeetingsPage() {
         }
         return s
       })
-      if (!next) setSelectAllMatching(false)
     },
     [paged],
   )
 
   const selectAll = useCallback(() => {
     setSelected(new Set(matching.map((m) => m.id)))
-    setSelectAllMatching(true)
     notify(`已选中符合当前筛选的全部 ${matching.length} 场（含未显示的页）`)
   }, [matching, notify])
 
   const selectPageOnly = useCallback(() => {
     const keep = new Set(paged.map((m) => m.id))
     setSelected((prev) => new Set([...prev].filter((id) => keep.has(id))))
-    setSelectAllMatching(false)
   }, [paged])
 
   /* ── 批量 ────────────────────────────────────────────────── */
 
   const runBatch = useCallback(
     (action: BatchAction) => {
-      const nowSec = Math.floor(now.getTime() / 1000)
-      let n = 0
-      setRows((prev) =>
-        prev.map((m) => {
-          if (!selected.has(m.id)) return m
-          if (action === 'fetch' && m.fetch !== 'none' && m.fetch !== 'done') {
-            n += 1
-            return { ...m, fetch: 'done', hand: withHand(m, 'fetch') }
-          }
-          if (action === 'archive' && m.fetch === 'done' && m.archive !== 'done') {
-            n += 1
-            return {
-              ...m,
-              archive: 'done',
-              hand: withHand(m, 'archive'),
-              keep: { archivedAt: nowSec, expiresAt: addDays(nowSec, KEEP_DAYS), extended: 0, filesGone: false },
-            }
-          }
-          if (action === 'extend' && m.keep.expiresAt !== null && !m.keep.filesGone) {
-            n += 1
-            return {
-              ...m,
-              keep: {
-                ...m.keep,
-                expiresAt: m.keep.expiresAt === null ? null : addDays(m.keep.expiresAt, KEEP_DAYS),
-                extended: m.keep.extended + 1,
-              },
-            }
-          }
-          if (action === 'revoke' && m.grants.length > 0) {
-            n += 1
-            return applyGrants(m, [])
-          }
-          return m
-        }),
-      )
+      const w: MeetingWrite =
+        action === 'extend'
+          ? { op: 'extend' }
+          : action === 'revoke'
+            ? { op: 'grants', next: [] }
+            : { op: 'stage', stage: action, next: 'done' }
+      // 兜底的第二道：只改**当前筛选下真的被选中**的行。第一道是上面那个
+      // 推出来的 `effective`；两道都在，是因为屏幕上的数字和真正被改掉的行
+      // 一旦对不上，代价是不可逆的。
+      const targets = rows.filter((m) => effective.has(m.id) && canWrite(m, w))
+      const targetIds = new Set(targets.map((m) => m.id))
+      setRows((prev) => prev.map((m) => (targetIds.has(m.id) ? applyWrite(m, w, ctx) : m)))
       const verb = { fetch: '拉取', archive: '归档', extend: `延长 ${KEEP_DAYS} 天保留`, revoke: '收回授权' }[action]
       setSelected(new Set())
-      setSelectAllMatching(false)
-      notify(n > 0 ? `已对 ${n} 场会议执行${verb}` : `所选会议里没有可${verb}的`)
+      notify(targets.length > 0 ? `已对 ${targets.length} 场会议执行${verb}` : `所选会议里没有可${verb}的`)
     },
-    [selected, now, notify, applyGrants],
+    [rows, effective, ctx, notify],
   )
 
   /* ── 键盘 ────────────────────────────────────────────────── */
@@ -487,7 +431,7 @@ export default function MeetingsPage() {
           setCursor(Math.max(0, Math.min(safeCursor + action.delta, paged.length - 1)))
           break
         case 'toggle-select':
-          toggleSelect(cursorMeeting.id, !selected.has(cursorMeeting.id))
+          toggleSelect(cursorMeeting.id, !effective.has(cursorMeeting.id))
           break
         case 'open-detail':
           setDetailId(cursorMeeting.id)
@@ -513,7 +457,7 @@ export default function MeetingsPage() {
       paged.length,
       cursorMeeting,
       safeCursor,
-      selected,
+      effective,
       toggleSelect,
       toggleStage,
       openGrant,
@@ -550,6 +494,24 @@ export default function MeetingsPage() {
     setPage(1)
   }
 
+  /**
+   * 点分诊格：**同时把时间范围置成"全部时间"**。
+   *
+   * 分诊条的产品职责是"告诉你全系统有什么需要处理"，所以它的计数算在全量
+   * `rows` 上。那就必须保证**点任何一格都真能到达它数出来的那些行**——否则
+   * 选了"近 7 天"之后，"仅存 NAS"还显示 1（那一场在 40 天前），点进去却是
+   * 一张空表，出口还是"清除筛选"，点了范围也不会变。
+   *
+   * 反过来把计数裁进当前时间窗（另一条路）也能消掉矛盾，但那等于让归档失败
+   * ——本系统最严重的状态——可以被一个时间筛选器悄悄藏起来。
+   *
+   * 只在**打开**这一格时改范围：关掉它不该顺手动用户自己选的范围。
+   */
+  const toggleTriage = (id: TriageId) => {
+    if (!filters.has(id)) setRangeDays(0)
+    toggleFilter(id)
+  }
+
   const clearFilters = () => {
     setFilters(new Set())
     setQuery('')
@@ -572,7 +534,7 @@ export default function MeetingsPage() {
           meetings={rows}
           now={now}
           active={filters as ReadonlySet<TriageId>}
-          onToggle={(id) => toggleFilter(id)}
+          onToggle={toggleTriage}
           loading={loading}
         />
       )}
@@ -637,8 +599,6 @@ export default function MeetingsPage() {
                     setRangeOpen(false)
                     setPage(1)
                     setCursor(0)
-                    setSelected(new Set())
-                    setSelectAllMatching(false)
                   }}
                 >
                   <span>{r.label}</span>
@@ -656,13 +616,14 @@ export default function MeetingsPage() {
         rows={paged}
         consumers={consumers}
         now={now}
-        selected={selected}
+        selected={effective}
         cursorId={cursorId}
         onSelect={toggleSelect}
         onSelectPage={selectPage}
         onSelectAllMatching={selectAll}
         onSelectPageOnly={selectPageOnly}
-        selectAllMatching={selectAllMatching}
+        allMatchingSelected={allMatchingSelected}
+        selectedCount={effective.size}
         totalMatching={matching.length}
         page={safePage}
         pageSize={pageSize}
@@ -698,14 +659,11 @@ export default function MeetingsPage() {
       <Legend />
 
       <BatchBar
-        count={selected.size}
-        allMatching={selectAllMatching}
+        count={effective.size}
+        allMatching={allMatchingSelected && matching.length > paged.length}
         onAction={runBatch}
-        onGrant={() => setGrantIds([...selected])}
-        onCancel={() => {
-          setSelected(new Set())
-          setSelectAllMatching(false)
-        }}
+        onGrant={() => setGrantIds([...effective])}
+        onCancel={() => setSelected(new Set())}
       />
 
       <GrantPicker
