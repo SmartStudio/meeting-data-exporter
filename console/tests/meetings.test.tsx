@@ -373,6 +373,37 @@ describe('会议记录页 · 授权栏的状态与理由必须自洽', () => {
     expect(grantCellKind(byId('m2')).kind).toBe('grantable')
   })
 
+  test('deny 是中性的，不是琥珀——一直响的警报等于没有警报', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+
+    // m6 招聘面试命中权限规则 #200，是真的被一条规则拒绝了（by === 'deny'）。
+    // 但那是规则系统在正确地干活，而且是故意且永久的——琥珀留给"这需要你
+    // 看一眼"（有人绕过了规则、保留期快到了）。一个配了隐私规则的组织会有
+    // 一整列永久琥珀，真正该被看见的琥珀就淹死在里面。
+    const cell = screen.getByTestId('grant-m6')
+    expect(cell).toHaveTextContent('规则禁止采集')
+    expect(cell.querySelector('[class*="warn"]')).toBeNull()
+
+    // 详情抽屉里那条判定理由同样是中性的
+    await user.click(within(screen.getByTestId('row-m6')).getByRole('button', { name: /详情/ }))
+    const drawer = await screen.findByRole('dialog', { name: '招聘面试 · 后端 P7' })
+    const why = drawer.querySelector('[data-by="deny"]')!
+    expect(why).not.toBeNull()
+    expect(why).toHaveAttribute('data-tone', 'neutral')
+
+    // 对照组：人工改写**必须**是琥珀——有人绕过了规则系统，那才需要人看一眼。
+    // 没有这一半，上面那半会在"所有理由都中性"时照样通过。
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(drawer).toHaveAttribute('data-state', 'closed'))
+    await user.click(within(screen.getByTestId('row-m4')).getByRole('button', { name: /详情/ }))
+    const m4Drawer = await screen.findByRole('dialog', { name: '董事会闭门会' })
+    const handWhy = m4Drawer.querySelector('[data-by="hand"]')!
+    expect(handWhy).not.toBeNull()
+    expect(handWhy).toHaveAttribute('data-tone', 'warn')
+  })
+
   test('已授权给：pill 可加可删，＋ 授权给… 打开程序选择浮层', async () => {
     const user = userEvent.setup()
     renderPage()

@@ -238,9 +238,11 @@ function GrantCell({
     return <span className={styles.grantNone}>未归档</span>
   }
   if (cell.kind === 'denied') {
-    return (
-      <Pill tone="warn">规则禁止采集</Pill>
-    )
+    // 中性，不是琥珀——琥珀的唯一含义是"这需要你看一眼"，而一条 deny 规则
+    // 命中是规则系统在正确地干活，绝大多数被拒的会议是故意且永久被拒的。
+    // 一个配了隐私规则的组织会有一整列永久琥珀，真正该被看见的琥珀就淹没了。
+    // （design-system.md §2.2，控制器 f81a88d 的裁决；原型这处着色作废）
+    return <Pill>规则禁止采集</Pill>
   }
 
   if (m.grants.length === 0) {

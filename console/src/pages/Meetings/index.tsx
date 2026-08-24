@@ -52,9 +52,18 @@ const WHY_LABEL: Record<WhyKind, string> = {
 
 function whyTone(by: WhyKind): 'neutral' | 'warn' | 'fail' {
   if (by === 'fail') return 'fail'
-  // hand＝有人手动改写了规则；deny＝有一条规则明确拒绝。
-  // expired / wait / na 是生命周期原因，不是谁的过错，保持中性。
-  if (by === 'hand' || by === 'deny') return 'warn'
+  // 琥珀只有一个含义：**这需要你看一眼**（design-system.md §2.2）。
+  // 所以只有 hand（有人手动改写了规则，绕过了规则系统）配得上它。
+  //
+  // deny 特意**不**用琥珀，尽管原型是琥珀的：一条 deny 规则命中是规则系统
+  // 在正确地干活（原型那条是「标题含面试/薪酬/绩效 → 禁止采集」的隐私规则），
+  // 绝大多数被拒的会议是故意且永久被拒的。画成琥珀，配了这类规则的组织
+  // 就会有一大片永久琥珀，真正该被看见的琥珀（有人绕过了规则、还剩三天到期）
+  // 淹死在里面——一直响的警报等于没有警报。
+  // 「允许」与「拒绝」的区分由 AllowState 表达，不是理由文字的着色职责。
+  //
+  // expired / wait / na 是生命周期原因，不是谁的过错，同样中性。
+  if (by === 'hand') return 'warn'
   return 'neutral'
 }
 
