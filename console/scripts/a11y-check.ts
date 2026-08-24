@@ -392,11 +392,19 @@ async function launch(): Promise<Browser> {
 
 let BASE = ''
 const STATE_SELECT = 'select[aria-label^="系统状态"]'
+/** 七条挂在 AppShell 下的路由共同的挂载标志。`/login` 不经过 AppShell
+ *  （routes.tsx 明写：它是 `/` 的兄弟节点，没有左栏/顶栏），必须给
+ *  自己的 `waitFor`，否则等的是永远不会出现的主导航，15s 后超时。 */
+const NAV_SELECTOR = 'nav[aria-label="主导航"]'
 
 interface Scene {
   id: string
   why: string
   route: string
+  /** 页面挂载完成的等待目标，供 open() 用。省略时用 NAV_SELECTOR（适用于
+   *  AppShell 之下的七条路由）；不经过 AppShell 的页面必须显式给出自己的
+   *  挂载标志——语义选择器，不用 CSS Module 哈希类名，避免样式重命名就打断。 */
+  waitFor?: string
   setup?: (page: Page) => Promise<void>
 }
 
@@ -414,6 +422,12 @@ const SCENES: Scene[] = [
   { id: 'grant', why: '授权面板打开', route: '/meetings', setup: openGrant },
   { id: 'toast', why: '延长保留期后的 toast', route: '/meetings', setup: fireToast },
   { id: 'placeholder', why: '占位页（采集授权）', route: '/consumers' },
+  {
+    id: 'login',
+    why: '登录页（spec.md §4.1；刻意不经过 AppShell，无左栏/顶栏，见 routes.tsx）',
+    route: '/login',
+    waitFor: 'input[autocomplete="current-password"]',
+  },
 ]
 
 async function setState(page: Page, v: string): Promise<void> {
@@ -452,9 +466,9 @@ async function fireToast(page: Page): Promise<void> {
   }
 }
 
-async function open(page: Page, route: string): Promise<void> {
+async function open(page: Page, route: string, waitFor: string = NAV_SELECTOR): Promise<void> {
   await page.goto(BASE + route, { waitUntil: 'load' })
-  await page.waitForSelector('nav[aria-label="主导航"]', { timeout: 15000 })
+  await page.waitForSelector(waitFor, { timeout: 15000 })
   await page.waitForFunction('document.fonts.status === "loaded"', null, { timeout: 6000 }).catch(() => {})
   await page.waitForTimeout(120)
 }
@@ -481,7 +495,7 @@ function fmtRow(r: ScanRow): string {
 
 async function runContrast(page: Page, theme: 'light' | 'dark'): Promise<void> {
   for (const s of SCENES) {
-    await open(page, s.route)
+    await open(page, s.route, s.waitFor)
     if (s.setup) {
       try { await s.setup(page) } catch (e) {
         fail('1 对比度', `${theme}/${s.id}`, `形态没搭起来：${e instanceof Error ? e.message : String(e)}`)
@@ -850,11 +864,11 @@ interface LayoutResult {
 let vacuityNoted = false
 
 async function runLayout(page: Page): Promise<void> {
-  const scenes = SCENES.filter((s) => ['ok', 'selected', 'drawer', 'loading', 'nas-down'].includes(s.id))
+  const scenes = SCENES.filter((s) => ['ok', 'selected', 'drawer', 'loading', 'nas-down', 'login'].includes(s.id))
   for (const w of WIDTHS) {
     await page.setViewportSize({ width: w, height: 900 })
     for (const s of scenes) {
-      await open(page, s.route)
+      await open(page, s.route, s.waitFor)
       if (s.setup) {
         try { await s.setup(page) } catch (e) {
           fail('3 横向溢出', `${w}px/${s.id}`, `形态没搭起来：${e instanceof Error ? e.message : String(e)}`)
