@@ -1,4 +1,3 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { loadConfig } from './config'
 import { createPool, runMigrations } from './store/db'
 import { createStsStore } from './store/sts'
@@ -11,6 +10,7 @@ import { createRecordsApi } from './tencent/records'
 import { createAddressesApi } from './tencent/addresses'
 import { createCatalog } from './catalog/index'
 import { createStsManager } from './sts/manager'
+import { createTokenCipher } from './sts/cipher'
 import { verifySignature, decryptEvent, decryptCheckStr } from './sts/crypto'
 import { createPolicyEngine } from './policy/engine'
 import { createAuditRecorder } from './audit/recorder'
@@ -23,35 +23,6 @@ import { createLoginRateLimiter } from './http/ratelimit'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
-
-/**
- * STS-Token 落库前的对称加密。设计文档 §5.8 建议用阿里云 KMS 托管或等效的
- * 密文存储——本实现用一把【独立于 JWT_SECRET】的密钥（STS_ENC_KEY）派生
- * AES-256-GCM 密钥，使会话签名域与 STS 加密域互不牵连：任一密钥泄露不会同时
- * 危及另一域。生产部署前仍建议替换为真正的 KMS 密钥托管。
- */
-function createTokenCipher(secret: string): { encrypt: (plain: string) => string; decrypt: (cipher: string) => string } {
-  const key = createHash('sha256').update(secret).digest()
-
-  return {
-    encrypt(plain) {
-      const iv = randomBytes(12)
-      const cipher = createCipheriv('aes-256-gcm', key, iv)
-      const encrypted = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
-      const tag = cipher.getAuthTag()
-      return Buffer.concat([iv, tag, encrypted]).toString('base64')
-    },
-    decrypt(cipherText) {
-      const buf = Buffer.from(cipherText, 'base64')
-      const iv = buf.subarray(0, 12)
-      const tag = buf.subarray(12, 28)
-      const encrypted = buf.subarray(28)
-      const decipher = createDecipheriv('aes-256-gcm', key, iv)
-      decipher.setAuthTag(tag)
-      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
-    },
-  }
-}
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env)
