@@ -43,6 +43,8 @@ import { createAuthStore } from '../../src/store/auth'
 import { createDeviceFlow } from '../../src/auth/device'
 import { createIdentityMapper } from '../../src/auth/identity'
 import { createServiceAuth } from '../../src/auth/service'
+import { createAdminStore } from '../../src/store/admin'
+import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
@@ -159,10 +161,16 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const serviceAuth = createServiceAuth({ store: authStore })
   const meetingsCache = createMeetingCacheStore(dbPool)
 
+  // 管理员会话与账号管理（Task 3，A1）——与上面企微/服务账号认证线完全独立，
+  // 装配方式跟随 src/index.ts：真实 AdminStore/AdminAuth，接到同一个测试库
+  const adminStore = createAdminStore(dbPool)
+  const adminAuth = createAdminAuth({ store: adminStore })
+  const gatewayBaseUrl = 'https://gw.e2e.example'
+
   const deps: AppDeps = {
     now,
     jwtSecret: JWT_SECRET,
-    gatewayBaseUrl: 'https://gw.e2e.example',
+    gatewayBaseUrl,
     recordsApi,
     catalog,
     policyEngine,
@@ -178,6 +186,10 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     // 这里只需满足 AppDeps 契约，给每个 app 实例一个独立桶。
     loginRateLimiter: createLoginRateLimiter(),
     trustedProxyHops: 1,
+    adminAuth,
+    adminStore,
+    // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
+    cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

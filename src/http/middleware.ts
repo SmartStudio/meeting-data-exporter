@@ -4,6 +4,8 @@ import {
   verifyAccessToken,
 } from '../auth/tokens'
 import type { ActorIdentity } from '../domain/types'
+import type { AdminAuth, AdminIdentity } from '../auth/admin'
+import { AdminSessionInvalidError } from '../auth/admin'
 import { json } from './respond'
 
 export type AuthResult =
@@ -47,4 +49,50 @@ export function requireAuth(req: Request, secret: string, now: number): AuthResu
 /** 客户端类型：仅用于审计留痕，缺失时置为 unknown，不阻断请求 */
 export function clientKindOf(req: Request): string {
   return req.headers.get('x-client-kind') ?? 'unknown'
+}
+
+export const ADMIN_SESSION_COOKIE = 'mde_admin_session'
+
+export type AdminAuthResult =
+  | { ok: true; identity: AdminIdentity }
+  | { ok: false; response: Response }
+
+/**
+ * 从 Cookie 头里取指定名字的值。Cookie 头可能同时携带多个 cookie
+ * （`foo=bar; mde_admin_session=xxx; baz=qux`），必须按 `;` 拆分后逐个匹配
+ * 名字，不能假设目标 cookie 是唯一或第一个。
+ */
+function readCookie(req: Request, name: string): string | null {
+  const header = req.headers.get('cookie')
+  if (!header) return null
+  for (const part of header.split(';')) {
+    const [k, ...rest] = part.trim().split('=')
+    if (k === name) return decodeURIComponent(rest.join('='))
+  }
+  return null
+}
+
+/**
+ * 管理员会话校验。与 requireAuth 并列但签名故意不同——管理员会话（Task 3，
+ * A1）落库在 admin_sessions 表，校验必须查库（并可能触发滑动续期的 UPDATE），
+ * 做不成同步函数。
+ */
+export async function requireAdminAuth(
+  req: Request,
+  adminAuth: AdminAuth,
+  now: number,
+): Promise<AdminAuthResult> {
+  const token = readCookie(req, ADMIN_SESSION_COOKIE)
+  if (token === null) {
+    return { ok: false, response: json(401, { error: 'missing_admin_session' }) }
+  }
+  try {
+    const identity = await adminAuth.verifySession(token, now)
+    return { ok: true, identity }
+  } catch (err) {
+    if (err instanceof AdminSessionInvalidError) {
+      return { ok: false, response: json(401, { error: 'invalid_admin_session' }) }
+    }
+    throw err
+  }
 }

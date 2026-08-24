@@ -9,11 +9,14 @@ import type { DeviceFlow } from '../auth/device'
 import type { WecomClient } from '../auth/wecom'
 import type { IdentityMapper } from '../auth/identity'
 import type { ServiceAuth } from '../auth/service'
+import type { AdminAuth } from '../auth/admin'
+import type { AdminStore } from '../store/admin'
 import { internalError, json } from './respond'
 import * as authHandlers from './handlers/auth'
 import * as deviceHandlers from './handlers/device'
 import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
+import * as consoleAuthHandlers from './handlers/console/auth'
 import type { RateLimiter } from './ratelimit'
 
 /**
@@ -40,6 +43,11 @@ export interface AppDeps {
   loginRateLimiter: RateLimiter
   /** 网关前方会追加 X-Forwarded-For 的可信代理层数，决定 clientIp 取右数第几段 */
   trustedProxyHops: number
+  /** 管理员会话与账号管理（Task 3，A1）——与企微/服务账号认证完全独立的第三条认证线 */
+  adminAuth: AdminAuth
+  adminStore: AdminStore
+  /** 生产环境必须为 true（cookie 的 Secure 属性依据它）；本地 http 开发环境为 false */
+  cookieSecure: boolean
 }
 
 export interface RouteCtx {
@@ -92,6 +100,15 @@ const ROUTES: Route[] = [
   compile('POST', '/webhook/tencent-meeting', webhookHandlers.handleWebhook),
 
   compile('GET', '/healthz', async () => json(200, { status: 'ok' })),
+
+  // 管理员会话与账号管理（Task 3，A1）——与上面企微/服务账号认证线完全独立，
+  // 不共用 requireAuth，走各自的 requireAdminAuth（见 middleware.ts）
+  compile('POST', '/api/v1/admin/auth/login', consoleAuthHandlers.login),
+  compile('POST', '/api/v1/admin/auth/logout', consoleAuthHandlers.logout),
+  compile('GET', '/api/v1/admin/auth/me', consoleAuthHandlers.me),
+  compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
+  compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
+  compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
 ]
 
 /**
@@ -116,6 +133,8 @@ const RATE_LIMITED = new Set([
   'POST /api/v1/auth/device/token',
   'POST /api/v1/auth/service-token',
   'POST /api/v1/auth/refresh',
+  // 管理员登录端点：与设备/服务账号登录端点同等对待，防止密码穷举
+  'POST /api/v1/admin/auth/login',
 ])
 
 /**
