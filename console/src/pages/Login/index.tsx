@@ -98,8 +98,8 @@ export default function LoginPage() {
       {/* 四阶段点线：产品模型的可视化，不是进度条——纯展示，不接任何状态 */}
       <ol className={styles.stages}>
         <li>拉取</li>
-        <li>归档NAS</li>
-        <li>保留30天</li>
+        <li>归档 NAS</li>
+        <li>保留 30 天</li>
         <li>授权采集</li>
       </ol>
     </div>
