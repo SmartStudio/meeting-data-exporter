@@ -29,7 +29,7 @@ import { createAddressesApi } from '../tencent/addresses'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
 import { createArchivesStore, type ArchivesStore } from '../store/archives'
-import { archiveMeeting, type ArchiveDeps } from './archive'
+import { archivePendingMeetings, type ArchiveDeps } from './archive'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore } from './store-mysql'
 
@@ -60,9 +60,11 @@ export interface WorkerRound {
   completed: number
   failed: number
   skipped: number
-  /** 本轮归档流水线（P2）的汇总：跨全部已知会议累加（原因见 runWorkerOnce 内的注释——
-   *  不是只挑"本轮 discover 到的那些"） */
-  archived: { newlyArchived: number; verificationFailed: number }
+  /** 本轮归档流水线（P2）的汇总：对 ArchivesStore.listMeetingsNeedingArchive() 给出的
+   *  每场"有未归档完成资产"的会议累加。failed 是逐会议错误隔离之后没能正常归档完的
+   *  会议数（archiveMeeting 本身抛出，不是可以放心忽略的数字，见 archive.ts 的
+   *  ArchiveRoundOutcome 注释）。 */
+  archived: { newlyArchived: number; verificationFailed: number; failed: number }
 }
 
 /**
@@ -111,25 +113,22 @@ export async function runWorkerOnce(
 
   // 归档：把（本轮以及此前遗留、这一轮才终于补齐的）已完成下载的资产搬到 NAS。
   //
-  // 按 meetingsById 逐会议调用，而不是只挑"discover 在本轮新发现的那些"——原因
-  // 与 runExecutor 的 claimNext 一样：claimNext 领取的是 meeting_assets 全表范围内
-  // 可领取的行，不是本轮 discover 新插入的那些，所以一个资产完成下载，可能是几轮
-  // 之前 discover 出来、这一轮才终于跑完的（探测/下载天然异步）。meetingsById 已经
-  // 是 discover 之后重新查出的全量会议元数据（Store.meetingsForPaths()），
-  // discover/runExecutor 本身也没有把"这一轮具体碰过哪些 meetingId"暴露出来，
-  // 想精确缩小范围需要改引擎侧的聚合返回，不在本任务范围内。
+  // 枚举源是 ArchivesStore.listMeetingsNeedingArchive()，不是上面的 meetingsById——
+  // meetingsById 是 Store.meetingsForPaths() 给的，按 meeting_id 去重，专为本地落盘
+  // 路径命名设计（一次只需要一个"代表"元数据的场次）。周期性会议同一 meeting_id 下
+  // 还有其它 sub_meeting_id 时，去重会把它们静默丢掉，永远不会被传给 archiveMeeting，
+  // 对应场次因此永远不会归档、永远进不了 meeting_archives（这个去重行为本身是对的，
+  // 被 tests/worker/store-mysql.test.ts:393 的既有回归测试钉住了；错的是把它复用成
+  // 归档流水线的枚举源）。listMeetingsNeedingArchive() 直接按 (meeting_id,
+  // sub_meeting_id) 这个真实主键枚举，不丢会议；它还只返回"completed 数量 > 已归档
+  // 数量"的那些，顺带给出"没有待办事项就不必再查"的早退，不会对早就归档完的会议
+  // 每轮都重新查一遍。
   //
-  // 代价：对没有新完成资产的会议，archiveMeeting 只是几条空查询（listCompletedAssets
-  // 之类），可以接受；archiveMeeting 内部对"这次没有新归档任何资产"的 fullyArchived
-  // 情形也不会重新 upsert meeting_archives（见 archive.ts 的注释），所以按全量会议
-  // 反复调用不会让 archived_at 被空转的重跑悄悄推着往前走。
+  // 逐会议错误隔离（一场会议的 archiveMeeting 抛出不连累其它会议）与
+  // "archived_at 不被空转重跑推着走"的守卫都在 archivePendingMeetings /
+  // archiveMeeting 内部，见 archive.ts 的注释。
   const archiveDeps: ArchiveDeps = { archives: deps.archives, localRoot: deps.localRoot, nasRoot: deps.nasRoot }
-  const archived = { newlyArchived: 0, verificationFailed: 0 }
-  for (const [meetingId, meta] of meetingsById) {
-    const outcome = await archiveMeeting(archiveDeps, meetingId, meta.subMeetingId, now())
-    archived.newlyArchived += outcome.newlyArchived
-    archived.verificationFailed += outcome.verificationFailed
-  }
+  const archived = await archivePendingMeetings(archiveDeps, now)
 
   return { ...found, probes, ...ran, archived }
 }
@@ -482,9 +481,13 @@ async function main(): Promise<number> {
     )
     console.log(`completed=${res.completed} failed=${res.failed} skipped=${res.skipped}`)
     console.log(
-      `archived newlyArchived=${res.archived.newlyArchived} verificationFailed=${res.archived.verificationFailed}`,
+      `archived newlyArchived=${res.archived.newlyArchived} ` +
+        `verificationFailed=${res.archived.verificationFailed} failed=${res.archived.failed}`,
     )
-    return res.failed > 0 ? 1 : 0
+    // 归档失败（archiveMeeting 本身抛出）与下载失败一样必须让退出码变非零——
+    // dev-plan.md 的全局约束把"归档失败"列为最高级别告警，一个盯着 cron/systemd
+    // 退出码的监控系统如果只看 res.failed，会把"某场会议归档不了"误判成本轮成功。
+    return res.failed > 0 || res.archived.failed > 0 ? 1 : 0
   } finally {
     // 关停顺序：一轮跑完（或抛出）→ 关连接池 → 进程退出。
     // 进度回写是 fire-and-forget，池关掉时可能还有一两条在途，它们会被

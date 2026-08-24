@@ -154,6 +154,47 @@ export async function archiveMeeting(
   return { meetingId, subMeetingId, newlyArchived, verificationFailed, fullyArchived }
 }
 
+export interface ArchiveRoundOutcome {
+  newlyArchived: number
+  verificationFailed: number
+  /** archiveMeeting 本身抛出（NAS 挂起触发的 FsTimeoutError、本地文件意外缺失触发的
+   *  ENOENT 之类）而没能正常返回结果的会议数——这些不是 archiveOneAsset 内部已经
+   *  优雅处理的"哈希校验不一致"（那种走 verificationFailed，不计入这里）。
+   *  dev-plan.md 的全局约束把"归档失败"列为最高级别告警，这个计数就是那条告警
+   *  的数据来源，不是可以放心忽略的数字。 */
+  failed: number
+}
+
+/**
+ * 对 listMeetingsNeedingArchive() 给出的每一场"有未归档完成资产"的会议调用一次
+ * archiveMeeting，逐会议做错误隔离：一场会议的 archiveMeeting 抛出不能连累排在
+ * 后面的会议——不隔离的话，例如某场会议的本地文件被人手误删触发 ENOENT，会让
+ * 同一轮里排在它后面的所有会议都归档不了，即便它们与那场会议毫无关系。
+ *
+ * 这与 archiveOneAsset 内部"哈希校验不一致就地跳过、不重试、不抛出"是两层不同的
+ * 容错：那一层处理的是"归档动作本身完成了，但结果不可信"，这一层处理的是
+ * "归档动作根本没能跑完"。两者都不应该中止整批会议的归档，但含义不同，所以
+ * 分别计入 verificationFailed 与 failed，不合并成一个数字。
+ */
+export async function archivePendingMeetings(
+  deps: ArchiveDeps,
+  now: () => number,
+): Promise<ArchiveRoundOutcome> {
+  const pending = await deps.archives.listMeetingsNeedingArchive()
+  const result: ArchiveRoundOutcome = { newlyArchived: 0, verificationFailed: 0, failed: 0 }
+  for (const { meetingId, subMeetingId } of pending) {
+    try {
+      const outcome = await archiveMeeting(deps, meetingId, subMeetingId, now())
+      result.newlyArchived += outcome.newlyArchived
+      result.verificationFailed += outcome.verificationFailed
+    } catch (err) {
+      result.failed++
+      console.error(`archiveMeeting failed for meeting=${meetingId} subMeeting=${subMeetingId}:`, err)
+    }
+  }
+  return result
+}
+
 // 为什么这里不用 Task 2 的 createNasStorage，明明它就是为归档准备的：Storage 接口是
 // 按"边下载边写、可断点续传"设计的（appendChunk + finalize），服务的是"数据从网络进来、
 // 逐块落盘"这个场景。这里是相反的场景——本地已经有一个完整的文件，要一次性搬到 NAS 上，

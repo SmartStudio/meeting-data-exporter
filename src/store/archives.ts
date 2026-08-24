@@ -54,6 +54,23 @@ export interface ArchivesStore {
   countCompletedAssets(meetingId: string, subMeetingId: string): Promise<number>
   countArchivedAssets(meetingId: string, subMeetingId: string): Promise<number>
 
+  /** worker 主循环用：枚举"存在未归档完成资产"的 (meeting_id, sub_meeting_id) 精确对——
+   *  即 meeting_assets 里 completed 数量严格大于 archived_assets 里已归档数量的那些。
+   *
+   *  这是 Step 5 归档循环真正的枚举源，取代最初错误复用的 Store.meetingsForPaths()：
+   *  那个方法按 meeting_id 去重（专为local 落盘路径命名设计——一次只需要一个"代表"
+   *  meeting 元数据的场次），周期性会议同一 meeting_id 下的其它 sub_meeting_id 会被
+   *  静默丢弃、永远不会被传给 archiveMeeting，对应场次因此永远不会归档到 NAS、
+   *  永远不会出现在 meeting_archives 里，Task 8 的到期清理也永远看不到它们
+   *  （tests/worker/store-mysql.test.ts:393 一条既有回归测试钉住了 meetingsForPaths
+   *  这个"后一行覆盖前一行"的行为——它对自己的原始用途是对的，只是不该被当成
+   *  归档流水线的枚举源复用）。
+   *
+   *  同时也是"没有待办事项就不必再查"的早退：completed<=archived 的会议（早就
+   *  全部归档完、或者压根没有 completed 资产）不会出现在结果里，不会每轮都被
+   *  重新 archiveMeeting 一遍。 */
+  listMeetingsNeedingArchive(): Promise<{ meetingId: string; subMeetingId: string }[]>
+
   upsertMeetingArchive(input: {
     meetingId: string
     subMeetingId: string
@@ -118,6 +135,11 @@ interface MeetingArchiveSqlRow extends RowDataPacket {
 
 interface CountRow extends RowDataPacket {
   cnt: number
+}
+
+interface MeetingKeyRow extends RowDataPacket {
+  meeting_id: string
+  sub_meeting_id: string
 }
 
 interface SettingRow extends RowDataPacket {
@@ -229,6 +251,34 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
         [meetingId, subMeetingId],
       )
       return Number(rows[0]?.cnt ?? 0)
+    },
+
+    async listMeetingsNeedingArchive() {
+      // 两边各自按 (meeting_id, sub_meeting_id) 聚合成一行 completed_count /
+      // archived_count 再 LEFT JOIN 比较，而不是逐会议跑 countCompletedAssets +
+      // countArchivedAssets——那样对 N 场会议要发 2N 条查询；这里恒定两条。
+      // completed_count > archived_count（archived_count 缺行时按 0 算）精确刻画
+      // "这场会议还有至少一个 completed 资产没有出现在 archived_assets 里"，
+      // 包含三种情况：从没归档过、归档到一半、某个资产哈希校验失败等下一轮重试——
+      // 全部需要重新调用 archiveMeeting；完全没有 completed 资产、或已经全部归档完的
+      // 会议不会出现在结果里，天然提供"没有待办事项就不必再查"的早退。
+      const [rows] = await pool.execute<MeetingKeyRow[]>(
+        `SELECT c.meeting_id, c.sub_meeting_id
+           FROM (
+             SELECT meeting_id, sub_meeting_id, COUNT(*) AS completed_count
+               FROM meeting_assets
+              WHERE status = 'completed'
+              GROUP BY meeting_id, sub_meeting_id
+           ) c
+           LEFT JOIN (
+             SELECT meeting_id, sub_meeting_id, COUNT(*) AS archived_count
+               FROM archived_assets
+              GROUP BY meeting_id, sub_meeting_id
+           ) a ON a.meeting_id = c.meeting_id AND a.sub_meeting_id = c.sub_meeting_id
+          WHERE c.completed_count > COALESCE(a.archived_count, 0)
+          ORDER BY c.meeting_id, c.sub_meeting_id`,
+      )
+      return rows.map((r) => ({ meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id }))
     },
 
     async upsertMeetingArchive({ meetingId, subMeetingId, nasDir, archivedAt, retentionDays, now }) {

@@ -267,7 +267,7 @@ describe('runWorkerOnce', () => {
         skipped: 0,
         // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
         // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
-        archived: { newlyArchived: 2, verificationFailed: 0 },
+        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0 },
       })
 
       // ① 文件真的落在归档区，且路径是按 <year>/<month>/<cleanDirName>/<文件名> 拼出来的那个
@@ -437,6 +437,60 @@ describe('runWorkerOnce', () => {
       expect(seenLease.length).toBe(2)
       expect(seenLease[0]).toBe(START + 100 + 900)
       expect(seenLease[1]).toBe(START + 100 + 600 + 900)
+    })
+  }, 30_000)
+
+  test('归档步骤按 (meeting_id, sub_meeting_id) 精确枚举，不按 meeting_id 去重：同一 meeting_id 下两个 sub_meeting_id 都有完成资产时，一轮之后两个都被归档', async () => {
+    // 这是 code review 抓出的 Critical 的回归用例：归档步骤最初错误复用了
+    // Store.meetingsForPaths()（专为本地路径命名设计，按 meeting_id 去重，见
+    // tests/worker/store-mysql.test.ts:393 那条钉住"后一行覆盖前一行"的既有用例）
+    // 当枚举源。周期性会议共享 meeting_id、各场次有不同的 sub_meeting_id 是真实场景
+    // （meetings 表主键就是 (meeting_id, sub_meeting_id)），去重会让除"胜出"那条之外
+    // 的场次永远不被传给 archiveMeeting——静默地永远不归档、永远不进
+    // meeting_archives、Task 8 的到期清理也永远看不到。
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
+      // 直接往 meeting_assets 插两条"已完成下载"的行，分属同一个 meeting_id 下的
+      // 两个不同 sub_meeting_id——不经过 discover/下载：这个 bug 完全在归档步骤的
+      // 枚举逻辑里，不需要、也不应该跟 createInProcSource 聚合周期性会议资产那个
+      // （另一处、与本次修复无关的）行为纠缠在一起。
+      await pool.execute(
+        `INSERT INTO meeting_assets
+           (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, bytes_written, created_at, updated_at)
+         VALUES ('m-periodic', 's1', 'video', 'r-1', 'mp4', 'completed', 's1.bin', 0, 1000, 1000)`,
+      )
+      await pool.execute(
+        `INSERT INTO meeting_assets
+           (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, bytes_written, created_at, updated_at)
+         VALUES ('m-periodic', 's2', 'video', 'r-1', 'mp4', 'completed', 's2.bin', 0, 1000, 1000)`,
+      )
+      await writeFile(join(root, 's1.bin'), 'content for s1')
+      await writeFile(join(root, 's2.bin'), 'content for s2')
+
+      const now = () => START + 100
+      // 本轮不需要真的发现/下载任何东西：用一个查不到会议的空 source，让这一轮
+      // 唯一有意义的活动落在归档步骤上。
+      const emptySource = createInProcSource({
+        recordsApi: { listMeetings: async () => [] },
+        catalog: {
+          listAssets: async () => [],
+          resolveDownloadUrl: async () => { throw new Error('unexpected download in this test') },
+        },
+        now,
+      })
+      const deps = makeDeps(pool, root, nasRoot, server, [], now, { source: emptySource })
+
+      const res = await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
+      expect(res.meetings).toBe(0)
+      expect(res.tasks).toBe(0)
+
+      // 两个 sub_meeting_id 都被归档了，不是只有一个
+      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0 })
+
+      const archives = createArchivesStore(pool)
+      expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's1', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)
+      expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's2', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)
+      expect(await archives.findMeetingArchive('m-periodic', 's1')).not.toBeNull()
+      expect(await archives.findMeetingArchive('m-periodic', 's2')).not.toBeNull()
     })
   }, 30_000)
 })

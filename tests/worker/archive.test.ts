@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { withTestDb } from '../helpers/testdb'
 import { createArchivesStore, type ArchivesStore } from '../../src/store/archives'
-import { archiveMeeting, type ArchiveDeps } from '../../src/worker/archive'
+import { archiveMeeting, archivePendingMeetings, type ArchiveDeps } from '../../src/worker/archive'
 import type { Pool } from '../../src/store/db'
 
 /**
@@ -238,5 +238,44 @@ test('用例5：分两轮跑——第一轮部分资产完成、第二轮剩余�
     const rec = await archives.findMeetingArchive('m-5', '')
     expect(rec).not.toBeNull()
     expect(rec?.archivedAt).toBe(9500) // 反映"最终真正凑齐"的那一轮
+  })
+})
+
+test('archivePendingMeetings：一场会议的 archiveMeeting 抛出不连累其它会议，且计入 failed（review Important #2 的回归用例）', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    // 两场正常会议 + 一场会在归档时抛出的会议——三场都出现在
+    // listMeetingsNeedingArchive() 的结果里（各自都有 completed 但未归档的资产）。
+    await seedCompletedAsset(pool, { meetingId: 'm-ok-1', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'ok1.bin' })
+    await seedCompletedAsset(pool, { meetingId: 'm-ok-2', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'ok2.bin' })
+    await seedCompletedAsset(pool, { meetingId: 'm-throws', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'throws.bin' })
+    await writeLocalFile(localRoot, 'ok1.bin', 'ok content 1')
+    await writeLocalFile(localRoot, 'ok2.bin', 'ok content 2')
+    await writeLocalFile(localRoot, 'throws.bin', 'this local file exists but hashing it will throw')
+
+    // 制造"archiveMeeting 本身抛出"而不是"哈希校验不一致"：hashFile 对 m-throws
+    // 的资产直接 throw（localHash = await doHash(localPath) 是 archiveOneAsset
+    // 里第一个 await 的操作，在任何 mkdir/复制发生之前就会让整个 archiveMeeting
+    // 调用 reject）——模拟 NAS 挂起触发的 FsTimeoutError 或本地文件读取时的
+    // 意外 I/O 错误这一类，跟 verificationFailed 那种"复制成功但内容对不上"
+    // 是两回事。
+    const hashFile = async (path: string): Promise<string> => {
+      if (path.endsWith('throws.bin')) throw new Error('simulated archive I/O failure')
+      return realSha256(path)
+    }
+
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, hashFile }
+    const result = await archivePendingMeetings(deps, () => 10_000)
+
+    expect(result.newlyArchived).toBe(2) // m-ok-1、m-ok-2 都正常归档，没有被 m-throws 连累
+    expect(result.verificationFailed).toBe(0)
+    expect(result.failed).toBe(1) // 只有 m-throws 记为 failed
+
+    expect(await archives.isAssetArchived({ meetingId: 'm-ok-1', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)
+    expect(await archives.isAssetArchived({ meetingId: 'm-ok-2', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)
+    expect(await archives.isAssetArchived({ meetingId: 'm-throws', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(false)
+
+    expect(await archives.findMeetingArchive('m-ok-1', '')).not.toBeNull()
+    expect(await archives.findMeetingArchive('m-ok-2', '')).not.toBeNull()
+    expect(await archives.findMeetingArchive('m-throws', '')).toBeNull()
   })
 })

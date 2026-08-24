@@ -292,3 +292,48 @@ test('getSetting 对不存在的 key 返回 null；setSetting 后能读回；重
     await cleanup()
   }
 })
+
+test('listMeetingsNeedingArchive 精确按 (meeting_id, sub_meeting_id) 枚举，不按 meeting_id 去重——同一 meeting_id 下多个 sub_meeting_id 都要出现', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    // 周期性会议的真实场景：同一 meeting_id，两个不同的 sub_meeting_id，各自都有
+    // 已完成但还没归档的资产。这是钉住 review Critical 的用例——如果枚举源退化成
+    // 按 meeting_id 去重（比如又被换回 Store.meetingsForPaths()），这里只会剩一行。
+    await seedAsset(pool, { meetingId: 'm-periodic', subMeetingId: 's1', remoteId: 'r-1' })
+    await seedAsset(pool, { meetingId: 'm-periodic', subMeetingId: 's2', remoteId: 'r-1' })
+
+    const store = createArchivesStore(pool)
+    const rows = await store.listMeetingsNeedingArchive()
+    expect(rows).toEqual([
+      { meetingId: 'm-periodic', subMeetingId: 's1' },
+      { meetingId: 'm-periodic', subMeetingId: 's2' },
+    ])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingsNeedingArchive 只返回 completed 数量严格大于 archived 数量的会议——完全归档完/没有 completed 资产的不出现', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+
+    // 有 completed 资产、还没归档任何一个——应该出现
+    await seedAsset(pool, { meetingId: 'm-needs', remoteId: 'r-1' })
+
+    // 有 completed 资产，且已经全部归档完——不应该出现（早退的核心）
+    await seedAsset(pool, { meetingId: 'm-done', remoteId: 'r-1' })
+    await store.recordArchivedAsset({
+      meetingId: 'm-done', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4',
+      localPath: 'a.mp4', nasPath: '/nas/a.mp4', nasHash: 'h', archivedAt: 1000,
+    })
+
+    // 只有 pending 资产，没有任何 completed——不应该出现
+    await seedAsset(pool, { meetingId: 'm-pending', remoteId: 'r-1', status: 'pending' })
+
+    const rows = await store.listMeetingsNeedingArchive()
+    expect(rows).toEqual([{ meetingId: 'm-needs', subMeetingId: '' }])
+  } finally {
+    await cleanup()
+  }
+})
