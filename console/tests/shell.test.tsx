@@ -1,11 +1,38 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { routes } from '../src/app/routes'
 import { SystemStateProvider, useMeetings, useSystemState } from '../src/app/SystemStatus'
+
+/**
+ * `AppShell`（Task 6）挂载时会探一次管理员登录态（`fetchAdminIdentity()`，
+ * 真的 `fetch('/api/v1/admin/auth/me')`）。这个文件测的是外壳本身的导航/
+ * 系统状态行为，不是登录态守卫本身（守卫的 loading/redirect/error 三态见
+ * `tests/pages/Login.test.tsx`），所以这里统一把它 stub 成"已登录"、直接
+ * 放行——不这样做，下面每一条测试都要各自处理一遍登录探测的异步时序。
+ */
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/admin/auth/me')) {
+        return new Response(JSON.stringify({ adminId: 'admin-1', username: 'chen.yw' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
+    }),
+  )
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 /**
  * 顶栏下方那条系统告警条。
@@ -62,7 +89,7 @@ describe('AppShell · 左栏与路由', () => {
     const user = userEvent.setup()
     renderApp('/meetings')
 
-    expect(screen.getByRole('heading', { name: '会议记录' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '会议记录' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('link', { name: '采集授权' }))
 
@@ -82,7 +109,7 @@ describe('AppShell · 左栏与路由', () => {
     ]
     for (const [path, title, phase] of cases) {
       const { unmount } = renderApp(path)
-      expect(screen.getByRole('heading', { name: title })).toBeInTheDocument()
+      expect(await screen.findByRole('heading', { name: title })).toBeInTheDocument()
       expect(screen.getByText(new RegExp(phase))).toBeInTheDocument()
       unmount()
     }
@@ -92,7 +119,7 @@ describe('AppShell · 左栏与路由', () => {
 describe('AppShell · 顶栏', () => {
   test('保留「原型 · 全部数字为示例」标记', async () => {
     renderApp('/meetings')
-    expect(screen.getByText('原型 · 全部数字为示例')).toBeInTheDocument()
+    expect(await screen.findByText('原型 · 全部数字为示例')).toBeInTheDocument()
     // 同上：等首轮请求落地再结束，不留悬空的状态更新告警。
     await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
   })
@@ -101,7 +128,7 @@ describe('AppShell · 顶栏', () => {
     const user = userEvent.setup()
     renderApp('/meetings')
 
-    const picker = screen.getByRole('combobox', { name: /系统状态/ })
+    const picker = await screen.findByRole('combobox', { name: /系统状态/ })
 
     // ok：无告警条，分诊数字来自真实 mock 数据（1 场归档失败，即 m3）
     await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1'))

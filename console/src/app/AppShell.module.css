@@ -19,3 +19,33 @@
   padding: var(--s-5) var(--pad-x) var(--s-11);
   min-width: 0;
 }
+
+/* 登录态守卫的 loading / error 两态共用的外层容器——挂载检查还没有结果之前，
+ * 或者检查本身失败时，整个外壳（左栏/顶栏/ShortcutBar）都不画，只画这一块，
+ * 免得一闪而过的骨架屏或错误提示还带着一套暂时用不上的导航 chrome。 */
+.authGate {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  max-width: 40ch;
+  margin: 0 auto;
+  padding: var(--s-10) var(--s-7);
+  text-align: center;
+}
+
+.authGateTitle {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 600;
+  color: var(--fail);
+}
+
+.authGateText {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.7;
+}
