@@ -6,8 +6,13 @@ export type Pool = mysql.Pool
 /**
  * 池上限。导出是因为**调用方的并发度必须对着它来定**：
  * `store-mysql.ts` 的 `claimNext` 在事务期间独占一条连接，归档 worker 的每个
- * 执行体在最坏交错下还可能同时压着一条未 await 的 `touchProgress`，
- * 所以「执行体数 × 2 ≤ 本上限」是 worker 启动时的硬校验（见 src/worker/index.ts）。
+ * 执行体在下载期间还压着一条未 await 的 `touchProgress`，所以
+ * 「执行体数 × 2 ≤ 本上限」是 worker 启动时的硬校验（见 src/worker/index.ts）。
+ *
+ * ⚠️ **`× 2` 是稳态的典型值，不是最坏值。** `touchProgress` 不被 await，
+ * 在途量的真实上界是**无界**的，由 `queueLimit` 兜（见 worker 侧的
+ * `poolQueueLimitFor`）。这道硬校验挡的是「稳态就已经配过头」，
+ * 挡不住在途堆积——两道闸门管的不是同一件事。
  */
 export const POOL_CONNECTION_LIMIT = 10
 

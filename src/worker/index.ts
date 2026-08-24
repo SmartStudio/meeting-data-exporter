@@ -280,24 +280,29 @@ export function assertConcurrencyFitsPool(concurrency: number): void {
  * 系统调用取消（fs 调用跑在线程池上，AbortSignal 也救不了已经进入 D 状态的线程）。
  * 这里靠的是「报错 → 进程退出 → 线程随进程一起没」。
  */
+/**
+ * 探针超时。**做成可注入的第二参数不是为了配置，是为了可测**：挂死的挂载在本地
+ * 造不出来，但用一个没有读者的 FIFO 可以——`writeFile` 以 `O_WRONLY` 打开它会
+ * 永久阻塞在 open，超时必赢，不存在竞速。没有注入口，这条分支就只能靠嘴说。
+ */
 const ARCHIVE_PROBE_TIMEOUT_MS = 5_000
 
 /** 单独成类，好让调用方**按类型**而不是按错误话里的子串区分超时与真实的 fs 错误 */
 class FsTimeoutError extends Error {
-  constructor(what: string) {
-    super(`${what} timed out after ${ARCHIVE_PROBE_TIMEOUT_MS}ms — a hung network mount blocks fs calls instead of failing them`)
+  constructor(what: string, ms: number) {
+    super(`${what} timed out after ${ms}ms — a hung network mount blocks fs calls instead of failing them`)
     this.name = 'FsTimeoutError'
   }
 }
 
-function withFsTimeout<T>(p: Promise<T>, what: string): Promise<T> {
+function withFsTimeout<T>(p: Promise<T>, what: string, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   // p 若在输掉竞速之后才拒绝，那次拒绝已经被 Promise.race 自己接住了
   // （race 给两边都挂了 handler），不会变成 unhandled rejection。
   return Promise.race([
     p,
     new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new FsTimeoutError(what)), ARCHIVE_PROBE_TIMEOUT_MS)
+      timer = setTimeout(() => reject(new FsTimeoutError(what, ms)), ms)
     }),
   ]).finally(() => clearTimeout(timer))
 }
@@ -325,14 +330,17 @@ function withFsTimeout<T>(p: Promise<T>, what: string): Promise<T> {
  *
  * 探针文件带 pid，避免多实例互踩，用完即删。
  */
-export async function assertArchiveRootUsable(root: string | undefined): Promise<string> {
+export async function assertArchiveRootUsable(
+  root: string | undefined,
+  timeoutMs: number = ARCHIVE_PROBE_TIMEOUT_MS,
+): Promise<string> {
   if (root === undefined || root === '') {
     throw new Error('missing required config: MDE_ARCHIVE_ROOT')
   }
   let st: Stats
   try {
     // stat 一样要包超时：挂死的网络挂载上它和 writeFile 一样会挂住。
-    st = await withFsTimeout(stat(root), `stat(${root})`)
+    st = await withFsTimeout(stat(root), `stat(${root})`, timeoutMs)
   } catch (err) {
     // 超时与「不存在」是两件不同的故障，错误话必须分开，否则值班的人会去
     // 检查一个其实存在、只是挂死了的挂载点的拼写。
@@ -348,7 +356,7 @@ export async function assertArchiveRootUsable(root: string | undefined): Promise
   }
   const probe = join(root, `.mde-worker-write-probe-${process.pid}`)
   try {
-    await withFsTimeout(writeFile(probe, ''), `write probe in MDE_ARCHIVE_ROOT ${root}`)
+    await withFsTimeout(writeFile(probe, ''), `write probe in MDE_ARCHIVE_ROOT ${root}`, timeoutMs)
   } catch (err) {
     if (err instanceof FsTimeoutError) throw err
     throw new Error(
@@ -357,9 +365,11 @@ export async function assertArchiveRootUsable(root: string | undefined): Promise
   } finally {
     // 清理是尽力而为：它自己也可能在挂死的挂载上超时，而一个从 finally 里抛出的
     // 次生错误会盖掉上面那个真正的根因。留一个空探针文件远比丢掉根因划算。
-    await withFsTimeout(rm(probe, { force: true }), `cleanup write probe in ${root}`).catch(
-      () => {},
-    )
+    await withFsTimeout(
+      rm(probe, { force: true }),
+      `cleanup write probe in ${root}`,
+      timeoutMs,
+    ).catch(() => {})
   }
   return root
 }

@@ -718,13 +718,47 @@ describe('assertArchiveRootUsable', () => {
     }
   })
 
-  test('目录存在但不可写时报错——只看权限位看不出只读挂载/磁盘满，要真写一次', async () => {
+  test('目录存在但不可写时报错——只看权限位看不出只读挂载，要真写一次', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'mde-root-'))
     try {
       await chmod(dir, 0o500) // r-x：能进能列，不能写
       await expect(assertArchiveRootUsable(dir)).rejects.toThrow(/not writable/)
     } finally {
       await chmod(dir, 0o700)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('挂死的挂载不会把启动期校验也挂住——写探针超时会喊出来', async () => {
+    /**
+     * 这条覆盖的是本任务反复要消灭的那个失效形态：**硬挂载掉线时 fs 调用是挂住
+     * 而不是报错**，于是「校验全部前置」这道防线自己变成了一次无限期静默挂起。
+     *
+     * 挂死的网络挂载在本地造不出来，但**没有读者的 FIFO 可以**：`writeFile` 以
+     * `O_WRONLY` 打开一个无读者的 FIFO 会**永久阻塞在 open**（POSIX 语义），
+     * 超时必赢，不存在竞速——所以这条用例不是时间敏感的。
+     *
+     * 探针文件名是确定性的（带本进程 pid），测试因此能预先把它做成 FIFO。
+     */
+    const dir = await mkdtemp(join(tmpdir(), 'mde-root-'))
+    const probe = join(dir, `.mde-worker-write-probe-${process.pid}`)
+    try {
+      const mkfifo = Bun.spawnSync(['mkfifo', probe])
+      expect(mkfifo.exitCode).toBe(0) // 造不出 FIFO 就别假装测过了
+
+      const err = await assertArchiveRootUsable(dir, 50).then(
+        () => null,
+        (e: unknown) => e,
+      )
+
+      // 三件事一起断言：确实报错了、是**超时**这一类而不是被翻译成「不可写」、
+      // 且错误话里带着路径。把超时误报成「不可写」会让值班的人去查权限，
+      // 而真正的毛病是那个挂载点已经没在回应了。
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).name).toBe('FsTimeoutError')
+      expect((err as Error).message).toContain('timed out after 50ms')
+      expect((err as Error).message).toContain(dir)
+    } finally {
       await rm(dir, { recursive: true, force: true })
     }
   })
