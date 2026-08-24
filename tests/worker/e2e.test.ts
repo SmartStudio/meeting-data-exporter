@@ -24,6 +24,7 @@ import { POOL_CONNECTION_LIMIT, createPool, type Pool } from '../../src/store/db
 import type { Asset, Meeting } from '../../src/domain/types'
 import type { Catalog } from '../../src/catalog/index'
 import type { RecordsApi } from '../../src/tencent/records'
+import { createArchivesStore } from '../../src/store/archives'
 import { createInProcSource } from '../../src/worker/source-inproc'
 import { createMysqlStore } from '../../src/worker/store-mysql'
 import {
@@ -185,6 +186,7 @@ function stubCatalog(
 function makeDeps(
   pool: Pool,
   root: string,
+  nasRoot: string,
   server: FileServer,
   assets: Asset[],
   now: () => number,
@@ -201,6 +203,10 @@ function makeDeps(
     storage: createLocalStorage(root),
     concurrency: 2,
     leaseSec: 900,
+    // 归档流水线（P2）依赖：与 storage 用同一个本地根目录，NAS 目的地另开一个临时目录
+    archives: createArchivesStore(pool),
+    localRoot: root,
+    nasRoot,
     ...rest,
   }
 }
@@ -224,19 +230,21 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** 每个用例一套独立的库 + 归档目录 + 文件服务，跑完全部拆掉 */
+/** 每个用例一套独立的库 + 本地归档目录 + NAS 目录 + 文件服务，跑完全部拆掉 */
 async function withRig(
   files: Record<string, string>,
-  fn: (rig: { pool: Pool; root: string; server: FileServer }) => Promise<void>,
+  fn: (rig: { pool: Pool; root: string; nasRoot: string; server: FileServer }) => Promise<void>,
 ): Promise<void> {
   const { pool, cleanup } = await withTestDb()
   const root = await mkdtemp(join(tmpdir(), 'mde-worker-'))
+  const nasRoot = await mkdtemp(join(tmpdir(), 'mde-worker-nas-'))
   const server = startFileServer(files)
   try {
-    await fn({ pool, root, server })
+    await fn({ pool, root, nasRoot, server })
   } finally {
     server.stop()
     await rm(root, { recursive: true, force: true })
+    await rm(nasRoot, { recursive: true, force: true })
     await cleanup()
   }
 }
@@ -245,9 +253,9 @@ const FILES = { '/file/f-sum-1': TRANSCRIPT_BODY, '/file/f-video-1': VIDEO_BODY 
 
 describe('runWorkerOnce', () => {
   test('一轮把一场会议的两个资产拉进归档区，状态与哈希落进 MySQL', async () => {
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
 
       const res = await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
       expect(res).toEqual({
@@ -257,6 +265,9 @@ describe('runWorkerOnce', () => {
         completed: 2,
         failed: 0,
         skipped: 0,
+        // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
+        // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
+        archived: { newlyArchived: 2, verificationFailed: 0 },
       })
 
       // ① 文件真的落在归档区，且路径是按 <year>/<month>/<cleanDirName>/<文件名> 拼出来的那个
@@ -298,9 +309,9 @@ describe('runWorkerOnce', () => {
   }, 30_000)
 
   test('同一场会议跑第二遍不重新下载：已 completed 的行不再被领取', async () => {
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
 
       await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
       const afterFirst = server.requests.length
@@ -329,9 +340,9 @@ describe('runWorkerOnce', () => {
   }, 30_000)
 
   test('断点续传：上一轮只下到一半，下一轮带 Range 接着下而不是从头来', async () => {
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET], now)
       const keys: AssetKey[] = ['transcript']
 
       // 第一轮：服务端只发前 5 字节，downloader 因 size mismatch 判失败，.part 保留
@@ -375,9 +386,9 @@ describe('runWorkerOnce', () => {
   test('服务端无视 Range 时退回全量重下——上一条用例的 sent=6 因此是有判别力的', async () => {
     // 这条不是为了测「无视 Range」这个场景本身，是给上一条用例当负控制：
     // 如果没有它，谁也说不清 sent=6 那个断言换成一个不支持续传的服务端会不会照样绿。
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET], now)
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET], now)
       const keys: AssetKey[] = ['transcript']
 
       server.truncateTo = 5
@@ -405,11 +416,11 @@ describe('runWorkerOnce', () => {
     // 冻结时钟下 lease_expires_at 恒等于「本轮开始时刻 + leaseSec」，一轮跑够久
     // （大文件很正常）之后，别的实例按自己的活时钟一看就判定租约过期，把还在下载中的
     // 任务抢走——两个进程同时写同一个 .part。把时钟换成函数这条用例才可能通过。
-    await withRig(FILES, async ({ pool, root, server }) => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       let clock = START + 100
       const now = () => clock
       const seenLease: number[] = []
-      const deps = makeDeps(pool, root, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now, {
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now, {
         concurrency: 1, // 串行领取，任一时刻只有一行是 running
         onResolve: async () => {
           const [rows] = await pool.query<RowDataPacket[]>(

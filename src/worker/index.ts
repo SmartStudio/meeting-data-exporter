@@ -28,6 +28,8 @@ import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
 import { createAddressesApi } from '../tencent/addresses'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
+import { createArchivesStore, type ArchivesStore } from '../store/archives'
+import { archiveMeeting, type ArchiveDeps } from './archive'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore } from './store-mysql'
 
@@ -39,6 +41,14 @@ export interface WorkerDeps {
   concurrency: number
   /** 领取任务时写进 lease_expires_at 的租约时长（秒） */
   leaseSec: number
+  /** 归档流水线（P2）依赖：归档记录存取 */
+  archives: ArchivesStore
+  /** 本地归档区根目录（MDE_ARCHIVE_ROOT）——与 storage 指向同一棵目录树。
+   *  Storage 接口本身不暴露自己的根路径，archiveMeeting 拼本地源文件路径
+   *  （join(localRoot, target_path)）需要单独拿到它，所以在这里另传一份。 */
+  localRoot: string
+  /** 归档目的地根目录（MDE_NAS_ROOT，NAS 挂载点） */
+  nasRoot: string
 }
 
 export interface WorkerRound {
@@ -50,6 +60,9 @@ export interface WorkerRound {
   completed: number
   failed: number
   skipped: number
+  /** 本轮归档流水线（P2）的汇总：跨全部已知会议累加（原因见 runWorkerOnce 内的注释——
+   *  不是只挑"本轮 discover 到的那些"） */
+  archived: { newlyArchived: number; verificationFailed: number }
 }
 
 /**
@@ -96,7 +109,29 @@ export async function runWorkerOnce(
     now,
   )
 
-  return { ...found, probes, ...ran }
+  // 归档：把（本轮以及此前遗留、这一轮才终于补齐的）已完成下载的资产搬到 NAS。
+  //
+  // 按 meetingsById 逐会议调用，而不是只挑"discover 在本轮新发现的那些"——原因
+  // 与 runExecutor 的 claimNext 一样：claimNext 领取的是 meeting_assets 全表范围内
+  // 可领取的行，不是本轮 discover 新插入的那些，所以一个资产完成下载，可能是几轮
+  // 之前 discover 出来、这一轮才终于跑完的（探测/下载天然异步）。meetingsById 已经
+  // 是 discover 之后重新查出的全量会议元数据（Store.meetingsForPaths()），
+  // discover/runExecutor 本身也没有把"这一轮具体碰过哪些 meetingId"暴露出来，
+  // 想精确缩小范围需要改引擎侧的聚合返回，不在本任务范围内。
+  //
+  // 代价：对没有新完成资产的会议，archiveMeeting 只是几条空查询（listCompletedAssets
+  // 之类），可以接受；archiveMeeting 内部对"这次没有新归档任何资产"的 fullyArchived
+  // 情形也不会重新 upsert meeting_archives（见 archive.ts 的注释），所以按全量会议
+  // 反复调用不会让 archived_at 被空转的重跑悄悄推着往前走。
+  const archiveDeps: ArchiveDeps = { archives: deps.archives, localRoot: deps.localRoot, nasRoot: deps.nasRoot }
+  const archived = { newlyArchived: 0, verificationFailed: 0 }
+  for (const [meetingId, meta] of meetingsById) {
+    const outcome = await archiveMeeting(archiveDeps, meetingId, meta.subMeetingId, now())
+    archived.newlyArchived += outcome.newlyArchived
+    archived.verificationFailed += outcome.verificationFailed
+  }
+
+  return { ...found, probes, ...ran, archived }
 }
 
 // ---------------------------------------------------------------------------
@@ -378,12 +413,27 @@ async function main(): Promise<number> {
   // 也被迫配一个用不到的变量。与 src/index.ts 处理 PORT / HOST 的口径一致。
   const archiveRoot = await assertArchiveRootUsable(process.env.MDE_ARCHIVE_ROOT)
 
+  // NAS 根目录（归档流水线 P2 的搬运目的地）同样是 worker 独有的进程编排参数，
+  // 与 archiveRoot 相同的理由不塞进 loadConfig。这里只做"必须已配置"的最小校验，
+  // 不做 assertArchiveRootUsable 那一整套存在性/目录/可写性 + 超时探测——那一整套
+  // 运行期可重复调用的版本是 Task 4 的 probeNas（src/worker/nas-probe.ts），
+  // 服务的是控制台"归档存储"页；本任务的 Step 5 只负责把归档流水线接进主循环，
+  // 不重新实现一遍 NAS 侧的启动期硬校验。真正把 probeNas 接到这里（或做一次等价的
+  // 启动期强校验）留给消费 probeNas 的那个后续任务。空着不配的后果与 MDE_ARCHIVE_ROOT
+  // 打错一样是"静默用一个不存在/错误的路径"，所以至少必须显式配置，不能悄悄回落成
+  // undefined 一路穿到 join(undefined, ...) 才在很远的地方炸出一个不知所云的错误。
+  const nasRoot = process.env.MDE_NAS_ROOT
+  if (nasRoot === undefined || nasRoot === '') {
+    throw new Error('missing required config: MDE_NAS_ROOT')
+  }
+
   const now = (): number => Math.floor(Date.now() / 1000)
 
   const pool = createPool(config.databaseUrl, { queueLimit: poolQueueLimitFor(args.concurrency) })
   try {
     await runMigrations(pool)
     const store = createMysqlStore(pool)
+    const archives = createArchivesStore(pool)
 
     const tencentClient = createTencentClient(config.tencent, {
       fetch,
@@ -418,7 +468,10 @@ async function main(): Promise<number> {
     const storage = createLocalStorage(archiveRoot)
 
     const res = await runWorkerOnce(
-      { store, source, storage, concurrency: args.concurrency, leaseSec: LEASE_SEC },
+      {
+        store, source, storage, concurrency: args.concurrency, leaseSec: LEASE_SEC,
+        archives, localRoot: archiveRoot, nasRoot,
+      },
       args.sel,
       args.keys,
       now,
@@ -428,6 +481,9 @@ async function main(): Promise<number> {
       `probes resolved=${res.probes.resolved} abandoned=${res.probes.abandoned} new=${res.probes.newTasks}`,
     )
     console.log(`completed=${res.completed} failed=${res.failed} skipped=${res.skipped}`)
+    console.log(
+      `archived newlyArchived=${res.archived.newlyArchived} verificationFailed=${res.archived.verificationFailed}`,
+    )
     return res.failed > 0 ? 1 : 0
   } finally {
     // 关停顺序：一轮跑完（或抛出）→ 关连接池 → 进程退出。
