@@ -561,3 +561,64 @@ test('改写：唯一键挡住同一 kind 的第二条生效改写', async () =>
     await cleanup()
   }
 })
+
+/**
+ * kind 是改写行上唯一没有安全侧可落的字段（计划 §3.4 的 D-t，T7 落地时发现）。
+ * 下面三条钉的是两道防线：store 的运行时校验、以及数据库那条 CHECK（migrations/006）。
+ *
+ * 求值层为什么拦不住：`normalizeEffect(kind, effect)` 是按栈校验 effect 的，
+ * 它无从知道这一行原本是为哪一栈写的——一条 fetch 改写（effect `all`）套到归档栈上，
+ * `all` 会被当成一段合法的目录模板，录像因此归档进一个叫 all 的目录。
+ */
+test('改写：store 拒绝三栈之外的 kind，不当成无事发生', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createGrantsStore(pool)
+
+    await expect(
+      store.putOverride({
+        meetingId: 'm-1', subMeetingId: '',
+        // @ts-expect-error 故意绕过类型：真实入口是 HTTP 请求体反序列化出来的值
+        kind: 'fecth',
+        effect: 'all', assetTypes: null, reason: '', now: 1000,
+      }),
+    ).rejects.toThrow(/must be one of fetch \/ archive \/ allow/)
+
+    // 撤销侧同理：拼错 kind 会匹配到零行、返回 false，看起来像「本来就没有改写」
+    await expect(
+      // @ts-expect-error 同上
+      store.revokeOverride('m-1', '', 'fecth', 2000),
+    ).rejects.toThrow(/must be one of fetch \/ archive \/ allow/)
+
+    // 什么都没写进去
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT COUNT(*) AS n FROM meeting_overrides`,
+    )
+    expect(Number(rows[0]!.n)).toBe(0)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('改写：数据库的 CHECK 挡住绕开 store 的直接 INSERT', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await expect(
+      pool.execute(
+        `INSERT INTO meeting_overrides (meeting_id, sub_meeting_id, kind, effect, asset_types, reason, created_at, revoked_at)
+         VALUES ('m-1', '', 'fecth', 'all', NULL, '', 1000, 0)`,
+      ),
+    ).rejects.toThrow(/ck_override_kind|Check constraint/i)
+
+    // 三个合法值都插得进去，证明约束没有误伤
+    for (const kind of ['fetch', 'archive', 'allow']) {
+      await pool.execute(
+        `INSERT INTO meeting_overrides (meeting_id, sub_meeting_id, kind, effect, asset_types, reason, created_at, revoked_at)
+         VALUES ('m-1', '', ?, 'skip', NULL, '', 1000, 0)`,
+        [kind],
+      )
+    }
+  } finally {
+    await cleanup()
+  }
+})

@@ -284,6 +284,37 @@ const REVOKE_OVERRIDE_SQL =
   `UPDATE meeting_overrides SET revoked_at = ?
     WHERE meeting_id = ? AND sub_meeting_id = ? AND kind = ? AND revoked_at = 0`
 
+/**
+ * 改写行的三个合法 kind。**与 `StackKind` 逐字一致**，不是巧合：
+ * `OverrideKind` 就是 `StackKind` 的别名，这里只是把类型系统的约束落到运行时。
+ */
+const OVERRIDE_KINDS: ReadonlySet<string> = new Set(['fetch', 'archive', 'allow'])
+
+/**
+ * 写入/撤销改写前把 kind 拦一道。TypeScript 管得住我们自己的调用点，管不住
+ * 从 HTTP 请求体反序列化出来的值。
+ *
+ * 为什么必须响亮地抛而不是当无事发生（T7 落地时发现，计划 §3.4 的 D-t）：
+ * kind 是改写行上**唯一没有安全侧可落**的字段。
+ *   - 填成另一栈：一条 fetch 改写（effect `all`）套到归档栈上时，
+ *     `normalizeEffect('archive', 'all')` 会认为 `all` 是一段合法的目录模板，
+ *     于是录像被归档进一个叫 all 的目录。求值层复用的那个规范化函数
+ *     无从知道这一行原本是为哪一栈写的，拦不住。
+ *   - 填成三栈之外：没有任何一栈认领，`indexOverrides` 只能丢掉，
+ *     管理员明确做出的决定变成一次界面上毫无痕迹的空操作。
+ *
+ * 数据库那边还有一条 CHECK（migrations/006）管住绕开本 store 的直接 SQL。
+ * 两道都要，因为这是授权中枢。
+ */
+function assertOverrideKind(kind: string, where: string): void {
+  if (!OVERRIDE_KINDS.has(kind)) {
+    throw new Error(
+      `meeting_overrides.kind must be one of fetch / archive / allow (${where}), got: ${kind}`,
+    )
+  }
+}
+
+
 /** 在一条连接上开事务跑一段，出错回滚。回滚失败不许盖掉真正的根因
  *  （与 src/worker/store-mysql.ts 的 claimNext 同一种处理）。 */
 async function inTransaction<T>(pool: Pool, fn: (conn: PoolConnection) => Promise<T>): Promise<T> {
@@ -428,9 +459,17 @@ export function createGrantsStore(pool: Pool): GrantsStore {
       return selectActiveGrant(pool, meetingId, subMeetingId, programId)
     },
 
-    putOverride: (input) => withDuplicateRetry(() => putOverrideOnce(input)),
+    // 声明成 async 而不是同步箭头：校验失败要**拒绝 promise**，不是同步抛。
+    // 同步抛会绕过调用方的 .catch()，在一个全是 async 方法的接口里制造一个例外
+    async putOverride(input) {
+      assertOverrideKind(input.kind, `${input.meetingId}/${input.subMeetingId}`)
+      return withDuplicateRetry(() => putOverrideOnce(input))
+    },
 
     async revokeOverride(meetingId, subMeetingId, kind, now) {
+      // 撤销一个不存在的 kind 会匹配到零行、返回 false——看起来像「本来就没有改写」，
+      // 实际是调用方拼错了字段。这条路径上「没撤到」与「不用撤」必须分得开
+      assertOverrideKind(kind, `${meetingId}/${subMeetingId}`)
       return revokeActive(pool, REVOKE_OVERRIDE_SQL, [meetingId, subMeetingId, kind], now,
         `meeting_overrides ${meetingId}/${subMeetingId}/${kind}`)
     },
