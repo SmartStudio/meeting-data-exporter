@@ -107,7 +107,7 @@ Batch 3/4/5（各单独） T9 executor → T10 cli → T11 e2e + README
 
 | # | 问题 | 影响 |
 | --- | --- | --- |
-| 1 | `storage.writeMeta` 定义并实现了，但无任何调用 | 接口文档承诺的会议 sidecar（`meeting.json`/`_manifest.json`）未写；需接线或移除 |
+| 1 | ~~`storage.writeMeta` 定义并实现了，但无任何调用~~ **已闭合** | 已接线：`packages/engine/src/manifest/` 在一轮结束后按会议写出 `meeting.json` / `_manifest.json`，worker 与 mde CLI 两个宿主都调。仍留一个尾巴——NAS 副本里还没有这两个文件（归档流水线只搬 `meeting_assets` 里的行） |
 | 2 | `--failed` 标志被 `parseArgs` 解析，但无命令消费 | 死标志；应接入 `status`/`retry` 过滤或移除 |
 | 3 | `executor` 未知 `asset_type` 回退 `?? (row.asset_type as any)` 非 fail-safe | 当前不可达（discovery 只写已知字段）；若可达会抛在 try/catch 外，宜改为 `markSkipped('unknown_asset_type')` |
 | 4 | `store/db.ts` 无版本化迁移（全 `CREATE TABLE IF NOT EXISTS`） | M3 首版所有库皆新建，暂无影响；跨版本 schema 演进前必须补迁移机制 |

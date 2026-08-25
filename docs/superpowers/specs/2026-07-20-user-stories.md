@@ -505,11 +505,11 @@ spec 管住了「谁能**导出**」，没管「导出后谁能**看**」。资�
 | US-5.5 配置默认保留天数 | ◐ | `system_settings.default_retention_days`，`src/worker/archive.ts:163` 读取，缺省 30 | 无 API、无设置入口，改值只能直接写库 |
 | US-5.6 立即清理已到期文件 | ◐ | `previewCleanup` / `executeCleanup(confirm: true)` · 删前 `verifyNasCopies` 哈希重校验 · `cleanup_paused` 持久化开关；`tests/worker/retention.test.ts` | 无 API、无界面。**「二次确认」目前只是函数签名上的 `confirm: true`，真正的人机确认要等 F5** |
 | US-6.1 核查数据导出记录 | ◐ | 写侧 `src/audit/recorder.ts` · `tests/audit/recorder.test.ts` | **读侧（A5）未做**——记录写进去了但查不出来。操作审计页（F5）同样未做 |
-| US-6.2 归档结果可脱离系统理解 | ⬜ | `Storage.writeMeta` 在 `local.ts` / `nas.ts` 里都实现了，在 `executor` 的依赖类型里也声明了，但**全仓库没有一个调用点** | 会议目录里至今没有元数据文件与资产清单，三条验收标准一条都不成立。roadmap 已把它列为 M3 遗留债，阶段 2 也没碰 |
+| US-6.2 归档结果可脱离系统理解 | ◐ | `packages/engine/src/manifest/` + `domain/manifest.ts`（格式定死、两个宿主共用）；worker 与 mde CLI 在一轮结束后各按会议调一次；`packages/engine/tests/manifest/index.test.ts` · `tests/worker/e2e.test.ts` | 三条验收标准在**本地归档区**成立：`meeting.json` + `_manifest.json`（原始 ID / 大小 / sha256，视频音频的哈希如实为 null）+ `missing[]` 显式标注确认缺失的原因。缺口是 **NAS 上那份副本还没有这两个文件**——归档流水线照 `meeting_assets` 的行搬文件，sidecar 不是资产、不在那张表里 |
 | US-7.1 无需安装依赖即可使用 | ⏸ | — | M5 桌面端无限期推迟（2026-08-23，D2） |
 | US-7.2 可视化查看与操作任务 | ⏸ | 形态改由 M6 控制台承接（`console/`，F1 骨架已完成） | 桌面端本身推迟；控制台的任务页（F5）未做 |
 
-**一句话小结**：31 条故事里 `✅` 17 条、`◐` 9 条、`⬜` 2 条、`⏸` 2 条、`—` 1 条。其中 3 条标了「✅（P1 侧）」——US-3.1 / US-3.3 / US-4.1 的网关能力是完整的，但它们同时挂着的 `P2` / `P4` / `P5` 那一侧另有说法，看该行的缺口列。
+**一句话小结**：31 条故事里 `✅` 17 条、`◐` 10 条、`⬜` 1 条、`⏸` 2 条、`—` 1 条。其中 3 条标了「✅（P1 侧）」——US-3.1 / US-3.3 / US-4.1 的网关能力是完整的，但它们同时挂着的 `P2` / `P4` / `P5` 那一侧另有说法，看该行的缺口列。
 
 **`◐` 集中在同一个原因上**：M6 阶段 2 交出的是**能力**，不是**入口**。归档、保留、清理、探测、账号管理的逻辑都跑得起来、也有测试，但除了登录之外没有一条控制台 API（阶段 4 的 A2–A6），也没有除登录页与会议记录页骨架之外的界面（阶段 5 的 F2–F7）。**在 A2–A6 与 F2–F7 落地之前，这 10 条对使用者来说等于不存在。**
 
