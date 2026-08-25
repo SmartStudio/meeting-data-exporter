@@ -20,7 +20,7 @@ export async function cmdGet(cmd: ParsedCommand, env: Record<string, string | un
   const deps = { store, gw, storage, meetingsById,
     download: (task: DownloadTask, onProgress: (b: number) => void) => downloadAsset({ storage, gw, onProgress }, task, now) }
   await runProbes(deps, now)
-  const r = await runExecutor(deps, { concurrency: cfg.concurrency, leaseSec: 900 }, now)
+  const r = await runExecutor(deps, { concurrency: cfg.concurrency, leaseSec: cfg.leaseSec }, now)
   console.log(`completed=${r.completed} failed=${r.failed} skipped=${r.skipped}`)
   return r.failed > 0 ? 1 : 0
 }
