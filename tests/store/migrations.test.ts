@@ -196,3 +196,161 @@ describe('runMigrations', () => {
     }
   })
 })
+
+/**
+ * 004（阶段 3 · T1）：policy_rules 换成三栈结构，旧行搬进 policy_rules_legacy。
+ *
+ * 迁移本身要有测试，理由不是「覆盖率」：runMigrations 每次进程启动都会把
+ * migrations/ 全跑一遍，004 又是唯一一个会 DROP 现有表的迁移。它幂等这件事
+ * 若只靠读代码确认，代价是某次重启把管理员建的规则全清掉——而表现是
+ * 「所有采集程序突然什么都取不到」，与「腾讯侧挂了」在现场看起来一模一样。
+ */
+describe('004 三栈规则模型迁移', () => {
+  test('policy_rules 换成三栈结构：新增 kind/join_op/conds/note/created_by，删掉 resource_expr', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const [rows] = await pool.query<any[]>(
+        `SELECT column_name, data_type, character_maximum_length
+           FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND table_name = 'policy_rules'`,
+      )
+      const cols = new Map<string, any>(
+        rows.map((r) => [(r.column_name ?? r.COLUMN_NAME) as string, r]),
+      )
+
+      for (const name of ['kind', 'join_op', 'conds', 'note', 'created_by']) {
+        expect(cols.has(name)).toBe(true)
+      }
+      // 换表示法，不做双向转换：旧列必须真的不在了，否则两套语义会同时活着
+      expect(cols.has('resource_expr')).toBe(false)
+      // 保留复用的列
+      expect(cols.has('asset_types')).toBe(true)
+      expect(cols.has('subject_type')).toBe(true)
+
+      const conds = cols.get('conds')
+      expect((conds.data_type ?? conds.DATA_TYPE) as string).toBe('json')
+
+      // archive 栈的 effect 是目录模板，8 字符装不下
+      const effect = cols.get('effect')
+      expect(Number(effect.character_maximum_length ?? effect.CHARACTER_MAXIMUM_LENGTH)).toBe(255)
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('idx_policy_lookup 改成 (kind, enabled, priority, id)：三栈各取自己那批', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const [rows] = await pool.query<any[]>(
+        `SELECT column_name FROM information_schema.statistics
+          WHERE table_schema = DATABASE() AND table_name = 'policy_rules'
+            AND index_name = 'idx_policy_lookup' ORDER BY seq_in_index`,
+      )
+      const cols = rows.map((r) => (r.column_name ?? r.COLUMN_NAME) as string)
+      expect(cols).toEqual(['kind', 'enabled', 'priority', 'id'])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('effect 装得下一段归档目录模板（archive 栈）', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const template = '/nas/meetings-finance/{年}/{月}/{会议号}_{标题}'
+      await pool.execute(
+        `INSERT INTO policy_rules
+           (kind, priority, join_op, conds, asset_types, effect, note, enabled, created_at, updated_at)
+         VALUES ('archive', 10, 'and', JSON_ARRAY(), JSON_ARRAY(), ?, '财务会议单独归档', 1, 0, 0)`,
+        [template],
+      )
+      const [rows] = await pool.query<any[]>(`SELECT effect FROM policy_rules WHERE kind = 'archive'`)
+      expect(rows[0].effect).toBe(template)
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('旧结构的规则被整表搬进 policy_rules_legacy，policy_rules 清空且不自动转换语义', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const { runMigrations } = await import('../../src/store/db')
+
+      // 造一个「004 还没跑过」的库：把 policy_rules 还原成 001 的旧结构，
+      // 塞一条与生产库同形状的规则（subject_type='user'，主体是人），再删掉 legacy。
+      await pool.query('DROP TABLE IF EXISTS policy_rules_legacy')
+      await pool.query('DROP TABLE policy_rules')
+      await pool.query(`CREATE TABLE policy_rules (
+        id            BIGINT       NOT NULL AUTO_INCREMENT,
+        priority      INT          NOT NULL,
+        subject_type  VARCHAR(16)  NOT NULL,
+        subject_value VARCHAR(128) NOT NULL,
+        resource_expr JSON         NOT NULL,
+        asset_types   JSON         NOT NULL,
+        effect        VARCHAR(8)   NOT NULL,
+        enabled       TINYINT(1)   NOT NULL DEFAULT 1,
+        created_at    BIGINT       NOT NULL,
+        updated_at    BIGINT       NOT NULL,
+        PRIMARY KEY (id),
+        KEY idx_policy_lookup (enabled, priority, id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+      await pool.execute(
+        `INSERT INTO policy_rules
+           (id, priority, subject_type, subject_value, resource_expr, asset_types, effect, enabled, created_at, updated_at)
+         VALUES (7, 100, 'user', 'tm-admin-1', JSON_OBJECT(), JSON_ARRAY('*'), 'allow', 1, 1, 1)`,
+      )
+
+      await runMigrations(pool)
+
+      // 不丢数据：那一行原样在 legacy 里，主体仍是人
+      const [legacy] = await pool.query<any[]>(
+        'SELECT id, subject_type, subject_value, effect FROM policy_rules_legacy',
+      )
+      expect(legacy).toHaveLength(1)
+      expect(legacy[0].id).toBe(7)
+      expect(legacy[0].subject_type).toBe('user')
+      expect(legacy[0].subject_value).toBe('tm-admin-1')
+
+      // 也不假装能自动转换语义：新表是空的，等管理员按新语义重建。
+      // 空规则集 = allow 栈兜底 deny = 谁都取不走，这是安全侧。
+      const [fresh] = await pool.query<any[]>('SELECT COUNT(*) AS n FROM policy_rules')
+      expect(Number(fresh[0].n)).toBe(0)
+
+      const [cols] = await pool.query<any[]>(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND table_name = 'policy_rules'`,
+      )
+      const names = cols.map((r) => (r.column_name ?? r.COLUMN_NAME) as string)
+      expect(names).toContain('kind')
+      expect(names).not.toContain('resource_expr')
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('重复执行不会清掉管理员后来新建的规则（004 幂等）', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const { runMigrations } = await import('../../src/store/db')
+      await pool.execute(
+        `INSERT INTO policy_rules
+           (kind, priority, join_op, conds, subject_type, subject_value, asset_types, effect,
+            note, created_by, enabled, created_at, updated_at)
+         VALUES ('allow', 50, 'and', JSON_ARRAY(), 'program', 'mde-local', JSON_ARRAY('*'), 'allow',
+                 '放行本地采集程序', 'admin-1', 1, 0, 0)`,
+      )
+
+      await runMigrations(pool)
+      await runMigrations(pool)
+
+      const [rows] = await pool.query<any[]>(
+        `SELECT kind, subject_value, note FROM policy_rules`,
+      )
+      expect(rows).toHaveLength(1)
+      expect(rows[0].kind).toBe('allow')
+      expect(rows[0].subject_value).toBe('mde-local')
+      expect(rows[0].note).toBe('放行本地采集程序')
+    } finally {
+      await cleanup()
+    }
+  })
+})

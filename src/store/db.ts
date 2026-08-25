@@ -66,20 +66,31 @@ export function createPool(databaseUrl: string, tuning: PoolTuning = {}): Pool {
  *
  * 切分方式是按分号朴素 split，所以 .sql 文件里除语句结束符外不许出现分号，
  * 注释里也不行。
+ *
+ * **全部语句跑在同一条连接上**，而不是每条各从池里取一条。会话变量（`SET @x`）
+ * 与预处理语句（`PREPARE` / `EXECUTE`）都是**会话级**的，换一条连接就全没了。
+ * 004 用这套写法实现幂等的条件 DDL（MySQL 的 ADD/DROP COLUMN 没有 IF EXISTS），
+ * 靠池「多半会把刚归还的那条连接再发出来」是碰运气，一旦不成立，迁移会以
+ * 「@变量是 NULL、条件判空、DDL 静默不执行」的方式失败——查不出来的那一种。
  */
 export async function runMigrations(pool: Pool): Promise<void> {
   const dir = `${import.meta.dir}/../../migrations`
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort()
 
-  for (const name of files) {
-    const sql = await Bun.file(`${dir}/${name}`).text()
-    const statements = sql
-      .split(';')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
+  const conn = await pool.getConnection()
+  try {
+    for (const name of files) {
+      const sql = await Bun.file(`${dir}/${name}`).text()
+      const statements = sql
+        .split(';')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
 
-    for (const stmt of statements) {
-      await pool.query(stmt)
+      for (const stmt of statements) {
+        await conn.query(stmt)
+      }
     }
+  } finally {
+    conn.release()
   }
 }
