@@ -294,7 +294,7 @@ const OVERRIDE_KINDS: ReadonlySet<string> = new Set(['fetch', 'archive', 'allow'
  * 写入/撤销改写前把 kind 拦一道。TypeScript 管得住我们自己的调用点，管不住
  * 从 HTTP 请求体反序列化出来的值。
  *
- * 为什么必须响亮地抛而不是当无事发生（T7 落地时发现，计划 §3.4 的 D-t）：
+ * 为什么必须响亮地抛而不是当无事发生（T7 落地时发现，计划 §3.4 的 D-u）：
  * kind 是改写行上**唯一没有安全侧可落**的字段。
  *   - 填成另一栈：一条 fetch 改写（effect `all`）套到归档栈上时，
  *     `normalizeEffect('archive', 'all')` 会认为 `all` 是一段合法的目录模板，

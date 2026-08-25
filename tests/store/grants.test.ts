@@ -563,7 +563,7 @@ test('改写：唯一键挡住同一 kind 的第二条生效改写', async () =>
 })
 
 /**
- * kind 是改写行上唯一没有安全侧可落的字段（计划 §3.4 的 D-t，T7 落地时发现）。
+ * kind 是改写行上唯一没有安全侧可落的字段（计划 §3.4 的 D-u，T7 落地时发现）。
  * 下面三条钉的是两道防线：store 的运行时校验、以及数据库那条 CHECK（migrations/006）。
  *
  * 求值层为什么拦不住：`normalizeEffect(kind, effect)` 是按栈校验 effect 的，

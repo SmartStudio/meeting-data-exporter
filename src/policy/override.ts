@@ -19,7 +19,7 @@
  * 所以这一层只做一件事：拿规则栈算出来的 `StackDecision`，套上这场会议的人工决定，
  * 产出 `OverriddenDecision`。规则那一份判定不丢，挂在 `overriddenFrom` 上。
  *
- * ## 二、被改写掉的那个判定必须留着（D-n）
+ * ## 二、被改写掉的那个判定必须留着（D-q）
  *
  * spec §1.3 要求界面**随时能回答「为什么这场会议这个程序取不到」**。被改写的会议
  * 若只剩一个结论，管理员就看不到「规则本来会放行、是人工关掉的」这件事，
@@ -30,10 +30,10 @@
  *
  * 改写的 effect 来自管理员在界面上填的自由文本，比 `policy_rules.effect`
  * **更容易脏**。规则那边有 `rule_invalid`（计划 §3.4.1 D-d），改写这边就有
- * `override_invalid`（D-m）——少这一个取值，「管理员填错了」和「管理员就是这么定的」
+ * `override_invalid`（D-p）——少这一个取值，「管理员填错了」和「管理员就是这么定的」
  * 会在详情抽屉里混成同一件事。
  *
- * effect 与资产名的规范化**一律复用 `stacks.ts` 的那两个函数**（D-p）。
+ * effect 与资产名的规范化**一律复用 `stacks.ts` 的那两个函数**（D-s）。
  * 计划 §3.4 D-c 记着：同一批资产在这个项目里已经有过三套叫法，M3.5 为此吃过一次亏。
  * 两份规范化逻辑迟早会漂移，漂移的后果是某一类资产在规则路径和改写路径下待遇不同。
  *
@@ -84,7 +84,7 @@ export interface MeetingOverride extends OverrideTarget {
   /** 自由文本，落到本栈安全侧的可能性比规则的 effect 更大 */
   effect: string
   /**
-   * 三态，与 `meeting_grants.asset_types` 一致（D-o）：
+   * 三态，与 `meeting_grants.asset_types` 一致（D-r）：
    * `null` = 不另行指定，沿用被改写掉的那个判定的范围；
    * 非空数组 = 白名单；`[]` = 一类都不放行。
    */
@@ -104,7 +104,7 @@ export type MeetingOverrideSet = Partial<Record<StackKind, MeetingOverride | nul
 
 /**
  * 套过改写的判定。**`StackDecision` 本身不动**，只加一个字段：
- * 若无人工改写，规则栈本会判成什么（D-n）。没有改写时为 null。
+ * 若无人工改写，规则栈本会判成什么（D-q）。没有改写时为 null。
  */
 export interface OverriddenDecision<E extends string = string> extends StackDecision<E> {
   /** 若无人工改写，规则栈本会判成什么。没有改写时为 null */
@@ -180,7 +180,7 @@ function normalizeOverrideEffect(kind: StackKind, override: MeetingOverride): Ef
 }
 
 /**
- * 改写实际生效的资产范围（D-o）。三态与 `meeting_grants.asset_types` 一致。
+ * 改写实际生效的资产范围（D-r）。三态与 `meeting_grants.asset_types` 一致。
  *
  * **`null` 沿用被改写掉的那个判定的范围，不是「全部八类」。** 把 null 读成全部，
  * 一次没填完的改写就会把规则原本限定的范围悄悄放宽——那正是全局约束
@@ -256,7 +256,7 @@ export function applyOverride<E extends string = string>(
     kind,
     // effect 已由 normalizeOverrideEffect 收敛到本栈取值域，这里的断言是它的结论
     effect: effect as E,
-    // D-q：改写没有规则。它有的是管理员写的 reason，语义与 note 一致——
+    // D-t：改写没有规则。它有的是管理员写的 reason，语义与 note 一致——
     // 「决定这次判定的那个东西身上的人写的说明」
     ruleId: null,
     note: override.reason ?? null,
@@ -264,7 +264,7 @@ export function applyOverride<E extends string = string>(
     reason: `${head}${why}；${wouldBe}`,
     assetTypes: assets.keys,
     issues,
-    // 规则确实被逐条考察过，那段考察记录是真的，只是最后没轮到它说话（D-n）
+    // 规则确实被逐条考察过，那段考察记录是真的，只是最后没轮到它说话（D-q）
     trace: decision.trace,
     overriddenFrom: decision,
   }

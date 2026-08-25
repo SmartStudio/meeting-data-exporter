@@ -50,7 +50,7 @@ function rule(over: Partial<StackRule> & Pick<StackRule, 'id' | 'kind'>): StackR
   }
 }
 
-/** 造一条人工改写。默认落在会议 m-1/s-1 上，资产范围不另行指定（D-o 的 null 态） */
+/** 造一条人工改写。默认落在会议 m-1/s-1 上，资产范围不另行指定（D-r 的 null 态） */
 function ov(
   over: Partial<MeetingOverride> & Pick<MeetingOverride, 'kind' | 'effect'>,
 ): MeetingOverride {
@@ -76,7 +76,7 @@ test('改写优先于任何规则，包括 priority 最高的那条', () => {
   const d = applyOverride(byRule, ov({ kind: 'allow', effect: 'deny', reason: '法务要求这场不外发' }))
   expect(d.effect).toBe('deny')
   expect(d.source).toBe('override')
-  // D-q：改写没有规则，ruleId 置 null，note 放管理员写的 reason
+  // D-t：改写没有规则，ruleId 置 null，note 放管理员写的 reason
   expect(d.ruleId).toBeNull()
   expect(d.note).toBe('法务要求这场不外发')
   expect(d.assetTypes).toEqual([])
@@ -144,7 +144,7 @@ test('三个 kind 互不干扰：改写了 allow 不影响 fetch / archive', () 
   expect(out.archive.effect).toBe('/nas/finance/{年}/')
 })
 
-// ── D-m 脏 effect：override_invalid，而且三栈安全侧各不相同 ────────
+// ── D-p 脏 effect：override_invalid，而且三栈安全侧各不相同 ────────
 
 test('脏 effect 的改写落到本栈安全侧，source 是 override_invalid 而不是 override', () => {
   const rules = [
@@ -193,7 +193,7 @@ test('改写记的 kind 与所套的栈对不上时，落到本栈安全侧并�
   expect(d.overriddenFrom?.effect).toBe('/nas/finance/{年}/')
 })
 
-// ── D-o assetTypes 三态 ────────────────────────────────────────
+// ── D-r assetTypes 三态 ────────────────────────────────────────
 
 test('assetTypes 为 null 时沿用被改写掉的那个判定的资产范围', () => {
   const rules = [rule({ id: 3, kind: 'allow', effect: 'allow', assetTypes: ['transcript', 'video'] })]
@@ -252,7 +252,7 @@ test('null 的沿用不会把范围放宽：规则只拉转写时，改写成拉
   expect(d.assetTypes).toEqual(['transcript'])
 })
 
-// ── D-n overriddenFrom 与 trace ────────────────────────────────
+// ── D-q overriddenFrom 与 trace ────────────────────────────────
 
 test('overriddenFrom 带着原本那条规则的 ruleId / note / reason', () => {
   const rules = [
