@@ -10,6 +10,7 @@ import type { WecomClient, WecomUser } from '../../src/auth/wecom'
 import type { IdentityStrategy } from '../../src/config'
 import type { RuleCond } from '../../src/policy/conds'
 
+import { createGrantsStore } from '../../src/store/grants'
 import { createPolicyStore } from '../../src/store/policy'
 import { createAccessGate } from '../../src/policy/access'
 import { createArchivesStore } from '../../src/store/archives'
@@ -105,7 +106,7 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
-  const accessGate = createAccessGate({ store: policyStore })
+  const accessGate = createAccessGate({ store: policyStore, grants: createGrantsStore(pool) })
   const archivesStore = createArchivesStore(pool)
 
   const auditStore = createAuditStore(pool)

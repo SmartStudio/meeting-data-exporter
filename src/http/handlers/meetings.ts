@@ -68,8 +68,8 @@ async function decideMeeting(
 }
 
 /**
- * 批量版：列会议时一次问清整批的归档状态，再逐场求值。
- * 逐场各查一次归档状态会让列会议变成 N 次数据库往返。
+ * 批量版：列会议时一次问清整批的归档状态与人工改写，再整批求值。
+ * 逐场各查一次会让列会议变成 N 次数据库往返。
  */
 async function filterVisibleMeetings(
   ctx: RouteCtx,
@@ -78,13 +78,17 @@ async function filterVisibleMeetings(
   now: number,
 ): Promise<Meeting[]> {
   const archivedKeys = await ctx.deps.archives.listArchivedMeetingKeys(meetings)
-  const visible: Meeting[] = []
-  for (const meeting of meetings) {
-    const archived = archivedKeys.has(archiveStateKey(meeting.meetingId, meeting.subMeetingId))
-    const decision = await ctx.deps.accessGate.decide({ actor, meeting, archived, now })
-    if (isVisible(decision)) visible.push(meeting)
-  }
-  return visible
+  // decideMany 而不是逐场 decide：规则与人工改写各取一次。逐场取的话，同一次
+  // 列会议里前后两场可能按不同的规则集判，列表里两行的理由会互相矛盾
+  const decisions = await ctx.deps.accessGate.decideMany(
+    meetings.map((meeting) => ({
+      actor,
+      meeting,
+      archived: archivedKeys.has(archiveStateKey(meeting.meetingId, meeting.subMeetingId)),
+      now,
+    })),
+  )
+  return meetings.filter((_, i) => isVisible(decisions[i]!))
 }
 
 /**

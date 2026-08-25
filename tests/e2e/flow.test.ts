@@ -35,6 +35,7 @@ import { createCatalog } from '../../src/catalog/index'
 import { createStsStore } from '../../src/store/sts'
 import { createStsManager } from '../../src/sts/manager'
 import { verifySignature, decryptEvent, decryptCheckStr } from '../../src/sts/crypto'
+import { createGrantsStore } from '../../src/store/grants'
 import { createPolicyStore } from '../../src/store/policy'
 import { createAccessGate } from '../../src/policy/access'
 import { createArchivesStore } from '../../src/store/archives'
@@ -145,7 +146,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(dbPool)
-  const accessGate = createAccessGate({ store: policyStore })
+  const accessGate = createAccessGate({ store: policyStore, grants: createGrantsStore(dbPool) })
   const archivesStore = createArchivesStore(dbPool)
 
   const auditStore = createAuditStore(dbPool)
@@ -589,6 +590,102 @@ test('策略拒绝时整条链路在 download-url 处被拦截', async () => {
   expect(auditRows).toHaveLength(1)
   expect(auditRows[0]!.decision).toBe('deny')
   expect(auditRows[0]!.action).toBe('issue_download_url')
+})
+
+test('人工改写 deny 拦得住 download-url——改写要到达真正的安全边界', async () => {
+  const clock = stepClock(NOW)
+  const meetingRecordId = 'rec-e2e-ovr-1'
+  const meetingId = 'm-e2e-ovr-1'
+  const fileId = 'file-e2e-ovr-1'
+
+  const { app, fakeState } = buildE2eApp(pool, {
+    now: clock.now,
+    wecomExchangeCode: async () => ({ userId: 'ww-e2e-ovr-1', email: null }),
+  })
+
+  fakeState.records.push({
+    meeting_record_id: meetingRecordId,
+    meeting_id: meetingId,
+    meeting_code: '700009',
+    host_user_id: 'ww-e2e-ovr-1',
+    media_start_time: NOW * 1000,
+    subject: '法务要求不外发的会议',
+    state: 3,
+  })
+  fakeState.addressesByRecordId.set(meetingRecordId, [
+    {
+      record_file_id: fileId,
+      download_address: 'https://cos.example/ovr-video.mp4',
+      download_address_file_type: 'mp4',
+      allow_download: true,
+    },
+  ])
+
+  // 规则本身是放行的——本用例要证明的正是「规则说可以，改写说不行，以改写为准」
+  await insertPolicyRule(pool, {
+    priority: 10,
+    programId: 'prog-e2e-ovr-1',
+    assetTypes: ['*'],
+    effect: 'allow',
+    note: '全部放行',
+  })
+
+  const { access_token } = await serviceLogin(app, 'prog-e2e-ovr-1', 'ww-e2e-ovr-1')
+  const headers = { Authorization: `Bearer ${access_token}` }
+
+  // ① 没有改写时：列得出、取得到
+  const before = await app(new Request('https://gw/api/v1/meetings?meeting_code=700009', { headers }))
+  expect(((await before.json()) as { meetings: unknown[] }).meetings).toHaveLength(1)
+
+  const assetsRes = await app(new Request(`https://gw/api/v1/meetings/${meetingId}/assets`, { headers }))
+  const assetsBody = (await assetsRes.json()) as { assets: Array<{ asset_id: string }> }
+  const assetId = assetsBody.assets[0]!.asset_id
+
+  const okDl = await app(
+    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
+      method: 'POST',
+      headers,
+    }),
+  )
+  expect(okDl.status).toBe(200)
+
+  // ② 管理员按下「这场不许取」。改写优先于所有规则（spec §5.4），而且必须在
+  //    **数据出境的那道闸门**上生效——只在采集清单里生效的话，它就不是一条
+  //    安全规则，只是一个展示效果
+  await createGrantsStore(pool).putOverride({
+    meetingId,
+    subMeetingId: '',
+    kind: 'allow',
+    effect: 'deny',
+    assetTypes: null,
+    reason: '法务要求这场不外发',
+    now: NOW * 1000,
+  })
+
+  // ③ 会议从列表里消失
+  const after = await app(new Request('https://gw/api/v1/meetings?meeting_code=700009', { headers }))
+  expect(((await after.json()) as { meetings: unknown[] }).meetings).toHaveLength(0)
+
+  // ④ 客户端拿着改写之前缓存下来的 assetId 直接换下载地址——被拦住。
+  //    这一条才是真正要紧的：清单过滤是 UI 便利，download-url 才是安全边界
+  const deniedDl = await app(
+    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
+      method: 'POST',
+      headers,
+    }),
+  )
+  expect(deniedDl.status).toBe(403)
+  expect((await deniedDl.json()).error).toBe('forbidden')
+
+  // ⑤ 撤销改写后回落到规则判定
+  await createGrantsStore(pool).revokeOverride(meetingId, '', 'allow', NOW * 1000 + 1)
+  const restoredDl = await app(
+    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
+      method: 'POST',
+      headers,
+    }),
+  )
+  expect(restoredDl.status).toBe(200)
 })
 
 test('STS-Token 未就位时，video 可下载而 ai_minutes 返回 unavailable', async () => {

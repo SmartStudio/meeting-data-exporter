@@ -33,7 +33,14 @@ import { GATEWAY_TYPE_TO_ASSET_KEY, type AssetKey } from '@yaowu/mde-engine'
 import type { ActorIdentity, AssetType, Meeting } from '../domain/types'
 import type { PolicyStore } from '../store/policy'
 import type { MeetingFacts } from './conds'
-import { decisionAllowsAsset, evaluateAllowStack, STACK_KIND_LABEL, type AllowDecision } from './stacks'
+import { applyOverride, type MeetingOverride, type OverriddenDecision } from './override'
+import {
+  decisionAllowsAsset,
+  evaluateAllowStack,
+  STACK_KIND_LABEL,
+  type AllowDecision,
+  type StackKind,
+} from './stacks'
 
 export interface AccessInput {
   actor: ActorIdentity
@@ -48,16 +55,51 @@ export interface AccessInput {
   now: number
 }
 
+/** 判定结果。`overriddenFrom` 非空表示这场会议被人工改写过（spec §5.4） */
+export type AccessDecision = OverriddenDecision<AllowDecision['effect']>
+
 export interface AccessGate {
   /**
    * 整场会议对这个 actor 的采集权限判定。**一场会议只判一次**，
    * 具体哪几类资产取得到由 `allowsAsset` 作用在判定结果之上（计划 §3.4.1 D-e）。
    */
-  decide(input: AccessInput): Promise<AllowDecision>
+  decide(input: AccessInput): Promise<AccessDecision>
+  /**
+   * 批量版，列会议用。语义与逐场调 `decide` **完全一致**，只是把规则与改写
+   * 各取一次而不是每场取一次。
+   */
+  decideMany(inputs: readonly AccessInput[]): Promise<AccessDecision[]>
 }
 
 export interface AccessGateDeps {
   store: Pick<PolicyStore, 'listEnabledStackRules'>
+  /**
+   * 人工改写的来源（spec §5.4：**单场会议的人工改写优先于所有规则**）。
+   *
+   * **为什么由本模块自己取，而不是像 `archived` 那样让调用方传进来**：
+   * 这是数据出境的闸门（spec §1.4）。让调用方负责递改写，等于每新增一个
+   * 调用点就多一次「忘了递就静默绕过改写」的机会——而绕过的方向是放行。
+   * `archived` 那样处理是可以的，因为漏了它最多让一条 `arch` 规则判错；
+   * 漏了改写则是让管理员明确按下的那个「不许取」失效。
+   */
+  grants: OverrideSource
+}
+
+/**
+ * 改写的读法。**按 policy 层自己的 `MeetingOverride` 声明，不是
+ * `Pick<GrantsStore, …>`**：真正的 store 结构上满足它，而这一层不必反过来
+ * 依赖库表的行结构（`id` / `revokedAt` 这些它一个都不读）。
+ * `stacks.ts` 的 `StackRule` 是同一个取舍。
+ */
+export interface OverrideSource {
+  findActiveOverride(
+    meetingId: string,
+    subMeetingId: string,
+    kind: StackKind,
+  ): Promise<MeetingOverride | null>
+  listActiveOverridesForMeetings(
+    keys: { meetingId: string; subMeetingId: string }[],
+  ): Promise<MeetingOverride[]>
 }
 
 /**
@@ -87,7 +129,7 @@ export function meetingFacts(meeting: Meeting, archived: boolean): MeetingFacts 
 }
 
 /** 身份不是采集程序时的判定。**在读规则之前**就得出，与规则集无关 */
-function notAProgram(actor: ActorIdentity): AllowDecision {
+function notAProgram(actor: ActorIdentity): AccessDecision {
   const who = actor.kind === 'wecom_user' ? '企业微信用户' : '当前身份'
   return {
     kind: 'allow',
@@ -102,22 +144,85 @@ function notAProgram(actor: ActorIdentity): AllowDecision {
     assetTypes: [],
     issues: [],
     trace: [],
+    // 这条判定压根没经过规则栈，所以「若无改写本会判成什么」无从谈起
+    overriddenFrom: null,
   }
 }
 
 export function createAccessGate(deps: AccessGateDeps): AccessGate {
   return {
-    async decide({ actor, meeting, archived, now }) {
-      if (actor.programId === null || actor.programId === '') return notAProgram(actor)
+    async decide(input) {
+      // 不是采集程序的，在读规则**和改写**之前就拒。改写改的是「规则对这场会议
+      // 会怎么判」，不是「谁算采集程序」——给企微用户套一条 allow 改写也不该
+      // 让他取到数据，那是另一条出境路径（spec §1.4），要当成采集程序来接
+      if (input.actor.programId === null || input.actor.programId === '') {
+        return notAProgram(input.actor)
+      }
 
       const rules = await deps.store.listEnabledStackRules('allow')
-      return evaluateAllowStack(rules, {
-        facts: meetingFacts(meeting, archived),
-        now,
-        programId: actor.programId,
+      const override = await deps.grants.findActiveOverride(
+        input.meeting.meetingId,
+        input.meeting.subMeetingId,
+        'allow',
+      )
+      return decideOne(rules, input, override)
+    },
+
+    async decideMany(inputs) {
+      if (inputs.length === 0) return []
+
+      // 规则与改写各取一次。逐场取的话，同一次列会议里前后两场可能按不同的
+      // 规则集判——列表里两行的判定理由互相矛盾，而且不可复现
+      const rules = await deps.store.listEnabledStackRules('allow')
+      const overrides = await deps.grants.listActiveOverridesForMeetings(
+        inputs.map((i) => ({
+          meetingId: i.meeting.meetingId,
+          subMeetingId: i.meeting.subMeetingId,
+        })),
+      )
+      const byMeeting = new Map<string, (typeof overrides)[number]>()
+      for (const o of overrides) {
+        if (o.kind !== 'allow') continue
+        byMeeting.set(overrideKey(o.meetingId, o.subMeetingId), o)
+      }
+
+      return inputs.map((input) => {
+        if (input.actor.programId === null || input.actor.programId === '') {
+          return notAProgram(input.actor)
+        }
+        const override = byMeeting.get(
+          overrideKey(input.meeting.meetingId, input.meeting.subMeetingId),
+        )
+        return decideOne(rules, input, override ?? null)
       })
     },
   }
+}
+
+/**
+ * 两个 id 拼成一场会议的键。用 NUL 分隔而不是 `/`——会议 id 是外部系统给的，
+ * 拿可打印分隔符去赌它不出现在 id 里，撞上一次就是两场会议共用一条改写。
+ * 与 `override.ts` 的 `targetKey` 同一个理由。
+ */
+function overrideKey(meetingId: string, subMeetingId: string): string {
+  return `${meetingId}\u0000${subMeetingId}`
+}
+
+/**
+ * 规则求值 + 套改写。`decide` 与 `decideMany` 共用这一段，
+ * 两条路径的语义因此不可能分叉。
+ */
+function decideOne(
+  rules: Awaited<ReturnType<PolicyStore['listEnabledStackRules']>>,
+  input: AccessInput,
+  override: Parameters<typeof applyOverride>[1],
+): AccessDecision {
+  const decision = evaluateAllowStack(rules, {
+    facts: meetingFacts(input.meeting, input.archived),
+    now: input.now,
+    programId: input.actor.programId as string,
+  })
+  return applyOverride(decision, override)
 }
 
 /**

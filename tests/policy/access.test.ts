@@ -8,7 +8,14 @@
  *    `transcript` 是同一类资产的两个名字，认错等于放行/拒绝错一整类）。
  */
 import { expect, test } from 'bun:test'
-import { allowsAsset, createAccessGate, meetingFacts } from '../../src/policy/access'
+import {
+  allowsAsset,
+  createAccessGate,
+  isVisible,
+  meetingFacts,
+  type AccessGateDeps,
+} from '../../src/policy/access'
+import type { MeetingOverride } from '../../src/policy/override'
 import type { StackRule } from '../../src/policy/stacks'
 import type { PolicyStore } from '../../src/store/policy'
 import type { ActorIdentity, Meeting } from '../../src/domain/types'
@@ -58,7 +65,24 @@ function stubStore(rules: StackRule[]): Pick<PolicyStore, 'listEnabledStackRules
   return { listEnabledStackRules: async (kind) => rules.filter((r) => r.kind === kind) }
 }
 
-const gateOf = (rules: StackRule[]) => createAccessGate({ store: stubStore(rules) })
+/** 没有人工改写的假 store。有改写的用例各自造自己的 */
+function stubGrants(overrides: MeetingOverride[] = []): AccessGateDeps['grants'] {
+  return {
+    async findActiveOverride(meetingId, subMeetingId, kind) {
+      return overrides.find(
+        (o) => o.meetingId === meetingId && o.subMeetingId === subMeetingId && o.kind === kind,
+      ) ?? null
+    },
+    async listActiveOverridesForMeetings(keys) {
+      return overrides.filter((o) =>
+        keys.some((k) => k.meetingId === o.meetingId && k.subMeetingId === o.subMeetingId),
+      )
+    },
+  }
+}
+
+const gateOf = (rules: StackRule[], overrides: MeetingOverride[] = []) =>
+  createAccessGate({ store: stubStore(rules), grants: stubGrants(overrides) })
 
 test('没有任何规则时兜底拒绝', async () => {
   const d = await gateOf([]).decide({ actor: program, meeting, archived: false, now: NOW })
@@ -111,6 +135,7 @@ test('企微用户不是采集程序：显式拒绝，且理由说得出为什�
 test('企微用户被拒时不去读规则表（判定与规则集无关）', async () => {
   let reads = 0
   const gate = createAccessGate({
+    grants: stubGrants(),
     store: {
       listEnabledStackRules: async () => {
         reads += 1
@@ -245,4 +270,93 @@ test('effect 是脏数据时落到拒绝一侧，并说得出是哪条规则写�
   expect(d.effect).toBe('deny')
   expect(d.source).toBe('rule_invalid')
   expect(d.ruleId).toBe(9)
+})
+
+// ── 人工改写要到达真正的安全边界（spec §5.4 × §1.4）─────────────────────────
+//
+// 这一组的存在理由：T4 落地时 T7 的覆盖层还不存在，网关的 allow 判定曾经**完全
+// 绕过改写**——管理员在界面上按下的「这场不许取」拦不住 downloadUrl。
+// 「改写优先于所有规则」如果只在采集清单那一层成立，它就不是一条安全规则，
+// 只是一个展示效果。
+
+const overrideOf = (o: Partial<MeetingOverride> = {}): MeetingOverride => ({
+  meetingId: 'm1',
+  subMeetingId: '',
+  kind: 'allow',
+  effect: 'deny',
+  assetTypes: null,
+  reason: '法务要求这场不外发',
+  createdAt: NOW - 100,
+  ...o,
+})
+
+test('改写：deny 改写压过放行的规则', async () => {
+  const gate = gateOf([rule({})], [overrideOf()])
+  const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+
+  expect(d.effect).toBe('deny')
+  expect(d.source).toBe('override')
+  // 规则本来会放行——详情抽屉要能说出这件事，否则管理员看不到是人工关掉的
+  expect(d.overriddenFrom?.effect).toBe('allow')
+  expect(d.note).toBe('法务要求这场不外发')
+})
+
+test('改写：allow 改写压过兜底 deny，但没指定范围时一类都取不到', async () => {
+  const gate = gateOf([], [overrideOf({ effect: 'allow' })])
+  const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+
+  expect(d.effect).toBe('allow')
+  // D-r：assetTypes 为 null 沿用被改写掉的那个判定的范围，而兜底 deny 是空数组。
+  // 于是「放行了但一类都取不到」——故意的安全侧，必须带 issue 说清楚
+  expect(d.assetTypes).toEqual([])
+  expect(d.issues.length).toBeGreaterThan(0)
+  // 也因此不该被列出来：没有任何可取内容却泄露标题与主持人
+  expect(isVisible(d)).toBe(false)
+})
+
+test('改写：只对该场会议生效，别的会议照规则判', async () => {
+  const gate = gateOf([rule({})], [overrideOf({ meetingId: 'm-other' })])
+  const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+
+  expect(d.effect).toBe('allow')
+  expect(d.source).toBe('rule')
+  expect(d.overriddenFrom).toBeNull()
+})
+
+test('改写：decideMany 与逐场 decide 给出同一个答案', async () => {
+  const other: Meeting = { ...meeting, meetingId: 'm2' }
+  const gate = gateOf([rule({})], [overrideOf()])
+
+  const batch = await gate.decideMany([
+    { actor: program, meeting, archived: false, now: NOW },
+    { actor: program, meeting: other, archived: false, now: NOW },
+  ])
+  const one = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+  const two = await gate.decide({ actor: program, meeting: other, archived: false, now: NOW })
+
+  expect(batch[0]!.effect).toBe(one.effect)
+  expect(batch[0]!.source).toBe(one.source)
+  expect(batch[1]!.effect).toBe(two.effect)
+  // 被改写的那场是 deny，另一场按规则 allow——批量路径没有把改写套错会议
+  expect(batch[0]!.effect).toBe('deny')
+  expect(batch[1]!.effect).toBe('allow')
+})
+
+test('改写：企微用户仍然被拒，改写不改变「谁算采集程序」', async () => {
+  // 给他挂一条 allow 改写。改写改的是「规则对这场会议会怎么判」，
+  // 不是「谁有资格参与判定」——后者是另一条出境路径（spec §1.4）
+  const gate = gateOf([rule({})], [overrideOf({ effect: 'allow' })])
+  const d = await gate.decide({ actor: person, meeting, archived: false, now: NOW })
+
+  expect(d.effect).toBe('deny')
+  expect(d.source).not.toBe('override')
+  expect(d.overriddenFrom).toBeNull()
+})
+
+test('改写：kind 不是 allow 的改写不影响采集权限判定', async () => {
+  // 一条 archive 改写（effect 是目录模板）绝不能被 allow 栈当成放行
+  const gate = gateOf([], [overrideOf({ kind: 'archive', effect: 'meetings/{年}/' })])
+  const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+
+  expect(d.effect).toBe('deny')
 })

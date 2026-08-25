@@ -1,6 +1,7 @@
 import { loadConfig } from './config'
 import { createPool, runMigrations } from './store/db'
 import { createStsStore } from './store/sts'
+import { createGrantsStore } from './store/grants'
 import { createPolicyStore } from './store/policy'
 import { createAuthStore } from './store/auth'
 import { createAdminStore } from './store/admin'
@@ -61,7 +62,9 @@ async function main(): Promise<void> {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
-  const accessGate = createAccessGate({ store: policyStore })
+  // 网关这边只读改写，不写。写侧在控制台的管理端点里（阶段 4）
+  const grantsStore = createGrantsStore(pool)
+  const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
   // 网关只用它读「这场会议归档了没有」（规则的 arch 条件）——归档流水线的写侧
   // 在 worker 进程里，两边共用同一份 store 定义，不各写一遍 SQL
   const archivesStore = createArchivesStore(pool)
