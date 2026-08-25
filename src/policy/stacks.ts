@@ -86,6 +86,19 @@ export type DecisionSource =
   | 'rule_invalid'
   /** 一条都没匹配，用了本栈的兜底 */
   | 'default'
+  /**
+   * 人工改写决定的（T7 · `override.ts`，spec §5.4）。规则栈**不会**产出这个取值——
+   * 改写是套在三个 `evaluate*Stack` 外面的一层，引擎本身一个字都不认改写。
+   */
+  | 'override'
+  /**
+   * 人工改写决定的，但它的 effect 是脏数据，落到了本栈的安全侧。
+   *
+   * 与 `override` 分开是必要的，不是对称好看：改写的 effect 来自管理员在界面上填的
+   * 自由文本，比 `policy_rules.effect` 更容易脏。两者合成一个取值，详情抽屉就再也分不开
+   * 「管理员填错了」和「管理员就是这么定的」——前者要去改，后者是他自己想要的。
+   */
+  | 'override_invalid'
 
 export type RuleOutcome =
   | 'matched'
@@ -183,13 +196,20 @@ export function sortStackRules(rules: readonly StackRule[]): StackRule[] {
 
 // ── effect 与 asset_types 的规范化 ───────────────────────────────
 
-interface EffectNorm {
+export interface EffectNorm {
   effect: string
   /** 非 null 表示 effect 是脏数据，已落到本栈安全侧 */
   issue: string | null
 }
 
-function normalizeEffect(kind: StackKind, raw: unknown): EffectNorm {
+/**
+ * effect 收敛到本栈的取值域，收不住就落到本栈安全侧并说明。
+ *
+ * **导出给 `override.ts`（T7）用**：人工改写的 effect 也是自由文本，也要过同一道
+ * 规范化。计划 §3.4 D-c 记着——同一批语义在这个项目里已经有过多套写法，
+ * 两份规范化逻辑迟早会漂移，漂移的后果是同一个脏值在规则路径和改写路径下待遇不同。
+ */
+export function normalizeEffect(kind: StackKind, raw: unknown): EffectNorm {
   const shown = typeof raw === 'string' ? raw : String(raw)
   if (kind === 'fetch') {
     if (raw === 'all' || raw === 'skip') return { effect: raw, issue: null }
@@ -216,7 +236,7 @@ function normalizeEffect(kind: StackKind, raw: unknown): EffectNorm {
 
 const ASSET_KEY_SET: ReadonlySet<string> = new Set<string>(ALL_ASSET_KEYS)
 
-interface AssetNorm {
+export interface AssetNorm {
   keys: AssetKey[]
   issues: string[]
 }
@@ -227,8 +247,11 @@ interface AssetNorm {
  * 计划 §3.4 D-c：**不许把原型的短名（`summary` / `aitr` / `digest`）带进代码**——
  * 同一批资产已经有过三套叫法，M3.5 为此吃过一次亏。丢掉而不是猜，
  * 猜错的那一类会静默多放行或少放行。
+ *
+ * **导出给 `override.ts`（T7）用**，理由同 `normalizeEffect`：改写里的资产名同样是
+ * 管理员填的，两处各写一份映射，某一类资产迟早会在规则路径和改写路径下待遇不同。
  */
-function normalizeAssetTypes(raw: unknown): AssetNorm {
+export function normalizeAssetTypes(raw: unknown): AssetNorm {
   if (!Array.isArray(raw)) {
     return { keys: [], issues: ['asset_types 不是数组，这条规则没有可用的资产类型'] }
   }
