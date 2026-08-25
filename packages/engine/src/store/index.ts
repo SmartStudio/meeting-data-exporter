@@ -54,6 +54,24 @@ export interface Store {
    * 那条路在 MySQL 宿主下根本不存在，必须收进接口。
    */
   meetingsForPaths(): Promise<Map<string, { subject: string | null; startTime: number | null; meetingCode: string | null; endTime: number | null; subMeetingId: string }>>
+  /**
+   * 单场会议的完整元数据，按**精确的 (meeting_id, sub_meeting_id)** 取；没有则 null。
+   *
+   * 与 `meetingsForPaths()` 是两件事，不要用后者代替：那个方法按 meeting_id 去重
+   * （一次只要一个「代表」场次来拼目录名），周期性会议的其它场次会被静默丢掉；
+   * 而且它刻意只带拼路径用得上的几列，没有 `host_userid`。`meeting.json` 要写的是
+   * 这一场会议的全部元数据，只能按真实主键取。
+   */
+  getMeeting(meetingId: string, subMeetingId: string): Promise<Meeting | null>
+  /**
+   * 单场会议的**全部**资产行（按 id 升序），不按 status 过滤。
+   *
+   * 不在 SQL 里过滤成「只要 completed」，是因为 `_manifest.json` 要同时回答两个问题：
+   * 这个目录里有什么（completed），以及哪些资产是**确认取不到**的、为什么
+   * （skipped / dead）——「确认缺失」与「不知有无」是两种状态。分类规则属于清单的
+   * 语义，放在 manifest/ 里一处说清楚，比在两个宿主的 SQL 里各写一遍 WHERE 更难写错。
+   */
+  assetsForMeeting(meetingId: string, subMeetingId: string): Promise<AssetRow[]>
 }
 
 export function createStore(db: Database): Store {
@@ -128,6 +146,24 @@ export function createStore(db: Database): Store {
         subject: r.subject, startTime: r.start_time, meetingCode: r.meeting_code,
         endTime: r.end_time, subMeetingId: r.sub_meeting_id,
       }]))
+    },
+    async getMeeting(meetingId, subMeetingId) {
+      const r = db.query<{ meeting_id: string; sub_meeting_id: string; meeting_code: string | null;
+                           subject: string | null; host_userid: string | null;
+                           start_time: number | null; end_time: number | null }, [string, string]>(
+        `SELECT meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time
+           FROM meetings WHERE meeting_id=? AND sub_meeting_id=?`,
+      ).get(meetingId, subMeetingId)
+      if (!r) return null
+      return {
+        meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id, meetingCode: r.meeting_code,
+        subject: r.subject, hostUserId: r.host_userid, startTime: r.start_time, endTime: r.end_time,
+      }
+    },
+    async assetsForMeeting(meetingId, subMeetingId) {
+      return db.query<AssetRow, [string, string]>(
+        `SELECT * FROM assets WHERE meeting_id=? AND sub_meeting_id=? ORDER BY id`,
+      ).all(meetingId, subMeetingId)
     },
   }
 }

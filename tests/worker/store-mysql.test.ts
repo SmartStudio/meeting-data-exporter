@@ -417,4 +417,54 @@ describe('createMysqlStore', () => {
       expect(map.get('m1')!.endTime).toBe(3000)
     })
   })
+
+  // -------------------------------------------------------------------------
+  // sidecar（meeting.json / _manifest.json）要的两个读方法，与 SQLite 版逐条对齐
+  // -------------------------------------------------------------------------
+
+  test('getMeeting 按精确 (meeting_id, sub_meeting_id) 取回，不存在给 null', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertMeeting({ ...M, subMeetingId: 's1', subject: '第二场', startTime: 2000 }, 100)
+      expect(await s.getMeeting('m1', '')).toEqual(M)
+      expect((await s.getMeeting('m1', 's1'))!.subject).toBe('第二场') // 不被兄弟场次盖掉
+      expect(await s.getMeeting('m1', 'nope')).toBeNull()
+      expect(await s.getMeeting('nope', '')).toBeNull()
+    })
+  })
+
+  test('getMeeting 的空值列如实给 null，时间列是数字不是字符串', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting({
+        meetingId: 'm9', subMeetingId: '', meetingCode: null, subject: null,
+        hostUserId: null, startTime: null, endTime: null,
+      }, 100)
+      expect(await s.getMeeting('m9', '')).toEqual({
+        meetingId: 'm9', subMeetingId: '', meetingCode: null, subject: null,
+        hostUserId: null, startTime: null, endTime: null,
+      })
+      await s.upsertMeeting(M, 100)
+      expect(typeof (await s.getMeeting('m1', ''))!.startTime).toBe('number')
+    })
+  })
+
+  test('assetsForMeeting 只给本场次的行、按 id 升序，各状态一并给出', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: 's1', assetType: 'video', remoteId: 'r3' }, 100)
+      await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r4' }, 100)
+      const first = (await s.claimNext(200, 60))!
+      await s.markCompleted(first.id, 'h', 200)
+
+      const rows = await s.assetsForMeeting('m1', '')
+      expect(rows.map((r) => r.remote_id)).toEqual(['r1', 'r2'])
+      expect(rows.map((r) => r.status)).toEqual(['completed', 'pending'])
+      expect(await s.assetsForMeeting('m1', 's1')).toHaveLength(1)
+    })
+  })
 })

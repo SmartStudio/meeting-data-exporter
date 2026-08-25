@@ -8,6 +8,7 @@ import {
   runExecutor,
   runProbes,
   withFsTimeout,
+  writeMeetingManifests,
   type AssetKey,
   type AssetSource,
   type DownloadTask,
@@ -60,6 +61,10 @@ export interface WorkerRound {
   completed: number
   failed: number
   skipped: number
+  /** 本轮 sidecar（meeting.json / _manifest.json）收尾的汇总。failed 是写入抛出的场次数——
+   *  它**不进退出码**：资产已经落盘了，一份没写出来的清单不该把一轮成功的下载判成失败。
+   *  但每一次都会 console.warn，不是静默吞掉。 */
+  manifests: { written: number; skipped: number; failed: number }
   /** 本轮归档流水线（P2）的汇总：对 ArchivesStore.listMeetingsNeedingArchive() 给出的
    *  每场"有未归档完成资产"的会议累加。failed 是逐会议错误隔离之后没能正常归档完的
    *  会议数（archiveMeeting 本身抛出，不是可以放心忽略的数字，见 archive.ts 的
@@ -111,6 +116,27 @@ export async function runWorkerOnce(
     now,
   )
 
+  // 一轮下载的收尾：给每场会议写 meeting.json / _manifest.json（US-6.2「归档结果可脱离
+  // 系统理解」）。放在这里而不是 executor 里边下边写，是因为 runExecutor 是逐资产的并发
+  // 执行体，内部根本没有「这场会议下完了」这个判定——详见 packages/engine/src/manifest。
+  //
+  // 枚举源用 meetingsById 而不是归档那边的 listMeetingsNeedingArchive()：sidecar 描述的是
+  // **本地归档区里那个目录**，而那个目录正是 meetingsById 算出来的；两边必须同源，否则
+  // 清单会落到一个没有资产的目录里。这也意味着它继承了 meetingsById 按 meeting_id 去重的
+  // 已知窟窿（见下方 archive 段落的说明）——在那个洞被修好之前，与资产落盘保持同一种行为，
+  // 好过在这里自作主张地分叉。
+  //
+  // ⚠️ 本轮只写进**本地归档区**（deps.storage 指向 MDE_ARCHIVE_ROOT）。NAS 上那份副本
+  // 暂时还没有这两个文件：archivePendingMeetings 是照着 meeting_assets 的行搬文件的，
+  // 而 sidecar 不是资产、不在那张表里。产品模型是「NAS 是主存储、本地 30 天后删」，
+  // 所以「数年后在 NAS 上翻到该目录也能自解释」这半句要等归档链路复用同一份类型把
+  // sidecar 一并搬过去，那是接下来那件事，不在本次改动里。
+  const manifests = await writeMeetingManifests(
+    { store: deps.store, storage: deps.storage, generatedBy: 'mde-worker' },
+    meetingsById,
+    now,
+  )
+
   // 归档：把（本轮以及此前遗留、这一轮才终于补齐的）已完成下载的资产搬到 NAS。
   //
   // 枚举源是 ArchivesStore.listMeetingsNeedingArchive()，不是上面的 meetingsById——
@@ -130,7 +156,7 @@ export async function runWorkerOnce(
   const archiveDeps: ArchiveDeps = { archives: deps.archives, localRoot: deps.localRoot, nasRoot: deps.nasRoot }
   const archived = await archivePendingMeetings(archiveDeps, now)
 
-  return { ...found, probes, ...ran, archived }
+  return { ...found, probes, ...ran, manifests, archived }
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +506,10 @@ async function main(): Promise<number> {
       `probes resolved=${res.probes.resolved} abandoned=${res.probes.abandoned} new=${res.probes.newTasks}`,
     )
     console.log(`completed=${res.completed} failed=${res.failed} skipped=${res.skipped}`)
+    console.log(
+      `manifests written=${res.manifests.written} skipped=${res.manifests.skipped} ` +
+        `failed=${res.manifests.failed}`,
+    )
     console.log(
       `archived newlyArchived=${res.archived.newlyArchived} ` +
         `verificationFailed=${res.archived.verificationFailed} failed=${res.archived.failed}`,

@@ -3,7 +3,7 @@ import type { DownloadResult, DownloadTask } from '../downloader'
 import type { Storage } from '../storage/types'
 import type { AssetSource } from '../source/types'
 import { GATEWAY_TYPE_TO_ASSET_KEY, assetKeyToFilename, isTextAssetType, ASSET_WAIT_CAP_SEC } from '../domain/types'
-import { cleanDirName } from '../domain/filename'
+import { meetingDirPath } from '../domain/filename'
 import { judgeReadiness } from '../domain/readiness'
 
 export interface ExecutorDeps {
@@ -44,18 +44,20 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   await deps.store.markFailed(row.id, res.error, now()); result.failed++
 }
 
-/** 相对路径：<year>/<month>/<清洗目录>/<资产文件名> */
+/**
+ * 相对路径：<year>/<month>/<清洗目录>/<资产文件名>
+ *
+ * 目录那一段走 `meetingDirPath`，与同目录下的 meeting.json / _manifest.json
+ * （manifest/index.ts）共用同一份计算——这两处一旦各算一遍，sidecar 就会落到
+ * 一个没有资产的目录里去。
+ */
 async function buildRelPath(deps: ExecutorDeps, row: AssetRow): Promise<string | null> {
   const m = deps.meetingsById.get(row.meeting_id)
   if (!m) return null
-  const d = new Date((m.startTime ?? 0) * 1000)
-  const yyyy = String(d.getUTCFullYear()), mm = String(d.getUTCMonth() + 1).padStart(2, '0'), dd = String(d.getUTCDate()).padStart(2, '0')
-  const hhmm = String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0')
-  const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, m.subject ?? '', m.meetingCode ?? row.meeting_id)
   const key = GATEWAY_TYPE_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
   const { ordinal } = await deps.store.siblingRank(row)
   const fname = assetKeyToFilename(key, row.remote_id, row.file_type, ordinal)  // 归一化与空值回落都在 assetKeyToFilename 里
-  return `${yyyy}/${mm}/${dir}/${fname}`
+  return `${meetingDirPath(m, row.meeting_id)}/${fname}`
 }
 function assetId(row: AssetRow): string { return `${row.meeting_id}:${row.remote_id}:${row.asset_type}:0` }
 

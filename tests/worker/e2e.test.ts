@@ -265,6 +265,8 @@ describe('runWorkerOnce', () => {
         completed: 2,
         failed: 0,
         skipped: 0,
+        // 一轮收尾给这场会议写出 meeting.json / _manifest.json
+        manifests: { written: 1, skipped: 0, failed: 0 },
         // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
         // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
         archived: { newlyArchived: 2, verificationFailed: 0, failed: 0 },
@@ -305,6 +307,30 @@ describe('runWorkerOnce', () => {
 
       // ⑤ 每个文件恰好被取了一次
       expect(server.requests.map((r) => r.path).sort()).toEqual(['/file/f-sum-1', '/file/f-video-1'])
+
+      // ⑥ 两个 sidecar 与资产**同目录**（US-6.2）：目录这段是上面手算出来的 DIR，
+      //    不是从实现里抄的，所以这条同时也在核对"清单没跑到别的目录去"
+      const meta = JSON.parse(await readFile(join(root, DIR, 'meeting.json'), 'utf8'))
+      expect(meta.meeting).toEqual({
+        meetingId: 'm-e2e', subMeetingId: '', meetingCode: '881-123-40',
+        subject: '周会 / Q3 复盘', hostUserId: 'u-host', startTime: START, endTime: END,
+      })
+      expect(meta.generatedBy).toBe('mde-worker')
+
+      const manifest = JSON.parse(await readFile(join(root, DIR, '_manifest.json'), 'utf8'))
+      expect(manifest.meetingId).toBe('m-e2e')
+      expect(manifest.missing).toEqual([])
+      // 文件名可以直接对着目录里真实存在的文件核，不需要另算一遍
+      expect(manifest.assets.map((a: { fileName: string }) => a.fileName).sort())
+        .toEqual(['recording_f-video-1.mp4', 'transcript.txt'])
+      const sum = manifest.assets.find((a: { assetType: string }) => a.assetType === 'meeting_summary')
+      const vid = manifest.assets.find((a: { assetType: string }) => a.assetType === 'video')
+      expect(sum.sha256).toBe(TRANSCRIPT_SHA256)          // 文本类有整文件哈希
+      expect(vid.sha256).toBeNull()                        // 视频不做整文件哈希，如实写 null
+      expect(sum.bytes).toBe(TRANSCRIPT_BODY.length)       // 大小取被校验过的 bytes_expected
+      expect(vid.bytes).toBe(VIDEO_BODY.length)
+      expect(sum.remoteId).toBe('f-sum-1')
+      expect(vid.assetKey).toBe('video')
     })
   }, 30_000)
 

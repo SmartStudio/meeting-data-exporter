@@ -247,6 +247,40 @@ export function createMysqlStore(pool: Pool): Store {
         subMeetingId: r.sub_meeting_id as string,
       }]))
     },
+
+    // meetingsForPaths 之外**另开**一个按精确 (meeting_id, sub_meeting_id) 取的读法：
+    // 前者按 meeting_id 去重、且只带拼路径用得上的几列（没有 host_userid），
+    // meeting.json 要写的是这一场会议的全部元数据，只能按真实主键取。
+    // 与 SQLite 版同一条语句、同一组列。
+    async getMeeting(meetingId, subMeetingId) {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time
+           FROM meetings WHERE meeting_id=? AND sub_meeting_id=?`,
+        [meetingId, subMeetingId],
+      )
+      const r = rows[0]
+      if (r === undefined) return null
+      // start_time / end_time 是 BIGINT，与 meetingsForPaths 一样显式 Number 化：
+      // 这两个值会被写进 meeting.json，一个字符串 "1787218200" 会让 JSON 里的
+      // 时间戳变成带引号的字符串，读清单的人（和脚本）拿到的就是另一种类型。
+      return {
+        meetingId: r.meeting_id as string,
+        subMeetingId: r.sub_meeting_id as string,
+        meetingCode: (r.meeting_code ?? null) as string | null,
+        subject: (r.subject ?? null) as string | null,
+        hostUserId: (r.host_userid ?? null) as string | null,
+        startTime: r.start_time === null ? null : Number(r.start_time),
+        endTime: r.end_time === null ? null : Number(r.end_time),
+      }
+    },
+
+    async assetsForMeeting(meetingId, subMeetingId) {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT * FROM meeting_assets WHERE meeting_id=? AND sub_meeting_id=? ORDER BY id`,
+        [meetingId, subMeetingId],
+      )
+      return rows as unknown as AssetRow[]
+    },
   }
 }
 

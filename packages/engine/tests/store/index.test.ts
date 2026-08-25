@@ -118,3 +118,33 @@ test('siblingRank 对同格式的多段录制仍然给出序号', async () => {
   expect(await store.siblingRank(first)).toEqual({ ordinal: 1, total: 2 })
   expect(await store.siblingRank(second)).toEqual({ ordinal: 2, total: 2 })
 })
+
+// ---------------------------------------------------------------------------
+// sidecar（meeting.json / _manifest.json）要的两个读方法。两者都按**精确的
+// (meeting_id, sub_meeting_id)** 取，与归档流水线的 listCompletedAssets 同口径：
+// meetingsForPaths 那种按 meeting_id 去重的形状只适合拼路径，当枚举源会丢场次。
+// ---------------------------------------------------------------------------
+
+test('getMeeting 按精确 (meeting_id, sub_meeting_id) 取回，不存在给 null', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertMeeting({ ...M, subMeetingId: 'sub2', subject: '第二场', startTime: 300 }, 1)
+  expect(await s.getMeeting('m1', '')).toEqual(M)
+  expect((await s.getMeeting('m1', 'sub2'))!.subject).toBe('第二场')   // 不被同 meeting_id 的兄弟场次盖掉
+  expect(await s.getMeeting('m1', 'nope')).toBeNull()
+  expect(await s.getMeeting('nope', '')).toBeNull()
+})
+
+test('assetsForMeeting 只给本场次的行、按 id 升序，各状态一并给出', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'sub2', assetType: 'video', remoteId: 'r3' }, 1)
+  await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r4' }, 1)
+  const first = (await s.claimNext(100, 300))!
+  await s.markCompleted(first.id, 'h', 100)
+
+  const rows = await s.assetsForMeeting('m1', '')
+  expect(rows.map((r) => r.remote_id)).toEqual(['r1', 'r2'])            // 兄弟场次与别的会议都不在内
+  expect(rows.map((r) => r.status)).toEqual(['completed', 'pending'])   // 状态不过滤，交给调用方分类
+  expect(await s.assetsForMeeting('m1', 'sub2')).toHaveLength(1)
+})
