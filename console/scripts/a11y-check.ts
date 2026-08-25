@@ -466,8 +466,16 @@ async function fireToast(page: Page): Promise<void> {
   }
 }
 
+/**
+ * `?proto=1` 把顶栏那两个原型控件调出来（见 `src/app/GlobalBar.tsx`）。它们默认
+ * 不渲染，而本脚本的五个系统形态场景（nas-down / tencent-down / load-failed /
+ * loading / empty）全靠其中的状态下拉驱动——不带这个参数，`setState` 找不到
+ * `STATE_SELECT`，那五个场景会直接超时失败。
+ */
 async function open(page: Page, route: string, waitFor: string = NAV_SELECTOR): Promise<void> {
-  await page.goto(BASE + route, { waitUntil: 'load' })
+  const url = new URL(BASE + route)
+  url.searchParams.set('proto', '1')
+  await page.goto(url.toString(), { waitUntil: 'load' })
   await page.waitForSelector(waitFor, { timeout: 15000 })
   await page.waitForFunction('document.fonts.status === "loaded"', null, { timeout: 6000 }).catch(() => {})
   await page.waitForTimeout(120)

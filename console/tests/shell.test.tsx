@@ -5,6 +5,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { routes } from '../src/app/routes'
+import { PROTO_STORAGE_KEY } from '../src/app/GlobalBar'
 import { SystemStateProvider, useMeetings, useSystemState } from '../src/app/SystemStatus'
 
 /**
@@ -117,7 +118,21 @@ describe('AppShell · 左栏与路由', () => {
 })
 
 describe('AppShell · 顶栏', () => {
-  test('保留「原型 · 全部数字为示例」标记', async () => {
+  // 原型控件默认不渲染，靠 ?proto=1 调出来后记在 sessionStorage 里
+  // （见 src/app/GlobalBar.tsx 的 useProtoControls）。这里直接写存储，
+  // 因为 renderApp 用的是内存路由，改不了 jsdom 的 window.location.search。
+  beforeEach(() => sessionStorage.setItem(PROTO_STORAGE_KEY, '1'))
+  afterEach(() => sessionStorage.removeItem(PROTO_STORAGE_KEY))
+
+  test('默认不渲染原型控件——它们是开发脚手架，不该出现在运维人员的界面里', async () => {
+    sessionStorage.removeItem(PROTO_STORAGE_KEY)
+    renderApp('/meetings')
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
+    expect(screen.queryByText('原型 · 全部数字为示例')).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /系统状态/ })).toBeNull()
+  })
+
+  test('带上 ?proto=1 之后保留「原型 · 全部数字为示例」标记', async () => {
     renderApp('/meetings')
     expect(await screen.findByText('原型 · 全部数字为示例')).toBeInTheDocument()
     // 同上：等首轮请求落地再结束，不留悬空的状态更新告警。
@@ -183,6 +198,11 @@ describe('AppShell · 顶栏', () => {
 })
 
 describe('SystemStatus · nas-down 必须体现在数据里', () => {
+  // 这三条测的是数据层，但都借顶栏那个状态下拉来切换形态，而它默认不渲染
+  // （见 src/app/GlobalBar.tsx 的 useProtoControls），所以同样要先把标志打开。
+  beforeEach(() => sessionStorage.setItem(PROTO_STORAGE_KEY, '1'))
+  afterEach(() => sessionStorage.removeItem(PROTO_STORAGE_KEY))
+
   test('nas-down：受影响会议的保留窗口清零、授权撤下——不是只挂一条横幅', async () => {
     const user = userEvent.setup()
     renderApp('/meetings', 'ok')
