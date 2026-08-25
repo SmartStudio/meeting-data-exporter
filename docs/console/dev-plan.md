@@ -368,7 +368,7 @@ F7 的五个缺口：只读角色 · 移动端卡片化降级 · 新建定时任
 | **C2** | 同优先级的平局规则未定义 | 现有引擎「同优先级 deny 优先」；spec 只说「第一条命中的说了算」，没说平局 | 补进 spec §5.1：同优先级按 `id` 升序（建得早的先） | ✅ 已定 |
 | **C3** | 规则主体语义不同 | 现有 `subject_type/subject_value` 只按 **user** 匹配；控制台三栈里 fetch/archive **无主体**（系统级），allow 栈的主体是**采集程序**不是人 | `subject_type` 增加 `program` 取值；fetch/archive 两栈主体列留空并在引擎里显式忽略 | ✅ 已定 |
 | **C4** | 条件表示法不同 | `resource_expr` 是表达式；控制台产出 `{join, conds:[{f,op,v}]}` | 换表示法（backend-gap §3 已判）。**不做双向转换**——那会长期漏语义 | ✅ 已定 |
-| **C5** | **`dept` 主持人部门没有数据源** | `policy/engine.ts` 明写「department / role 需组织架构数据，属后续能力」 | 要么接企微通讯录 API（新增一块工作），要么**从规则编辑器里先撤掉这个字段**。推荐后者：它只是六个字段之一，撤掉不影响形态 | 📌 改为 R0 前置任务，不删字段 |
+| **C5** | **`dept` 主持人部门没有数据源** | `policy/engine.ts` 明写「department / role 需组织架构数据，属后续能力」 | 要么接企微通讯录 API（新增一块工作），要么**从规则编辑器里先撤掉这个字段**。推荐后者：它只是六个字段之一，撤掉不影响形态 | ✅ **已定（2026-08-25）：R0 不做**——企微自建应用没真建（`.env` 里是占位符），接通讯录无从谈起。按 spec §5.3 的降级路径走：字段可见、禁用、引擎显式判不匹配 |
 | **C6** | **`dur` 会议时长其实可算，但被过期注释封着** | `tencent/records.ts` 的 `meetingEndTime()` 已从 `record_files[].record_end_time` 聚合出真实结束时间（`d191f5b`，2026-08-21）；但 `domain/types.ts` 上「恒等于 startTime、本次未做」的注释停在 `f00406b`（2026-07-21），`policy/expr.ts` 也据此仍拒绝 `end_time` | 清掉过期注释，在 `expr.ts` 开放 `end_time`；**M3.5 用真实响应确认 `record_end_time` 确实存在**——否则会回落到 `media_start_time`，时长恒为 0 | ✅ **已闭合**：注释已清，`d191f5b` 已从 `record_files[].record_end_time` 聚合出真实结束时间，M3.5 联调确认字段存在 |
 | **C7** | **资产类型出现了第三套名字** | `spec.md` §6.2 的「腾讯侧类型」列有两行与 M3.5 实测不符：`transcript` 实际是 `meeting_summary`，`ai_transcript` 实际是 `ai_meeting_transcripts` | 改 spec，**控制台直接用 `ASSET_KEY_TO_GATEWAY_TYPE` 这一份映射** | ✅ 已定 |
 
