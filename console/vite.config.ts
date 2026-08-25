@@ -11,7 +11,23 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
-  server: { port: 5273 },
+  // 开发期把 /api 转发给本地网关。控制台的管理员接口（console/src/api/admin.ts）
+  // 用相对路径 + httpOnly cookie 认会话，不走 mock 层，所以 dev server 必须能把
+  // 这些请求交出去——否则它按自己的路由处理，浏览器里连登录都走不到。
+  //
+  // 走同源转发而不是让前端直接请求 http://localhost:3000，是因为会话 cookie 是
+  // SameSite=Strict：跨源请求浏览器不会带上它，直连的话登录完立刻又变成未登录。
+  //
+  // 只影响 `vite dev`，不进构建产物：生产部署是反向代理把前端静态文件与网关
+  // 挂在同一个源下（docs/deploy.md §1），本来就同源，不需要这层。
+  server: {
+    port: 5273,
+    proxy: {
+      // 网关默认 :3000（src/index.ts 读 PORT）。换端口时设 MDE_GATEWAY_ORIGIN，
+      // 不用改这个文件。
+      '/api': { target: process.env.MDE_GATEWAY_ORIGIN ?? 'http://localhost:3000' },
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: true,
