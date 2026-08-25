@@ -194,6 +194,7 @@ test('用例1：单个资产归档成功——archived_assets 有记录、哈希
       sidecar: 'written',
       // 归档栈判的：规则命中、判了一个目录模板
       skipped: false,
+      undecidable: false,
       reason: expect.stringContaining('归档规则 #1「全部归档」决定：归档到'),
     })
 
@@ -864,6 +865,75 @@ test('T9：archivePendingMeetings 把「判为不归档」单独计数，且不�
       // 但每一场都要留下一条能查的理由——一场会议悄悄没被归档是最难排查的现象
       expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('m-sk-1'))).toBe(true)
       expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('m-sk-2'))).toBe(true)
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+/**
+ * 「规则就是这么定的」与「判不出来」在轮末汇总里必须分得开。
+ *
+ * 合成一个 skipped 的话，一条写坏的规则（命中它的会议一场都归不了档，而且不会
+ * 自己好转）在汇总行里与「今天没有会议需要归档」长得一模一样。
+ */
+test('T9：写坏的模板计进 undecidable，规则判 skip 不计', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedCompletedAsset(pool, { meetingId: 'm-bad', targetPath: 'b.bin' })
+      await writeLocalFile(localRoot, 'b.bin', 'x')
+
+      // {年份} 不是合法占位符——原样保留会产出一个字面带花括号的目录，看起来像成功了
+      const deps: ArchiveDeps = {
+        archives, localRoot, nasRoot, getMeeting: stubMeeting,
+        listArchiveRules: async () => [archiveRule('{年份}/{月}/{会议号}/')],
+      }
+      const result = await archivePendingMeetings(deps, () => 35_000)
+
+      expect(result.skipped).toBe(1)
+      expect(result.undecidable).toBe(1)
+      // 判不出来仍然不是「归档失败」：它不进退出码，理由见 archive.ts
+      expect(result.failed).toBe(0)
+    })
+
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedCompletedAsset(pool, { meetingId: 'm-skip', targetPath: 's.bin' })
+      await writeLocalFile(localRoot, 's.bin', 'y')
+
+      // 一条规则都没有 → 走兜底 skip。这是设计如此，不是有事要办
+      const deps: ArchiveDeps = {
+        archives, localRoot, nasRoot, getMeeting: stubMeeting,
+        listArchiveRules: async () => [],
+      }
+      const result = await archivePendingMeetings(deps, () => 36_000)
+
+      expect(result.skipped).toBe(1)
+      expect(result.undecidable).toBe(0)
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test('T9：会议元数据取不到计进 undecidable——那是采集侧的数据不一致，不是规则的决定', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedCompletedAsset(pool, { meetingId: 'm-nometa', targetPath: 'n.bin' })
+      await writeLocalFile(localRoot, 'n.bin', 'z')
+
+      const deps: ArchiveDeps = {
+        archives, localRoot, nasRoot,
+        getMeeting: async () => null,
+        listArchiveRules,
+      }
+      const result = await archivePendingMeetings(deps, () => 37_000)
+
+      expect(result.skipped).toBe(1)
+      expect(result.undecidable).toBe(1)
+      expect(result.newlyArchived).toBe(0)
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('m-nometa'))).toBe(true)
     })
   } finally {
     warnSpy.mockRestore()

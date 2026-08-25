@@ -86,6 +86,10 @@ export interface WorkerRound {
      *  归档栈的兜底就是 skip，规则没配就什么都不归档是设计如此（spec §4.6）。
      *  每一场都带着理由 warn 过，见 archive.ts 的 archivePendingMeetings。 */
     skipped: number
+    /** 上面那 `skipped` 里**判不出来**的那部分：模板写坏了、元数据取不到。
+     *  非零就是有事要办——一条写坏的规则会让命中它的会议一场都归不了档，
+     *  而且不会自己好转。仍然不进退出码，理由见 archive.ts。 */
+    undecidable: number
   }
 }
 
@@ -547,7 +551,8 @@ async function main(): Promise<number> {
     console.log(
       `archived newlyArchived=${res.archived.newlyArchived} ` +
         `verificationFailed=${res.archived.verificationFailed} failed=${res.archived.failed} ` +
-        `sidecarFailed=${res.archived.sidecarFailed} skipped=${res.archived.skipped}`,
+        `sidecarFailed=${res.archived.sidecarFailed} skipped=${res.archived.skipped} ` +
+        `undecidable=${res.archived.undecidable}`,
     )
     // 归档失败（archiveMeeting 本身抛出）与下载失败一样必须让退出码变非零——
     // dev-plan.md 的全局约束把"归档失败"列为最高级别告警，一个盯着 cron/systemd

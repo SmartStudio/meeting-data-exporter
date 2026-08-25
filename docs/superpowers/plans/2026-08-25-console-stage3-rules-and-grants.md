@@ -97,7 +97,7 @@ spec §5.3 原本要求「不删 `dept` 字段，把接企微通讯录 API 立�
 | 栈 | 主体 | effect 取值 | asset_types | 兜底 |
 | --- | --- | --- | --- | --- |
 | `fetch` | **无**（系统级） | `'all'` \| `'skip'` | 拉哪几类（`'all'` 时为 `['*']`） | `skip` |
-| `archive` | **无**（系统级） | **目录模板**，如 `/nas/meetings-finance/{年}/` | 不用 | `skip` |
+| `archive` | **无**（系统级） | **目录模板，相对 `MDE_NAS_ROOT`**，如 `meetings-finance/{年}/` | 不用 | `skip` |
 | `allow` | **采集程序**（`service_accounts.id`） | `'allow'` \| `'deny'` | 准许取走哪几类 | **`deny`** |
 
 > **allow 栈的兜底是 deny，另两栈是 skip**——第三栈是数据出企业边界的闸门，默认必须是关的

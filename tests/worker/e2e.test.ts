@@ -291,7 +291,7 @@ describe('runWorkerOnce', () => {
         manifests: { written: 1, skipped: 0, failed: 0 },
         // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
         // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
-        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0 },
+        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0, undecidable: 0 },
       })
 
       // ① 文件真的落在归档区，且路径是按 <year>/<month>/<cleanDirName>/<文件名> 拼出来的那个
@@ -575,7 +575,7 @@ describe('runWorkerOnce', () => {
       expect(res.tasks).toBe(0)
 
       // 两个 sub_meeting_id 都被归档了，不是只有一个
-      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0 })
+      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0, undecidable: 0 })
 
       const archives = createArchivesStore(pool)
       expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's1', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)

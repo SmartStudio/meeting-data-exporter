@@ -80,6 +80,9 @@ import {
 import { archiveStateKey, type ArchivesStore, type MeetingArchiveRecord } from '../store/archives'
 import type { GrantsStore, MeetingGrant, MeetingKey } from '../store/grants'
 import type { PolicyStore } from '../store/policy'
+// 保留窗口的定义只有一处：到期清理按它挑候选，清单按它答「还剩几天」。
+// 两处各存一份公式的话，清单说「还剩 3 天」而清理昨天就删了文件
+import { expiresAt } from './retention'
 
 // ── 输出形状 ──────────────────────────────────────────────────
 
@@ -227,20 +230,6 @@ export interface VisibilityDeps {
 }
 
 // ── 到期时刻 ──────────────────────────────────────────────────
-
-/**
- * 本地文件的到期时刻。
- *
- * **逐字照抄 `src/worker/retention.ts` 的 `expiresAt()`**（那边是私有的，
- * 到期清理按它挑候选）。两处必须给出同一个答案：清单上写着「还剩 3 天」而清理
- * 昨天就把文件删了，是最难解释的一种不一致。**这个公式将来要改，两个文件一起改。**
- *
- * `extendedDays` 不能漏——漏掉的话每一场被管理员延长过保留期的会议都会被误报为
- * 即将到期（延长 60 天的会议会显示成早就该到期了）。
- */
-function expiresAt(rec: MeetingArchiveRecord): number {
-  return rec.archivedAt + (rec.retentionDays + rec.extendedDays) * 86400
-}
 
 // ── 求交 ──────────────────────────────────────────────────────
 

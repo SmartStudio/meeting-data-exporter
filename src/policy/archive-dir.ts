@@ -59,8 +59,20 @@ export interface ArchiveDirContext {
 }
 
 export type ArchiveDirOutcome =
-  | { archive: true; nasDir: string; reason: string }
-  | { archive: false; nasDir?: undefined; reason: string }
+  | { archive: true; nasDir: string; reason: string; undecidable?: undefined }
+  /**
+   * 不归档。`undecidable` 把这里面的两类分开——**它们在运维上完全不同**：
+   *
+   * - `false`：**规则就是这么定的**（命中一条 `skip`，或一条都没匹配走兜底）。
+   *   正常运转，`skip` 本来就是归档栈的兜底（spec §4.6）。
+   * - `true`：**判不出来**。模板渲染不出合法路径（管理员的规则写坏了），
+   *   或压根没法求值。归档栈的意图没能被执行，命中这条规则的会议**一场都归不了档**，
+   *   而且不会自己好转。
+   *
+   * 合并成一个数字的话，一条写坏的规则在轮末汇总里与「今天没有会议需要归档」
+   * 长得一模一样。
+   */
+  | { archive: false; nasDir?: undefined; reason: string; undecidable: boolean }
 
 /** 模板里可用的占位符。理由文案与规则编辑器的提示都从这里取，不各写一份 */
 export const ARCHIVE_DIR_PLACEHOLDERS = ['年', '月', '会议号', '标题'] as const
@@ -168,7 +180,8 @@ function validate(rendered: string, nasRoot: string): { ok: true; nasDir: string
 /**
  * 归档栈的判定 → 这场会议归档到哪个目录，或者为什么不归档。
  *
- * 判 `skip`（含兜底）与模板不合法**都返回 `archive: false`**，区别只在 `reason`。
+ * 判 `skip`（含兜底）与模板不合法**都返回 `archive: false`**，但 `undecidable` 不同：
+ * 前者是规则就这么定的，后者是规则的意图没能被执行。
  * 调用方不需要分辨这两者：对归档流水线来说它们是同一件事——这一轮不搬这场会议，
  * 而且有一句可查的理由。**任何「判断不出来」的路径都要落到安全侧并留下理由**，
  * 一场会议悄悄没被归档是这个系统里最难排查的一类现象。
@@ -177,14 +190,14 @@ export function resolveArchiveDir(decision: ArchiveDecision, ctx: ArchiveDirCont
   if (decision.effect === 'skip') {
     // 判定理由已经是一句人话（「……决定：不归档」/「没有任何归档规则匹配……」），
     // 不在外面再包一层，包了只会让同一件事有两种说法。
-    return { archive: false, reason: decision.reason }
+    return { archive: false, reason: decision.reason, undecidable: false }
   }
 
   const rendered = renderArchiveTemplate(decision.effect, ctx)
-  if (!rendered.ok) return { archive: false, reason: badTemplate(decision, rendered.problem) }
+  if (!rendered.ok) return { archive: false, reason: badTemplate(decision, rendered.problem), undecidable: true }
 
   const checked = validate(rendered.path, ctx.nasRoot)
-  if (!checked.ok) return { archive: false, reason: badTemplate(decision, checked.problem) }
+  if (!checked.ok) return { archive: false, reason: badTemplate(decision, checked.problem), undecidable: true }
 
   return { archive: true, nasDir: checked.nasDir, reason: decision.reason }
 }

@@ -3359,10 +3359,10 @@ let RULES = [
     note:'停用前命中 18 场，误伤了几场短的评审会', author:'陈运维', on:'7 月 2 日' },
 
   { id:'a200', kind:'archive', pri:200, enabled:true, join:'and',
-    conds:[{ f:'dept', op:'in', v:['财务部'] }], effect:'/nas/meetings-finance/{年}/',
+    conds:[{ f:'dept', op:'in', v:['财务部'] }], effect:'meetings-finance/{年}/',
     note:'财务资料独立目录，NAS 侧另有访问控制', author:'赵财务', on:'7 月 8 日' },
   { id:'a100', kind:'archive', pri:100, enabled:true, join:'and',
-    conds:[], effect:'/nas/meetings/{年}/{月}/{会议号}-{标题}/',
+    conds:[], effect:'meetings/{年}/{月}/{会议号}-{标题}/',
     note:'兜底规则 · 按内容哈希去重，重复归档不会产生第二份', author:'陈运维', on:'6 月 12 日' },
 
   { id:'p200', kind:'allow', pri:200, enabled:true, join:'and',
@@ -3484,7 +3484,7 @@ function blankRule(kind) {
   const max = Math.max(0, ...RULES.filter(r => r.kind === kind).map(r => r.pri));
   return { id: 'r' + (RULES.length + 1) + '-' + kind, kind, pri: max + 100, enabled: true, join: 'and',
     conds: [{ f: 'title', op: 'has', v: '' }],
-    effect: kind === 'fetch' ? 'all' : kind === 'allow' ? 'allow' : '/nas/meetings/{年}/{月}/{会议号}-{标题}/',
+    effect: kind === 'fetch' ? 'all' : kind === 'allow' ? 'allow' : 'meetings/{年}/{月}/{会议号}-{标题}/',
     assets: kind === 'allow' ? ['summary', 'transcript'] : undefined,
     note: '', author: '陈运维', on: '今天', isNew: true };
 }

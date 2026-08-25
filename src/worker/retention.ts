@@ -80,7 +80,18 @@ export interface CleanupExecuted {
   failed: Array<{ meetingId: string; subMeetingId: string; reason: string }>
 }
 
-function expiresAt(rec: MeetingArchiveRecord): number {
+/**
+ * 本地文件的到期时刻。**这是保留窗口的唯一定义处。**
+ *
+ * 导出而不是留成私有，是因为采集清单（`visibility.ts`）也要回答「还剩几天」。
+ * 两处若各存一份公式，清单上写着「还剩 3 天」而到期清理昨天就把文件删了——
+ * 这是最难向人解释的一种不一致，而且只在延长过保留期的会议上才现形。
+ * 靠注释叮嘱「改的时候两个文件一起改」挡不住，所以只留一份。
+ *
+ * `extendedDays` 是这个公式里最容易被漏掉的一项：漏掉的话，每一场被管理员
+ * 延长过保留期的会议都会被算成早就该到期了。
+ */
+export function expiresAt(rec: MeetingArchiveRecord): number {
   return rec.archivedAt + (rec.retentionDays + rec.extendedDays) * 86400
 }
 

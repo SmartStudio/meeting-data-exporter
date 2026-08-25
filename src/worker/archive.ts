@@ -120,6 +120,10 @@ async function decideArchiveDir(
   if (meeting === null) {
     return {
       archive: false,
+      // undecidable：这不是「规则说不归档」，是 meeting_assets 里有资产而 meetings
+      // 表里没有对应行——采集侧的数据不一致。它不会自己好转，也不该和正常的
+      // skip 装在同一个计数里
+      undecidable: true,
       reason:
         `读不到会议 ${meetingId}/${subMeetingId || '-'} 的元数据（meetings 表里没有这一行，或查库失败）；` +
         '归档规则的条件与目录模板都要会议字段，判不出该归档到哪里，按不归档处理',
@@ -232,6 +236,16 @@ export interface ArchiveOutcome {
    * 这个是「按规则本来就不该归」。合并成一个数字会让真正的故障被正常的 skip 淹没。
    */
   skipped: boolean
+  /**
+   * `skipped` 为 true 时，是**判不出来**（模板写坏了、元数据取不到）还是
+   * **规则就是这么定的**（命中 skip、走兜底）。`skipped` 为 false 时恒为 false。
+   *
+   * 分开是因为两者在运维上完全不同：后者是正常运转（归档栈的兜底本来就是 skip），
+   * 前者是一条规则的意图没能被执行、命中它的会议一场都归不了档、而且不会自己好转。
+   * 合在一个数字里的话，一条写坏的规则在轮末汇总里与「今天没有会议需要归档」
+   * 长得一模一样。
+   */
+  undecidable: boolean
   /**
    * 判定理由，一句人话，**归不归档都有**。
    *
@@ -496,6 +510,7 @@ export async function archiveMeeting(
       fullyArchived: false,
       sidecar: 'skipped',
       skipped: true,
+      undecidable: dir.undecidable,
       reason: dir.reason,
     }
   }
@@ -565,6 +580,7 @@ export async function archiveMeeting(
   return {
     meetingId, subMeetingId, newlyArchived, verificationFailed, fullyArchived, sidecar,
     skipped: false,
+    undecidable: false,
     reason: dir.reason,
   }
 }
@@ -588,6 +604,11 @@ export interface ArchiveRoundOutcome {
    *  都不归档是设计如此（spec §4.6 兜底 skip）。但它也不能只是一个数字：每一场都
    *  带着一句理由 console.warn，见 archivePendingMeetings 里的说明。 */
   skipped: number
+  /** 上面那 `skipped` 里**判不出来**的那部分（阶段 3 · T9 之后拆出来）：模板写坏了、
+   *  元数据取不到。**这个数字非零就是有事要办**——一条写坏的规则会让命中它的会议
+   *  一场都归不了档，而且不会自己好转。它仍然不进退出码：让它进的话，一场永远
+   *  匹配不上的会议会把退出码永久钉成非零，那种警报很快就没人看了。 */
+  undecidable: number
 }
 
 /**
@@ -607,7 +628,7 @@ export async function archivePendingMeetings(
 ): Promise<ArchiveRoundOutcome> {
   const pending = await deps.archives.listMeetingsNeedingArchive()
   const result: ArchiveRoundOutcome = {
-    newlyArchived: 0, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0,
+    newlyArchived: 0, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0, undecidable: 0,
   }
   // 没有待办就不必查规则——与 listMeetingsNeedingArchive 自带的那个早退同一个道理
   if (pending.length === 0) return result
@@ -625,6 +646,7 @@ export async function archivePendingMeetings(
       if (outcome.sidecar === 'failed') result.sidecarFailed++
       if (outcome.skipped) {
         result.skipped++
+        if (outcome.undecidable) result.undecidable++
         // 判为不归档必须留痕，哪怕它是正常的。**一场会议悄悄没被归档，是这个系统里
         // 最难排查的一类现象**：库里没有记录、NAS 上没有目录、日志里没有一行，
         // 唯一的线索就是这句理由。
