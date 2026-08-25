@@ -1,10 +1,11 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { MANIFEST_SCHEMA_VERSION, type ArchivedManifestFile, type Meeting, type MeetingMetaFile } from '@yaowu/mde-engine'
 import { withTestDb } from '../helpers/testdb'
 import { createArchivesStore, type ArchivesStore } from '../../src/store/archives'
 import { archiveMeeting, archivePendingMeetings, type ArchiveDeps } from '../../src/worker/archive'
@@ -29,6 +30,10 @@ interface SeedAssetInput {
   remoteId?: string
   fileType?: string
   targetPath: string
+  /** 平台声明的大小——NAS sidecar 的 `bytes` 取的就是这一列（不是 bytes_written） */
+  bytesExpected?: number | null
+  /** 下载器在本地算的整文件 sha256；视频/音频那一栏本来就是 null */
+  contentHash?: string | null
 }
 
 /** 直接写 meeting_assets：这张表不归 ArchivesStore/archiveMeeting 写，只读用途 */
@@ -40,13 +45,69 @@ async function seedCompletedAsset(pool: Pool, input: SeedAssetInput): Promise<vo
     remoteId = 'remote-1',
     fileType = 'mp4',
     targetPath,
+    bytesExpected = null,
+    contentHash = null,
   } = input
   await pool.execute(
     `INSERT INTO meeting_assets
-       (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, bytes_written, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'completed', ?, 0, 1000, 1000)`,
-    [meetingId, subMeetingId, assetType, remoteId, fileType, targetPath],
+       (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path,
+        bytes_written, bytes_expected, content_hash, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'completed', ?, 0, ?, ?, 1000, 1000)`,
+    [meetingId, subMeetingId, assetType, remoteId, fileType, targetPath, bytesExpected, contentHash],
   )
+}
+
+/** 直接写一行**终态但没拿到**的资产（skipped / dead）——US-6.2 第三条验收标准的输入 */
+async function seedMissingAsset(
+  pool: Pool,
+  input: { meetingId: string; assetType: string; remoteId: string; fileType?: string; status: 'skipped' | 'dead'; lastError: string },
+): Promise<void> {
+  const { meetingId, assetType, remoteId, fileType = '', status, lastError } = input
+  await pool.execute(
+    `INSERT INTO meeting_assets
+       (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, last_error, created_at, updated_at)
+     VALUES (?, '', ?, ?, ?, ?, ?, 1000, 1000)`,
+    [meetingId, assetType, remoteId, fileType, status, lastError],
+  )
+}
+
+// 2026-08-20T09:30:00Z——手算的整数秒，好让 sidecar 里的期望值可以手算复核
+const MEETING_START = Date.UTC(2026, 7, 20, 9, 30) / 1000
+
+/**
+ * 默认的会议元数据来源。`ArchiveDeps.getMeeting` 是**必填**的（不是可选的测试缝）：
+ * 忘了接线的后果不是报错而是 NAS 上留下一串只有 ID 的 sidecar——正是 US-6.2 要消灭的
+ * 那个失效形态，所以让编译器盯着，不留缺省值。
+ */
+function stubMeeting(meetingId: string, subMeetingId: string): Promise<Meeting | null> {
+  return Promise.resolve({
+    meetingId,
+    subMeetingId,
+    meetingCode: '881-123-40',
+    subject: '周会 / Q3 复盘',
+    hostUserId: 'u-host',
+    startTime: MEETING_START,
+    endTime: MEETING_START + 3600,
+  })
+}
+
+/** 手算：nasDirFor 的规则是 <nasRoot>/<UTC 年>/<UTC 月>/<meetingId>[_<subMeetingId>] */
+function expectedNasDir(nasRoot: string, meetingId: string, archivedAtSec: number): string {
+  const d = new Date(archivedAtSec * 1000)
+  return join(nasRoot, String(d.getUTCFullYear()), String(d.getUTCMonth() + 1).padStart(2, '0'), meetingId)
+}
+
+async function readJson<T>(path: string): Promise<T> {
+  return JSON.parse(await readFile(path, 'utf8')) as T
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await readFile(path)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function writeLocalFile(localRoot: string, targetPath: string, content: string): Promise<void> {
@@ -76,7 +137,7 @@ test('用例1：单个资产归档成功——archived_assets 有记录、哈希
     await seedCompletedAsset(pool, { meetingId: 'm-1', targetPath: '2026/08/dir/note.txt' })
     await writeLocalFile(localRoot, '2026/08/dir/note.txt', 'hello world')
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
     const outcome = await archiveMeeting(deps, 'm-1', '', 5000)
 
     expect(outcome).toEqual({
@@ -85,6 +146,8 @@ test('用例1：单个资产归档成功——archived_assets 有记录、哈希
       newlyArchived: 1,
       verificationFailed: 0,
       fullyArchived: true,
+      // 整场归档完成的同一处判定里顺带写出 NAS 那份自解释 sidecar（US-6.2）
+      sidecar: 'written',
     })
 
     const assets = await archives.listArchivedAssetsForMeeting('m-1', '')
@@ -113,7 +176,7 @@ test('用例2：会议的全部 completed 资产都归档成功 → meeting_arch
     // 手算复核，而不是从实现里抄回来的（跟 tests/worker/e2e.test.ts 的做法一致）。
     const ARCHIVED_AT = Date.UTC(2026, 7, 24) / 1000
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
     const outcome = await archiveMeeting(deps, 'm-2', '', ARCHIVED_AT)
 
     expect(outcome.newlyArchived).toBe(2)
@@ -137,7 +200,7 @@ test('用例2b：default_retention_days 设置后，新归档的会议采用该�
     await seedCompletedAsset(pool, { meetingId: 'm-2b', targetPath: 'a.txt' })
     await writeLocalFile(localRoot, 'a.txt', 'x')
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
     await archiveMeeting(deps, 'm-2b', '', 6000)
 
     expect((await archives.findMeetingArchive('m-2b', ''))?.retentionDays).toBe(90)
@@ -161,7 +224,7 @@ test('用例3：一个资产哈希校验失败（NAS 写入内容与本地不一
       return realSha256(path)
     }
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot, hashFile }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, hashFile, getMeeting: stubMeeting }
     const outcome = await archiveMeeting(deps, 'm-3', '', 7000)
 
     expect(outcome.newlyArchived).toBe(1)
@@ -186,7 +249,7 @@ test('用例4：对已经全部归档过的会议重跑一次 → newlyArchived=
     await seedCompletedAsset(pool, { meetingId: 'm-4', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'video.mp4' })
     await writeLocalFile(localRoot, 'video.mp4', 'content-for-rerun-test')
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
     const first = await archiveMeeting(deps, 'm-4', '', 8000)
     expect(first.newlyArchived).toBe(1)
     expect(first.fullyArchived).toBe(true)
@@ -220,7 +283,7 @@ test('用例5：分两轮跑——第一轮部分资产完成、第二轮剩余�
     await seedCompletedAsset(pool, { meetingId: 'm-5', assetType: 'video', remoteId: 'r-a', fileType: 'mp4', targetPath: 'a.mp4' })
     await writeLocalFile(localRoot, 'a.mp4', 'asset A content')
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
     const round1 = await archiveMeeting(deps, 'm-5', '', 9000)
     expect(round1.newlyArchived).toBe(1)
     expect(round1.verificationFailed).toBe(0)
@@ -250,7 +313,7 @@ test('NAS 写得太久（注入一个小超时模拟挂住的挂载）时归档�
     await seedCompletedAsset(pool, { meetingId: 'm-slow-nas', targetPath: 'slow/video.mp4' })
     await writeLocalFile(localRoot, 'slow/video.mp4', big)
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
     await expect(archiveMeeting({ ...deps, nasWriteTimeoutMs: 1 }, 'm-slow-nas', '', 11_000)).rejects.toThrow(
       /timed out/,
     )
@@ -292,7 +355,7 @@ test('archivePendingMeetings：一场会议的 archiveMeeting 抛出不连累其
       return realSha256(path)
     }
 
-    const deps: ArchiveDeps = { archives, localRoot, nasRoot, hashFile }
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, hashFile, getMeeting: stubMeeting }
     const result = await archivePendingMeetings(deps, () => 10_000)
 
     expect(result.newlyArchived).toBe(2) // m-ok-1、m-ok-2 都正常归档，没有被 m-throws 连累
@@ -307,4 +370,316 @@ test('archivePendingMeetings：一场会议的 archiveMeeting 抛出不连累其
     expect(await archives.findMeetingArchive('m-ok-2', '')).not.toBeNull()
     expect(await archives.findMeetingArchive('m-throws', '')).toBeNull()
   })
+})
+
+// ---------------------------------------------------------------------------
+// NAS 上那份自解释 sidecar（US-6.2）
+//
+// 为什么 NAS 那份要独立生成、而不是把本地那两个文件搬过去：
+// ① NAS 那份要带**归档特有**的信息（nasPath / nasHash / archivedAt / retentionDays /
+//    nasDir），本地那份根本没有；
+// ② 本地那份可能压根不存在（写失败过，或这场会议早于 sidecar 上线就归过档）。
+// 更要紧的是**本地那份 30 天后会被到期清理删掉**（src/worker/retention.ts），
+// 长期活下来的是 NAS 那一份——US-6.2 那句「数年后在 NAS 上翻到该目录」说的就是它。
+// ---------------------------------------------------------------------------
+
+/** sha256("summary text")——用一个像样的定值，本文件不验证哈希算法本身 */
+const SUM_SHA = 'a'.repeat(64)
+
+test('sidecar①：整场归档完成后 NAS 目录里出现 meeting.json 与 _manifest.json，字段与库里的事实逐条对得上', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    // 两个已完成资产（文本类有哈希、视频没有）+ 一个确认取不到的资产
+    await seedCompletedAsset(pool, {
+      meetingId: 'm-side', assetType: 'meeting_summary', remoteId: 'r-sum', fileType: 'txt',
+      targetPath: '2026/08/d/summary.txt', bytesExpected: 12, contentHash: SUM_SHA,
+    })
+    await seedCompletedAsset(pool, {
+      meetingId: 'm-side', assetType: 'video', remoteId: 'r-vid', fileType: 'mp4',
+      targetPath: '2026/08/d/video.mp4', bytesExpected: 18, contentHash: null,
+    })
+    await seedMissingAsset(pool, {
+      meetingId: 'm-side', assetType: 'ai_minutes', remoteId: 'r-ai',
+      status: 'skipped', lastError: 'download_not_allowed',
+    })
+    await writeLocalFile(localRoot, '2026/08/d/summary.txt', 'summary text')
+    await writeLocalFile(localRoot, '2026/08/d/video.mp4', 'binary-ish-content')
+
+    const ARCHIVED_AT = Date.UTC(2026, 7, 24) / 1000
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
+    const outcome = await archiveMeeting(deps, 'm-side', '', ARCHIVED_AT)
+
+    expect(outcome.fullyArchived).toBe(true)
+    expect(outcome.sidecar).toBe('written')
+
+    const nasDir = expectedNasDir(nasRoot, 'm-side', ARCHIVED_AT)
+
+    // ① meeting.json：这一场会议的完整元数据，generatedBy 必须是 worker 那一侧的名字
+    const meta = await readJson<MeetingMetaFile>(join(nasDir, 'meeting.json'))
+    expect(meta).toEqual({
+      schemaVersion: MANIFEST_SCHEMA_VERSION,
+      meeting: {
+        meetingId: 'm-side', subMeetingId: '', meetingCode: '881-123-40',
+        subject: '周会 / Q3 复盘', hostUserId: 'u-host',
+        startTime: MEETING_START, endTime: MEETING_START + 3600,
+      },
+      generatedAt: ARCHIVED_AT,
+      generatedBy: 'mde-worker',
+    })
+
+    // ② _manifest.json：归档段 + 逐资产的 NAS 事实
+    const manifest = await readJson<ArchivedManifestFile>(join(nasDir, '_manifest.json'))
+    expect(manifest.schemaVersion).toBe(MANIFEST_SCHEMA_VERSION)
+    expect(manifest.meetingId).toBe('m-side')
+    expect(manifest.subMeetingId).toBe('')
+    expect(manifest.generatedBy).toBe('mde-worker')
+    expect(manifest.generatedAt).toBe(ARCHIVED_AT)
+
+    // 归档段与 meeting_archives 那一行同值——保留窗口的起点在两处必须是同一个数字，
+    // 不然拿着清单算"还有几天被清"的人会算出另一个日子
+    const archiveRow = (await archives.findMeetingArchive('m-side', ''))!
+    expect(manifest.archive).toEqual({
+      archivedAt: archiveRow.archivedAt,
+      retentionDays: archiveRow.retentionDays,
+      nasDir: archiveRow.nasDir,
+    })
+    expect(manifest.archive.nasDir).toBe(nasDir)
+
+    // 逐资产：nasPath / nasHash 必须与 archived_assets 表里记的一模一样
+    const archived = await archives.listArchivedAssetsForMeeting('m-side', '')
+    const byRemote = new Map(archived.map((a) => [a.remoteId, a]))
+    expect(manifest.assets.length).toBe(2)
+    // 顺序按入库顺序（id 升序），与引擎那份本地清单同一种排序
+    expect(manifest.assets.map((a) => a.remoteId)).toEqual(['r-sum', 'r-vid'])
+
+    const sum = manifest.assets[0]!
+    expect(sum).toEqual({
+      assetType: 'meeting_summary',
+      assetKey: 'transcript',          // 网关词汇 → 引擎 AssetKey，数年后翻清单的人未必有映射表
+      remoteId: 'r-sum',
+      fileType: 'txt',
+      fileName: 'summary.txt',
+      bytes: 12,                        // 取 bytes_expected（被校验过的），不是 bytes_written
+      sha256: SUM_SHA,                  // 本地下载时算的整文件哈希
+      nasPath: byRemote.get('r-sum')!.nasPath,
+      nasHash: byRemote.get('r-sum')!.nasHash,
+    })
+    // nasHash 是真的重新读回 NAS 那份文件算出来的，不是把本地那个值抄过去
+    expect(sum.nasHash).toBe(await realSha256(join(nasDir, '2026/08/d/summary.txt')))
+    expect(sum.nasPath).toBe(join(nasDir, '2026/08/d/summary.txt'))
+
+    const vid = manifest.assets[1]!
+    // 视频没有本地整文件哈希（如实 null），但 NAS 侧那一份**有**——归档链路本来就要
+    // 读回来校验一次，所以拿着这份清单核查 NAS 目录完整性时，视频也核得了
+    expect(vid.sha256).toBeNull()
+    expect(vid.nasHash).toBe(await realSha256(join(nasDir, '2026/08/d/video.mp4')))
+    expect(vid.bytes).toBe(18)
+    expect(vid.assetKey).toBe('video')
+
+    // ③ 确认取不到的资产显式标注原因（US-6.2 第三条验收标准）
+    expect(manifest.missing).toEqual([
+      { assetType: 'ai_minutes', assetKey: 'ai_minutes', remoteId: 'r-ai', status: 'skipped', reason: 'download_not_allowed' },
+    ])
+  })
+})
+
+test('sidecar②：会议元数据取不到时归档照常成功，meeting.json 里如实写 null 并留一行 warn', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedCompletedAsset(pool, { meetingId: 'm-nometa', targetPath: 'a.mp4', bytesExpected: 1 })
+      await writeLocalFile(localRoot, 'a.mp4', 'x')
+
+      const deps: ArchiveDeps = {
+        archives, localRoot, nasRoot,
+        // meetings 表里没有这一场（历史数据、或上游把行删了）
+        getMeeting: async () => null,
+      }
+      const outcome = await archiveMeeting(deps, 'm-nometa', '', 20_000)
+
+      // 归档本身是更重要的事：元数据取不到不能让整场会议判为归档失败
+      expect(outcome.fullyArchived).toBe(true)
+      expect(outcome.sidecar).toBe('written')
+      expect(await archives.findMeetingArchive('m-nometa', '')).not.toBeNull()
+
+      const nasDir = expectedNasDir(nasRoot, 'm-nometa', 20_000)
+      const meta = await readJson<MeetingMetaFile>(join(nasDir, 'meeting.json'))
+      // 主键那两个是我们自己知道的事实，照写；其余一律如实 null，不猜不伪造
+      expect(meta.meeting).toEqual({
+        meetingId: 'm-nometa', subMeetingId: '',
+        meetingCode: null, subject: null, hostUserId: null, startTime: null, endTime: null,
+      })
+      // 清单照写不误——原始 ID / 大小 / 校验值不依赖会议元数据
+      const manifest = await readJson<ArchivedManifestFile>(join(nasDir, '_manifest.json'))
+      expect(manifest.assets.length).toBe(1)
+
+      // 不静默：拿不到元数据这件事必须留痕
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('m-nometa'))).toBe(true)
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test('sidecar③：写 sidecar 抛错时归档仍然成功，meeting_archives 照样写入，且有 warn 留痕', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedCompletedAsset(pool, { meetingId: 'm-badmeta', targetPath: 'a.mp4', bytesExpected: 1 })
+      await writeLocalFile(localRoot, 'a.mp4', 'x')
+
+      const deps: ArchiveDeps = {
+        archives, localRoot, nasRoot, getMeeting: stubMeeting,
+        writeMeta: async () => { throw new Error('simulated sidecar write failure') },
+      }
+      const outcome = await archiveMeeting(deps, 'm-badmeta', '', 21_000)
+
+      // 关键：upsertMeetingArchive 那一行是**保留窗口开始计时的地方**。
+      // 写 sidecar 失败就跳过归档记录的话，这场会议每一轮都会被重新归档。
+      expect(outcome.fullyArchived).toBe(true)
+      expect(outcome.sidecar).toBe('failed')
+      const rec = await archives.findMeetingArchive('m-badmeta', '')
+      expect(rec).not.toBeNull()
+      expect(rec?.archivedAt).toBe(21_000)
+      expect(await archives.countArchivedAssets('m-badmeta', '')).toBe(1)
+
+      // 不许静默 .catch(() => {})——失败必须留痕
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('m-badmeta'))).toBe(true)
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test('sidecar④：NAS 写 sidecar 挂住时在有限时间内返回，归档不被卡死', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedCompletedAsset(pool, { meetingId: 'm-hang', targetPath: 'a.mp4', bytesExpected: 1 })
+      await writeLocalFile(localRoot, 'a.mp4', 'x')
+
+      const deps: ArchiveDeps = {
+        archives, localRoot, nasRoot, getMeeting: stubMeeting,
+        // 永不 resolve = 挂死的网络挂载：fs 调用不报错，就那么挂着。
+        // 超时归 archive.ts 自己包，不指望注入进来的实现自带（withFsTimeout 的
+        // 保证必须由调用方持有，否则换个实现这条保证就没了）。
+        writeMeta: () => new Promise<void>(() => {}),
+        // 300ms：够一个 1 字节文件在真实文件系统上复制 + 读回算哈希，
+        // 又不至于让这条用例真的等上生产默认的 10 分钟
+        nasWriteTimeoutMs: 300,
+      }
+      const started = Date.now()
+      const outcome = await archiveMeeting(deps, 'm-hang', '', 22_000)
+      const elapsed = Date.now() - started
+
+      expect(outcome.sidecar).toBe('failed')
+      expect(elapsed).toBeLessThan(10_000)      // 有限时间内返回，不是挂死
+      // 资产与归档记录都照常落库——挂住的只是 sidecar
+      expect(await archives.countArchivedAssets('m-hang', '')).toBe(1)
+      expect(await archives.findMeetingArchive('m-hang', '')).not.toBeNull()
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('timed out'))).toBe(true)
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
+}, 30_000)
+
+test('sidecar⑤：可重复调用——空转重跑不改动已写出的 sidecar，迟到的资产才触发一次内容正确的重写', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedCompletedAsset(pool, {
+      meetingId: 'm-idem', assetType: 'video', remoteId: 'r-1', fileType: 'mp4',
+      targetPath: 'a.mp4', bytesExpected: 3,
+    })
+    await writeLocalFile(localRoot, 'a.mp4', 'aaa')
+
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting }
+    const T1 = Date.UTC(2026, 7, 24) / 1000
+    const first = await archiveMeeting(deps, 'm-idem', '', T1)
+    expect(first.sidecar).toBe('written')
+
+    const nasDir = expectedNasDir(nasRoot, 'm-idem', T1)
+    const metaBytes = await readFile(join(nasDir, 'meeting.json'), 'utf8')
+    const manifestBytes = await readFile(join(nasDir, '_manifest.json'), 'utf8')
+
+    // 第二轮：什么都没变。sidecar 不该被重写——generatedAt 若跟着时钟走，
+    // 一份"内容一模一样、只有时间戳每轮都变"的清单会让 NAS 上的 mtime 天天跳，
+    // 也会让"这份清单是什么时候生成的"这个问题失去意义。
+    const second = await archiveMeeting(deps, 'm-idem', '', T1 + 3600)
+    expect(second.newlyArchived).toBe(0)
+    expect(second.sidecar).toBe('skipped')
+    expect(await readFile(join(nasDir, 'meeting.json'), 'utf8')).toBe(metaBytes)
+    expect(await readFile(join(nasDir, '_manifest.json'), 'utf8')).toBe(manifestBytes)
+
+    // 第三轮：一个迟到的资产（比如事后才产出的 AI 纪要）真的归档进来了 → 重写一次，
+    // 内容跟着库里的新事实走，而不是在旧清单上追加
+    await seedCompletedAsset(pool, {
+      meetingId: 'm-idem', assetType: 'ai_minutes', remoteId: 'r-2', fileType: 'txt',
+      targetPath: 'b.txt', bytesExpected: 5,
+    })
+    await writeLocalFile(localRoot, 'b.txt', 'bbbbb')
+    const T3 = Date.UTC(2026, 7, 24) / 1000 + 7200
+    const third = await archiveMeeting(deps, 'm-idem', '', T3)
+    expect(third.newlyArchived).toBe(1)
+    expect(third.sidecar).toBe('written')
+
+    const manifest = await readJson<ArchivedManifestFile>(join(nasDir, '_manifest.json'))
+    expect(manifest.assets.map((a) => a.remoteId)).toEqual(['r-1', 'r-2'])
+    // 先归档的那个资产的 NAS 事实一个字都没变（重写不是重算）
+    const before = JSON.parse(manifestBytes) as ArchivedManifestFile
+    expect(manifest.assets[0]).toEqual(before.assets[0]!)
+    expect(manifest.archive.archivedAt).toBe(T3)
+  })
+})
+
+test('sidecar⑥：部分归档（fullyArchived===false）时不写 sidecar——目录还没齐，一份声称齐了的清单比没有更糟', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedCompletedAsset(pool, { meetingId: 'm-part', assetType: 'video', remoteId: 'r-good', fileType: 'mp4', targetPath: 'good.bin' })
+    await seedCompletedAsset(pool, { meetingId: 'm-part', assetType: 'chat', remoteId: 'r-bad', fileType: 'txt', targetPath: 'bad.bin' })
+    await writeLocalFile(localRoot, 'good.bin', 'good content')
+    await writeLocalFile(localRoot, 'bad.bin', 'bad content')
+
+    // 与用例3 同一手法：让 bad.bin 在 NAS 侧的哈希对不上，这场会议就归不满
+    const hashFile = async (path: string): Promise<string> => {
+      if (path.startsWith(nasRoot) && path.endsWith('bad.bin')) return 'tampered-hash-does-not-match-local'
+      return realSha256(path)
+    }
+
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, hashFile, getMeeting: stubMeeting }
+    const outcome = await archiveMeeting(deps, 'm-part', '', 23_000)
+
+    expect(outcome.fullyArchived).toBe(false)
+    expect(outcome.sidecar).toBe('skipped')
+
+    const nasDir = expectedNasDir(nasRoot, 'm-part', 23_000)
+    expect(await exists(join(nasDir, 'meeting.json'))).toBe(false)
+    expect(await exists(join(nasDir, '_manifest.json'))).toBe(false)
+  })
+})
+
+test('sidecar⑦：archivePendingMeetings 把 sidecar 失败单独计数，且不算进"归档失败"', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedCompletedAsset(pool, { meetingId: 'm-agg-1', targetPath: 'x1.bin' })
+      await seedCompletedAsset(pool, { meetingId: 'm-agg-2', targetPath: 'x2.bin' })
+      await writeLocalFile(localRoot, 'x1.bin', 'one')
+      await writeLocalFile(localRoot, 'x2.bin', 'two')
+
+      const deps: ArchiveDeps = {
+        archives, localRoot, nasRoot, getMeeting: stubMeeting,
+        writeMeta: async () => { throw new Error('nas sidecar unavailable') },
+      }
+      const result = await archivePendingMeetings(deps, () => 24_000)
+
+      expect(result.newlyArchived).toBe(2)
+      expect(result.verificationFailed).toBe(0)
+      // "归档失败"是最高级别告警，写不出 sidecar 不是那件事——两个数字不能合并
+      expect(result.failed).toBe(0)
+      expect(result.sidecarFailed).toBe(2)
+
+      expect(await archives.findMeetingArchive('m-agg-1', '')).not.toBeNull()
+      expect(await archives.findMeetingArchive('m-agg-2', '')).not.toBeNull()
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
 })

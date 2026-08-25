@@ -115,3 +115,63 @@ export interface ManifestFile {
   generatedAt: number
   generatedBy: string
 }
+
+// ---------------------------------------------------------------------------
+// NAS 副本
+// ---------------------------------------------------------------------------
+
+/**
+ * 下面三个类型描述的是**归档到 NAS 之后写在 NAS 目录里的那一份 sidecar**。
+ *
+ * 为什么需要单独一组类型，而不是把 NAS 那份写成和本地一模一样的内容：本系统的
+ * 产品模型是「NAS 是主存储、本地 30 天后删」（`src/worker/retention.ts`），所以
+ * **长期活下来的是 NAS 那一份**，US-6.2 那句「数年后在 NAS 上翻到该目录」说的
+ * 也正是它。那份清单要能回答本地那份回答不了的问题：这些文件在 NAS 上的哪儿、
+ * NAS 上那些字节的校验值是多少、什么时候归的档、本地副本按多少天保留。
+ *
+ * 为什么是 `extends` 而不是另抄一份字段：两份清单描述的是**同一批资产**，
+ * 字段含义必须逐字相同。同一份数据在两处各有一套类型定义，是这个仓库反复吃过
+ * 亏的地方（见 `docs/console/dev-plan.md` §5 的 C7）。
+ *
+ * **schemaVersion 仍然是 1**，不是 2：本地那份 `_manifest.json` 的字段一个都没改、
+ * 含义一个都没动，NAS 那份只是在同一版格式上**多带了几个字段**。按 v1 写的读取脚本
+ * 读 NAS 那份照样正确（多出来的字段会被忽略），把版本号推到 2 反而是在对本地那份
+ * 撒谎——它并没有变。真正需要 +1 的是「已有字段改语义」，不是「新增字段」。
+ */
+
+/** NAS 副本 `_manifest.json` 里的一项：本地清单的全部字段 + 归档特有的两项 */
+export interface ArchivedManifestAssetEntry extends ManifestAssetEntry {
+  /**
+   * 这个文件在 NAS 上的实际路径（`archived_assets.nas_path` 的原值）。
+   *
+   * 与 `fileName` 不冗余：NAS 目录下沿用了本地的相对结构（`src/worker/archive.ts`
+   * 的 `archiveOneAsset`），文件不一定就躺在清单所在的这一层目录里，只有完整路径
+   * 才能把「清单里的这一条」和「盘上的那个文件」对上。
+   */
+  nasPath: string
+  /**
+   * 归档时**重新读回 NAS 上那份文件**算出的 sha256（`archived_assets.nas_hash`）。
+   *
+   * 与上面的 `sha256` 是两个值、两种含义，不要合并：`sha256` 是下载器在本地算的
+   * （视频/音频恒为 null，理由见该字段注释），`nasHash` 是「NAS 上这些字节」的
+   * 校验值，**对每个已归档资产都有**——归档链路本来就要读回来校验一次，顺手记下的
+   * 是真实值，不是补算出来的。所以拿着这份清单核查 NAS 目录完整性时，视频也核得了。
+   */
+  nasHash: string
+}
+
+/** 归档段：只有 NAS 那一份清单才有的信息，本地那份没有也不该有 */
+export interface ManifestArchiveInfo {
+  /** unix 秒。**同时是本地保留窗口的起点**（`meeting_archives.archived_at` 的同值副本） */
+  archivedAt: number
+  /** 本地副本的保留天数。**不含**管理员事后延长的天数（`extended_days` 会变，
+   *  而清单是归档那一刻的快照，写一个之后会漂移的值等于写一个会过期的谎） */
+  retentionDays: number
+  /** 这份清单所在的 NAS 目录（`meeting_archives.nas_dir` 的同值副本） */
+  nasDir: string
+}
+
+export interface ArchivedManifestFile extends Omit<ManifestFile, 'assets'> {
+  assets: ArchivedManifestAssetEntry[]
+  archive: ManifestArchiveInfo
+}

@@ -68,8 +68,9 @@ export interface WorkerRound {
   /** 本轮归档流水线（P2）的汇总：对 ArchivesStore.listMeetingsNeedingArchive() 给出的
    *  每场"有未归档完成资产"的会议累加。failed 是逐会议错误隔离之后没能正常归档完的
    *  会议数（archiveMeeting 本身抛出，不是可以放心忽略的数字，见 archive.ts 的
-   *  ArchiveRoundOutcome 注释）。 */
-  archived: { newlyArchived: number; verificationFailed: number; failed: number }
+   *  ArchiveRoundOutcome 注释）。sidecarFailed 是 NAS 上那两个自解释 JSON 没写出来的
+   *  会议数——与 failed 分开、且不进退出码，理由同 manifests.failed。 */
+  archived: { newlyArchived: number; verificationFailed: number; failed: number; sidecarFailed: number }
 }
 
 /**
@@ -126,11 +127,12 @@ export async function runWorkerOnce(
   // 已知窟窿（见下方 archive 段落的说明）——在那个洞被修好之前，与资产落盘保持同一种行为，
   // 好过在这里自作主张地分叉。
   //
-  // ⚠️ 本轮只写进**本地归档区**（deps.storage 指向 MDE_ARCHIVE_ROOT）。NAS 上那份副本
-  // 暂时还没有这两个文件：archivePendingMeetings 是照着 meeting_assets 的行搬文件的，
-  // 而 sidecar 不是资产、不在那张表里。产品模型是「NAS 是主存储、本地 30 天后删」，
-  // 所以「数年后在 NAS 上翻到该目录也能自解释」这半句要等归档链路复用同一份类型把
-  // sidecar 一并搬过去，那是接下来那件事，不在本次改动里。
+  // 这一段写的是**本地归档区**那一份（deps.storage 指向 MDE_ARCHIVE_ROOT）。
+  // NAS 上那一份由归档链路**独立生成**（archiveMeeting → writeNasSidecars），
+  // 不是把这两个文件搬过去——NAS 那份要多带归档特有的信息（nasPath / nasHash /
+  // archivedAt / retentionDays / nasDir），而且本地这份 30 天后会被到期清理删掉，
+  // 长期活下来的是 NAS 那一份。两份共用 packages/engine/src/domain/manifest.ts
+  // 的同一套类型（NAS 版是本地版的 extends），格式不分叉。
   const manifests = await writeMeetingManifests(
     { store: deps.store, storage: deps.storage, generatedBy: 'mde-worker' },
     meetingsById,
@@ -153,7 +155,16 @@ export async function runWorkerOnce(
   // 逐会议错误隔离（一场会议的 archiveMeeting 抛出不连累其它会议）与
   // "archived_at 不被空转重跑推着走"的守卫都在 archivePendingMeetings /
   // archiveMeeting 内部，见 archive.ts 的注释。
-  const archiveDeps: ArchiveDeps = { archives: deps.archives, localRoot: deps.localRoot, nasRoot: deps.nasRoot }
+  // getMeeting 是**注入的函数**而不是整个 store：ArchivesStore 刻意不读 meetings 表
+  // （三张表边界之外的第四张），但 NAS 上的 meeting.json 必须有 subject / 会议号 /
+  // 起止时间，否则那个目录里只剩一串 ID。这里的 deps.store 本来就有这个读法，
+  // 直接把它当依赖递进去，边界不破、来源单一。
+  const archiveDeps: ArchiveDeps = {
+    archives: deps.archives,
+    localRoot: deps.localRoot,
+    nasRoot: deps.nasRoot,
+    getMeeting: (meetingId, subMeetingId) => deps.store.getMeeting(meetingId, subMeetingId),
+  }
   const archived = await archivePendingMeetings(archiveDeps, now)
 
   return { ...found, probes, ...ran, manifests, archived }
@@ -512,7 +523,8 @@ async function main(): Promise<number> {
     )
     console.log(
       `archived newlyArchived=${res.archived.newlyArchived} ` +
-        `verificationFailed=${res.archived.verificationFailed} failed=${res.archived.failed}`,
+        `verificationFailed=${res.archived.verificationFailed} failed=${res.archived.failed} ` +
+        `sidecarFailed=${res.archived.sidecarFailed}`,
     )
     // 归档失败（archiveMeeting 本身抛出）与下载失败一样必须让退出码变非零——
     // dev-plan.md 的全局约束把"归档失败"列为最高级别告警，一个盯着 cron/systemd

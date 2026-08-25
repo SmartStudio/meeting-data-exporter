@@ -502,18 +502,18 @@ spec 管住了「谁能**导出**」，没管「导出后谁能**看**」。资�
 | US-5.1 定时自动归档 | ◐ | CLI 侧完全成立；服务端 `archivePendingMeetings` 可跑，`tests/worker/e2e.test.ts` | **服务端调度器（A4）未做**，现在只能靠外部 cron 调。「失败项不静默丢弃」的重试与展示随 A4 一起 |
 | US-5.2 导出到企业存储 | ◐ | `packages/engine/src/storage/nas.ts` · `packages/engine/tests/storage/nas.test.ts`（含断连/超时） | **只做了 NAS**。阿里云 OSS 无需求方，M4 已收敛。「切换目标不需要迁移已有记录」这条没有验证过 |
 | US-5.4 NAS 挂载与容量状态 | ◐ | `src/worker/nas-probe.ts` · `tests/worker/nas-probe.test.ts`（不可达时有限时间内返回降级结果） | 无 API、无归档存储页（F5） |
-| US-5.5 配置默认保留天数 | ◐ | `system_settings.default_retention_days`，`src/worker/archive.ts:163` 读取，缺省 30 | 无 API、无设置入口，改值只能直接写库 |
+| US-5.5 配置默认保留天数 | ◐ | `system_settings.default_retention_days`，`src/worker/archive.ts` 的 `archiveMeeting` 读取（`getSetting('default_retention_days')`），缺省 30 | 无 API、无设置入口，改值只能直接写库 |
 | US-5.6 立即清理已到期文件 | ◐ | `previewCleanup` / `executeCleanup(confirm: true)` · 删前 `verifyNasCopies` 哈希重校验 · `cleanup_paused` 持久化开关；`tests/worker/retention.test.ts` | 无 API、无界面。**「二次确认」目前只是函数签名上的 `confirm: true`，真正的人机确认要等 F5** |
 | US-6.1 核查数据导出记录 | ◐ | 写侧 `src/audit/recorder.ts` · `tests/audit/recorder.test.ts` | **读侧（A5）未做**——记录写进去了但查不出来。操作审计页（F5）同样未做 |
-| US-6.2 归档结果可脱离系统理解 | ◐ | `packages/engine/src/manifest/` + `domain/manifest.ts`（格式定死、两个宿主共用）；worker 与 mde CLI 在一轮结束后各按会议调一次；`packages/engine/tests/manifest/index.test.ts` · `tests/worker/e2e.test.ts` | 三条验收标准在**本地归档区**成立：`meeting.json` + `_manifest.json`（原始 ID / 大小 / sha256，视频音频的哈希如实为 null）+ `missing[]` 显式标注确认缺失的原因。缺口是 **NAS 上那份副本还没有这两个文件**——归档流水线照 `meeting_assets` 的行搬文件，sidecar 不是资产、不在那张表里 |
+| US-6.2 归档结果可脱离系统理解 | ✅ | 格式：`packages/engine/src/domain/manifest.ts`（本地版 + NAS 版 `extends` 同一套类型）。本地归档区：`packages/engine/src/manifest/`，worker 与 mde CLI 一轮结束后各按会议调一次。NAS：`src/worker/archive.ts` 的 `writeNasSidecars`，在「整场会议归档完成」那一处判定里独立生成。测试：`packages/engine/tests/manifest/index.test.ts` · `tests/worker/archive.test.ts`（sidecar①–⑦）· `tests/worker/e2e.test.ts`（真 MySQL + 真磁盘，本地与 NAS 两份都断言） | 三条验收标准在**本地归档区与 NAS 两侧都成立**：元数据文件 + 资产清单；每项资产带原始 ID、大小（取被校验过的 `bytes_expected`）、校验值（本地 `sha256`，视频音频如实为 null；NAS 侧另有恒有值的 `nasHash`）；`missing[]` 显式标注 `skipped`/`dead` 的原因。三处已知边界，都不影响三条标准本身：① NAS 那份只在会议**整体归档完成**时写（没归完的会议本地副本也不会被清理，「只剩 NAS」的处境还不成立）；② 本次改动**之前**已归档完的会议不会被回填（空转重跑不重写 sidecar），当前无生产数据，故未做迁移；③ 归档目录按**归档时刻**的年/月分，跨月才补齐的会议其早先那批文件留在上个月的目录里、那个目录没有清单（清单按各自真实的 `nasPath` 记录，仍找得到；`writeNasSidecars` 每次都 warn 留痕） |
 | US-7.1 无需安装依赖即可使用 | ⏸ | — | M5 桌面端无限期推迟（2026-08-23，D2） |
 | US-7.2 可视化查看与操作任务 | ⏸ | 形态改由 M6 控制台承接（`console/`，F1 骨架已完成） | 桌面端本身推迟；控制台的任务页（F5）未做 |
 
-**一句话小结**：31 条故事里 `✅` 17 条、`◐` 10 条、`⬜` 1 条、`⏸` 2 条、`—` 1 条。其中 3 条标了「✅（P1 侧）」——US-3.1 / US-3.3 / US-4.1 的网关能力是完整的，但它们同时挂着的 `P2` / `P4` / `P5` 那一侧另有说法，看该行的缺口列。
+**一句话小结**：31 条故事里 `✅` 18 条、`◐` 9 条、`⬜` 1 条、`⏸` 2 条、`—` 1 条。其中 3 条标了「✅（P1 侧）」——US-3.1 / US-3.3 / US-4.1 的网关能力是完整的，但它们同时挂着的 `P2` / `P4` / `P5` 那一侧另有说法，看该行的缺口列。
 
-**`◐` 集中在同一个原因上**：M6 阶段 2 交出的是**能力**，不是**入口**。归档、保留、清理、探测、账号管理的逻辑都跑得起来、也有测试，但除了登录之外没有一条控制台 API（阶段 4 的 A2–A6），也没有除登录页与会议记录页骨架之外的界面（阶段 5 的 F2–F7）。**在 A2–A6 与 F2–F7 落地之前，这 10 条对使用者来说等于不存在。**
+**`◐` 集中在同一个原因上**：M6 阶段 2 交出的是**能力**，不是**入口**。归档、保留、清理、探测、账号管理的逻辑都跑得起来、也有测试，但除了登录之外没有一条控制台 API（阶段 4 的 A2–A6），也没有除登录页与会议记录页骨架之外的界面（阶段 5 的 F2–F7）。**在 A2–A6 与 F2–F7 落地之前，这 9 条对使用者来说等于不存在。**
 
-**两条 `⬜` 的性质不同**：US-6.2 是被明确记账的遗留债（roadmap M3 「可带上线的债」第一条）；US-2.5 是**计划声称覆盖、交付里没有**，见下。
+**唯一那条 `⬜`（US-2.5 撤销归档）的性质**：不是「记过账的债」，而是**计划声称覆盖、交付里没有**，见下。（原先与它并列的 US-6.2 属于前一类——roadmap M3「可带上线的债」第一条——已于 2026-08-25 补齐 NAS 侧 sidecar 后转 `✅`。）
 
 ### 9.5 反向检查：计划说覆盖了、代码里没有
 

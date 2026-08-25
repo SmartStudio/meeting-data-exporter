@@ -269,7 +269,7 @@ describe('runWorkerOnce', () => {
         manifests: { written: 1, skipped: 0, failed: 0 },
         // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
         // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
-        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0 },
+        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0 },
       })
 
       // ① 文件真的落在归档区，且路径是按 <year>/<month>/<cleanDirName>/<文件名> 拼出来的那个
@@ -331,6 +331,36 @@ describe('runWorkerOnce', () => {
       expect(vid.bytes).toBe(VIDEO_BODY.length)
       expect(sum.remoteId).toBe('f-sum-1')
       expect(vid.assetKey).toBe('video')
+
+      // ⑦ **NAS 上也有这两个 sidecar**（US-6.2 的落点其实是这一份：本地那份 30 天后
+      //    会被到期清理删掉，长期活下来的是 NAS 这一份）。NAS 目录按归档时刻的
+      //    年/月 + 会议 ID 分——同样是手算的，不是从实现抄回来的。
+      const d = new Date(now() * 1000)
+      const nasDir = join(nasRoot, String(d.getUTCFullYear()), String(d.getUTCMonth() + 1).padStart(2, '0'), 'm-e2e')
+      const nasMeta = JSON.parse(await readFile(join(nasDir, 'meeting.json'), 'utf8'))
+      // 会议元数据真的从 MySQL 的 meetings 表流到了 NAS 上（getMeeting 注入接对了），
+      // 而不是只剩一串 ID——这正是 US-6.2「无需本工具即可知道内容」那半句
+      expect(nasMeta.meeting).toEqual({
+        meetingId: 'm-e2e', subMeetingId: '', meetingCode: '881-123-40',
+        subject: '周会 / Q3 复盘', hostUserId: 'u-host', startTime: START, endTime: END,
+      })
+      expect(nasMeta.generatedBy).toBe('mde-worker')
+
+      const nasManifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
+      expect(nasManifest.archive).toEqual({ archivedAt: now(), retentionDays: 30, nasDir })
+      const nasSum = nasManifest.assets.find((a: { assetType: string }) => a.assetType === 'meeting_summary')
+      // NAS 侧多出来的两个字段：文件在 NAS 上的实际路径 + 归档时重新读回 NAS 算的哈希。
+      // 后者对文本类恰好等于本地那个 sha256（同样的字节），这条断言顺带证明复制没走样。
+      expect(nasSum.nasPath).toBe(join(nasDir, TRANSCRIPT_REL))
+      expect(nasSum.nasHash).toBe(TRANSCRIPT_SHA256)
+      expect(nasSum.sha256).toBe(TRANSCRIPT_SHA256)
+      expect(nasSum.bytes).toBe(TRANSCRIPT_BODY.length)
+      // 视频没有本地整文件哈希，但 NAS 侧那一份有——归档链路本来就要读回来校验一次
+      const nasVid = nasManifest.assets.find((a: { assetType: string }) => a.assetType === 'video')
+      expect(nasVid.sha256).toBeNull()
+      expect(typeof nasVid.nasHash).toBe('string')
+      expect(nasVid.nasHash.length).toBe(64)
+      expect(nasManifest.missing).toEqual([])
     })
   }, 30_000)
 
@@ -510,7 +540,7 @@ describe('runWorkerOnce', () => {
       expect(res.tasks).toBe(0)
 
       // 两个 sub_meeting_id 都被归档了，不是只有一个
-      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0 })
+      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0 })
 
       const archives = createArchivesStore(pool)
       expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's1', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)

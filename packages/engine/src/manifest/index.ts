@@ -79,7 +79,7 @@ export async function writeMeetingManifest(
     .filter((r): r is AssetRow & { status: 'skipped' | 'dead' } => r.status === 'skipped' || r.status === 'dead')
     .map((r) => ({
       assetType: r.asset_type,
-      assetKey: assetKeyOf(r.asset_type),
+      assetKey: manifestAssetKey(r.asset_type),
       remoteId: emptyToNull(r.remote_id),
       status: r.status,
       reason: r.last_error ?? 'unknown',
@@ -155,7 +155,7 @@ export async function writeMeetingManifests(
 function toAssetEntry(row: AssetRow, targetPath: string): ManifestAssetEntry {
   return {
     assetType: row.asset_type,
-    assetKey: assetKeyOf(row.asset_type),
+    assetKey: manifestAssetKey(row.asset_type),
     remoteId: emptyToNull(row.remote_id),
     fileType: emptyToNull(row.file_type),
     fileName: targetPath.slice(targetPath.lastIndexOf('/') + 1),
@@ -165,8 +165,14 @@ function toAssetEntry(row: AssetRow, targetPath: string): ManifestAssetEntry {
   }
 }
 
-/** 网关 asset_type → 引擎 AssetKey；映射不认识的新类型原样透出（网关将来会 emit 新的） */
-function assetKeyOf(assetType: string): string {
+/**
+ * 网关 asset_type → 引擎 AssetKey；映射不认识的新类型原样透出（网关将来会 emit 新的）。
+ *
+ * 导出而不是留成模块私有：服务端归档链路要给 NAS 那份清单算同一个 `assetKey` 字段
+ * （`src/worker/archive.ts`）。两处各写一遍 `GATEWAY_TYPE_TO_ASSET_KEY[t] ?? t` 看着
+ * 一样，但「映射不到时怎么办」是这个字段的语义决定，只该有一处。
+ */
+export function manifestAssetKey(assetType: string): string {
   return GATEWAY_TYPE_TO_ASSET_KEY[assetType] ?? assetType
 }
 

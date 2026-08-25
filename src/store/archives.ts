@@ -17,6 +17,35 @@ export interface CompletedAssetRow {
   fileType: string
   targetPath: string
   bytesWritten: number
+  /**
+   * 平台声明的字节数。写进 NAS sidecar 的 `bytes` 取的是它，**不是** `bytesWritten`
+   * ——后者是 downloader 每 8MB 一次的**进度检查点**，对小文件恒为 0、对大文件停在
+   * 最后一个 8MB 边界上，把它当文件大小写进清单等于写假数据。完整推理见
+   * `packages/engine/src/domain/manifest.ts` 里 `bytes` 字段的注释。
+   */
+  bytesExpected: number | null
+  /** 下载器在**本地**算出的整文件 sha256；视频/音频恒为 null（不整读，会吃爆内存）。
+   *  与归档记下的 `nas_hash` 是两个值、两种含义，见 domain/manifest.ts。 */
+  contentHash: string | null
+}
+
+/**
+ * meeting_assets 里一行**确认取不到**的资产。
+ *
+ * 只有终态才算「确认缺失」：`skipped`（明确放弃）与 `dead`（重试用尽）。
+ * `pending` / `running` / `failed` 还在流程里，属于「不知有无」，不在这里返回——
+ * 「确认缺失」与「不知有无」是两种状态，这条区分是 US-6.2 的第三条验收标准本身，
+ * 不是实现细节。分类规则与 `packages/engine/src/manifest/` 逐字一致。
+ */
+export interface MissingAssetRow {
+  meetingId: string
+  subMeetingId: string
+  assetType: string
+  remoteId: string
+  fileType: string
+  status: 'skipped' | 'dead'
+  /** 放弃的原因（meeting_assets.last_error），没记下时为 null */
+  lastError: string | null
 }
 
 export interface ArchivedAssetRecord {
@@ -44,8 +73,15 @@ export interface MeetingArchiveRecord {
 }
 
 export interface ArchivesStore {
-  /** WHERE status='completed'，供归档流水线挑出"下载完成但还没进 archived_assets"的资产 */
+  /** WHERE status='completed'，供归档流水线挑出"下载完成但还没进 archived_assets"的资产。
+   *  按 id 升序（= 入库顺序）：归档顺序与 NAS sidecar 的 `assets[]` 顺序都由它决定，
+   *  重跑要产出同样的内容就不能让顺序跟着优化器走。与引擎那份清单同一种排序。 */
   listCompletedAssets(meetingId: string, subMeetingId: string): Promise<CompletedAssetRow[]>
+  /** 同一场会议里**确认取不到**的资产（status='skipped' / 'dead'），供 NAS sidecar 的
+   *  `missing[]` 用——US-6.2 第三条验收标准要的就是这一段。按 id 升序，理由同上。
+   *
+   *  它读的仍然是 meeting_assets（三张表边界内那张只读的），不越界去碰第四张表。 */
+  listMissingAssets(meetingId: string, subMeetingId: string): Promise<MissingAssetRow[]>
   /** 该资产是否已经在 archived_assets 里有记录（用于跳过已归档过的资产，支持重跑） */
   isAssetArchived(row: Pick<CompletedAssetRow, 'meetingId' | 'subMeetingId' | 'assetType' | 'remoteId' | 'fileType'>): Promise<boolean>
   recordArchivedAsset(input: ArchivedAssetRecord): Promise<void>
@@ -109,6 +145,18 @@ interface CompletedAssetSqlRow extends RowDataPacket {
   // 悄悄压过去，免得一个真正的数据完整性 bug 被伪装成别处一个更难查的 join(root, null)
   target_path: string | null
   bytes_written: number
+  bytes_expected: number | null
+  content_hash: string | null
+}
+
+interface MissingAssetSqlRow extends RowDataPacket {
+  meeting_id: string
+  sub_meeting_id: string
+  asset_type: string
+  remote_id: string
+  file_type: string
+  status: 'skipped' | 'dead'
+  last_error: string | null
 }
 
 interface ArchivedAssetSqlRow extends RowDataPacket {
@@ -162,6 +210,23 @@ function mapCompletedAssetRow(r: CompletedAssetSqlRow): CompletedAssetRow {
     fileType: r.file_type,
     targetPath: r.target_path,
     bytesWritten: Number(r.bytes_written),
+    // BIGINT 列显式 Number 化（与 store-mysql.ts 的 getMeeting 同一理由）：
+    // 这个值会被写进 NAS 上的 JSON 清单，一个字符串 "1234" 会让数年后读清单的
+    // 脚本拿到另一种类型。
+    bytesExpected: r.bytes_expected === null ? null : Number(r.bytes_expected),
+    contentHash: r.content_hash,
+  }
+}
+
+function mapMissingAssetRow(r: MissingAssetSqlRow): MissingAssetRow {
+  return {
+    meetingId: r.meeting_id,
+    subMeetingId: r.sub_meeting_id,
+    assetType: r.asset_type,
+    remoteId: r.remote_id,
+    fileType: r.file_type,
+    status: r.status,
+    lastError: r.last_error,
   }
 }
 
@@ -195,12 +260,25 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
   return {
     async listCompletedAssets(meetingId, subMeetingId) {
       const [rows] = await pool.execute<CompletedAssetSqlRow[]>(
-        `SELECT meeting_id, sub_meeting_id, asset_type, remote_id, file_type, target_path, bytes_written
+        `SELECT meeting_id, sub_meeting_id, asset_type, remote_id, file_type, target_path,
+                bytes_written, bytes_expected, content_hash
            FROM meeting_assets
-          WHERE meeting_id = ? AND sub_meeting_id = ? AND status = 'completed'`,
+          WHERE meeting_id = ? AND sub_meeting_id = ? AND status = 'completed'
+          ORDER BY id`,
         [meetingId, subMeetingId],
       )
       return rows.map(mapCompletedAssetRow)
+    },
+
+    async listMissingAssets(meetingId, subMeetingId) {
+      const [rows] = await pool.execute<MissingAssetSqlRow[]>(
+        `SELECT meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, last_error
+           FROM meeting_assets
+          WHERE meeting_id = ? AND sub_meeting_id = ? AND status IN ('skipped', 'dead')
+          ORDER BY id`,
+        [meetingId, subMeetingId],
+      )
+      return rows.map(mapMissingAssetRow)
     },
 
     async isAssetArchived({ meetingId, subMeetingId, assetType, remoteId, fileType }) {
@@ -334,7 +412,8 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
       const [rows] = await pool.execute<ArchivedAssetSqlRow[]>(
         `SELECT meeting_id, sub_meeting_id, asset_type, remote_id, file_type, local_path, nas_path, nas_hash, archived_at
            FROM archived_assets
-          WHERE meeting_id = ? AND sub_meeting_id = ?`,
+          WHERE meeting_id = ? AND sub_meeting_id = ?
+          ORDER BY asset_type, remote_id, file_type`,
         [meetingId, subMeetingId],
       )
       return rows.map(mapArchivedAssetRow)

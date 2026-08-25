@@ -24,9 +24,15 @@ interface SeedAssetInput {
   assetType?: string
   remoteId?: string
   fileType?: string
-  status?: 'pending' | 'completed'
+  status?: 'pending' | 'completed' | 'failed' | 'skipped' | 'dead'
   targetPath?: string | null
   bytesWritten?: number
+  /** 平台声明的大小；NAS sidecar 的 bytes 取这一列（不是 bytes_written，那是进度检查点） */
+  bytesExpected?: number | null
+  /** 下载器在本地算的整文件 sha256；视频/音频恒为 null */
+  contentHash?: string | null
+  /** 放弃原因，只有 skipped / dead 的行才有意义 */
+  lastError?: string | null
 }
 
 async function seedAsset(pool: Pool, input: SeedAssetInput): Promise<void> {
@@ -39,19 +45,27 @@ async function seedAsset(pool: Pool, input: SeedAssetInput): Promise<void> {
     status = 'completed',
     targetPath = '2026/08/dir/video.mp4',
     bytesWritten = 1024,
+    bytesExpected = null,
+    contentHash = null,
+    lastError = null,
   } = input
   await pool.execute(
     `INSERT INTO meeting_assets
-       (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, bytes_written, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1000, 1000)`,
-    [meetingId, subMeetingId, assetType, remoteId, fileType, status, targetPath, bytesWritten],
+       (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path,
+        bytes_written, bytes_expected, content_hash, last_error, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1000, 1000)`,
+    [meetingId, subMeetingId, assetType, remoteId, fileType, status, targetPath,
+     bytesWritten, bytesExpected, contentHash, lastError],
   )
 }
 
 test('listCompletedAssets 只返回 status=completed 的行，字段映射正确', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
-    await seedAsset(pool, { meetingId: 'm-1', targetPath: '2026/08/dir/a.mp4', bytesWritten: 555 })
+    await seedAsset(pool, {
+      meetingId: 'm-1', targetPath: '2026/08/dir/a.mp4', bytesWritten: 555,
+      bytesExpected: 4096, contentHash: 'f'.repeat(64),
+    })
     await seedAsset(pool, { meetingId: 'm-1', assetType: 'audio', remoteId: 'remote-2', status: 'pending' })
 
     const store = createArchivesStore(pool)
@@ -65,6 +79,10 @@ test('listCompletedAssets 只返回 status=completed 的行，字段映射正确
         fileType: 'mp4',
         targetPath: '2026/08/dir/a.mp4',
         bytesWritten: 555,
+        // BIGINT 列必须是 number 而不是字符串：这个值会被写进 NAS 上的 JSON 清单，
+        // 一个 "4096" 会让数年后读清单的脚本拿到另一种类型
+        bytesExpected: 4096,
+        contentHash: 'f'.repeat(64),
       },
     ])
   } finally {
@@ -333,6 +351,30 @@ test('listMeetingsNeedingArchive 只返回 completed 数量严格大于 archived
 
     const rows = await store.listMeetingsNeedingArchive()
     expect(rows).toEqual([{ meetingId: 'm-needs', subMeetingId: '' }])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMissingAssets 只返回终态的 skipped / dead，pending / failed 一概不返回', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    // 「确认缺失」（skipped / dead）与「不知有无」（pending / running / failed）是两种
+    // 状态——US-6.2 第三条验收标准要的正是这条区分。把还在流程里的状态写进清单，
+    // 等于对着一个还会变的状态下结论。
+    await seedAsset(pool, { meetingId: 'm-x', assetType: 'ai_minutes', remoteId: 'r-skip', fileType: '', status: 'skipped', targetPath: null, lastError: 'download_not_allowed' })
+    await seedAsset(pool, { meetingId: 'm-x', assetType: 'ai_ds_minutes', remoteId: 'r-dead', fileType: '', status: 'dead', targetPath: null, lastError: 'upstream_timeout' })
+    await seedAsset(pool, { meetingId: 'm-x', assetType: 'audio', remoteId: 'r-pending', status: 'pending', targetPath: null })
+    await seedAsset(pool, { meetingId: 'm-x', assetType: 'transcript', remoteId: 'r-failed', status: 'failed', targetPath: null, lastError: 'ECONNRESET' })
+    await seedAsset(pool, { meetingId: 'm-x', assetType: 'video', remoteId: 'r-done', status: 'completed' })
+    // 另一场会议的 skipped 行不该串进来
+    await seedAsset(pool, { meetingId: 'm-y', assetType: 'ai_minutes', remoteId: 'r-other', fileType: '', status: 'skipped', targetPath: null, lastError: 'download_not_allowed' })
+
+    const store = createArchivesStore(pool)
+    expect(await store.listMissingAssets('m-x', '')).toEqual([
+      { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'r-skip', fileType: '', status: 'skipped', lastError: 'download_not_allowed' },
+      { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_ds_minutes', remoteId: 'r-dead', fileType: '', status: 'dead', lastError: 'upstream_timeout' },
+    ])
   } finally {
     await cleanup()
   }
