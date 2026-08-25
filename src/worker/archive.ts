@@ -18,6 +18,7 @@ import type { ArchivedAssetRecord, ArchivesStore, CompletedAssetRow } from '../s
 import { meetingFacts } from '../policy/access'
 import type { MeetingFacts } from '../policy/conds'
 import { resolveArchiveDir, type ArchiveDirOutcome } from '../policy/archive-dir'
+import { applyOverride, type MeetingOverride } from '../policy/override'
 import { evaluateArchiveStack, type StackRule } from '../policy/stacks'
 
 /**
@@ -115,6 +116,7 @@ async function decideArchiveDir(
   subMeetingId: string,
   meeting: Meeting | null,
   rules: readonly StackRule[],
+  override: MeetingOverride | null,
   now: number,
 ): Promise<ArchiveDirOutcome> {
   if (meeting === null) {
@@ -130,17 +132,23 @@ async function decideArchiveDir(
     }
   }
 
-  // ── 接缝：人工改写覆盖层（T7，`meeting_overrides`）落地后接在这里 ────────────
-  // 人工改写优先于**所有**规则（spec §5.4），所以它要在 evaluateArchiveStack
-  // **之前**短路，产出一个同形状的 ArchiveDecision；下面渲染目录那一段原样复用，
-  // 不需要为改写另写一条路径。本任务只做规则驱动的这一半。
-
   // `archived` 是 `arch`（isarch / notarch）条件的数据源，**查出来传，不猜**：
   // 随手填 false 会让一条 `arch notarch → 归档到 X` 的规则对已归档的会议也成立。
   // 这一轮进到这里的会议数量很小（listMeetingsNeedingArchive 只给「有未归档完成
   // 资产」的那些），一次查询换一个正确的事实是划算的。
   const archived = (await deps.archives.findMeetingArchive(meetingId, subMeetingId)) !== null
-  const decision = evaluateArchiveStack(rules, { facts: factsFor(meeting, archived), now })
+
+  // 人工改写优先于**所有**规则（spec §5.4）。套在求值**外面**而不是混进
+  // evaluateArchiveStack：规则求值是纯函数、可预览、可回放，把「某场会议的人工
+  // 决定」混进去，影响预览（T5）就再也算不准了——它算的是「规则改了会怎样」，
+  // 而被改写的会议根本不受规则支配。
+  //
+  // 套完仍然是一个同形状的 ArchiveDecision，所以下面渲染目录那一段原样复用，
+  // 改写不需要自己一条路径。
+  const decision = applyOverride(
+    evaluateArchiveStack(rules, { facts: factsFor(meeting, archived), now }),
+    override,
+  )
 
   return resolveArchiveDir(decision, {
     nasRoot: deps.nasRoot,
@@ -148,6 +156,15 @@ async function decideArchiveDir(
     // 会议号缺失时顶 meeting_id——与本地归档区（meetingDirPath 的 fallbackCode）同口径
     fallbackCode: meetingId,
   })
+}
+
+/**
+ * 两个 id 拼成一场会议的键。用 NUL 分隔而不是 `/`——会议 id 是外部系统给的，
+ * 拿可打印分隔符去赌它不出现在 id 里，撞上一次就是两场会议共用一条改写。
+ * 与 `policy/override.ts` 的 `targetKey`、`access.ts` 的 `overrideKey` 同一个理由。
+ */
+function overrideKey(meetingId: string, subMeetingId: string): string {
+  return `${meetingId}\u0000${subMeetingId}`
 }
 
 export interface ArchiveDeps {
@@ -179,6 +196,16 @@ export interface ArchiveDeps {
    * 只有 ID 的 sidecar——正是这条故事要消灭的那个失效形态。让编译器盯着。
    */
   getMeeting: (meetingId: string, subMeetingId: string) => Promise<Meeting | null>
+  /**
+   * 这批会议的 archive 人工改写（spec §5.4）。同 `listArchiveRules`：
+   * **每轮取一次**，在 `archivePendingMeetings` 的循环外。
+   *
+   * 传一批键而不是逐场问，理由与 `listArchivedMeetingKeys` 那条注释一样——
+   * 一轮几十上百场会议逐场往返一次是白花的查询。
+   */
+  listArchiveOverrides: (
+    keys: { meetingId: string; subMeetingId: string }[],
+  ) => Promise<readonly MeetingOverride[]>
   /**
    * 归档栈的规则来源（阶段 3 · T9）。
    *
@@ -494,10 +521,18 @@ export async function archiveMeeting(
   subMeetingId: string,
   now: number,
   rules: readonly StackRule[],
+  /**
+   * 这场会议的 archive 改写，没有就传 `null`。
+   *
+   * **和 `rules` 一样做成必填参数**：`archivePendingMeetings` 在循环外一次取清
+   * 整批，这里只负责用。做成可选参数的话，漏传就是静默按规则判——而管理员按下
+   * 「这场归到别处」不生效，和没按一样，没有任何痕迹。
+   */
+  override: MeetingOverride | null,
 ): Promise<ArchiveOutcome> {
   // 先判、再搬。判定要用会议元数据，元数据同时也是 sidecar 要写的东西，一并读在这里。
   const meeting = await loadMeetingMeta(deps, meetingId, subMeetingId)
-  const dir = await decideArchiveDir(deps, meetingId, subMeetingId, meeting, rules, now)
+  const dir = await decideArchiveDir(deps, meetingId, subMeetingId, meeting, rules, override, now)
   if (!dir.archive) {
     // 判为不归档：**一个字节都不搬**，也不写任何记录。理由带回去（调用方记进日志与
     // 计数），这是这场会议"为什么不在 NAS 上"的唯一线索。
@@ -638,9 +673,22 @@ export async function archivePendingMeetings(
   // 规则）——同一轮内不该有两套口径。取好之后按值传给每场会议。
   const rules = await deps.listArchiveRules()
 
+  // 改写同样每轮取一次。按会议索引起来，`kind !== 'archive'` 的丢掉——
+  // 一条 allow 改写（effect 是 'allow'/'deny'）若被当成归档模板，
+  // 'allow' 会被 normalizeEffect('archive', …) 认成一段合法的目录名
+  const overrides = await deps.listArchiveOverrides(pending)
+  const overrideOf = new Map<string, MeetingOverride>()
+  for (const o of overrides) {
+    if (o.kind !== 'archive') continue
+    overrideOf.set(overrideKey(o.meetingId, o.subMeetingId), o)
+  }
+
   for (const { meetingId, subMeetingId } of pending) {
     try {
-      const outcome = await archiveMeeting(deps, meetingId, subMeetingId, now(), rules)
+      const outcome = await archiveMeeting(
+        deps, meetingId, subMeetingId, now(), rules,
+        overrideOf.get(overrideKey(meetingId, subMeetingId)) ?? null,
+      )
       result.newlyArchived += outcome.newlyArchived
       result.verificationFailed += outcome.verificationFailed
       if (outcome.sidecar === 'failed') result.sidecarFailed++

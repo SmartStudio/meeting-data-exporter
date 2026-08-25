@@ -25,6 +25,7 @@ import type { Asset, Meeting } from '../../src/domain/types'
 import type { Catalog } from '../../src/catalog/index'
 import type { RecordsApi } from '../../src/tencent/records'
 import { createArchivesStore } from '../../src/store/archives'
+import { createGrantsStore } from '../../src/store/grants'
 import { createPolicyStore } from '../../src/store/policy'
 import { createInProcSource } from '../../src/worker/source-inproc'
 import { createMysqlStore } from '../../src/worker/store-mysql'
@@ -196,6 +197,7 @@ function makeDeps(
   const { onResolve, ...rest } = over
   return {
     store: createMysqlStore(pool),
+    grants: createGrantsStore(pool),
     source: createInProcSource({
       recordsApi: stubRecordsApi(),
       catalog: stubCatalog(server, assets, { onResolve }),

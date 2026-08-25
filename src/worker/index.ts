@@ -30,6 +30,7 @@ import { createAddressesApi } from '../tencent/addresses'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
 import { createArchivesStore, type ArchivesStore } from '../store/archives'
+import { createGrantsStore, type GrantsStore } from '../store/grants'
 import { createPolicyStore, type PolicyStore } from '../store/policy'
 import { archivePendingMeetings, type ArchiveDeps } from './archive'
 import { createInProcSource } from './source-inproc'
@@ -51,6 +52,13 @@ export interface WorkerDeps {
    *  是刻意的分层：WorkerDeps 是宿主、本来就握着各个 store，ArchiveDeps 才是那个
    *  要对依赖吝啬的地方。 */
   policy: Pick<PolicyStore, 'listEnabledStackRules'>
+  /**
+   * 人工改写（spec §5.4：**单场会议的人工改写优先于所有规则**）。
+   * 归档目录的判定要用它；采集清单（visibility.ts）也要用。
+   *
+   * worker 这边只读不写——写侧在控制台的管理端点里（阶段 4）。
+   */
+  grants: Pick<GrantsStore, 'listActiveOverridesForMeetings' | 'listActiveGrantsForProgram'>
   /** 本地归档区根目录（MDE_ARCHIVE_ROOT）——与 storage 指向同一棵目录树。
    *  Storage 接口本身不暴露自己的根路径，archiveMeeting 拼本地源文件路径
    *  （join(localRoot, target_path)）需要单独拿到它，所以在这里另传一份。 */
@@ -190,6 +198,8 @@ export async function runWorkerOnce(
     nasRoot: deps.nasRoot,
     getMeeting: (meetingId, subMeetingId) => deps.store.getMeeting(meetingId, subMeetingId),
     listArchiveRules: () => deps.policy.listEnabledStackRules('archive'),
+    // 改写同样每轮取一次、整批取。归档目录被人工改写过的会议不受规则支配（spec §5.4）
+    listArchiveOverrides: (keys) => deps.grants.listActiveOverridesForMeetings(keys),
   }
   const archived = await archivePendingMeetings(archiveDeps, now)
 
@@ -497,6 +507,7 @@ async function main(): Promise<number> {
     const store = createMysqlStore(pool)
     const archives = createArchivesStore(pool)
     const policy = createPolicyStore(pool)
+    const grants = createGrantsStore(pool)
 
     const tencentClient = createTencentClient(config.tencent, {
       fetch,
@@ -533,7 +544,7 @@ async function main(): Promise<number> {
     const res = await runWorkerOnce(
       {
         store, source, storage, concurrency: args.concurrency, leaseSec: LEASE_SEC,
-        archives, policy, localRoot: archiveRoot, nasRoot,
+        archives, policy, grants, localRoot: archiveRoot, nasRoot,
       },
       args.sel,
       args.keys,
