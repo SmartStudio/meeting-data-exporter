@@ -23,7 +23,7 @@
 | 管理员管控 | 由企业管理员控制哪些数据可被导出，需支持策略与规则 |
 | 任务与进度记录 | 本地数据库记录导出数据与任务进度 |
 | 解决重复导出 | 幂等，已导出的不重复拉取 |
-| 可配置导出目标 | 阿里云 OSS、公司本地 NAS |
+| 可配置导出目标 | 阿里云 OSS、公司本地 NAS<sup>[1]</sup> |
 | Bun 运行时内嵌 | 桌面应用无需用户单独安装 Bun 及依赖 |
 | 双平台安装包 | macOS 与 Windows |
 
@@ -1053,6 +1053,11 @@ interface StorageTarget {
 ```
 
 阿里云 OSS 需以分片上传映射 `appendStream` / `finalize` 语义；NAS 走 SMB 挂载，语义接近本地文件系统但需处理网络中断。
+
+> <sup>[1]</sup> **2026-08-25 补注：OSS 已撤，只交付 NAS。** 立项时列的两个导出目标里，
+> 阿里云 OSS 至今没有需求方，M4 因此收敛为只做 NAS（`docs/console/dev-plan.md` §3 阶段 2），
+> 已实现为 `packages/engine/src/storage/nas.ts` 并随控制台阶段 2 交付（2026-08-24）。
+> `Storage` 接口原样留着——真有 OSS 需求时新增一个实现类即可，`executor` 不用改。
 
 ### B.2 子项目 4 — 桌面应用
 
