@@ -15,6 +15,10 @@ import {
   type MeetingMetaFile,
 } from '@yaowu/mde-engine'
 import type { ArchivedAssetRecord, ArchivesStore, CompletedAssetRow } from '../store/archives'
+import { meetingFacts } from '../policy/access'
+import type { MeetingFacts } from '../policy/conds'
+import { resolveArchiveDir, type ArchiveDirOutcome } from '../policy/archive-dir'
+import { evaluateArchiveStack, type StackRule } from '../policy/stacks'
 
 /**
  * 触达 NAS 的单个 fs 操作的超时上限（整段耗时，不是"多久没进展"）。
@@ -37,29 +41,109 @@ const NAS_WRITE_TIMEOUT_MS = 10 * 60_000
 const DEFAULT_RETENTION_DAYS = 30
 
 /**
- * 本阶段（阶段 2）用"按年/月 + 会议 ID"的固定目录规则，不是规则驱动的。
- * spec.md §4.6 描述的"归档规则决定进 NAS 的哪个目录"要到阶段 3（R1 三栈规则
- * 引擎）才有配置入口——在那之前用一个确定性的默认规则，不阻塞归档能力本身
- * 上线。等 R1/R4 落地后这里要接一个真正的规则求值，不是最终形态，这里显式记着。
+ * 求值器要的事实。**事实本身仍由 `policy/access.ts` 的 `meetingFacts` 构造**，
+ * 这里只做一次类型归一——仓库里有两个 `Meeting`：
  *
- * 为什么不复用 packages/engine/src/domain/filename.ts 的 cleanDirName（Step 0 核实过）：
- * cleanDirName(date, hhmm, subject, code) 清洗的是**会议主题这段自由文本**（非法字符
- * 替换、字素簇截断到 60、空主题兜底），服务于本地下载路径里那段人类可读的目录名
- * （packages/engine/src/executor/index.ts 的 buildRelPath）。这里的输入是 meetingId /
- * subMeetingId——腾讯会议 API 给的结构化 ID（VARCHAR(64)），不是用户可编辑的自由文本，
- * 整个代码库里也没有任何地方对 meeting_id 做过这类清洗。用 cleanDirName 反而需要额外
- * 拉 meeting 的 subject/meetingCode/startTime 进来（现有 archiveMeeting(deps, meetingId,
- * subMeetingId, now) 签名里没有，ArchivesStore 也刻意不读 meetings 表——那是三张表边界
- * 之外的第四张表），并不是在补一个真正缺失的"清洗"步骤，只是在拼没有非法字符风险的
- * 两个 ID。按年/月 + 会议 ID 是本阶段独立于本地目录命名规则的一套目的地布局，
- * 不是同一份逻辑的第二份实现。
+ * - 引擎那个（`@yaowu/mde-engine`，`ArchiveDeps.getMeeting` 给的）字段可空，
+ *   它是"拼落盘路径用的那点信息"的视角；
+ * - 网关那个（`src/domain/types`，`meetingFacts` 收的）字段非空，还多
+ *   `meetingRecordId` / `state`。
+ *
+ * 所以不能把前者直接递给 `meetingFacts`。**但也不能顺手在这里另写一个事实构造器**：
+ * `meetingFacts` 里那条「`endTime <= startTime` 视为没有结束时间数据」的回落识别是
+ * 有教训的（照直算会让 `dur lt 30` 静默命中所有缺 `record_end_time` 的会议），
+ * 这种逻辑只能有一份实现。于是这里只补空值与两个多出来的字段，事实照旧交给它：
+ *
+ * - 空值一律按本仓库的约定编码（文本 `''`、时间 `0`），与 DB 里 NOT NULL 列的口径一致；
+ * - `meetingRecordId` 引擎侧根本没有这个概念，`meetingFacts` 也不读它，填 `''`；
+ * - `state` 填 `'completed'` 不是随手填的：能走到归档的会议，其录制早已转码完成、
+ *   资产也已经下载完毕（`archiveMeeting` 只处理有 completed 资产的会议）。
  */
-function nasDirFor(nasRoot: string, meetingId: string, subMeetingId: string, archivedAtSec: number): string {
-  const d = new Date(archivedAtSec * 1000)
-  const year = d.getUTCFullYear()
-  const month = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const dirName = subMeetingId ? `${meetingId}_${subMeetingId}` : meetingId
-  return join(nasRoot, String(year), month, dirName)
+function factsFor(meeting: Meeting, archived: boolean): MeetingFacts {
+  return meetingFacts(
+    {
+      meetingId: meeting.meetingId,
+      subMeetingId: meeting.subMeetingId,
+      meetingRecordId: '',
+      meetingCode: meeting.meetingCode ?? '',
+      subject: meeting.subject ?? '',
+      hostUserId: meeting.hostUserId ?? '',
+      startTime: meeting.startTime ?? 0,
+      endTime: meeting.endTime ?? 0,
+      state: 'completed',
+    },
+    archived,
+  )
+}
+
+/**
+ * 这场会议归档到 NAS 的哪个目录，或者为什么这一轮不归档（阶段 3 · T9）。
+ *
+ * ## 这里替换掉了什么
+ *
+ * 阶段 2 用的是一条固定规则 `<归档时刻的年>/<月>/<meetingId>[_<subMeetingId>]`，
+ * 那段代码的注释自己写着「等 R1/R4 落地后这里要接一个真正的规则求值」。R1 已经落地
+ * （`src/policy/stacks.ts` 的 `evaluateArchiveStack`），这里就是那次接线：目录由
+ * archive 栈判出来的**目录模板**渲染而成，模板求值的全部规矩在
+ * `src/policy/archive-dir.ts`（含四个占位符、坏模板一律判不归档的理由）。
+ *
+ * ## 顺带修掉的那个 bug：年月取会议 startTime，不是归档时刻
+ *
+ * 旧实现用 `archivedAtSec` 算 `{年}/{月}`。**七月的会议在八月被归档，就会落进
+ * `2026/08/`**，而本地归档区（`packages/engine/src/domain/filename.ts` 的
+ * `meetingDirPath`）用的是**会议的 startTime**。同一场会议在两处的年月目录不一致，
+ * 人去 NAS 上按月份找会议就会找不到——而这件事没有任何地方会报错。
+ *
+ * **改变算法是安全的，已核实**：`archived_assets.nas_path` 与
+ * `meeting_archives.nas_dir` 都是**存进库里的**，`src/worker/retention.ts` 读的是
+ * 记录里的值（`asset.nasPath` / `asset.localPath`）而不是重算路径。所以已经归档过的
+ * 文件不会因为算法变了而失联——它们仍按老路径被找到、被校验、被清理。
+ * 记在这里，下一个人不必再查一遍。
+ *
+ * （旧注释里「为什么不复用 cleanDirName」那段随之作废：它的前提是「这里的输入是
+ * meetingId / subMeetingId 这种结构化 ID，没有自由文本」。模板的 `{标题}` 就是自由
+ * 文本，所以它现在**必须**过与本地目录同一套清洗——那段清洗已经从 `cleanDirName`
+ * 里提成了 `cleanSubjectSegment`，两处共用一份，不许各写一份。）
+ *
+ * `getMeeting` 拿不到元数据时**不归档**：归档规则的条件求值与 `{年}/{月}/{标题}`
+ * 都要会议字段，没有字段就是「判断不出来」，按全局约束落到安全侧并留下理由。
+ * 「用一个默认目录归档」不是更宽容的选择——它会把这场会议静静写进 `1970/01/untitled`。
+ */
+async function decideArchiveDir(
+  deps: ArchiveDeps,
+  meetingId: string,
+  subMeetingId: string,
+  meeting: Meeting | null,
+  rules: readonly StackRule[],
+  now: number,
+): Promise<ArchiveDirOutcome> {
+  if (meeting === null) {
+    return {
+      archive: false,
+      reason:
+        `读不到会议 ${meetingId}/${subMeetingId || '-'} 的元数据（meetings 表里没有这一行，或查库失败）；` +
+        '归档规则的条件与目录模板都要会议字段，判不出该归档到哪里，按不归档处理',
+    }
+  }
+
+  // ── 接缝：人工改写覆盖层（T7，`meeting_overrides`）落地后接在这里 ────────────
+  // 人工改写优先于**所有**规则（spec §5.4），所以它要在 evaluateArchiveStack
+  // **之前**短路，产出一个同形状的 ArchiveDecision；下面渲染目录那一段原样复用，
+  // 不需要为改写另写一条路径。本任务只做规则驱动的这一半。
+
+  // `archived` 是 `arch`（isarch / notarch）条件的数据源，**查出来传，不猜**：
+  // 随手填 false 会让一条 `arch notarch → 归档到 X` 的规则对已归档的会议也成立。
+  // 这一轮进到这里的会议数量很小（listMeetingsNeedingArchive 只给「有未归档完成
+  // 资产」的那些），一次查询换一个正确的事实是划算的。
+  const archived = (await deps.archives.findMeetingArchive(meetingId, subMeetingId)) !== null
+  const decision = evaluateArchiveStack(rules, { facts: factsFor(meeting, archived), now })
+
+  return resolveArchiveDir(decision, {
+    nasRoot: deps.nasRoot,
+    meeting,
+    // 会议号缺失时顶 meeting_id——与本地归档区（meetingDirPath 的 fallbackCode）同口径
+    fallbackCode: meetingId,
+  })
 }
 
 export interface ArchiveDeps {
@@ -91,6 +175,20 @@ export interface ArchiveDeps {
    * 只有 ID 的 sidecar——正是这条故事要消灭的那个失效形态。让编译器盯着。
    */
   getMeeting: (meetingId: string, subMeetingId: string) => Promise<Meeting | null>
+  /**
+   * 归档栈的规则来源（阶段 3 · T9）。
+   *
+   * **为什么又是一个函数而不是 `PolicyStore`**：同 `getMeeting` 的先例——本文件顶部
+   * 的三表边界注释解释了这里为什么对依赖吝啬。归档流水线需要的只是「archive 这一栈
+   * 当前启用的规则」，把整个 store 递进来会让它顺手够得着 `policy_rules` 之外的东西。
+   *
+   * **每轮取一次，不是每场会议取一次**：`archivePendingMeetings` 在循环**外**调它
+   * 一次，把结果当参数传给每场会议的 `archiveMeeting`。一轮可能有几十上百场会议，
+   * 每场重查一遍既是白花的查询，又会让同一轮里前后两场会议按不同的规则集判——
+   * 同一轮内不该有两套口径。`archiveMeeting` 的 `rules` 是显式参数正是为了这一点：
+   * 规则从哪来不是它能自己决定的事。
+   */
+  listArchiveRules: () => Promise<readonly StackRule[]>
   /**
    * 写 NAS sidecar 的落点，路径**相对 nasRoot**；缺省 `createNasStorage(nasRoot).writeMeta`。
    *
@@ -125,6 +223,24 @@ export interface ArchiveOutcome {
    * 但每一次都会 console.warn，并被 archivePendingMeetings 计进 sidecarFailed。
    */
   sidecar: 'written' | 'skipped' | 'failed'
+  /**
+   * **归档规则判为不归档**（阶段 3 · T9）：兜底 skip、规则 skip、目录模板渲染不出
+   * 合法路径、会议元数据取不到，四种情况都是它。为 true 时这一轮一个字节都没搬，
+   * `newlyArchived` 恒为 0，`fullyArchived` 恒为 false（没算过，不是「算出来是 false」）。
+   *
+   * 与 `verificationFailed` / 抛出的 `failed` **不是一回事**：那两个是「想归档但没归成」，
+   * 这个是「按规则本来就不该归」。合并成一个数字会让真正的故障被正常的 skip 淹没。
+   */
+  skipped: boolean
+  /**
+   * 判定理由，一句人话，**归不归档都有**。
+   *
+   * 归档时是命中规则的那句话（「归档规则 #3「财务部」决定：归档到 …」），不归档时是
+   * 兜底/规则/坏模板各自的理由。一场会议悄悄没被归档是这个系统里最难排查的一类现象，
+   * 所以任何「判断不出来」的路径都必须带着这句话回来——它同时进日志与返回值，
+   * 阶段 4 的会议详情抽屉直接展示它。
+   */
+  reason: string
 }
 
 async function archiveOneAsset(
@@ -193,6 +309,9 @@ async function writeNasSidecars(
   deps: ArchiveDeps,
   meetingId: string,
   subMeetingId: string,
+  // 元数据由调用方读好传进来：T9 之后归档目录本身就要用它（判定 + 模板渲染），
+  // 同一轮里再查一次库只会多一次查询，还可能读到两个不同的值。
+  meeting: Meeting | null,
   completed: CompletedAssetRow[],
   nasDir: string,
   retentionDays: number,
@@ -202,7 +321,6 @@ async function writeNasSidecars(
   const nasStorage = createNasStorage(deps.nasRoot, timeoutMs)
   const write = deps.writeMeta ?? nasStorage.writeMeta.bind(nasStorage)
 
-  const meeting = await loadMeetingMeta(deps, meetingId, subMeetingId)
   const archived = await deps.archives.listArchivedAssetsForMeeting(meetingId, subMeetingId)
   const nasByKey = new Map(archived.map((a) => [naturalKey(a), a]))
 
@@ -244,9 +362,11 @@ async function writeNasSidecars(
     )
   }
   if (elsewhere > 0) {
-    // 归档目录按**归档时刻**的年/月分（nasDirFor），所以一场跨月才归档齐的会议，
-    // 早先那批资产留在上个月的目录里，而 meeting_archives.nas_dir 只记得最后一次。
-    // 清单照实写每个文件的真实 nasPath（找得到），但这个错位本身要留痕。
+    // T9 之前归档目录按**归档时刻**的年/月分，一场跨月才归档齐的会议因此会把早先那批
+    // 资产留在上个月的目录里，而 meeting_archives.nas_dir 只记得最后一次。现在目录由
+    // 规则模板算、`{年}/{月}` 取会议 startTime，这个成因没有了；但**换成规则之后
+    // 又多了一个新成因**：管理员中途改了目录模板（或改了规则优先级），同一场会议前后
+    // 两轮判出不同的目录。清单照实写每个文件的真实 nasPath（找得到），但错位本身要留痕。
     console.warn(
       `archive sidecar: meeting=${meetingId} subMeeting=${subMeetingId} 有 ${elsewhere} 个已归档资产不在 ${nasDir} 内（跨月归档？），清单按各自真实的 nasPath 记录`,
     )
@@ -299,11 +419,15 @@ async function writeNasSidecars(
 }
 
 /**
- * 取会议元数据；**取不到不是错误**，返回 null 由调用方如实写进清单。
+ * 取会议元数据；**读失败不抛出**，返回 null 由调用方决定后果。
  *
- * 抛出也一样按"取不到"处理：归档本身是更重要的事，一次读元数据失败不该把一场
- * 已经搬完、已经校验过哈希的归档判成失败。但两种情况的 warn 话术分开——
- * "表里没这一行"和"查库炸了"是两件要查的不同的事。
+ * 抛出与"表里没这一行"都按"取不到"处理，但 warn 话术分开——"表里没这一行"和
+ * "查库炸了"是两件要查的不同的事。
+ *
+ * T9 之后取不到元数据的后果变了：从前只是 `meeting.json` 里几个字段写 null、归档照常，
+ * 现在**整场会议这一轮不归档**（归档目录要靠会议字段判，判不出来就落安全侧，
+ * 见 `decideArchiveDir`）。这行 warn 因此是"为什么这场会议没归档"的第一现场，
+ * 措辞不再提 sidecar。
  */
 async function loadMeetingMeta(
   deps: ArchiveDeps,
@@ -314,13 +438,13 @@ async function loadMeetingMeta(
     const m = await deps.getMeeting(meetingId, subMeetingId)
     if (m === null) {
       console.warn(
-        `archive sidecar: meeting=${meetingId} subMeeting=${subMeetingId} 在 meetings 表里没有元数据，NAS 上的 meeting.json 相应字段如实写 null`,
+        `archive: meeting=${meetingId} subMeeting=${subMeetingId} 在 meetings 表里没有元数据`,
       )
     }
     return m
   } catch (err) {
     console.warn(
-      `archive sidecar: meeting=${meetingId} subMeeting=${subMeetingId} 读会议元数据失败（${err}），NAS 上的 meeting.json 相应字段如实写 null`,
+      `archive: meeting=${meetingId} subMeeting=${subMeetingId} 读会议元数据失败（${err}）`,
     )
     return null
   }
@@ -344,14 +468,40 @@ function isUnder(dir: string, path: string): boolean {
   return path.startsWith(dir.endsWith('/') ? dir : `${dir}/`)
 }
 
+/**
+ * 归档一场会议。
+ *
+ * `rules` 是**显式参数**而不是从 `deps` 里现取的（阶段 3 · T9）：规则每轮取一次，
+ * 由 `archivePendingMeetings` 在循环外取好传进来。见 `ArchiveDeps.listArchiveRules`。
+ */
 export async function archiveMeeting(
   deps: ArchiveDeps,
   meetingId: string,
   subMeetingId: string,
   now: number,
+  rules: readonly StackRule[],
 ): Promise<ArchiveOutcome> {
+  // 先判、再搬。判定要用会议元数据，元数据同时也是 sidecar 要写的东西，一并读在这里。
+  const meeting = await loadMeetingMeta(deps, meetingId, subMeetingId)
+  const dir = await decideArchiveDir(deps, meetingId, subMeetingId, meeting, rules, now)
+  if (!dir.archive) {
+    // 判为不归档：**一个字节都不搬**，也不写任何记录。理由带回去（调用方记进日志与
+    // 计数），这是这场会议"为什么不在 NAS 上"的唯一线索。
+    return {
+      meetingId,
+      subMeetingId,
+      newlyArchived: 0,
+      verificationFailed: 0,
+      // 没有算过"是不是全归档完了"——不归档的会议问这个问题没有意义
+      fullyArchived: false,
+      sidecar: 'skipped',
+      skipped: true,
+      reason: dir.reason,
+    }
+  }
+  const nasDir = dir.nasDir
+
   const completed = await deps.archives.listCompletedAssets(meetingId, subMeetingId)
-  const nasDir = nasDirFor(deps.nasRoot, meetingId, subMeetingId, now)
 
   let newlyArchived = 0
   let verificationFailed = 0
@@ -402,7 +552,7 @@ export async function archiveMeeting(
     // 但按 packages/engine/src/executor/index.ts:38-41 立的规矩，降级要留痕，
     // 不许静默 .catch(() => {})。
     try {
-      await writeNasSidecars(deps, meetingId, subMeetingId, completed, nasDir, retentionDays, now)
+      await writeNasSidecars(deps, meetingId, subMeetingId, meeting, completed, nasDir, retentionDays, now)
       sidecar = 'written'
     } catch (err) {
       sidecar = 'failed'
@@ -412,7 +562,11 @@ export async function archiveMeeting(
     }
   }
 
-  return { meetingId, subMeetingId, newlyArchived, verificationFailed, fullyArchived, sidecar }
+  return {
+    meetingId, subMeetingId, newlyArchived, verificationFailed, fullyArchived, sidecar,
+    skipped: false,
+    reason: dir.reason,
+  }
 }
 
 export interface ArchiveRoundOutcome {
@@ -429,6 +583,11 @@ export interface ArchiveRoundOutcome {
    *  可解释性降级，不是"归档失败"那条最高级别告警。合并成一个数字会让真正的归档
    *  故障被 sidecar 的噪音稀释。与 WorkerRound.manifests.failed 同一口径。 */
   sidecarFailed: number
+  /** **归档规则判为不归档**的会议数（阶段 3 · T9）：兜底 skip、规则 skip、坏模板、
+   *  元数据取不到。**不是故障**，所以既不进退出码也不并进 failed——规则没配就什么
+   *  都不归档是设计如此（spec §4.6 兜底 skip）。但它也不能只是一个数字：每一场都
+   *  带着一句理由 console.warn，见 archivePendingMeetings 里的说明。 */
+  skipped: number
 }
 
 /**
@@ -447,13 +606,37 @@ export async function archivePendingMeetings(
   now: () => number,
 ): Promise<ArchiveRoundOutcome> {
   const pending = await deps.archives.listMeetingsNeedingArchive()
-  const result: ArchiveRoundOutcome = { newlyArchived: 0, verificationFailed: 0, failed: 0, sidecarFailed: 0 }
+  const result: ArchiveRoundOutcome = {
+    newlyArchived: 0, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0,
+  }
+  // 没有待办就不必查规则——与 listMeetingsNeedingArchive 自带的那个早退同一个道理
+  if (pending.length === 0) return result
+
+  // **规则每轮取一次**，在循环外。一轮可能有几十上百场会议：每场重查一遍既是白花的
+  // 查询，又会让同一轮里前后两场会议按不同的规则集判（管理员正好在这一轮中间改了
+  // 规则）——同一轮内不该有两套口径。取好之后按值传给每场会议。
+  const rules = await deps.listArchiveRules()
+
   for (const { meetingId, subMeetingId } of pending) {
     try {
-      const outcome = await archiveMeeting(deps, meetingId, subMeetingId, now())
+      const outcome = await archiveMeeting(deps, meetingId, subMeetingId, now(), rules)
       result.newlyArchived += outcome.newlyArchived
       result.verificationFailed += outcome.verificationFailed
       if (outcome.sidecar === 'failed') result.sidecarFailed++
+      if (outcome.skipped) {
+        result.skipped++
+        // 判为不归档必须留痕，哪怕它是正常的。**一场会议悄悄没被归档，是这个系统里
+        // 最难排查的一类现象**：库里没有记录、NAS 上没有目录、日志里没有一行，
+        // 唯一的线索就是这句理由。
+        //
+        // 已知代价：一场永远匹配不上规则的会议会**每一轮**都出现在
+        // listMeetingsNeedingArchive 里，于是每轮都重复这一行。这是刻意接受的——
+        // 重复的一行能被看见，沉默不能。阶段 4 的分诊条会把它变成界面上的一格，
+        // 那时这行日志才是纯粹的兜底。
+        console.warn(
+          `archive skipped for meeting=${meetingId} subMeeting=${subMeetingId}: ${outcome.reason}`,
+        )
+      }
     } catch (err) {
       result.failed++
       console.error(`archiveMeeting failed for meeting=${meetingId} subMeeting=${subMeetingId}:`, err)

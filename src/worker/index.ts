@@ -30,6 +30,7 @@ import { createAddressesApi } from '../tencent/addresses'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
 import { createArchivesStore, type ArchivesStore } from '../store/archives'
+import { createPolicyStore, type PolicyStore } from '../store/policy'
 import { archivePendingMeetings, type ArchiveDeps } from './archive'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore } from './store-mysql'
@@ -44,6 +45,12 @@ export interface WorkerDeps {
   leaseSec: number
   /** 归档流水线（P2）依赖：归档记录存取 */
   archives: ArchivesStore
+  /** 规则存取。worker 只用它的 archive 一栈（**往 NAS 的哪个目录归档**，spec §4.6）：
+   *  fetch 栈的接线是另一件事，allow 栈是网关的活（见 src/policy/access.ts 的文件头）。
+   *  这里持有整个读接口、只在下面把 archive 那一栈收成一个函数递给 archiveDeps，
+   *  是刻意的分层：WorkerDeps 是宿主、本来就握着各个 store，ArchiveDeps 才是那个
+   *  要对依赖吝啬的地方。 */
+  policy: Pick<PolicyStore, 'listEnabledStackRules'>
   /** 本地归档区根目录（MDE_ARCHIVE_ROOT）——与 storage 指向同一棵目录树。
    *  Storage 接口本身不暴露自己的根路径，archiveMeeting 拼本地源文件路径
    *  （join(localRoot, target_path)）需要单独拿到它，所以在这里另传一份。 */
@@ -70,7 +77,16 @@ export interface WorkerRound {
    *  会议数（archiveMeeting 本身抛出，不是可以放心忽略的数字，见 archive.ts 的
    *  ArchiveRoundOutcome 注释）。sidecarFailed 是 NAS 上那两个自解释 JSON 没写出来的
    *  会议数——与 failed 分开、且不进退出码，理由同 manifests.failed。 */
-  archived: { newlyArchived: number; verificationFailed: number; failed: number; sidecarFailed: number }
+  archived: {
+    newlyArchived: number
+    verificationFailed: number
+    failed: number
+    sidecarFailed: number
+    /** 归档规则判为不归档的会议数（阶段 3 · T9）。**不是故障、不进退出码**：
+     *  归档栈的兜底就是 skip，规则没配就什么都不归档是设计如此（spec §4.6）。
+     *  每一场都带着理由 warn 过，见 archive.ts 的 archivePendingMeetings。 */
+    skipped: number
+  }
 }
 
 /**
@@ -159,11 +175,17 @@ export async function runWorkerOnce(
   // （三张表边界之外的第四张），但 NAS 上的 meeting.json 必须有 subject / 会议号 /
   // 起止时间，否则那个目录里只剩一串 ID。这里的 deps.store 本来就有这个读法，
   // 直接把它当依赖递进去，边界不破、来源单一。
+  //
+  // 归档到**哪个目录**由 archive 规则栈判（阶段 3 · T9，src/policy/archive-dir.ts）：
+  // 阶段 2 那条「按归档时刻的年/月 + 会议 ID」的固定规则已经作废。listArchiveRules
+  // 同样是**注入的函数**而不是整个 PolicyStore，理由与 getMeeting 一样；
+  // 它每轮只会被调一次（archivePendingMeetings 在循环外调），不是每场会议一次。
   const archiveDeps: ArchiveDeps = {
     archives: deps.archives,
     localRoot: deps.localRoot,
     nasRoot: deps.nasRoot,
     getMeeting: (meetingId, subMeetingId) => deps.store.getMeeting(meetingId, subMeetingId),
+    listArchiveRules: () => deps.policy.listEnabledStackRules('archive'),
   }
   const archived = await archivePendingMeetings(archiveDeps, now)
 
@@ -470,6 +492,7 @@ async function main(): Promise<number> {
     await runMigrations(pool)
     const store = createMysqlStore(pool)
     const archives = createArchivesStore(pool)
+    const policy = createPolicyStore(pool)
 
     const tencentClient = createTencentClient(config.tencent, {
       fetch,
@@ -506,7 +529,7 @@ async function main(): Promise<number> {
     const res = await runWorkerOnce(
       {
         store, source, storage, concurrency: args.concurrency, leaseSec: LEASE_SEC,
-        archives, localRoot: archiveRoot, nasRoot,
+        archives, policy, localRoot: archiveRoot, nasRoot,
       },
       args.sel,
       args.keys,
@@ -524,7 +547,7 @@ async function main(): Promise<number> {
     console.log(
       `archived newlyArchived=${res.archived.newlyArchived} ` +
         `verificationFailed=${res.archived.verificationFailed} failed=${res.archived.failed} ` +
-        `sidecarFailed=${res.archived.sidecarFailed}`,
+        `sidecarFailed=${res.archived.sidecarFailed} skipped=${res.archived.skipped}`,
     )
     // 归档失败（archiveMeeting 本身抛出）与下载失败一样必须让退出码变非零——
     // dev-plan.md 的全局约束把"归档失败"列为最高级别告警，一个盯着 cron/systemd
