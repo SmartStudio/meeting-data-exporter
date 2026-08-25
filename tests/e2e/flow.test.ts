@@ -36,7 +36,8 @@ import { createStsStore } from '../../src/store/sts'
 import { createStsManager } from '../../src/sts/manager'
 import { verifySignature, decryptEvent, decryptCheckStr } from '../../src/sts/crypto'
 import { createPolicyStore } from '../../src/store/policy'
-import { createPolicyEngine } from '../../src/policy/engine'
+import { createAccessGate } from '../../src/policy/access'
+import { createArchivesStore } from '../../src/store/archives'
 import { createAuditStore } from '../../src/store/audit'
 import { createAuditRecorder } from '../../src/audit/recorder'
 import { createAuthStore } from '../../src/store/auth'
@@ -144,7 +145,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(dbPool)
-  const policyEngine = createPolicyEngine(policyStore)
+  const accessGate = createAccessGate({ store: policyStore })
+  const archivesStore = createArchivesStore(dbPool)
 
   const auditStore = createAuditStore(dbPool)
   const auditRecorder = createAuditRecorder(auditStore, now)
@@ -173,7 +175,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     gatewayBaseUrl,
     recordsApi,
     catalog,
-    policyEngine,
+    accessGate,
+    archives: archivesStore,
     auditRecorder,
     deviceFlow,
     wecomClient,
@@ -233,6 +236,40 @@ async function deviceLogin(
   return (await tokenRes.json()) as { access_token: string; refresh_token: string }
 }
 
+/**
+ * 建一个采集程序（`service_accounts` 里一行）并换出访问令牌，走的是真实的
+ * `POST /api/v1/auth/service-token`：真 argon2 校验、真签发。
+ *
+ * 取数据的链路一律用它，**不用设备登录**：阶段 3 之后采集权限规则的主体是
+ * 采集程序（`service_accounts.id`），企微用户登录的是人，没有采集程序身份，
+ * 走到 allow 栈会被显式拒绝（见下面那条专门盯这件事的用例）。
+ */
+async function serviceLogin(
+  app: (req: Request) => Promise<Response>,
+  clientId: string,
+  tmUserId: string,
+): Promise<{ access_token: string }> {
+  const secret = `secret-${clientId}`
+  const hash = await Bun.password.hash(secret, { algorithm: 'argon2id' })
+  await pool.execute(
+    `INSERT INTO service_accounts (id, name, secret_hash, tm_userid, enabled, expires_at, created_at)
+     VALUES (?, ?, ?, ?, 1, NULL, 0)
+     ON DUPLICATE KEY UPDATE secret_hash = VALUES(secret_hash), tm_userid = VALUES(tm_userid)`,
+    [clientId, `e2e ${clientId}`, hash, tmUserId],
+  )
+  const res = await app(
+    new Request('https://gw/api/v1/auth/service-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: secret }),
+    }),
+  )
+  if (res.status !== 200) {
+    throw new Error(`e2e service token exchange failed: ${res.status} ${await res.text()}`)
+  }
+  return (await res.json()) as { access_token: string }
+}
+
 /** 复刻 src/sts/crypto.ts 的加解密/签名算法（同 tests/http/webhook.test.ts 的做法），构造真实可通过验签的 webhook 回调 */
 function makeWebhookSignature(token: string, ts: string, nonce: string, data: string): string {
   return createHash('sha1').update([token, ts, nonce, data].sort().join('')).digest('hex')
@@ -275,7 +312,7 @@ function webhookRequest(encrypted: string, now: number): Request {
   })
 }
 
-test('完整流程：设备登录 → 列会议 → 取资产 → 换下载地址', async () => {
+test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下载地址', async () => {
   const clock = stepClock(NOW)
   const meetingRecordId = 'rec-e2e-full-1'
   const meetingId = 'm-e2e-full-1'
@@ -314,11 +351,10 @@ test('完整流程：设备登录 → 列会议 → 取资产 → 换下载地�
 
   await insertPolicyRule(pool, {
     priority: 10,
-    subjectType: 'user',
-    subjectValue: 'ww-e2e-full-1',
-    resourceExpr: {},
+    programId: 'prog-e2e-full-1',
     assetTypes: ['*'],
     effect: 'allow',
+    note: '放行 e2e 全流程采集程序',
   })
 
   // STS-Token 就位：真实发起 ensureFresh（对假服务的一次真实带签名 HTTP 调用），
@@ -328,26 +364,8 @@ test('完整流程：设备登录 → 列会议 → 取资产 → 换下载地�
   const webhookRes = await app(webhookRequest(encrypted, clock.now()))
   expect(webhookRes.status).toBe(200)
 
-  // 1. 设备登录
-  const codeRes = await app(new Request('https://gw/api/v1/auth/device/code', { method: 'POST' }))
-  expect(codeRes.status).toBe(200)
-  const codeBody = (await codeRes.json()) as { device_code: string }
-
-  clock.advance(1)
-  const pendingRes = await app(deviceTokenRequest(codeBody.device_code))
-  expect(pendingRes.status).toBe(400)
-  expect((await pendingRes.json()).error).toBe('authorization_pending')
-
-  const state = await lookupDeviceState(codeBody.device_code)
-  clock.advance(1)
-  const cbRes = await app(new Request(`https://gw/auth/wecom/callback?code=e2e-code&state=${state}`))
-  expect(cbRes.status).toBe(200)
-  expect(await cbRes.text()).toContain('登录成功')
-
-  clock.advance(10)
-  const tokenRes = await app(deviceTokenRequest(codeBody.device_code))
-  expect(tokenRes.status).toBe(200)
-  const { access_token } = (await tokenRes.json()) as { access_token: string }
+  // 1. 采集程序登录（真 argon2 校验 + 真签发）
+  const { access_token } = await serviceLogin(app, 'prog-e2e-full-1', 'ww-e2e-full-1')
   const headers = { Authorization: `Bearer ${access_token}` }
 
   // 2. 列会议
@@ -408,6 +426,84 @@ test('完整流程：设备登录 → 列会议 → 取资产 → 换下载地�
   expect(auditRows.every((r) => r.decision === 'allow')).toBe(true)
 })
 
+/**
+ * 阶段 3 的语义变更，用一条端到端用例钉死：**设备授权登录仍然走得通，但登录的是
+ * 人，不是采集程序。** 采集权限规则（allow 栈）的主体是 `service_accounts.id`，
+ * 企微用户没有这个身份，所以规则怎么建都取不到数据。
+ *
+ * 这不是「恰好没有匹配的规则」——建一条主体写成腾讯会议 userid 的规则（旧库里
+ * 就是这个形状）在这里同样无效，正是迁移时**不自动转换语义**的直接后果。
+ */
+test('设备授权登录成功，但企微用户不是采集程序，一场会议都取不到', async () => {
+  const clock = stepClock(NOW)
+  const meetingRecordId = 'rec-e2e-person-1'
+  const meetingId = 'm-e2e-person-1'
+  const fileId = 'file-e2e-person-1'
+
+  const { app, fakeState } = buildE2eApp(pool, {
+    now: clock.now,
+    wecomExchangeCode: async () => ({ userId: 'ww-e2e-person-1', email: null }),
+  })
+
+  fakeState.records.push({
+    meeting_record_id: meetingRecordId,
+    meeting_id: meetingId,
+    meeting_code: '700005',
+    host_user_id: 'ww-e2e-person-1',
+    media_start_time: NOW * 1000,
+    subject: '企微用户看不到的会议',
+    state: 3,
+  })
+  fakeState.addressesByRecordId.set(meetingRecordId, [
+    {
+      record_file_id: fileId,
+      download_address: 'https://cos.example/person-video.mp4',
+      download_address_file_type: 'mp4',
+      allow_download: true,
+    },
+  ])
+
+  // 旧形状的规则：主体是人（腾讯会议 userid）。换语义后它对任何身份都不生效。
+  await insertPolicyRule(pool, {
+    priority: 100,
+    subjectType: 'user',
+    subjectValue: 'ww-e2e-person-1',
+    assetTypes: ['*'],
+    effect: 'allow',
+    note: '旧形状：主体是人',
+  })
+
+  // 登录本身照常成功——被拒的是取数据，不是登录
+  const { access_token } = await deviceLogin(app, clock)
+  const headers = { Authorization: `Bearer ${access_token}` }
+
+  const listRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700005', { headers }))
+  expect(listRes.status).toBe(200)
+  expect(((await listRes.json()) as { meetings: unknown[] }).meetings).toEqual([])
+
+  // 列会议这一步已经把 meeting 写进了 meeting_cache（缓存写入与展示过滤是两回事），
+  // 所以下面这个 assetId 走的是「缓存命中 + 判定为拒绝」那条路径，不是「查不到」。
+  const assetId = `${meetingRecordId}:${fileId}:video:0`
+  const dlRes = await app(
+    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
+      method: 'POST',
+      headers,
+    }),
+  )
+  expect(dlRes.status).toBe(403)
+  expect((await dlRes.json()).error).toBe('forbidden')
+
+  const [auditRows] = await pool.execute<RowDataPacket[]>(
+    'SELECT decision, matched_rule FROM audit_log WHERE asset_id = ?',
+    [assetId],
+  )
+  expect(auditRows).toHaveLength(1)
+  expect(auditRows[0]!.decision).toBe('deny')
+  // 没有任何规则参与这次判定：拒绝的理由是「这个身份不是采集程序」，
+  // 不是「某条规则说了 deny」
+  expect(auditRows[0]!.matched_rule).toBeNull()
+})
+
 test('策略拒绝时整条链路在 download-url 处被拦截', async () => {
   const clock = stepClock(NOW)
   const meetingRecordId = 'rec-e2e-deny-1'
@@ -439,17 +535,17 @@ test('策略拒绝时整条链路在 download-url 处被拦截', async () => {
     },
   ])
 
-  // 只放行 video；audio（及其余类型）在策略层面被拒——默认 deny
+  // 只放行 video；audio（及其余类型）取不到——命中的规则只放行 video 这一类，
+  // 这与「一条规则都没命中走兜底 deny」是两种不同的拒绝（计划 §3.4.1 D-e）
   await insertPolicyRule(pool, {
     priority: 10,
-    subjectType: 'user',
-    subjectValue: 'ww-e2e-deny-1',
-    resourceExpr: {},
+    programId: 'prog-e2e-deny-1',
     assetTypes: ['video'],
     effect: 'allow',
+    note: '只放行录像',
   })
 
-  const { access_token } = await deviceLogin(app, clock)
+  const { access_token } = await serviceLogin(app, 'prog-e2e-deny-1', 'ww-e2e-deny-1')
   const headers = { Authorization: `Bearer ${access_token}` }
 
   // 链路前半段（登录、列会议、取资产清单）全部正常返回 200——
@@ -535,14 +631,12 @@ test('STS-Token 未就位时，video 可下载而 ai_minutes 返回 unavailable'
 
   await insertPolicyRule(pool, {
     priority: 10,
-    subjectType: 'user',
-    subjectValue: 'ww-e2e-sts-1',
-    resourceExpr: {},
+    programId: 'prog-e2e-sts-1',
     assetTypes: ['*'],
     effect: 'allow',
   })
 
-  const { access_token } = await deviceLogin(app, clock)
+  const { access_token } = await serviceLogin(app, 'prog-e2e-sts-1', 'ww-e2e-sts-1')
   const headers = { Authorization: `Bearer ${access_token}` }
 
   const assetsRes = await app(new Request(`https://gw/api/v1/meetings/${meetingId}/assets`, { headers }))
@@ -609,14 +703,12 @@ test('会议号命中多场时列出候选', async () => {
 
   await insertPolicyRule(pool, {
     priority: 10,
-    subjectType: 'user',
-    subjectValue: 'ww-e2e-multi-1',
-    resourceExpr: {},
+    programId: 'prog-e2e-multi-1',
     assetTypes: ['*'],
     effect: 'allow',
   })
 
-  const { access_token } = await deviceLogin(app, clock)
+  const { access_token } = await serviceLogin(app, 'prog-e2e-multi-1', 'ww-e2e-multi-1')
   const headers = { Authorization: `Bearer ${access_token}` }
 
   const res = await app(new Request(`https://gw/api/v1/meetings?meeting_code=${meetingCode}`, { headers }))

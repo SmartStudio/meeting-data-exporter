@@ -8,9 +8,11 @@ import type { TencentClient, RequestOptions } from '../../src/tencent/client'
 import type { QueryParams } from '../../src/tencent/url'
 import type { WecomClient, WecomUser } from '../../src/auth/wecom'
 import type { IdentityStrategy } from '../../src/config'
+import type { RuleCond } from '../../src/policy/conds'
 
 import { createPolicyStore } from '../../src/store/policy'
-import { createPolicyEngine } from '../../src/policy/engine'
+import { createAccessGate } from '../../src/policy/access'
+import { createArchivesStore } from '../../src/store/archives'
 import { createAuditStore } from '../../src/store/audit'
 import { createAuditRecorder } from '../../src/audit/recorder'
 import { createAuthStore } from '../../src/store/auth'
@@ -103,7 +105,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
-  const policyEngine = createPolicyEngine(policyStore)
+  const accessGate = createAccessGate({ store: policyStore })
+  const archivesStore = createArchivesStore(pool)
 
   const auditStore = createAuditStore(pool)
   const auditRecorder = createAuditRecorder(auditStore, now)
@@ -132,7 +135,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     gatewayBaseUrl,
     recordsApi,
     catalog,
-    policyEngine,
+    accessGate,
+    archives: archivesStore,
     auditRecorder,
     deviceFlow,
     wecomClient,
@@ -153,29 +157,54 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   return { app: createApp(deps), deps, pool }
 }
 
+/**
+ * 往 policy_rules 插一条规则。**默认是 allow 栈**——网关只判第三栈，
+ * 端到端测试造的规则九成九是它。
+ *
+ * `programId` 是主体（`service_accounts.id`），不是腾讯会议 userid：
+ * 阶段 3 之后采集权限规则的主体是采集程序，不是人。要造一条主体写错的规则
+ * （比如验证旧的 `subject_type='user'` 已经不生效），显式传 subjectType /
+ * subjectValue 覆盖即可。
+ *
+ * `assetTypes` 用 `AssetKey` 词汇（`transcript` / `ai_transcript`），不是网关的
+ * `asset_type`（`meeting_summary` / `ai_meeting_transcripts`）——两套词汇的换算在
+ * `policy/access.ts`。
+ */
 export async function insertPolicyRule(
   pool: Pool,
   opts: {
+    kind?: 'fetch' | 'archive' | 'allow'
     priority: number
-    subjectType: string
-    subjectValue: string
-    resourceExpr: Record<string, unknown>
+    join?: 'and' | 'or'
+    conds?: RuleCond[]
+    /** allow 栈的主体：采集程序 id */
+    programId?: string
+    subjectType?: string
+    subjectValue?: string
     assetTypes: string[]
     effect: string
+    note?: string | null
     enabled?: number
   },
 ): Promise<void> {
+  const kind = opts.kind ?? 'allow'
+  const subjectType = opts.subjectType ?? (kind === 'allow' ? 'program' : '')
+  const subjectValue = opts.subjectValue ?? opts.programId ?? ''
   await pool.execute(
     `INSERT INTO policy_rules
-       (priority, subject_type, subject_value, resource_expr, asset_types, effect, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+       (kind, priority, join_op, conds, subject_type, subject_value, asset_types, effect,
+        note, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
     [
+      kind,
       opts.priority,
-      opts.subjectType,
-      opts.subjectValue,
-      JSON.stringify(opts.resourceExpr),
+      opts.join ?? 'and',
+      JSON.stringify(opts.conds ?? []),
+      subjectType,
+      subjectValue,
       JSON.stringify(opts.assetTypes),
       opts.effect,
+      opts.note ?? null,
       opts.enabled ?? 1,
     ],
   )

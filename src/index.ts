@@ -13,7 +13,8 @@ import { createCatalog } from './catalog/index'
 import { createStsManager } from './sts/manager'
 import { createTokenCipher } from './sts/cipher'
 import { verifySignature, decryptEvent, decryptCheckStr } from './sts/crypto'
-import { createPolicyEngine } from './policy/engine'
+import { createAccessGate } from './policy/access'
+import { createArchivesStore } from './store/archives'
 import { createAuditRecorder } from './audit/recorder'
 import { createDeviceFlow } from './auth/device'
 import { createWecomClient } from './auth/wecom'
@@ -60,7 +61,10 @@ async function main(): Promise<void> {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
-  const policyEngine = createPolicyEngine(policyStore)
+  const accessGate = createAccessGate({ store: policyStore })
+  // 网关只用它读「这场会议归档了没有」（规则的 arch 条件）——归档流水线的写侧
+  // 在 worker 进程里，两边共用同一份 store 定义，不各写一遍 SQL
+  const archivesStore = createArchivesStore(pool)
 
   const auditStore = createAuditStore(pool)
   const auditRecorder = createAuditRecorder(auditStore, now)
@@ -99,7 +103,8 @@ async function main(): Promise<void> {
     gatewayBaseUrl: config.gatewayBaseUrl,
     recordsApi,
     catalog,
-    policyEngine,
+    accessGate,
+    archives: archivesStore,
     auditRecorder,
     deviceFlow,
     wecomClient,

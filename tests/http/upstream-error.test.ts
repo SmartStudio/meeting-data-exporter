@@ -12,7 +12,7 @@ beforeAll(async () => { const db = await withTestDb(); pool = db.pool; cleanup =
 afterAll(() => cleanup())
 
 const NOW = 1_700_000_000
-const alice: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-a', tmUserId: 'tm-a' }
+const alice: ActorIdentity = { kind: 'service_account', wecomUserId: null, tmUserId: 'tm-a', programId: 'prog-a' }
 function bearer(): Record<string, string> {
   return { Authorization: `Bearer ${signAccessToken(alice, JWT_SECRET, NOW)}` }
 }

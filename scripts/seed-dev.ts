@@ -7,15 +7,19 @@
  *                           [--keep-secret]
  *
  * 做两件事，缺一不可：
- *   1. 往 policy_rules 插一条 allow 规则。策略引擎**默认 deny**，空表意味着
- *      谁都导不了，而表现是「资产列表返回空数组」——与「这场会议真的没有录制」
- *      在客户端看来完全一样，是本项目最容易踩的坑。
- *   2. 往 service_accounts 建一个服务账号。客户端（mde CLI）用它认证，
- *      其 tm_userid 必须与上面规则的 subject_value **是同一个值**，否则策略
- *      照样拒绝，现象同样是空列表。
+ *   1. 往 policy_rules 插一条**采集权限规则**（`kind='allow'`）。allow 栈**兜底 deny**，
+ *      空表意味着谁都导不了，而表现是「资产列表返回空数组」——与「这场会议真的
+ *      没有录制」在客户端看来完全一样，是本项目最容易踩的坑。
+ *   2. 往 service_accounts 建一个服务账号。客户端（mde CLI）用它认证。
  *
- * 两处 userid 必须一致这件事，是手工执行 SQL 时最常见的错误来源；本脚本让它
- * 由同一个变量产生，从结构上消除不一致的可能。
+ * **规则的主体是服务账号的 id（client_id），不是腾讯会议 userid。** 阶段 3 之后
+ * 采集权限规则管的是「哪个采集程序能取走哪些会议」，主体是程序不是人；
+ * 一个人可能对应零个或多个服务账号，两者之间没有机械的对应关系。
+ * 手工执行 SQL 时最常见的错误就是把 tm_userid 填进 subject_value——本脚本让
+ * 规则主体与账号 id 由同一个变量产生，从结构上消除这种不一致。
+ *
+ * tm_userid 仍然要填对：它是审计留痕与调用腾讯 API 的操作者身份，只是**不再
+ * 参与策略判定**。
  *
  * 幂等：重复执行只会轮换 secret（除非 --keep-secret），不会重复插入规则。
  *
@@ -48,8 +52,8 @@ function parseArgs(argv: string[]): Args {
         [
           '用法: bun scripts/seed-dev.ts [选项]',
           '',
-          '  --client-id <id>       服务账号 id（即 MDE_CLIENT_ID），默认 mde-local',
-          '  --tm-userid <userid>   策略主体与服务账号身份，默认取 .env 的 TM_OPERATOR_ID',
+          '  --client-id <id>       服务账号 id（即 MDE_CLIENT_ID），也是采集权限规则的主体，默认 mde-local',
+          '  --tm-userid <userid>   服务账号的腾讯会议身份（审计与调用平台 API 用），默认取 .env 的 TM_OPERATOR_ID',
           '  --keep-secret          账号已存在时保留原 secret（不轮换）',
         ].join('\n'),
       )
@@ -64,24 +68,26 @@ function generateSecret(): string {
   return randomBytes(32).toString('base64url')
 }
 
-async function seedPolicyRule(pool: Pool, tmUserId: string): Promise<'created' | 'exists'> {
+async function seedPolicyRule(pool: Pool, clientId: string): Promise<'created' | 'exists'> {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT id FROM policy_rules
-      WHERE subject_type = 'user' AND subject_value = ? AND effect = 'allow' AND enabled = 1
+      WHERE kind = 'allow' AND subject_type = 'program' AND subject_value = ?
+        AND effect = 'allow' AND enabled = 1
       LIMIT 1`,
-    [tmUserId],
+    [clientId],
   )
   if (rows.length > 0) return 'exists'
 
-  // resource_expr = {} 表示不限定会议范围；asset_types = ['*'] 表示全部八类资产。
-  // 这就是 deploy.md §7 的「最小安全模板」：只放行这一个管理员，其余人默认 deny。
+  // conds = [] 表示不限定会议范围（匹配一切）；asset_types = ['*'] 表示全部八类资产。
+  // 这就是 deploy.md §7 的「最小安全模板」：只放行这一个采集程序，其余一律兜底 deny。
   await pool.execute(
     `INSERT INTO policy_rules
-       (priority, subject_type, subject_value, resource_expr, asset_types,
-        effect, enabled, created_at, updated_at)
-     VALUES (100, 'user', ?, JSON_OBJECT(), JSON_ARRAY('*'), 'allow', 1,
+       (kind, priority, join_op, conds, subject_type, subject_value, asset_types,
+        effect, note, enabled, created_at, updated_at)
+     VALUES ('allow', 100, 'and', JSON_ARRAY(), 'program', ?, JSON_ARRAY('*'), 'allow',
+             'seed-dev：放行本地采集程序的全部会议与全部资产', 1,
              UNIX_TIMESTAMP(), UNIX_TIMESTAMP())`,
-    [tmUserId],
+    [clientId],
   )
   return 'created'
 }
@@ -130,14 +136,15 @@ async function main(): Promise<void> {
   try {
     await runMigrations(pool)
 
-    const ruleResult = await seedPolicyRule(pool, tmUserId)
+    // 规则主体是采集程序的 id，不是 tmUserId——见文件头
+    const ruleResult = await seedPolicyRule(pool, args.clientId)
     const accountResult = await seedServiceAccount(pool, args.clientId, tmUserId, args.keepSecret)
 
     console.log('')
     console.log('播种完成')
     console.log('─'.repeat(64))
-    console.log(`  腾讯会议 userid : ${tmUserId}`)
-    console.log(`  策略规则        : ${ruleResult === 'created' ? '已插入（allow 全部资产）' : '已存在，跳过'}`)
+    console.log(`  腾讯会议 userid : ${tmUserId}（审计与调用腾讯 API 的身份，不参与策略判定）`)
+    console.log(`  采集权限规则    : ${ruleResult === 'created' ? `已插入（主体 ${args.clientId}，allow 全部资产）` : '已存在，跳过'}`)
     console.log(`  服务账号        : ${args.clientId}（${accountResult.action}）`)
     console.log('─'.repeat(64))
 

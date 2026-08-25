@@ -3,7 +3,8 @@ import type { MeetingCacheStore } from '../store/meetings'
 import type { RecordsApi } from '../tencent/records'
 import type { Catalog } from '../catalog/index'
 import type { StsManager } from '../sts/manager'
-import type { PolicyEngine } from '../policy/engine'
+import type { AccessGate } from '../policy/access'
+import type { ArchivesStore } from '../store/archives'
 import type { AuditRecorder } from '../audit/recorder'
 import type { DeviceFlow } from '../auth/device'
 import type { WecomClient } from '../auth/wecom'
@@ -29,7 +30,10 @@ export interface AppDeps {
   gatewayBaseUrl: string
   recordsApi: RecordsApi
   catalog: Catalog
-  policyEngine: PolicyEngine
+  /** 采集权限判定（allow 栈）。网关只判第三栈，拉取/归档两栈是 worker 的事 */
+  accessGate: AccessGate
+  /** 规则里的 `arch` 条件要的归档状态。只用到这一个方法，故收窄到它 */
+  archives: Pick<ArchivesStore, 'listArchivedMeetingKeys'>
   auditRecorder: AuditRecorder
   deviceFlow: DeviceFlow
   /** 企微未配置时为 null——WECOM_ROUTES 里的路由会因此统一返回 501 */

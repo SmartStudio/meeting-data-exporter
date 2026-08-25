@@ -53,7 +53,9 @@ function bearer(identity: ActorIdentity, now = NOW): Record<string, string> {
 }
 
 test('列表按策略过滤，被拒的会议不出现', async () => {
-  const alice: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-alice-1', tmUserId: 'tm-alice-1' }
+  const alice: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-alice-1', programId: 'prog-alice-1',
+  }
   const meetingA = rawMeeting({
     meeting_record_id: 'rec-a-1', meeting_id: 'm-a-1', meeting_code: '881', host_user_id: 'tm-alice-1',
   })
@@ -66,8 +68,8 @@ test('列表按策略过滤，被拒的会议不出现', async () => {
     tencentGet: (path) => (path === '/v1/records' ? recordsPage([meetingA, meetingB]) : {}),
   })
   await insertPolicyRule(pool, {
-    priority: 10, subjectType: 'user', subjectValue: 'tm-alice-1',
-    resourceExpr: { host_userid: 'tm-alice-1' }, assetTypes: ['*'], effect: 'allow',
+    priority: 10, programId: 'prog-alice-1',
+    conds: [{ f: 'host', op: 'is', v: 'tm-alice-1' }], assetTypes: ['*'], effect: 'allow',
   })
 
   const res = await app(new Request('https://gw/api/v1/meetings', { headers: bearer(alice) }))
@@ -77,7 +79,9 @@ test('列表按策略过滤，被拒的会议不出现', async () => {
 })
 
 test('单场详情对无可见权限的会议返回 404，且不泄露会议属性（不是无条件全量返回）', async () => {
-  const noAccess: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-noaccess-1', tmUserId: 'tm-noaccess-1' }
+  const noAccess: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-noaccess-1', programId: 'prog-noaccess-1',
+  }
   const secretMeeting = rawMeeting({
     meeting_record_id: 'rec-secret-1',
     meeting_id: 'm-secret-1',
@@ -116,7 +120,9 @@ test('单场详情对无可见权限的会议返回 404，且不泄露会议属�
 })
 
 test('download-url 对无权资产返回 403 且写审计', async () => {
-  const carol: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-carol-1', tmUserId: 'tm-carol-1' }
+  const carol: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-carol-1', programId: 'prog-carol-1',
+  }
   const meeting = rawMeeting({
     meeting_record_id: 'rec-carol-1', meeting_id: 'm-carol-1', meeting_code: '883', host_user_id: 'tm-carol-1',
   })
@@ -163,7 +169,9 @@ test('download-url 对无权资产返回 403 且写审计', async () => {
 })
 
 test('download-url 对越权构造的 assetId 返回 403（不是 404）', async () => {
-  const alice: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-alice-2', tmUserId: 'tm-alice-2' }
+  const alice: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-alice-2', programId: 'prog-alice-2',
+  }
   const meetingA = rawMeeting({
     meeting_record_id: 'rec-a-2', meeting_id: 'm-a-2', meeting_code: '884', host_user_id: 'tm-alice-2',
   })
@@ -176,8 +184,8 @@ test('download-url 对越权构造的 assetId 返回 403（不是 404）', async
     tencentGet: (path) => (path === '/v1/records' ? recordsPage([meetingA, meetingB]) : {}),
   })
   await insertPolicyRule(pool, {
-    priority: 10, subjectType: 'user', subjectValue: 'tm-alice-2',
-    resourceExpr: { host_userid: 'tm-alice-2' }, assetTypes: ['*'], effect: 'allow',
+    priority: 10, programId: 'prog-alice-2',
+    conds: [{ f: 'host', op: 'is', v: 'tm-alice-2' }], assetTypes: ['*'], effect: 'allow',
   })
 
   const headers = bearer(alice)
@@ -198,7 +206,9 @@ test('download-url 对越权构造的 assetId 返回 403（不是 404）', async
 })
 
 test('download-url 对从未被任何人列出过的 meetingRecordId 同样返回 403 而非 404', async () => {
-  const henry: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-henry-1', tmUserId: 'tm-henry-1' }
+  const henry: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-henry-1', programId: 'prog-henry-1',
+  }
   const { app } = buildTestApp(pool, { now: () => NOW })
 
   const res = await app(
@@ -212,7 +222,9 @@ test('download-url 对从未被任何人列出过的 meetingRecordId 同样返�
 })
 
 test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条路径下语义一致（均为 meetingRecordId 维度）', async () => {
-  const kate: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-kate-1', tmUserId: 'tm-kate-1' }
+  const kate: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-kate-1', programId: 'prog-kate-1',
+  }
   const meeting = rawMeeting({
     meeting_record_id: 'rec-kate-1', meeting_id: 'm-kate-1', meeting_code: '890', host_user_id: 'tm-kate-1',
   })
@@ -229,8 +241,7 @@ test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条�
     },
   })
   await insertPolicyRule(pool, {
-    priority: 10, subjectType: 'user', subjectValue: 'tm-kate-1',
-    resourceExpr: {}, assetTypes: ['*'], effect: 'allow',
+    priority: 10, programId: 'prog-kate-1', assetTypes: ['*'], effect: 'allow',
   })
 
   const headers = bearer(kate)
@@ -271,7 +282,9 @@ test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条�
 })
 
 test('未传 from/to 时默认最近 31 天', async () => {
-  const dave: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-dave-1', tmUserId: 'tm-dave-1' }
+  const dave: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-dave-1', programId: 'prog-dave-1',
+  }
   const queries: QueryParams[] = []
   const { app } = buildTestApp(pool, {
     now: () => NOW,
@@ -292,7 +305,9 @@ test('未传 from/to 时默认最近 31 天', async () => {
 })
 
 test('meeting_code 命中多场时返回数组而非单个对象', async () => {
-  const erin: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-erin-1', tmUserId: 'tm-erin-1' }
+  const erin: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-erin-1', programId: 'prog-erin-1',
+  }
   const m1 = rawMeeting({
     meeting_record_id: 'rec-e-1', meeting_id: 'm-e-1', meeting_code: '886', host_user_id: 'tm-erin-1',
   })
@@ -305,8 +320,7 @@ test('meeting_code 命中多场时返回数组而非单个对象', async () => {
     tencentGet: (path) => (path === '/v1/records' ? recordsPage([m1, m2]) : {}),
   })
   await insertPolicyRule(pool, {
-    priority: 10, subjectType: 'user', subjectValue: 'tm-erin-1',
-    resourceExpr: {}, assetTypes: ['*'], effect: 'allow',
+    priority: 10, programId: 'prog-erin-1', assetTypes: ['*'], effect: 'allow',
   })
 
   const res = await app(
@@ -319,7 +333,9 @@ test('meeting_code 命中多场时返回数组而非单个对象', async () => {
 })
 
 test('范围外未命中返回 404 且 error 为 meeting_not_found_in_range（单场详情端点）', async () => {
-  const frank: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-frank-1', tmUserId: 'tm-frank-1' }
+  const frank: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-frank-1', programId: 'prog-frank-1',
+  }
   const { app } = buildTestApp(pool, {
     now: () => NOW,
     tencentGet: (path) => (path === '/v1/records' ? recordsPage([]) : {}),
@@ -333,7 +349,9 @@ test('范围外未命中返回 404 且 error 为 meeting_not_found_in_range（�
 })
 
 test('范围外未命中返回 404（列表端点携带 meeting_id 过滤时同样适用）', async () => {
-  const frank2: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-frank-2', tmUserId: 'tm-frank-2' }
+  const frank2: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-frank-2', programId: 'prog-frank-2',
+  }
   const { app } = buildTestApp(pool, {
     now: () => NOW,
     tencentGet: (path) => (path === '/v1/records' ? recordsPage([]) : {}),
@@ -347,7 +365,9 @@ test('范围外未命中返回 404（列表端点携带 meeting_id 过滤时同�
 })
 
 test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async () => {
-  const grace: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-grace-1', tmUserId: 'tm-grace-1' }
+  const grace: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-grace-1', programId: 'prog-grace-1',
+  }
   const meeting = rawMeeting({
     meeting_record_id: 'rec-g-1', meeting_id: 'm-g-1', meeting_code: '887', host_user_id: 'tm-grace-1',
   })
@@ -369,8 +389,7 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
     },
   })
   await insertPolicyRule(pool, {
-    priority: 10, subjectType: 'user', subjectValue: 'tm-grace-1',
-    resourceExpr: {}, assetTypes: ['*'], effect: 'allow',
+    priority: 10, programId: 'prog-grace-1', assetTypes: ['*'], effect: 'allow',
   })
 
   const headers = bearer(grace)
@@ -394,7 +413,9 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
 })
 
 test('STS-Token 不可用时请求 ai_* 资产的 download-url 返回 503（而非崩溃或误签发）', async () => {
-  const ivan: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-ivan-1', tmUserId: 'tm-ivan-1' }
+  const ivan: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-ivan-1', programId: 'prog-ivan-1',
+  }
   const meeting = rawMeeting({
     meeting_record_id: 'rec-i-1', meeting_id: 'm-i-1', meeting_code: '888', host_user_id: 'tm-ivan-1',
   })
@@ -404,8 +425,7 @@ test('STS-Token 不可用时请求 ai_* 资产的 download-url 返回 503（而�
     tencentGet: (path) => (path === '/v1/records' ? recordsPage([meeting]) : {}),
   })
   await insertPolicyRule(pool, {
-    priority: 10, subjectType: 'user', subjectValue: 'tm-ivan-1',
-    resourceExpr: {}, assetTypes: ['*'], effect: 'allow',
+    priority: 10, programId: 'prog-ivan-1', assetTypes: ['*'], effect: 'allow',
   })
 
   const headers = bearer(ivan)
@@ -421,7 +441,9 @@ test('STS-Token 不可用时请求 ai_* 资产的 download-url 返回 503（而�
 })
 
 test('malformed assetId 返回 400 invalid_asset_id', async () => {
-  const judy: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-judy-1', tmUserId: 'tm-judy-1' }
+  const judy: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-judy-1', programId: 'prog-judy-1',
+  }
   const { app } = buildTestApp(pool, { now: () => NOW })
 
   const res = await app(
