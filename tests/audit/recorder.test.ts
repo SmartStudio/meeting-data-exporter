@@ -8,7 +8,7 @@ function memStore(): AuditStore & { entries: AuditEntry[] } {
   return { entries, async record(e) { entries.push(e) } }
 }
 
-const alice: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-a', tmUserId: 'tm-a' }
+const alice: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-a', tmUserId: 'tm-a', programId: null }
 
 test('签发下载地址时记录完整上下文', async () => {
   const store = memStore()
@@ -45,7 +45,7 @@ test('登录成功与失败均记录', async () => {
 
 test('服务账号的 actorType 正确', async () => {
   const store = memStore()
-  const svc: ActorIdentity = { kind: 'service_account', wecomUserId: null, tmUserId: 'tm-svc' }
+  const svc: ActorIdentity = { kind: 'service_account', wecomUserId: null, tmUserId: 'tm-svc', programId: 'svc-1' }
   const r = createAuditRecorder(store, () => 1700)
   await r.recordLogin(svc, true)
   expect(store.entries[0]!.actorType).toBe('service_account')

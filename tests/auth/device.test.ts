@@ -57,7 +57,8 @@ test('授权后轮询返回身份', async () => {
   const r = await flow.start(1000)
   await flow.completeAuthorization(r.state, 'ww-alice', 'tm-alice')
   expect(await flow.poll(r.deviceCode, 1100)).toEqual({
-    kind: 'wecom_user', wecomUserId: 'ww-alice', tmUserId: 'tm-alice',
+    // programId 为 null：设备授权流程登录的是人，人没有采集程序身份
+    kind: 'wecom_user', wecomUserId: 'ww-alice', tmUserId: 'tm-alice', programId: null,
   })
 })
 

@@ -32,7 +32,14 @@ test('密钥正确：返回 service_account 身份', async () => {
   const auth = createServiceAuth({ store })
 
   const identity = await auth.authenticate('svc-1', 's3cr3t-pass', 2000)
-  expect(identity).toEqual({ kind: 'service_account', wecomUserId: null, tmUserId: 'tm-svc-1' })
+  // programId = service_accounts.id：**采集权限栈（allow 栈）的主体**。
+  // 它不是 tmUserId——后者是审计与调用腾讯 API 用的人类身份，换语义后不再参与判定。
+  expect(identity).toEqual({
+    kind: 'service_account',
+    wecomUserId: null,
+    tmUserId: 'tm-svc-1',
+    programId: 'svc-1',
+  })
 })
 
 test('密钥错误：拒绝', async () => {

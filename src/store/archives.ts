@@ -72,6 +72,15 @@ export interface MeetingArchiveRecord {
   localPurgedAt: number | null
 }
 
+/**
+ * `listArchivedMeetingKeys` 返回集合里的键。用 `\u0000` 分隔而不是 `:`——
+ * meeting_id / sub_meeting_id 都是平台给的字符串，用可打印字符分隔会让
+ * `("a:b", "")` 与 `("a", "b")` 撞成同一个键。
+ */
+export function archiveStateKey(meetingId: string, subMeetingId: string): string {
+  return `${meetingId}\u0000${subMeetingId}`
+}
+
 export interface ArchivesStore {
   /** WHERE status='completed'，供归档流水线挑出"下载完成但还没进 archived_assets"的资产。
    *  按 id 升序（= 入库顺序）：归档顺序与 NAS sidecar 的 `assets[]` 顺序都由它决定，
@@ -116,6 +125,17 @@ export interface ArchivesStore {
     now: number
   }): Promise<void>
   findMeetingArchive(meetingId: string, subMeetingId: string): Promise<MeetingArchiveRecord | null>
+  /** 这批会议里哪些**已经写进了 NAS**（meeting_archives 里有行）。
+   *
+   *  规则引擎的 `arch` 条件（`isarch` / `notarch`）要用它——网关列一次会议要判
+   *  几十上百场，逐场 findMeetingArchive 就是几十上百次往返。**不能因为查着麻烦
+   *  就在调用点填个 false**：那会让一条 `arch notarch → allow` 的规则把已归档的
+   *  会议也放行，是查不出来的静默放行。
+   *
+   *  返回的集合用 `archiveStateKey()` 编码。传空数组时不查库，直接返回空集。 */
+  listArchivedMeetingKeys(
+    keys: readonly { meetingId: string; subMeetingId: string }[],
+  ): Promise<ReadonlySet<string>>
   extendRetention(meetingId: string, subMeetingId: string, addDays: number, now: number): Promise<void>
   /** Task 8 用：查全部未清理的会议归档（local_purged_at IS NULL），并用 archived_at
    *  做一次廉价的 SQL 侧预过滤（archived_at <= now 是"真到期"的必要非充分条件，因为
@@ -385,6 +405,21 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
       )
       const r = rows[0]
       return r ? mapMeetingArchiveRow(r) : null
+    },
+
+    async listArchivedMeetingKeys(keys) {
+      if (keys.length === 0) return new Set<string>()
+      // 行构造器的 IN：(meeting_id, sub_meeting_id) 是主键，命中主键前缀，
+      // 一次往返问清整批。逐场查是 N 次往返，列一次会议就是几十上百次。
+      const placeholders = keys.map(() => '(?, ?)').join(', ')
+      const params = keys.flatMap((k) => [k.meetingId, k.subMeetingId])
+      const [rows] = await pool.execute<MeetingArchiveSqlRow[]>(
+        `SELECT meeting_id, sub_meeting_id
+           FROM meeting_archives
+          WHERE (meeting_id, sub_meeting_id) IN (${placeholders})`,
+        params,
+      )
+      return new Set(rows.map((r) => archiveStateKey(r.meeting_id, r.sub_meeting_id)))
     },
 
     async extendRetention(meetingId, subMeetingId, addDays, now) {

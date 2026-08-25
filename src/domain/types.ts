@@ -29,10 +29,12 @@ export interface Meeting {
    * （见 tencent/records.ts 的 meetingEndTime）。`record_files` 全部缺该字段时
    * 回落到 `media_start_time`，此时 endTime === startTime、时长算出来是 0。
    *
-   * 策略引擎（policy/expr.ts）目前仍未开放 end_time 作为可查询字段——
-   * 那是历史决定（当时 endTime 确实是 startTime 的镜像），条件是
-   * **M3.5 联调用真实响应确认 record_end_time 存在**，确认后即可开放。
-   * 在此之前不要开放：回落路径下「按时长管控」会静默变成恒不匹配。
+   * 规则引擎的 `dur` / `age` 两个字段就是按它算的（`policy/conds.ts`）。
+   * **回落路径必须显式识别出来**：`endTime <= startTime` 一律判成「这场会议没有
+   * 结束时间数据」，两个 op 都不匹配。照直算成「时长 0 分钟」的话，
+   * `dur lt 30` 会把所有缺 record_end_time 的会议静默命中——这正是
+   * 旧 `policy/expr.ts` 当年**故意拒绝 end_time 字段**要防的那件事
+   * （`d191f5b` 之后有了真实数据源，字段开放了，教训搬进了 conds.ts）。
    */
   endTime: number
   state: RecordState
@@ -65,6 +67,18 @@ export interface ActorIdentity {
   kind: 'wecom_user' | 'service_account'
   /** 企微 userid；服务账号为 null */
   wecomUserId: string | null
-  /** 腾讯会议 userid，策略判定的依据 */
+  /**
+   * 腾讯会议 userid。**这不再是策略判定的依据**——阶段 3 之后，采集权限规则
+   * （allow 栈）的主体是采集程序（见下面的 `programId`），不是人。这里保留它
+   * 是因为审计留痕按它归集，且调用腾讯 API 时要带操作者身份。
+   */
   tmUserId: string
+  /**
+   * 采集程序 id，对应 `service_accounts.id`——**采集权限栈（allow 栈）的主体**
+   * （计划 §2.2 · `policy/stacks.ts` 的 `checkSubject`）。
+   *
+   * 企微用户走设备授权流程登录的是**人**，没有采集程序身份，恒为 `null`；
+   * 这类身份走到 allow 栈时被显式拒绝（`policy/access.ts`），不是「恰好匹配不上」。
+   */
+  programId: string | null
 }

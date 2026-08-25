@@ -103,6 +103,8 @@ export async function wecomCallback(req: Request, ctx: RouteCtx): Promise<Respon
       kind: 'wecom_user',
       wecomUserId: wecomUser.userId,
       tmUserId,
+      // 企微用户不是采集程序，见 domain/types.ts 的 programId 注释
+      programId: null,
     }
 
     if (!ok) {
@@ -120,6 +122,7 @@ export async function wecomCallback(req: Request, ctx: RouteCtx): Promise<Respon
         kind: 'wecom_user',
         wecomUserId: wecomUser.userId,
         tmUserId: wecomUser.userId,
+        programId: null,
       }
       await ctx.deps.auditRecorder.recordLogin(placeholder, false, 'account_not_provisioned')
       return html(
@@ -165,6 +168,7 @@ export async function refresh(req: Request, ctx: RouteCtx): Promise<Response> {
     kind: 'wecom_user',
     wecomUserId: record.wecomUserId,
     tmUserId: record.tmUserId,
+    programId: null,
   }
   const tokens = await issueSession(ctx, identity, now, record.familyId)
   return json(200, tokens)
@@ -173,8 +177,9 @@ export async function refresh(req: Request, ctx: RouteCtx): Promise<Response> {
 /**
  * POST /api/v1/auth/service-token
  *
- * 服务账号：无 refresh_token，到期重新换取。同样受策略约束，不享有绕过特权
- * （身份仍是一个显式的腾讯会议 userid，由管理员在创建服务账号时指定）。
+ * 服务账号：无 refresh_token，到期重新换取。同样受策略约束，不享有绕过特权——
+ * 签发的令牌里带的是这个采集程序的 id（`service_accounts.id`），
+ * 采集权限规则（allow 栈）按它判定，每次请求实时求值。
  */
 export async function serviceToken(req: Request, ctx: RouteCtx): Promise<Response> {
   const body = await readJson<{ client_id?: string; client_secret?: string }>(req)
@@ -200,7 +205,9 @@ export async function serviceToken(req: Request, ctx: RouteCtx): Promise<Respons
       // 审计里用 clientId 兜底填充 tmUserId，仅为了让失败尝试仍可追溯到具体
       // 是哪个 client_id 在尝试，不代表该 client_id 就是一个已知的合法身份。
       await ctx.deps.auditRecorder.recordLogin(
-        { kind: 'service_account', wecomUserId: null, tmUserId: clientId },
+        // programId 也填 clientId：这次尝试自称是哪个采集程序，是审计里唯一
+        // 说得出口的事实。它没有通过校验，不代表这个 client_id 存在。
+        { kind: 'service_account', wecomUserId: null, tmUserId: clientId, programId: clientId },
         false,
         'invalid_credentials',
       )

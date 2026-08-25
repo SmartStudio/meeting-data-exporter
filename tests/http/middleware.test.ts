@@ -6,7 +6,7 @@ import type { AdminAuth, AdminIdentity } from '../../src/auth/admin'
 import type { ActorIdentity } from '../../src/domain/types'
 
 const SECRET = 'x'.repeat(32)
-const alice: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-a', tmUserId: 'tm-a' }
+const alice: ActorIdentity = { kind: 'wecom_user', wecomUserId: 'ww-a', tmUserId: 'tm-a', programId: null }
 
 test('缺少 Authorization 头返回 401', () => {
   const r = requireAuth(new Request('https://gw/api/v1/meetings'), SECRET, 1000)

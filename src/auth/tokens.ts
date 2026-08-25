@@ -22,6 +22,11 @@ interface Payload {
   kind: ActorIdentity['kind']
   wecomUserId: string | null
   tmUserId: string
+  /**
+   * 采集程序 id（`service_accounts.id`）——采集权限栈的主体。
+   * 本字段是阶段 3 加的，**旧令牌的载荷里没有它**，还原时补 null（见 verifyAccessToken）。
+   */
+  programId: string | null
   iat: number
   exp: number
 }
@@ -42,6 +47,7 @@ export function signAccessToken(identity: ActorIdentity, secret: string, now: nu
     kind: identity.kind,
     wecomUserId: identity.wecomUserId,
     tmUserId: identity.tmUserId,
+    programId: identity.programId,
     iat: now,
     exp: now + ACCESS_TOKEN_TTL_SEC,
   }
@@ -72,6 +78,10 @@ export function verifyAccessToken(token: string, secret: string, now: number): A
     kind: payload.kind,
     wecomUserId: payload.wecomUserId,
     tmUserId: payload.tmUserId,
+    // 阶段 3 之前签发、尚未到期（最长 15 分钟）的令牌载荷里没有 programId。
+    // 补 null 而不是补 tmUserId：null 的后果是「不是采集程序 → 拒绝」，
+    // 拿 tmUserId 顶上则可能恰好等于某个 service_accounts.id，成了静默放行。
+    programId: payload.programId ?? null,
   }
 }
 

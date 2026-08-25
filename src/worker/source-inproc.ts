@@ -21,7 +21,7 @@ export interface InProcSourceDeps {
  *
  * spec §1.4 说「采集权限规则是数据离开企业边界的唯一闸门」。worker 把数据从腾讯
  * 拉进**企业内部**的归档区，没有跨企业边界，所以不该过那道闸门。
- * **闸门在出口，不在入口。** 不要把 policyEngine.decide 加回来。
+ * **闸门在出口，不在入口。** 不要把采集权限判定（`policy/access.ts` 的 `AccessGate`）加回来。
  */
 export function createInProcSource(deps: InProcSourceDeps): AssetSource {
   /** 网关 Meeting → 引擎 Meeting：丢掉 meetingRecordId 与 state，引擎两者都不用 */

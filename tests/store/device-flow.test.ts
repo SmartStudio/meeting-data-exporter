@@ -51,5 +51,7 @@ test('设备授权流程在真实 store 下可用（回归：pollDevice 曾把 l
   // 场景三：授权后、间隔 10 秒的最终 poll。这是设备流程真正拿到令牌的一步，
   // 之前的 bug 会让这一步也 slow_down，客户端永远拿不到身份。
   const identity = await flow.poll(started.deviceCode, t0 + 22)
-  expect(identity).toEqual({ kind: 'wecom_user', wecomUserId: 'wecom-zed', tmUserId: 'tm-zed' })
+  expect(identity).toEqual({
+    kind: 'wecom_user', wecomUserId: 'wecom-zed', tmUserId: 'tm-zed', programId: null,
+  })
 })

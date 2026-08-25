@@ -120,6 +120,10 @@ export function createDeviceFlow(deps: DeviceFlowDeps): DeviceFlow {
         kind: 'wecom_user',
         wecomUserId: record.wecomUserId,
         tmUserId: record.tmUserId,
+        // 设备授权流程登录的是**人**，不是采集程序：没有 service_accounts.id 可填。
+        // 采集权限栈（allow 栈）的主体是采集程序，所以这条身份走到那里会被显式拒绝
+        // （src/policy/access.ts）——这是语义使然，不是漏填。
+        programId: null,
       }
     },
   }

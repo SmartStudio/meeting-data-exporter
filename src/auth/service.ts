@@ -51,7 +51,15 @@ export function createServiceAuth(deps: ServiceAuthDeps): ServiceAuth {
         throw new ServiceAuthError()
       }
 
-      return { kind: 'service_account', wecomUserId: null, tmUserId: account.tmUserId }
+      // programId 取 service_accounts.id（= 传进来的 clientId），**不是 tmUserId**：
+      // 采集权限栈（allow 栈）的主体是采集程序本身，一个人可能对应零个或多个
+      // 服务账号，拿 tmUserId 当主体等于把「谁在跑这个程序」错认成「哪个程序」。
+      return {
+        kind: 'service_account',
+        wecomUserId: null,
+        tmUserId: account.tmUserId,
+        programId: account.id,
+      }
     },
   }
 }
