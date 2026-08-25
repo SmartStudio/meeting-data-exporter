@@ -140,7 +140,11 @@ export interface AllowStackInput extends StackInput {
   programId: string
 }
 
-const KIND_LABEL: Record<StackKind, string> = {
+/**
+ * 三栈在判定理由里的称呼。**导出给 `preview.ts`（T5）用**——影响预览要说
+ * 「这条规则是哪一栈的」，两处各写一份中文名早晚会分叉。
+ */
+export const STACK_KIND_LABEL: Record<StackKind, string> = {
   fetch: '拉取规则',
   archive: '归档规则',
   allow: '采集权限规则',
@@ -252,7 +256,12 @@ function isPositive(kind: StackKind, effect: string): boolean {
   return effect !== 'skip'
 }
 
-function describeEffect(kind: StackKind, effect: string, assetTypes: readonly AssetKey[]): string {
+/**
+ * 一次判定的 effect 读成人话。**导出给 `preview.ts`（T5）用**：影响预览的
+ * 「从 A 变成 B」两头必须与判定理由里的说法一字不差，否则同一件事在
+ * 详情抽屉与预览面板里读起来是两回事。
+ */
+export function describeStackEffect(kind: StackKind, effect: string, assetTypes: readonly AssetKey[]): string {
   const assets = assetTypes.length > 0 ? assetTypes.join('、') : '未列出任何资产类型'
   if (kind === 'fetch') return effect === 'all' ? `拉取（${assets}）` : '不拉取'
   if (kind === 'archive') return effect === 'skip' ? '不归档' : `归档到 ${effect}`
@@ -267,7 +276,7 @@ function describeFallback(kind: StackKind): string {
 
 /** 规则在判定理由里的称呼：有 note 就带上，没有就只报编号，不留空引号 */
 function ruleLabel(kind: StackKind, rule: StackRule): string {
-  const base = `${KIND_LABEL[kind]} #${rule.id}`
+  const base = `${STACK_KIND_LABEL[kind]} #${rule.id}`
   return rule.note !== null && rule.note !== '' ? `${base}「${rule.note}」` : base
 }
 
@@ -296,7 +305,7 @@ function checkSubject(kind: StackKind, rule: StackRule, programId: string): Subj
     return hasSubject(rule)
       ? {
           applies: true,
-          detail: `规则上残留主体「${subjectText(rule)}」，${KIND_LABEL[kind]}是系统级行为，已忽略`,
+          detail: `规则上残留主体「${subjectText(rule)}」，${STACK_KIND_LABEL[kind]}是系统级行为，已忽略`,
         }
       : { applies: true, detail: null }
   }
@@ -383,7 +392,7 @@ function evaluateStack(
       source: issue === null ? 'rule' : 'rule_invalid',
       reason:
         issue === null
-          ? `${ruleLabel(kind, rule)}决定：${describeEffect(kind, effect, assets.keys)}`
+          ? `${ruleLabel(kind, rule)}决定：${describeStackEffect(kind, effect, assets.keys)}`
           : `${ruleLabel(kind, rule)}的${issue}`,
       assetTypes: assets.keys,
       issues,
@@ -400,7 +409,7 @@ function evaluateStack(
     ruleId: null,
     note: null,
     source: 'default',
-    reason: `没有任何${KIND_LABEL[kind]}匹配${who}，按兜底处理：${describeFallback(kind)}`,
+    reason: `没有任何${STACK_KIND_LABEL[kind]}匹配${who}，按兜底处理：${describeFallback(kind)}`,
     assetTypes: [],
     issues: [],
     trace,
@@ -459,7 +468,7 @@ export function decisionAllowsAsset(
   if (decision.ruleId === null) {
     return { allowed: false, reason: decision.reason }
   }
-  const label = `${KIND_LABEL[decision.kind]} #${decision.ruleId}` +
+  const label = `${STACK_KIND_LABEL[decision.kind]} #${decision.ruleId}` +
     (decision.note !== null && decision.note !== '' ? `「${decision.note}」` : '')
   if (decision.assetTypes.length === 0) {
     return { allowed: false, reason: decision.reason }
@@ -510,7 +519,7 @@ export function describeStackRuleIssues(rule: StackRule): string[] {
     }
   } else if (hasSubject(rule)) {
     issues.push(
-      `${KIND_LABEL[kind]}是系统级行为，不针对任何主体；` +
+      `${STACK_KIND_LABEL[kind]}是系统级行为，不针对任何主体；` +
         `规则上残留的主体「${subjectText(rule)}」会被忽略（不影响判定）`,
     )
   }
