@@ -136,6 +136,33 @@ export interface ArchivesStore {
   listArchivedMeetingKeys(
     keys: readonly { meetingId: string; subMeetingId: string }[],
   ): Promise<ReadonlySet<string>>
+  /** 这批会议的归档行**整行**（阶段 3 · T8 的采集清单重算用）。
+   *
+   *  与上一个方法的分工：`listArchivedMeetingKeys` 回答的是规则引擎那个 `arch`
+   *  条件要的布尔——归档过没有。采集清单要的是另外三列：`local_purged_at`
+   *  （spec §1.3 的第二个「与」判的是**本地文件还在没有**，不是窗口算出来到没到期）、
+   *  `nas_dir`（本地已清理时要说得出"去 NAS 的哪个目录取"，见 §4.10）、
+   *  以及 `retention_days + extended_days`（§4.5 的"其中 N 场 7 天内到期"）。
+   *  只回一个布尔就都答不了，所以整行取回来，而不是让调用方逐场再补一次
+   *  `findMeetingArchive`——那正是这一族批量读法要防的 N+1。
+   *
+   *  同一条行构造器 IN，命中主键 (meeting_id, sub_meeting_id)，一次往返问清整批。
+   *  传空数组时不查库，直接返回空数组。 */
+  listMeetingArchives(
+    keys: readonly { meetingId: string; subMeetingId: string }[],
+  ): Promise<MeetingArchiveRecord[]>
+  /** 这批会议里哪些**本地还有下载完成的资产**（meeting_assets 里有 status='completed' 的行）。
+   *
+   *  采集清单里"还没归档过"的会议靠它判「文件在不在」：`meeting_archives` 里没有行
+   *  只说明保留窗口还没开始计时，不说明本地是空的——归档循环还没轮到、或者归档一直失败的
+   *  会议，本地文件明明还在，外部程序此刻真取得到。反过来，一场只是被拉取列表带出来、
+   *  一个资产都没下载完的会议，把它算进"现在可取走 N 场"就是虚报。
+   *
+   *  仍然只 SELECT `meeting_assets`（002 那张从下载完成起只读的表），不写它的任何一列。
+   *  返回的集合用 `archiveStateKey()` 编码。传空数组时不查库，直接返回空集。 */
+  listMeetingsWithCompletedAssets(
+    keys: readonly { meetingId: string; subMeetingId: string }[],
+  ): Promise<ReadonlySet<string>>
   extendRetention(meetingId: string, subMeetingId: string, addDays: number, now: number): Promise<void>
   /** Task 8 用：查全部未清理的会议归档（local_purged_at IS NULL），并用 archived_at
    *  做一次廉价的 SQL 侧预过滤（archived_at <= now 是"真到期"的必要非充分条件，因为
@@ -417,6 +444,36 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
         `SELECT meeting_id, sub_meeting_id
            FROM meeting_archives
           WHERE (meeting_id, sub_meeting_id) IN (${placeholders})`,
+        params,
+      )
+      return new Set(rows.map((r) => archiveStateKey(r.meeting_id, r.sub_meeting_id)))
+    },
+
+    async listMeetingArchives(keys) {
+      if (keys.length === 0) return []
+      // 同上那条行构造器 IN，只是取整行——采集清单要 local_purged_at / nas_dir /
+      // retention_days + extended_days 三件事，一个布尔答不了。
+      const placeholders = keys.map(() => '(?, ?)').join(', ')
+      const params = keys.flatMap((k) => [k.meetingId, k.subMeetingId])
+      const [rows] = await pool.execute<MeetingArchiveSqlRow[]>(
+        `SELECT meeting_id, sub_meeting_id, nas_dir, archived_at, retention_days, extended_days, local_purged_at
+           FROM meeting_archives
+          WHERE (meeting_id, sub_meeting_id) IN (${placeholders})`,
+        params,
+      )
+      return rows.map(mapMeetingArchiveRow)
+    },
+
+    async listMeetingsWithCompletedAssets(keys) {
+      if (keys.length === 0) return new Set<string>()
+      // DISTINCT 而不是把行全捞回来：这里只回答"有没有"，一场会议可以有几十行资产。
+      // (meeting_id, sub_meeting_id) 是 uk_asset 的最左前缀，行构造器 IN 走得上。
+      const placeholders = keys.map(() => '(?, ?)').join(', ')
+      const params = keys.flatMap((k) => [k.meetingId, k.subMeetingId])
+      const [rows] = await pool.execute<MeetingKeyRow[]>(
+        `SELECT DISTINCT meeting_id, sub_meeting_id
+           FROM meeting_assets
+          WHERE status = 'completed' AND (meeting_id, sub_meeting_id) IN (${placeholders})`,
         params,
       )
       return new Set(rows.map((r) => archiveStateKey(r.meeting_id, r.sub_meeting_id)))
