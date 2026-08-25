@@ -48,7 +48,7 @@
 ### 2.1 版本
 
 要求 MySQL ≥ 8.0。网关依赖 JSON 列类型（`policy_rules` 表的
-`resource_expr` / `asset_types` 字段）；服务端归档队列（`meeting_assets`）的领取逻辑
+`conds` / `asset_types` 字段）；服务端归档队列（`meeting_assets`）的领取逻辑
 用 `SELECT … FOR UPDATE SKIP LOCKED`，这是 MySQL 8.0 才支持的语法，5.7 不行。
 
 ### 2.2 建库时必须显式指定 utf8mb4
@@ -252,64 +252,115 @@ bun scripts/preflight.ts --sample-user <一个真实的企微 userid> \
 
 ---
 
-## 7. 默认导出权限：只有管理员，还是员工也能自助导出
+## 7. 采集权限规则：哪个采集程序能取走哪些会议
 
-这也是部署前**必须由项目方确认**的业务问题：普通员工能否自助导出自己参与/主持
-的会议录制，还是所有导出请求都必须经由管理员操作？
+这也是部署前**必须由项目方确认**的业务问题：哪些会议、哪几类资产可以被采集
+程序取走。答案要落成 `policy_rules` 里的规则，规则不建就等于全关。
 
-`migrations/001_init.sql` 建的 `policy_rules` 表**初始是空表**——策略引擎
-（`src/policy/engine.ts`）的默认行为是**默认拒绝**（无任何匹配规则时 `deny`），
-这是刻意的安全默认值：一个能访问全公司会议录音的归档工具，安全默认值优先于
-可用默认值。这意味着**如果不手动插入至少一条规则，部署后没有任何人能导出任何
-东西**（包括管理员自己）。
+`policy_rules` 表**初始是空表**——采集权限规则栈（`kind = 'allow'`，见
+`src/policy/stacks.ts`）的**兜底是 deny**：一条规则都不匹配时拒绝。这是刻意的
+安全默认值，第三栈是数据出企业边界的唯一闸门，默认必须是关的。这意味着
+**如果不手动插入至少一条规则，部署后没有任何采集程序能导出任何东西**。
+
+### 主体是采集程序，不是人
+
+**规则的 `subject_value` 填的是 `service_accounts.id`（即 `MDE_CLIENT_ID`），
+不是腾讯会议 userid。** 采集权限管的是「哪个采集程序能取走哪些会议」——一个人
+可能对应零个或多个服务账号，两者之间没有机械的对应关系。
+
+服务账号的 `tm_userid` 仍然要填对，但它只是审计留痕与调用腾讯会议 API 的操作者
+身份，**不参与策略判定**。
+
+> **企业微信用户（设备授权扫码登录）取不到任何数据**：登录的是人，人没有
+> 采集程序身份。这是语义使然，不是配置缺失——给他建规则也不会生效。
+> 本次部署本就没启用企微登录（四条设备流程路由返 501）。
 
 ### 最小安全模板（推荐的初始配置）
 
-只放行管理员，员工默认不能导出，符合默认 deny 的安全基线：
+只放行一个采集程序，其余一律兜底拒绝：
 
 ```sql
 INSERT INTO policy_rules
-  (priority, subject_type, subject_value, resource_expr, asset_types,
-   effect, enabled, created_at, updated_at)
+  (kind, priority, join_op, conds, subject_type, subject_value, asset_types,
+   effect, note, enabled, created_at, updated_at)
 VALUES
-  (100, 'user', '<管理员的腾讯会议 userid>',
-   JSON_OBJECT(),           -- 空条件 = 匹配全部会议，不做任何范围限制
-   JSON_ARRAY('*'),         -- 匹配全部八类资产
-   'allow', 1, UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
+  ('allow', 100, 'and',
+   JSON_ARRAY(),            -- 空条件 = 匹配全部会议，不做任何范围限制
+   'program', '<MDE_CLIENT_ID>',
+   JSON_ARRAY('*'),         -- 全部八类资产
+   'allow', '放行主采集程序', 1, UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
 ```
 
-`subject_value` 填的是管理员的**腾讯会议 userid**（不是企微 userid；如果两者
-不同，注意别填错——参考第 6 节）。可以插入多条这样的规则，给多个管理员分别
-放行。
+`scripts/seed-dev.ts` 种的就是这一条，且幂等，本地/联调环境直接跑它即可。
 
-### 如果后续要放开员工自助导出
+### 收紧到某一批会议、某几类资产
 
-在最小安全模板基础上追加规则即可，不需要改动已有规则。例如「员工只能导出自己
-主持的会议的录制视频/音频/文字摘要，AI 类纪要仍保留给管理员」：
+追加规则即可，不需要改动已有规则。例如「归档机器人只取走标题带『复盘』二字、
+且时长超过 30 分钟的会议，只要转写与 AI 纪要」：
 
 ```sql
 INSERT INTO policy_rules
-  (priority, subject_type, subject_value, resource_expr, asset_types,
-   effect, enabled, created_at, updated_at)
+  (kind, priority, join_op, conds, subject_type, subject_value, asset_types,
+   effect, note, enabled, created_at, updated_at)
 VALUES
-  (200, 'user', '<该员工的腾讯会议 userid>',
-   JSON_OBJECT('host_userid', '<该员工的腾讯会议 userid>'),  -- 仅本人主持的会议
-   JSON_ARRAY('video', 'audio', 'meeting_summary'),
-   'allow', 1, UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
+  ('allow', 200, 'and',
+   JSON_ARRAY(
+     JSON_OBJECT('f', 'title', 'op', 'has', 'v', '复盘'),
+     JSON_OBJECT('f', 'dur',   'op', 'gt',  'v', 30)
+   ),
+   'program', '<MDE_CLIENT_ID>',
+   JSON_ARRAY('transcript', 'ai_minutes'),
+   'allow', '复盘会只给转写与纪要', 1, UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
 ```
 
-`resource_expr` 支持的字段与写法见 `src/policy/expr.ts`：`host_userid` /
-`meeting_code` / `meeting_id` / `subject` / `start_time` / `end_time`，取值可以
-是字面量（等值）、数组（集合包含）、或 `{ "gte": ..., "lte": ..., "not_in": [...] }`
-形式的区间/排除条件。同一优先级下 `deny` 优先于 `allow`，数字越小优先级越高。
+### 条件（`conds`）支持的字段与运算符
 
-**当前实现的重要限制**：`subject_type` 只支持 `user`（按单个腾讯会议 userid
-精确匹配），`department` / `role` 两种维度**已经在表结构里预留了字段，但引擎
-判定逻辑目前恒定返回不匹配**（见 `src/policy/engine.ts` 的 `subjectMatches`
-注释），也就是说**不存在"整个部门"或"某个角色"这种批量授权方式**——如果要让
-全体员工都能自助导出，目前只能对每个员工的腾讯会议 userid 各插入一条规则（可以
-写脚本从 HR 花名册批量生成 INSERT 语句），直到组织架构数据接入、`department` /
-`role` 匹配逻辑被实现为止。这是一处已知的能力缺口，见第 11 节。
+一条规则内**只有一个连接词**（`join_op`，取 `and` / `or`），不支持括号与混用。
+`conds` 为空数组表示匹配全部会议。字段与运算符的事实源是
+`src/policy/conds.ts` 的 `CONDITION_FIELDS`：
+
+| 字段 | op | 语义 | `v` 的形态 |
+| --- | --- | --- | --- |
+| `title` | `has` / `nothas` | 标题包含任一关键词 / 一个都不包含 | 字符串，逗号（中英文皆可）或空白分隔 |
+| `host` | `is` / `isnot` | 主持人等值 / 不等 | 单个腾讯会议 userid |
+| `dur` | `gt` / `lt` | 会议时长**分钟**大于 / 小于 | 数字 |
+| `age` | `within` / `before` | 录制结束在最近 N 天内 / 早于 N 天 | 天数 |
+| `arch` | `isarch` / `notarch` | 已写入 NAS / 未归档 | 不需要值 |
+| `dept` | `in` / `notin` | 主持人部门属于 / 不属于 | 部门名数组 |
+
+**`dept` 当前没有数据源**（需要企业微信通讯录，尚未接入）：引擎对它**显式判不
+成立**，`in` 与 `notin` 都不匹配——「部门未知」不等于「不属于财务部」。带 `and`
+连接的 `dept` 条件会让整条规则永远不命中。
+
+未知字段、未知运算符、值类型不对，一律判**不匹配**（不是「不限制」）。
+`dur` / `age` 遇到没有真实录制结束时间的会议同样判不匹配，不会被当成「时长 0 分钟」。
+
+### 优先级与平局
+
+**数字越大优先级越高**：按 `priority` **降序**取第一条匹配的规则，用它的
+`effect`，立即停止——不合并、不叠加。同 `priority` 时按 **`id` 升序**（先建的
+先命中），不再有「`deny` 优先于 `allow`」这条平局规则。
+
+`asset_types` 是**命中规则的载荷**，不是筛选条件：先按 `conds` + 主体选出唯一
+一条决定者，再看它放行了哪几类。所以一条高优先级的「只放行转写」**不会**被低
+优先级的「放行全部」在视频上顶掉。
+
+`asset_types` 用的是客户端资产键（`video` / `audio` / `transcript` /
+`ai_transcript` / `ai_minutes` / `ai_topic_minutes` / `ai_speaker_minutes` /
+`ai_ds_minutes`），`'*'` 表示全部八类。注意 `transcript` 与 `ai_transcript` 在
+网关 API 的 `asset_type` 字段里叫 `meeting_summary` 与 `ai_meeting_transcripts`
+——换算由网关负责（`src/policy/access.ts`），规则里一律写前者。
+
+### 从旧版本升级：现有规则会被搬走
+
+`migrations/004_console_stage3.sql` 把 `policy_rules` 换成了三栈结构
+（`kind` / `join_op` / `conds`，删掉 `resource_expr`）。**旧规则整表复制进
+`policy_rules_legacy` 后，`policy_rules` 被清空。**
+
+不自动转换语义是有意的：旧规则的主体是人（`subject_type='user'`），新规则的
+主体是采集程序，两者之间没有机械的对应关系，猜哪一个都是在替管理员做他没做过
+的授权决定。升级后请按上面的模板重新建规则；重建期间没有任何规则 = 兜底
+拒绝 = 谁都取不走数据，落在安全侧。
 
 ---
 
@@ -373,11 +424,14 @@ VALUES
 6. **首次启动会自动建表**：`src/index.ts` 的 `main()` 里会在监听端口之前把
    `migrations/` 目录下的全部 `.sql` 按文件名顺序跑一遍（`runMigrations`），
    因此第一次启动稍慢属正常现象；
-   之后每次重启都会重新执行一遍（建表语句是 `CREATE TABLE IF NOT EXISTS`，
-   幂等，不会重复建表报错）。
+   之后每次重启都会重新执行一遍——**没有版本记录表，每个迁移文件都必须自己幂等**。
+   建表语句用 `CREATE TABLE IF NOT EXISTS`；`004` 要改表结构，MySQL 的
+   ADD/DROP COLUMN 没有 `IF EXISTS`，所以它用 `information_schema` 判一次
+   「还是不是旧结构」再动手，跑第二遍整段跳过。全部语句跑在同一条连接上
+   （会话变量与预处理语句是会话级的）。
 
 7. **上线前跑一遍 preflight**（见第 9 节），全部转绿再切正式流量；上线后按
-   第 7 节插入至少一条策略规则，否则没有人能真正导出任何文件。
+   第 7 节插入至少一条采集权限规则，否则没有任何采集程序能取走文件。
 
 8. **安全组**：ECS 安全组需要放行反向代理层到网关容器的端口（如果反向代理
    与网关同机部署，仅需放行本机回环即可，不需要对公网暴露 3000 端口本身）；
@@ -490,7 +544,7 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
 > **#2 事件加解密**已对照腾讯官方文档 1095/51608《回调服务要求》· 51612《签名校验》·
 > 54658《事件加解密》逐条核实并改正，两项**共查出 5 处不符**（详见下方）。
 >
-> 其余各项（meeting_cache TTL、subject_type、addresses 字段名等）仍为待确认项。
+> 其余各项（meeting_cache TTL、addresses 字段名等）仍为待确认项。
 
 1. ~~**Webhook 回调的线路格式未经腾讯官方文档核实**~~ →
    **✅ 已核实并改正（2026-08-21，`cc02f13`）。** 原实现是参照企业微信回调惯例自行设计的，
@@ -540,10 +594,11 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
    可接受（会议元数据本身很小，系统也不会有海量历史会议持续访问），但没有做
    过容量增长评估，长期运行后建议定期评估表大小。
 
-6. **`policy_rules` 的 `subject_type` 目前只实现了 `user`**
-   （`src/policy/engine.ts`）。`department` / `role` 两个维度已经在表结构里
-   预留，但判定逻辑恒定返回不匹配——见第 7 节的详细说明，批量授权（按部门/
-   角色放行）目前不可用，只能逐用户配置。
+6. **按部门授权不可用**：规则条件里的 `dept` 字段需要企业微信通讯录数据，
+   本次部署没有建企微自建应用，引擎对它**显式判不成立**
+   （`src/policy/conds.ts`，与「字段名拼错」是两条不同的路径，判定理由说得出
+   区别）。采集权限的主体本身是采集程序（`service_accounts.id`），逐程序配置，
+   不存在「整个部门」这种批量授权方式——见第 7 节。
 
 7. **`Asset` 不含 `meetingRecordId`，`download-url` 对 video/audio/
    meeting_summary 类型依赖进程内索引**（`src/catalog/index.ts`）。这些资产

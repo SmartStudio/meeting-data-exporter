@@ -50,7 +50,7 @@ M2 ─┘        │
 | --- | --- | --- | --- |
 | **B1** | 登录端点限流 + 服务账号恒定时间比较（消除枚举预言机） | 新增限流中间件 · `auth/service.ts` · `http/router.ts` | 独立 |
 | **B2** | STS 加密密钥与 JWT_SECRET 分离 + JWT_SECRET 强度校验 | `config.ts` · `index.ts`(密钥装配区) · `.env.example` | **与 B5 争 index.ts** |
-| **B3** | 策略引擎 NaN 静默放行 → 加载期校验 + NaN 视为不匹配 | `policy/expr.ts` | 独立 |
+| **B3** | 策略引擎 NaN 静默放行 → 加载期校验 + NaN 视为不匹配 | ~~`policy/expr.ts`~~（阶段 3 已删，那条规矩现在活在 `policy/conds.ts`） | 独立 |
 | **B4** | 腾讯错误分类在 HTTP 层映射（不再全塌 500） | `http/handlers/meetings.ts` · `http/respond.ts` | 独立 |
 | **B5** | STS 看门狗接线：调度 expireStale + ensureFresh 去重在途 pending | `index.ts`(续期循环区) · `sts/manager.ts` · `store/sts.ts` | **与 B2 争 index.ts** |
 | **B6** | 企微扫码登录接通（verification_uri 指向的 /device 缺失） | 见下方「需先决策」 | 独立但最大 |
@@ -272,9 +272,12 @@ M5 桌面端    ⏸  无限期推迟
 那个理由就是三栈规则引擎算出来的。阶段拆解与并行编排见
 [`dev-plan.md` §3/§4](console/dev-plan.md)。
 
-**阶段 3 开工前必须先做 R1 的迁移决策**：现有 `policy/engine.ts` 的优先级排序方向与 spec §5.1
-**相反**（dev-plan §5 冲突 C1）。这不是改个符号——旧数据是按旧语义写的规则，换方向后判定会翻转。
-迁移脚本要么重排现有规则的 priority，要么显式声明现有规则集为空。
+~~**阶段 3 开工前必须先做 R1 的迁移决策**~~ → **✅ 已做（2026-08-25）**：生产库
+`policy_rules` 实测只有 1 行，排序方向翻转的风险归零（单条规则命中就是它、不命中走兜底，
+两套语义结论相同）。`migrations/004_console_stage3.sql` 把现有行全量搬进 `policy_rules_legacy`
+后清空 `policy_rules`，**不自动转换语义**——旧规则的主体是人，新采集权限栈的主体是采集程序
+（`service_accounts.id`），两者之间没有机械的对应关系。旧的 `policy/engine.ts` 与
+`policy/expr.ts` 已删，现在是 `policy/{conds,stacks,access}.ts`。
 
 **另有两件与阶段无关、但阻塞投产的事**：
 

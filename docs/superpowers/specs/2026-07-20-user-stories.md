@@ -481,7 +481,7 @@ spec 管住了「谁能**导出**」，没管「导出后谁能**看**」。资�
 | US-1.2 部署与凭证配置 | ✅ | `src/config.ts` · `docs/deploy.md` · `tests/config.test.ts` | — |
 | US-1.3 STS-Token 自动续期 | ✅ | `src/sts/manager.ts` · `tests/sts/manager.test.ts` | — |
 | US-1.4 身份映射可用 | — | `src/auth/identity.ts` · `tests/auth/identity.test.ts`（三种策略都有实现与用例） | **当前部署形态下不适用**：M3.5 决定不建企微自建应用，只走服务账号，不经过企微 → 腾讯的 userid 映射（`f4adb3c`：企微未配置是合法状态，设备流程路由返 501）。`preflight --sample-user` 没跑也不需要跑。启用企微登录时本条回到「待实测」 |
-| US-2.1 限定可导出范围 | ✅ | `src/policy/` · `tests/policy/engine.test.ts` | 阶段 3 的三栈规则引擎（R1）会改写这块语义，且**排序方向与现有实现相反**（dev-plan §5 冲突 C1） |
+| US-2.1 限定可导出范围 | ✅ | `src/policy/{conds,stacks,access}.ts` · `tests/policy/{conds,stacks,access}.test.ts` | **语义已按阶段 3 的三栈引擎改写完（2026-08-25，R1）**：条件表示法换成 `{join, conds:[{f,op,v}]}`；priority 改为**降序**取第一条、同优先级按 id 升序；**主体从人换成采集程序**（`service_accounts.id`）——企微用户走到采集权限栈一律被显式拒绝。旧规则（生产库 1 行）已搬进 `policy_rules_legacy`，规则集需按新语义重建 |
 | US-2.2 管控无法被绕过 | ✅ | `tests/policy/` · `tests/http/meetings.test.ts` | — |
 | US-2.3 签发与吊销自动化凭证 | ✅ | `src/auth/service.ts` · `tests/auth/service.test.ts` | — |
 | US-2.4 看清卡在哪一段 | ◐ | `src/worker/archive.ts` · `src/store/archives.ts` · `tests/worker/archive.test.ts` | 记录层成立了，但**查询 API（A2）与会议记录页（F2）都没做**，管理员现在看不到任何一段状态 |

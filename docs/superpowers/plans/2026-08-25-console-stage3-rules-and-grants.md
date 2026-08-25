@@ -35,7 +35,7 @@ spec §5.3 原本要求「不删 `dept` 字段，把接企微通讯录 API 立�
 - 一条规则若**只有** `dept` 条件，它永远不会命中；规则列表要给出可见提示，
   不能让管理员建一条静默失效的规则
 
-### 1.2 C1（priority 排序方向）：⏳ 待生产库查询
+### 1.2 C1（priority 排序方向）：✅ 已定 —— **生产库只有 1 行，走最轻的方案**
 
 现有引擎按 priority **升序**取第一条、同优先级 **deny 优先**；spec §5.1 要求 **降序** +
 同优先级 **id 升序**。两处都要翻，而**旧数据是按旧语义写的规则**。
@@ -58,7 +58,18 @@ spec §5.3 原本要求「不删 `dept` 字段，把接企微通讯录 API 立�
 | 多条、priority 互不相同 | 重排 priority + 迁移前后逐条比对判定 | 中 |
 | 多条且有 priority 相同 | 同上，且平局语义也在翻（deny 优先 → id 升序），每条翻转都要人工确认 | 大 |
 
-**T1 在拿到查询结果之前不能开工。** 其余任务不受影响。
+**2026-08-25 实测：`policy_rules` 全表 1 行。** 落在第一行——单条规则不存在排序
+问题（降序还是升序，它命中就是它、不命中就走兜底，判定结果完全相同），平局语义
+从「deny 优先」换成「id 升序」也无从适用。**C1 的迁移风险归零。**
+
+**但不自动转换那条规则的语义。** 旧规则的主体是人（`subject_type='user'`，
+`subject_value` 是腾讯会议 userid），新 allow 栈的主体是采集程序
+（`service_accounts.id`）——两者之间没有机械的对应关系，一个人可能对应零个或多个
+服务账号，猜哪一个都是在替管理员做他没做过的授权决定。
+
+**T1 的做法**：`migrations/004_console_stage3.sql` 把现有行全量复制进
+`policy_rules_legacy`（不丢数据），再按新结构重建空的 `policy_rules`，由管理员按
+新语义重新建规则。重建期间没有任何规则 = allow 栈兜底 deny = 谁都取不走，落在安全侧。
 
 ---
 
@@ -200,10 +211,10 @@ join === 'and'    → 全部条件成立才匹配（默认）
 
 | # | 任务 | 落点 | 依赖 |
 | --- | --- | --- | --- |
-| **T1** | 数据模型与迁移 | `migrations/004_console_stage3.sql` · `src/store/policy.ts` | **§1.2 的查询结果** |
-| **T2** | 条件求值器 | `src/policy/conds.ts`（新），取代 `expr.ts` | T1 |
-| **T3** | 三栈引擎 | `src/policy/engine.ts` 重写 | T2 |
-| **T4** | 接线与旧语义清理 | `src/http/handlers/meetings.ts` 三处调用点 · `docs/deploy.md` | T3 |
+| ~~**T1**~~ | ~~数据模型与迁移~~ | `migrations/004_console_stage3.sql` · `src/store/policy.ts` | ✅ **已完成，2026-08-25** |
+| ~~**T2**~~ | ~~条件求值器~~ | `src/policy/conds.ts`（新），取代 `expr.ts` | ✅ **已完成** |
+| ~~**T3**~~ | ~~三栈引擎~~ | `src/policy/stacks.ts`（新建，未改 `engine.ts`——接线是 T4 的事） | ✅ **已完成** |
+| ~~**T4**~~ | ~~接线与旧语义清理~~ | `src/policy/access.ts`（新）· `src/http/handlers/meetings.ts` · `docs/deploy.md` | ✅ **已完成，2026-08-25** |
 
 **T2 必测**：六个字段 × 各自两个 op = 12 条；未知字段判不匹配；未知 op 判不匹配（D-b）；
 `conds` 为空匹配一切；and/or 各一条；`dept` 在无数据源时的行为（§1.1）；
@@ -214,13 +225,29 @@ join === 'and'    → 全部条件成立才匹配（默认）
 `enabled=0` 的规则不参与；fetch/archive 栈**显式忽略主体**（不是恰好匹配不上——
 要能构造一条带 subject 的 fetch 规则并断言它照样按无主体处理）。
 
-**T4 的注意点**：`meetings.ts:255`（`downloadUrl`）的注释标明那是**唯一的真正安全边界**，
+**T4 的注意点**：`meetings.ts` 的 `downloadUrl` 注释标明那是**唯一的真正安全边界**，
 无论客户端此前是否见过这个 assetId 都要用当前时刻的真实 Meeting 重跑一次判定。
 重写时这条不变，且要保住它的测试。
 
 另外 T4 要顺手修两处**文档与代码不符**：
 - `docs/deploy.md:304` 写着「数字越小优先级越高」——语义翻转后必须改
 - `docs/deploy.md:301-302` 把 `end_time` 列进了支持字段，但 `expr.ts` 从来拒绝它
+
+**T4 落地时新增的三处裁定**（照 §3.4 的体例记在这里，实现以裁定为准）：
+
+| # | 事 | 裁定 |
+| --- | --- | --- |
+| **D-i** | `ActorIdentity` 没有采集程序 id：旧引擎按 `tmUserId` 匹配主体，新 allow 栈按 `service_accounts.id` | **`ActorIdentity` 加 `programId: string \| null`**，由 `serviceAuth.authenticate` 填 `account.id`，随 access token 载荷往返。**不拿 `tmUserId` 顶替**——一个人可能对应零个或多个服务账号，顶替恰好撞上某个 id 时就是静默放行。旧令牌（载荷里没有这个字段）还原成 `null`，落在拒绝一侧 |
+| **D-j** | 企微用户（`programId === null`）走到 allow 栈判什么 | **在读规则之前显式拒绝**，理由写「不是采集程序，采集权限规则的主体是采集程序」。让它落进 `checkSubject` 的「主体匹配不上」分支也是 deny，但理由会变成「没有任何规则匹配」——管理员据此会去**再建一条永远不生效的规则**。判定理由是产品功能（§4.2/§4.3），说错比不说贵 |
+| **D-k** | `arch` 条件在网关侧的数据源 | **查 `meeting_archives`，不填 `false`**。列会议时用一次批量查询（`ArchivesStore.listArchivedMeetingKeys`）问清整批，不逐场往返。随手填 `false` 会让一条 `arch notarch → allow` 的规则把已归档的会议也放行，正是 §6「不许静默放行」要防的 |
+
+**D-e 在三个调用点的落地**（旧 `assetMatches` 是筛选式，新语义是载荷式）：
+
+| 调用点 | 旧写法 | 新写法 |
+| --- | --- | --- |
+| `isMeetingVisible` | 遍历八类资产，有一类判 allow 就可见 | 整场判一次：`effect === 'allow'` **且**放行的资产类型非空。**不能简写成只看 `effect`**——一条 allow 但 `asset_types` 里没有任何合法资产键的规则，判定是 allow 而实际一类都取不到，此时列出会议只会泄露标题与主持人 |
+| `filterAssetsByPolicy` | 每个资产各跑一次判定 | 整场判一次，再 `decisionAllowsAsset` 逐类问。逐资产重跑不但白跑，还会掩盖「是哪条规则放行了这场会议」 |
+| `downloadUrl` | 单资产判定 | 同上；**「唯一的真正安全边界」这条性质一个字没变**。两种拒绝在审计与理由里分得开：「命中 allow 但不放行这一类」与「一条规则都没命中走兜底」 |
 
 **`end_time` / `dur` 现在可以真的支持了**：`d191f5b`（2026-08-21）已从
 `record_files[].record_end_time` 聚合出真实结束时间，M3.5 联调确认字段存在（C6 已闭合）。
@@ -297,6 +324,17 @@ T8 算的就是这个交集，供 spec §4.5「现在可取走 N 场会议」那
 里那些通过 `insertPolicyRule()` 造规则的端到端用例——它们验证的是「策略确实拦得住」这件事，
 换语义后**行为应当等价**（用新表示法写等价规则）。若这些红了，说明改动溢出了预期范围。
 
+> **T4 落地时的实况（2026-08-25）**：上表四行全部按预期红了，
+> `tests/policy/{engine,expr}.test.ts` 两个文件连同 `src/policy/{engine,expr}.ts` 一并删除
+> （`expr.ts` 头部那段 `end_time` 的教训确认已活在 `conds.ts` 的文件头与
+> `tests/policy/conds.test.ts` 的两条用例里，另在 `domain/types.ts` 的 `endTime` 注释里补了一处）。
+>
+> 端到端用例确实等价，但**主体换了**：这些用例原先用企微用户身份（`wecom_user`）
+> 造 `subject_type='user'` 的规则，换语义后主体是采集程序，所以身份改成服务账号、
+> 规则改成 `subject_type='program'`，断言一条没动。`tests/e2e/flow.test.ts` 里取数据的
+> 四条用例因此从设备登录改为服务账号登录，并**新增一条**专门盯住
+> 「设备授权登录仍然走得通，但企微用户一场会议都取不到」——设备登录链路的覆盖没有丢。
+
 ---
 
 ## 6. 全局约束
@@ -308,7 +346,8 @@ T8 算的就是这个交集，供 spec §4.5「现在可取走 N 场会议」那
   spec §4.2/§4.3 的分诊条与详情抽屉、A2 的会议查询 API 全靠它
 - **迁移不得静默改变判定**：见 §1.2。这是本阶段的最高风险项
 - **验证**：每个任务完成跑 `bun run typecheck` + `bun test`，
-  基线 591 pass / 0 fail（阶段 3 会让基线上升）；前端 `cd console && npx vitest run` 保持 133 pass
+  基线 591 pass / 0 fail（阶段 3 会让基线上升；T1+T4 完成后为 718 pass）；
+  前端 `cd console && npx vitest run` 保持 133 pass
 
 ---
 
