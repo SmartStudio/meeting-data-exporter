@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { withTestDb } from '../helpers/testdb'
-import { createArchivesStore } from '../../src/store/archives'
+import { archiveStateKey, createArchivesStore } from '../../src/store/archives'
 import type { Pool } from '../../src/store/db'
 
 /**
@@ -375,6 +375,88 @@ test('listMissingAssets 只返回终态的 skipped / dead，pending / failed 一
       { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'r-skip', fileType: '', status: 'skipped', lastError: 'download_not_allowed' },
       { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_ds_minutes', remoteId: 'r-dead', fileType: '', status: 'dead', lastError: 'upstream_timeout' },
     ])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingArchives 一次问清一批，整行返回，且不混入没问的会议', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+    await store.upsertMeetingArchive({ meetingId: 'm-a', subMeetingId: '', nasDir: '/nas/a', archivedAt: 1000, retentionDays: 30, now: 1000 })
+    await store.upsertMeetingArchive({ meetingId: 'm-a', subMeetingId: 's1', nasDir: '/nas/a-s1', archivedAt: 1100, retentionDays: 45, now: 1100 })
+    await store.upsertMeetingArchive({ meetingId: 'm-b', subMeetingId: '', nasDir: '/nas/b', archivedAt: 1200, retentionDays: 7, now: 1200 })
+    await store.extendRetention('m-a', 's1', 60, 1300)
+    await store.markLocalPurged('m-b', '', 1400)
+
+    const rows = await store.listMeetingArchives([
+      { meetingId: 'm-a', subMeetingId: '' },
+      { meetingId: 'm-a', subMeetingId: 's1' },
+      { meetingId: 'm-b', subMeetingId: '' },
+      { meetingId: 'm-never', subMeetingId: '' },
+    ])
+    const byKey = new Map(rows.map((r) => [`${r.meetingId}/${r.subMeetingId}`, r]))
+
+    expect(rows).toHaveLength(3)
+    // 周期性会议的各场次必须各算各的——按 meeting_id 去重会让一个场次凭空消失
+    expect(byKey.get('m-a/s1')).toEqual({
+      meetingId: 'm-a', subMeetingId: 's1', nasDir: '/nas/a-s1',
+      archivedAt: 1100, retentionDays: 45, extendedDays: 60, localPurgedAt: null,
+    })
+    // 采集清单判「在保留期内」看的就是这一列，所以它必须原样回来，不能被折成一个布尔
+    expect(byKey.get('m-b/')?.localPurgedAt).toBe(1400)
+    expect(byKey.get('m-a/')?.localPurgedAt).toBeNull()
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingArchives 传空数组不查库，直接返回空数组', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+    await store.upsertMeetingArchive({ meetingId: 'm-a', subMeetingId: '', nasDir: '/nas/a', archivedAt: 1000, retentionDays: 30, now: 1000 })
+    // 空的 `IN ()` 是语法错误，所以这条早退不是优化而是正确性
+    expect(await store.listMeetingArchives([])).toEqual([])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingsWithCompletedAssets 只认 completed，且按 (meeting_id, sub_meeting_id) 精确区分', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    // m-1：两行 completed，DISTINCT 之后只该出一次
+    await seedAsset(pool, { meetingId: 'm-1', assetType: 'video', remoteId: 'r1', status: 'completed' })
+    await seedAsset(pool, { meetingId: 'm-1', assetType: 'audio', remoteId: 'r2', status: 'completed' })
+    // m-2：只有还在流程里的与已放弃的行，本地没有任何可取的文件
+    await seedAsset(pool, { meetingId: 'm-2', assetType: 'video', remoteId: 'r3', status: 'pending', targetPath: null })
+    await seedAsset(pool, { meetingId: 'm-2', assetType: 'audio', remoteId: 'r4', status: 'dead', targetPath: null })
+    // m-3 的两个场次：只有 s1 下完了
+    await seedAsset(pool, { meetingId: 'm-3', subMeetingId: 's1', remoteId: 'r5', status: 'completed' })
+    await seedAsset(pool, { meetingId: 'm-3', subMeetingId: 's2', remoteId: 'r6', status: 'failed', targetPath: null })
+
+    const store = createArchivesStore(pool)
+    const got = await store.listMeetingsWithCompletedAssets([
+      { meetingId: 'm-1', subMeetingId: '' },
+      { meetingId: 'm-2', subMeetingId: '' },
+      { meetingId: 'm-3', subMeetingId: 's1' },
+      { meetingId: 'm-3', subMeetingId: 's2' },
+    ])
+
+    expect(got).toEqual(new Set([archiveStateKey('m-1', ''), archiveStateKey('m-3', 's1')]))
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingsWithCompletedAssets 传空数组不查库，直接返回空集', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedAsset(pool, { meetingId: 'm-1', status: 'completed' })
+    const store = createArchivesStore(pool)
+    expect(await store.listMeetingsWithCompletedAssets([])).toEqual(new Set())
   } finally {
     await cleanup()
   }
