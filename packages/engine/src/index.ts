@@ -1,6 +1,6 @@
 export * from './domain/types'
 export { judgeReadiness } from './domain/readiness'
-export { cleanDirName, meetingDirPath } from './domain/filename'
+export { cleanDirName, cleanSubjectSegment, meetingDirPath } from './domain/filename'
 export type { MeetingDirInfo } from './domain/filename'
 export { splitWindow } from './domain/window'
 export type { AssetSource, SourceAsset, DownloadUrl } from './source/types'

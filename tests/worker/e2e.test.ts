@@ -25,6 +25,7 @@ import type { Asset, Meeting } from '../../src/domain/types'
 import type { Catalog } from '../../src/catalog/index'
 import type { RecordsApi } from '../../src/tencent/records'
 import { createArchivesStore } from '../../src/store/archives'
+import { createPolicyStore } from '../../src/store/policy'
 import { createInProcSource } from '../../src/worker/source-inproc'
 import { createMysqlStore } from '../../src/worker/store-mysql'
 import {
@@ -205,6 +206,10 @@ function makeDeps(
     leaseSec: 900,
     // 归档流水线（P2）依赖：与 storage 用同一个本地根目录，NAS 目的地另开一个临时目录
     archives: createArchivesStore(pool),
+    // 归档到哪个目录由 archive 规则栈判（T9）。这里用真的 PolicyStore 读真的
+    // policy_rules 行（withRig 里种下的那条），而不是塞一个假的规则数组——
+    // 端到端要覆盖的正是「规则从库里读出来、一路走到 NAS 上的目录」这条链。
+    policy: createPolicyStore(pool),
     localRoot: root,
     nasRoot,
     ...rest,
@@ -230,6 +235,22 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * 归档目录模板（T9）：`{年}/{月}/{会议号}`，与阶段 2 那条固定规则
+ * `<年>/<月>/<meetingId>` 形状相同，只是年月现在取**会议 startTime**、
+ * 末段取会议号。**每个 rig 都要种**：archive 栈的兜底是 skip，一条规则都没有
+ * 就是一场都不归档——这是设计如此，不是漏配。
+ */
+async function seedArchiveRule(pool: Pool): Promise<void> {
+  await pool.execute(
+    `INSERT INTO policy_rules
+       (kind, priority, join_op, conds, subject_type, subject_value, asset_types, effect,
+        note, enabled, created_at, updated_at)
+     VALUES ('archive', 100, 'and', ?, '', '', ?, ?, '全部归档', 1, 0, 0)`,
+    [JSON.stringify([]), JSON.stringify([]), '{年}/{月}/{会议号}'],
+  )
+}
+
 /** 每个用例一套独立的库 + 本地归档目录 + NAS 目录 + 文件服务，跑完全部拆掉 */
 async function withRig(
   files: Record<string, string>,
@@ -240,6 +261,7 @@ async function withRig(
   const nasRoot = await mkdtemp(join(tmpdir(), 'mde-worker-nas-'))
   const server = startFileServer(files)
   try {
+    await seedArchiveRule(pool)
     await fn({ pool, root, nasRoot, server })
   } finally {
     server.stop()
@@ -269,7 +291,7 @@ describe('runWorkerOnce', () => {
         manifests: { written: 1, skipped: 0, failed: 0 },
         // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
         // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
-        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0 },
+        archived: { newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0 },
       })
 
       // ① 文件真的落在归档区，且路径是按 <year>/<month>/<cleanDirName>/<文件名> 拼出来的那个
@@ -333,10 +355,12 @@ describe('runWorkerOnce', () => {
       expect(vid.assetKey).toBe('video')
 
       // ⑦ **NAS 上也有这两个 sidecar**（US-6.2 的落点其实是这一份：本地那份 30 天后
-      //    会被到期清理删掉，长期活下来的是 NAS 这一份）。NAS 目录按归档时刻的
-      //    年/月 + 会议 ID 分——同样是手算的，不是从实现抄回来的。
-      const d = new Date(now() * 1000)
-      const nasDir = join(nasRoot, String(d.getUTCFullYear()), String(d.getUTCMonth() + 1).padStart(2, '0'), 'm-e2e')
+      //    会被到期清理删掉，长期活下来的是 NAS 这一份）。NAS 目录由 archive 规则栈
+      //    判出的模板 `{年}/{月}/{会议号}` 渲染而成（withRig 种下的那条规则）——
+      //    **年月取会议 startTime（START），不是归档时刻**。同样是手算的，不是从
+      //    实现抄回来的。
+      const d = new Date(START * 1000)
+      const nasDir = join(nasRoot, String(d.getUTCFullYear()), String(d.getUTCMonth() + 1).padStart(2, '0'), '881-123-40')
       const nasMeta = JSON.parse(await readFile(join(nasDir, 'meeting.json'), 'utf8'))
       // 会议元数据真的从 MySQL 的 meetings 表流到了 NAS 上（getMeeting 注入接对了），
       // 而不是只剩一串 ID——这正是 US-6.2「无需本工具即可知道内容」那半句
@@ -521,6 +545,17 @@ describe('runWorkerOnce', () => {
       )
       await writeFile(join(root, 's1.bin'), 'content for s1')
       await writeFile(join(root, 's2.bin'), 'content for s2')
+      // 两条 meetings 行：T9 之后归档目录由规则栈判，判定与 `{年}/{月}/{会议号}` 都要
+      // 会议字段，没有元数据就判不出目录、这一轮不归档（见 archive.ts 的
+      // decideArchiveDir）。这条用例要证的是**枚举**不去重，所以得让两场都判得出目录。
+      // 会议号刻意不同，两场因此各有各的 NAS 目录。
+      await pool.execute(
+        `INSERT INTO meetings
+           (meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time, created_at, updated_at)
+         VALUES ('m-periodic', 's1', 'code-s1', '周期会 第一场', 'u-host', ?, ?, 1000, 1000),
+                ('m-periodic', 's2', 'code-s2', '周期会 第二场', 'u-host', ?, ?, 1000, 1000)`,
+        [START, END, START, END],
+      )
 
       const now = () => START + 100
       // 本轮不需要真的发现/下载任何东西：用一个查不到会议的空 source，让这一轮
@@ -540,7 +575,7 @@ describe('runWorkerOnce', () => {
       expect(res.tasks).toBe(0)
 
       // 两个 sub_meeting_id 都被归档了，不是只有一个
-      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0 })
+      expect(res.archived).toEqual({ newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0 })
 
       const archives = createArchivesStore(pool)
       expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's1', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)

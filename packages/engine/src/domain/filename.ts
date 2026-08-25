@@ -1,11 +1,31 @@
 const ILLEGAL = /[\\/:：*?"<>|]/g
-/** 目录名：<date>_<hhmm>_<清洗主题>_<code>。非法字符→-，字素簇截断 60，空主题兜底 */
-export function cleanDirName(date: string, hhmm: string, subject: string, code: string): string {
+
+/**
+ * 把**会议主题这段自由文本**清洗成一个能当目录名用的片段：非法字符→`-`、
+ * 连续空白折叠成一个空格、按字素簇截断到 60、空主题兜底 `untitled`。
+ *
+ * 从 `cleanDirName` 里提出来，**不是为了少写几行**：归档目录模板的 `{标题}`
+ * 占位符（`src/policy/archive-dir.ts`）要的正是这一段，而 `cleanDirName` 把它和
+ * `date_hhmm_主题_code` 那个完整格式焊在一起，NAS 侧用不上。在那边另写一份清洗，
+ * 两份迟早漂移，漂移的后果是**同一场会议在本地归档区与 NAS 上目录名不同**——
+ * 而人正是靠这个名字在两处对上同一场会议的。同一份逻辑两处实现是这个仓库反复
+ * 吃亏的地方（docs/console/dev-plan.md §5 的 C7）。
+ *
+ * 截断放在**替换之后**：非法字符替换是一对一的，不改变字素数，两种顺序结果相同；
+ * 但空白折叠会缩短字符串，必须先折叠再数，否则 60 这个上限会被空白吃掉。
+ * 这个顺序是 `cleanDirName` 原有的，提取时逐字保留——它的既有用例就是证据。
+ */
+export function cleanSubjectSegment(subject: string): string {
   let s = (subject ?? '').replace(ILLEGAL, '-').replace(/\s+/g, ' ').trim()
   const graphemes = [...s]                          // 按码点近似字素簇，避免切断代理对
   if (graphemes.length > 60) s = graphemes.slice(0, 60).join('')
   if (s.length === 0) s = 'untitled'
-  return `${date}_${hhmm}_${s}_${code}`
+  return s
+}
+
+/** 目录名：<date>_<hhmm>_<清洗主题>_<code>。清洗见 cleanSubjectSegment */
+export function cleanDirName(date: string, hhmm: string, subject: string, code: string): string {
+  return `${date}_${hhmm}_${cleanSubjectSegment(subject)}_${code}`
 }
 
 /** 拼会议目录名要用的那几个会议字段（`Meeting` 与 `meetingsForPaths()` 的值都满足它） */
