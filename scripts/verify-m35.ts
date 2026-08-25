@@ -146,6 +146,19 @@ function ignored(rel: string): boolean {
   return rel.startsWith('.mde/') || rel === '.mde'
 }
 
+/**
+ * `meeting.json` / `_manifest.json` **每一轮都会被重写**（它们带 `generatedAt`），
+ * 这是 `writeMeetingManifests` 的设计，不是幂等破了——幂等说的是**不重新下载资产**。
+ *
+ * 单独分类而不是直接忽略：清单里的 `assets[]` 如果变了，那是真问题
+ * （某个资产从清单里消失，或多出一条），只是「整个文件的哈希变了」这件事本身
+ * 不构成证据。**把它报成失败的后果是每一轮都红，几次之后没人再看这份输出。**
+ */
+function isSidecar(rel: string): boolean {
+  const base = rel.split('/').pop() ?? ''
+  return base === 'meeting.json' || base === '_manifest.json'
+}
+
 async function walk(root: string, hashCap: number): Promise<Snapshot> {
   const out: Snapshot = {}
   async function rec(dir: string): Promise<void> {
@@ -198,15 +211,29 @@ async function cmdCompare(a: Args): Promise<void> {
   const rewritten: string[] = []
   const touched: string[] = []
 
+  const sidecarsChanged: string[] = []
+
   for (const [rel, b] of Object.entries(before)) {
     const c = after[rel]
     if (!c) continue
+    if (isSidecar(rel)) {
+      if (c.sha256 !== b.sha256) sidecarsChanged.push(rel)
+      continue
+    }
     // 内容变了才算重下。只有 mtime 变而大小与哈希不变，说明文件被重写成了
     // 同样的内容——**那也是重下**，只是结果恰好相同，所以单独报出来
     const contentChanged = c.size !== b.size
       || (b.sha256 !== null && c.sha256 !== null && b.sha256 !== c.sha256)
     if (contentChanged) rewritten.push(rel)
     else if (c.mtimeMs !== b.mtimeMs) touched.push(rel)
+  }
+
+  if (sidecarsChanged.length > 0) {
+    fact(
+      `${sidecarsChanged.length} 份 sidecar 重写了`,
+      'meeting.json / _manifest.json 每轮都会重写（带 generatedAt），是设计如此。' +
+        '要确认的是清单里的 assets[] 条数没变，那个本工具不判，用眼睛看一次',
+    )
   }
 
   if (rewritten.length === 0) pass('没有任何已完成的资产被改写')
