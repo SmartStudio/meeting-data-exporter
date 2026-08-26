@@ -52,12 +52,18 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
-/** 只看 import/export 语句里的模块说明符，注释里提到 mock 不算。 */
+/**
+ * 只看 import/export 语句里的模块说明符，注释里提到 mock 不算。
+ *
+ * 第二个分支是 `mock/xxx` 这种相对写法。**它不列具体文件名**：F8 往
+ * `api/mock/` 里加了六个域文件（rules / jobs / storage / audit / content …），
+ * 名单式的写法当时就漏了它们——一道只认得出旧文件的门，等于对新文件敞着。
+ */
 function importsMock(source: string): boolean {
   const specifiers = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)].map((m) => m[1] ?? '')
   specifiers.push(...[...source.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1] ?? ''))
   return specifiers.some((s) =>
-    /(^|\/)api\/mock(\/|$)|(^|\/)mock\/(index|install|meetings|consumers|system)$/.test(s),
+    /(^|\/)api\/mock(\/|$)|(^|\/)mock\/[A-Za-z0-9_-]+$/.test(s),
   )
 }
 

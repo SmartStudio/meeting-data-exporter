@@ -14,8 +14,8 @@ export function loadFailedError(): Error {
  * 不改变已经是 `failed` / `blocked` / `none` 的会议——它们的状态跟 NAS 无关。
  *
  * **改状态就必须一起改理由。** 只把 `archive` 翻成 `'failed'`、把 `why` 留在
- * 原地，同一行里就会出现红叉圆点紧挨着一句「归档规则 #100，已成功写入 NAS
- * 并校验哈希」，抽屉里的授权那段还写着「权限规则 #100 准许采集」。
+ * 原地，同一行里就会出现红叉圆点紧挨着一句「归档规则 #210，已成功写入 NAS
+ * 并校验哈希」，抽屉里的授权那段还写着「权限规则 #320 准许采集」。
  * 「状态与理由自相矛盾」在这个计划里已经栽过好几次，这里不再多加一次。
  */
 export function applyNasDown(meetings: Meeting[]): Meeting[] {
