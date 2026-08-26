@@ -10,10 +10,10 @@
  *    内容，不是一次失败的请求。把它当错误处理，界面上就只剩一句"读取失败"，
  *    而管理员最需要看到的恰恰是"NAS 断了、还有几场没归档、到期清理停没停"。
  *
- * 2. **`null` 不许折成 `0`。** `failedMeetings` 现在恒为 null（后端还没接上
- *    `job_failures`，计划 §11.3 的 A8 在补）；`totalBytes` / `availableBytes`
- *    在探测失败时也是 null。0 的意思是"确实没有"，null 的意思是"没查到"，
- *    两者在界面上必须分得开，所以解析层一个字都不替它们决定。
+ * 2. **`null` 不许折成 `0`。** `totalBytes` / `availableBytes` 在探测失败时
+ *    是 null，`failedMeetings` 在后端查不出来时也是。0 的意思是"确实没有"，
+ *    null 的意思是"没查到"，两者在界面上必须分得开，所以解析层一个字都不替
+ *    它们决定。
  *
  * 3. **写操作不做乐观更新**（计划 G-c）。这里只负责发请求、把后端的回显解析
  *    出来；页面拿到回显之后重新 `fetchStorage()`。`setCleanupPaused` 尤其
@@ -55,9 +55,19 @@ export interface NasArchive {
    * `failedMeetings`。
    */
   pendingMeetings: number
-  /** 归档失败的场次数。**现在恒为 null**（A8 接上 `job_failures` 之后才有数） */
+  /**
+   * 归档失败的场次数，来自 `job_failures` 里 `job_name = 'archive_nas'`
+   * 的未解决行（A8 接上的，2026-08-26）。查不出来时是 null，不是 0。
+   */
   failedMeetings: number | null
-  /** `failedMeetings` 为 null 的原因。A8 之后后端会删掉这个字段，届时是 null */
+  /**
+   * `failedMeetings` 为 null 的原因。
+   *
+   * A8 之前后端恒在这里塞一句"归档失败项尚未落库"——那句话在 T-A4 建了
+   * `job_failures` 之后就不成立了，A8 已经把它删掉，所以现在正常是 null。
+   * 留着这个字段是为了兼容还没升级的网关：**它非空的时候，页面显示这句话
+   * 而不是显示一个数**。
+   */
   failedMeetingsNote: string | null
 }
 
