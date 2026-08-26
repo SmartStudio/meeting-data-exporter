@@ -123,11 +123,20 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   // 生产上真正跑的那段装配
   const consoleMeetings = createConsoleMeetingsStore(pool, { policy: policyStore })
   const grantsStore = createGrantsStore(pool)
-  const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
+  // 跟随 src/index.ts：判定要问 programsStore「这个程序还启用着吗」，
+  // 用的是控制台改的那同一张表、同一个实例（阶段 5 · A8）
+  const programsStore = createProgramsStore(pool)
+  const accessGate = createAccessGate({
+    store: policyStore,
+    grants: grantsStore,
+    programs: { isProgramEnabled: async (id) => (await programsStore.find(id))?.enabled === true },
+  })
   const archivesStore = createArchivesStore(pool)
 
   const auditStore = createAuditStore(pool)
   const auditRecorder = createAuditRecorder(auditStore, now)
+  // 跟随 src/index.ts：一个实例给「定时任务页」与「归档存储页的失败数」两处用
+  const jobsStore = createJobsStore(pool)
 
   const authStore = createAuthStore(pool)
   const deviceFlow = createDeviceFlow({ store: authStore, baseUrl: 'https://gw.example', ttlSec: 300 })
@@ -180,7 +189,7 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
     // 阶段 4 · T7（A3 采集授权）：与上面几行同样是真实模块接到同一个测试库
-    programs: createProgramsStore(pool),
+    programs: programsStore,
     grantsStore,
     policyStore,
     archivesStore,
@@ -204,6 +213,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
       archives: archivesStore,
       audit: auditStore,
       cleanup: null,
+      // 跟随 src/index.ts：归档存储页的「归档失败 N 场」与定时任务页读的是
+      // 同一张 job_failures、同一个实例（阶段 5 · A8）
+      jobFailures: jobsStore,
     } satisfies StorageDeps,
     // 审计读侧（阶段 4 · A5）：与 auditRecorder 同源，装配方式跟随 src/index.ts
     auditQuery: auditStore,
@@ -219,13 +231,43 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     // 排队，调度器不在这里（它属于 worker 进程）。时区固定 0（UTC），与测试里
     // 其它时间戳同口径
     jobs: {
-      jobs: createJobsStore(pool),
+      jobs: jobsStore,
       audit: auditStore,
       tzOffsetSec: 0,
     },
   }
 
   return { app: createApp(deps), deps, pool }
+}
+
+/**
+ * 往 `service_accounts` 插一个采集程序（阶段 5 · A8）。
+ *
+ * **一条 allow 规则不足以让判定放行**：AccessGate 在读规则之前先问
+ * 「这个程序还启用着吗」，查不到或 `enabled = 0` 一律拒绝（spec §11 缺口 4：
+ * 停用之后已签发、还没过期的访问令牌也必须失效）。所以凡是断言「取得到」的
+ * 端到端用例，除了 `insertPolicyRule` 之外还要有这一行。
+ *
+ * `enabled: false` 就是「停用了的程序」，用来验证那条拒绝真的生效。
+ * 凭据哈希填一个占位值：走这条路的用例都是自己签 JWT 的，不经过
+ * `POST /auth/service-token`，那一列在这里不参与任何判定。
+ */
+export async function insertServiceProgram(
+  pool: Pool,
+  opts: { id: string; name?: string; tmUserId?: string; enabled?: boolean; expiresAt?: number | null },
+): Promise<void> {
+  await pool.execute(
+    `INSERT INTO service_accounts (id, name, secret_hash, tm_userid, enabled, expires_at, created_at)
+     VALUES (?, ?, 'not-a-real-hash-tests-sign-their-own-jwt', ?, ?, ?, 0)
+     ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)`,
+    [
+      opts.id,
+      opts.name ?? opts.id,
+      opts.tmUserId ?? `tm-${opts.id}`,
+      opts.enabled === false ? 0 : 1,
+      opts.expiresAt ?? null,
+    ],
+  )
 }
 
 /**

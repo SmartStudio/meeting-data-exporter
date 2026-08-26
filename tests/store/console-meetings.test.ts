@@ -1063,7 +1063,9 @@ test('写侧与读侧同源：真的延长两次之后，keep.extended 是 2', a
         now: () => NOW,
         adminAuth: {
           async verifySession() {
-            return { adminId: 'admin-1', username: 'alice' }
+            // role 是阶段 5 · A8 加的。漏掉它这条用例会拿到 403——
+            // requireAdminWrite 只放行明确是 'admin' 的角色，拿不到角色按只读处理
+            return { adminId: 'admin-1', username: 'alice', role: 'admin' }
           },
         },
         storage: { archives: createArchivesStore(pool), audit: createAuditStore(pool) },

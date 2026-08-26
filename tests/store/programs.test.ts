@@ -187,3 +187,133 @@ test('create 写进去的 secret_hash 就是传进来的那一串（认证路径
     await cleanup()
   }
 })
+
+// ── 停用 / 启用与轮换凭据（阶段 5 · A8，spec §11 缺口 4）──────────────────
+
+async function seed(
+  store: ReturnType<typeof createProgramsStore>,
+  id: string,
+  secretHash = 'hash-0',
+): Promise<void> {
+  await store.create({ id, name: id, secretHash, tmUserId: 't', expiresAt: null, now: 1000 })
+}
+
+test('setEnabled 往返：停用之后读出来是 false，再启用回 true', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-toggle')
+
+    expect(await store.setEnabled('p-toggle', false)).toBe(true)
+    expect((await store.find('p-toggle'))?.enabled).toBe(false)
+
+    expect(await store.setEnabled('p-toggle', true)).toBe(true)
+    expect((await store.find('p-toggle'))?.enabled).toBe(true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('setEnabled 对不存在的 id 返回 false（handler 据此报 404）', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    expect(await store.setEnabled('never-existed', false)).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('把一个已经停用的程序再停用一次仍返回 true——问的是「有没有这个程序」不是「值有没有变」', async () => {
+  // 用 changedRows 判断的话，重复点一次停用会报 404，而那个程序明明就在
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-idem')
+    await store.setEnabled('p-idem', false)
+    expect(await store.setEnabled('p-idem', false)).toBe(true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('setEnabled 只改 enabled，不碰 secret_hash / expires_at / name', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await store.create({
+      id: 'p-narrow', name: '原名', secretHash: 'keep-this-hash',
+      tmUserId: 'tm-x', expiresAt: 9_999_999, now: 1000,
+    })
+    await store.setEnabled('p-narrow', false)
+
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      'SELECT name, secret_hash, tm_userid, expires_at FROM service_accounts WHERE id = ?',
+      ['p-narrow'],
+    )
+    expect(rows[0]?.name).toBe('原名')
+    expect(rows[0]?.secret_hash).toBe('keep-this-hash')
+    expect(rows[0]?.tm_userid).toBe('tm-x')
+    expect(Number(rows[0]?.expires_at)).toBe(9_999_999)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('rotateSecret 换掉 secret_hash（认证路径读的是同一列）', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-rotate', 'old-hash')
+
+    expect(await store.rotateSecret('p-rotate', 'brand-new-hash')).toBe(true)
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      'SELECT secret_hash FROM service_accounts WHERE id = ?',
+      ['p-rotate'],
+    )
+    expect(rows[0]?.secret_hash).toBe('brand-new-hash')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('rotateSecret 对不存在的 id 返回 false，且不新建一行', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    expect(await store.rotateSecret('never-existed', 'h')).toBe(false)
+    expect(await store.list()).toEqual([])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('rotateSecret 不改 enabled——给一个停用中的程序换凭据，它仍然是停用的', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-rot-disabled')
+    await store.setEnabled('p-rot-disabled', false)
+
+    await store.rotateSecret('p-rot-disabled', 'h2')
+    expect((await store.find('p-rot-disabled'))?.enabled).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('读侧仍然不返回 secret_hash——轮换之后也一样', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-nohash')
+    await store.rotateSecret('p-nohash', 'the-new-hash')
+
+    const found = await store.find('p-nohash')
+    expect(found).not.toBeNull()
+    expect(Object.keys(found!)).not.toContain('secretHash')
+    expect(JSON.stringify(found)).not.toContain('the-new-hash')
+  } finally {
+    await cleanup()
+  }
+})

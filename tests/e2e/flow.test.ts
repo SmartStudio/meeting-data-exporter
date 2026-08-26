@@ -157,7 +157,13 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   // 与 src/index.ts / testApp.ts 同一个实例口径
   const consoleMeetings = createConsoleMeetingsStore(dbPool, { policy: policyStore })
   const grantsStore = createGrantsStore(dbPool)
-  const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
+  // 跟随 src/index.ts（阶段 5 · A8）：判定读同一个 programsStore
+  const programsStore = createProgramsStore(dbPool)
+  const accessGate = createAccessGate({
+    store: policyStore,
+    grants: grantsStore,
+    programs: { isProgramEnabled: async (id) => (await programsStore.find(id))?.enabled === true },
+  })
   const archivesStore = createArchivesStore(dbPool)
 
   const auditStore = createAuditStore(dbPool)
@@ -214,7 +220,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
     // 阶段 4 · T7（A3 采集授权）：真实模块，接到同一个 e2e 测试库
-    programs: createProgramsStore(dbPool),
+    programs: programsStore,
     grantsStore,
     policyStore,
     archivesStore,
@@ -237,6 +243,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
       archives: archivesStore,
       audit: auditStore,
       cleanup: null,
+      // 阶段 5 · A8：真实实现接同一个 e2e 库，跟随 src/index.ts
+      jobFailures: createJobsStore(dbPool),
     },
     // 审计读侧（阶段 4 · A5）：与 auditRecorder 同源，装配方式跟随 src/index.ts
     auditQuery: auditStore,

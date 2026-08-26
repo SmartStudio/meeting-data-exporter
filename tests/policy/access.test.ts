@@ -81,8 +81,20 @@ function stubGrants(overrides: MeetingOverride[] = []): AccessGateDeps['grants']
   }
 }
 
-const gateOf = (rules: StackRule[], overrides: MeetingOverride[] = []) =>
-  createAccessGate({ store: stubStore(rules), grants: stubGrants(overrides) })
+/**
+ * 采集程序启用状态的假件（阶段 5 · A8）。**默认全部启用**：本文件绝大多数用例
+ * 问的是规则怎么判，程序当然是开着的。停用那一族用例显式传 `disabled`。
+ */
+function stubPrograms(disabled: readonly string[] = []): AccessGateDeps['programs'] {
+  return { isProgramEnabled: async (id) => !disabled.includes(id) }
+}
+
+const gateOf = (rules: StackRule[], overrides: MeetingOverride[] = [], disabled: string[] = []) =>
+  createAccessGate({
+    store: stubStore(rules),
+    grants: stubGrants(overrides),
+    programs: stubPrograms(disabled),
+  })
 
 test('没有任何规则时兜底拒绝', async () => {
   const d = await gateOf([]).decide({ actor: program, meeting, archived: false, now: NOW })
@@ -136,6 +148,7 @@ test('企微用户被拒时不去读规则表（判定与规则集无关）', as
   let reads = 0
   const gate = createAccessGate({
     grants: stubGrants(),
+    programs: stubPrograms(),
     store: {
       listEnabledStackRules: async () => {
         reads += 1
@@ -359,4 +372,105 @@ test('改写：kind 不是 allow 的改写不影响采集权限判定', async ()
   const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
 
   expect(d.effect).toBe('deny')
+})
+
+// ── 采集程序被停用（阶段 5 · A8，spec §11 缺口 4）────────────────────────
+//
+// 停用之后**已经签发、还没过期的访问令牌**走的就是这条路。只在
+// auth/service.ts（拿凭据换令牌）挡住，等于「停用」这个按钮在最长一个令牌
+// 生命周期内什么都没做——管理员看到卡片灰了，数据还在往外走。
+
+test('停用的程序：一条放行规则也救不回来', async () => {
+  const gate = gateOf([rule({})], [], ['prog-a'])
+  const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+
+  expect(d.effect).toBe('deny')
+  expect(d.ruleId).toBeNull()
+})
+
+test('停用的程序：理由要说出「已停用」，不能含糊成「没有规则匹配」', async () => {
+  // 说错了的代价是管理员去**再建一条规则**，而那条规则永远不会生效——
+  // 与企微用户那条短路同一个道理，判定理由是产品功能（spec §4.2/§4.3）
+  const d = await gateOf([rule({})], [], ['prog-a']).decide({
+    actor: program, meeting, archived: false, now: NOW,
+  })
+
+  expect(d.reason).toContain('停用')
+  expect(d.reason).not.toContain('没有任何采集权限规则匹配')
+  // 顺带把「授权还在」这件事说清楚：停用是可逆的，不连带删授权
+  expect(d.reason).toContain('授权')
+})
+
+test('停用的程序：一条 allow 人工改写也翻不过来（停用压过改写）', async () => {
+  // 改写是「规则对这场会议会怎么判」的覆盖，不是「这个程序还算不算数」。
+  // 顺序写反的表现是：管理员停用了一个程序，而它靠一条旧改写继续取数据
+  const gate = gateOf([], [overrideOf({ effect: 'allow' })], ['prog-a'])
+  const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+
+  expect(d.effect).toBe('deny')
+  expect(d.source).not.toBe('override')
+  expect(d.overriddenFrom).toBeNull()
+})
+
+test('停用的程序：不去读规则表（判定与规则集无关）', async () => {
+  let reads = 0
+  const gate = createAccessGate({
+    grants: stubGrants(),
+    programs: stubPrograms(['prog-a']),
+    store: {
+      listEnabledStackRules: async () => {
+        reads += 1
+        return []
+      },
+    },
+  })
+  await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+  expect(reads).toBe(0)
+})
+
+test('查不到这个程序（已被删）与停用同等对待——都落在拒绝一侧', async () => {
+  const gate = createAccessGate({
+    store: stubStore([rule({})]),
+    grants: stubGrants(),
+    // 装配处（src/index.ts）就是这么实现的：find 返回 null → false
+    programs: { isProgramEnabled: async () => false },
+  })
+  const d = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+  expect(d.effect).toBe('deny')
+})
+
+test('decideMany 与 decide 对停用程序判得一模一样', async () => {
+  // 两条路径分叉的表现是：列表里这场会议显示得出来，点进去详情说取不到
+  const gate = gateOf([rule({})], [], ['prog-a'])
+  const [batch] = await gate.decideMany([{ actor: program, meeting, archived: false, now: NOW }])
+  const one = await gate.decide({ actor: program, meeting, archived: false, now: NOW })
+
+  expect(batch!.effect).toBe(one.effect)
+  expect(batch!.reason).toBe(one.reason)
+  expect(batch!.effect).toBe('deny')
+})
+
+test('decideMany 只为每个 programId 问一次启用状态（一页两百场不是两百次往返）', async () => {
+  let calls = 0
+  const gate = createAccessGate({
+    store: stubStore([rule({})]),
+    grants: stubGrants(),
+    programs: {
+      isProgramEnabled: async () => {
+        calls += 1
+        return true
+      },
+    },
+  })
+  const inputs = Array.from({ length: 5 }, () => ({
+    actor: program, meeting, archived: false, now: NOW,
+  }))
+  await gate.decideMany(inputs)
+  expect(calls).toBe(1)
+})
+
+test('启用着的程序照旧走规则栈（这道判断不改变正常路径的结果）', async () => {
+  const d = await gateOf([rule({})]).decide({ actor: program, meeting, archived: false, now: NOW })
+  expect(d.effect).toBe('allow')
+  expect(d.ruleId).toBe(1)
 })

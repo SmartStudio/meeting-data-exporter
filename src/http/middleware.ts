@@ -101,3 +101,48 @@ export async function requireAdminAuth(
     throw err
   }
 }
+
+/**
+ * 管理员**写**操作的守卫（阶段 5 · A8，spec §2 / §11 缺口 1）。
+ *
+ * = `requireAdminAuth` + 一句角色判断。每一个改状态的 admin handler 都改调它，
+ * 读端点继续调 `requireAdminAuth`。
+ *
+ * ## 判断方向：只有明确是 `admin` 才放行
+ *
+ * 写成 `role === 'readonly' → 拒绝` 与写成 `role !== 'admin' → 拒绝` 在今天
+ * 等价（`parseAdminRole` 只吐这两个值），但明天不等价——加第三个角色的那一次
+ * 改动，前一种写法会把它**静默地当成管理员**放行。所以这里是白名单不是黑名单。
+ *
+ * 同理，`identity.role` 在类型上不可能是 undefined，但真到了运行时是
+ * undefined（哪个假件漏填了、或者某条路径绕过了 store 的映射），它也落在
+ * 拒绝一侧。拿不到角色按 readonly 处理，不是按 admin。
+ *
+ * ## 为什么不放在路由表上统一挡
+ *
+ * 角色要查库（会话 → 账号），而 handler 里本来就要查一次。放在路由层就是查两次，
+ * 或者把校验结果穿过一个新的上下文字段传下去。真正防「漏一条」的是
+ * `tests/http/console-readonly.test.ts`——它遍历路由表，任何一条新增的非 GET
+ * admin 端点只要没挡住只读账号就会红。靠人一条条数是数不住的。
+ */
+export async function requireAdminWrite(
+  req: Request,
+  adminAuth: AdminAuth,
+  now: number,
+): Promise<AdminAuthResult> {
+  const auth = await requireAdminAuth(req, adminAuth, now)
+  if (!auth.ok) return auth
+  if (auth.identity.role !== 'admin') {
+    return {
+      ok: false,
+      response: json(403, {
+        error: 'readonly_role',
+        role: auth.identity.role,
+        message:
+          '这个账号是只读角色（spec §2），只能查看、不能改任何状态。' +
+          '需要改规则、改授权、延长保留或手动触发任务，请让管理员把角色改成 admin。',
+      }),
+    }
+  }
+  return auth
+}

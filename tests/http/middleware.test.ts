@@ -75,7 +75,7 @@ test('Authorization 头不是 Bearer 形式时返回 401 missing_token', async (
 // requireAdminAuth（Task 3 / A1）
 // ---------------------------------------------------------------------------
 
-const ADMIN_IDENTITY: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+const ADMIN_IDENTITY: AdminIdentity = { adminId: 'admin-1', username: 'alice', role: 'admin' }
 
 /** 只需要 verifySession 这一个方法被 requireAdminAuth 调用；其余方法在这些用例里不应被触碰 */
 function fakeAdminAuth(verifySession: AdminAuth['verifySession']): AdminAuth {
@@ -89,6 +89,7 @@ function fakeAdminAuth(verifySession: AdminAuth['verifySession']): AdminAuth {
     verifySession,
     revokeSession: notExpected('revokeSession'),
     revokeAllSessionsFor: notExpected('revokeAllSessionsFor'),
+    revokeOtherSessionsFor: notExpected('revokeOtherSessionsFor'),
   }
 }
 

@@ -1,4 +1,4 @@
-import type { AdminAccount, AdminStore } from '../store/admin'
+import type { AdminAccount, AdminRole, AdminStore } from '../store/admin'
 import { generateOpaqueToken, hashToken } from './tokens'
 
 // 注：不需要 node:crypto 的 timingSafeEqual——密码比对交由 Bun.password.verify
@@ -22,6 +22,15 @@ export class AdminSessionInvalidError extends Error {
 export interface AdminIdentity {
   adminId: string
   username: string
+  /**
+   * 角色（阶段 5 · A8，spec §2）。**每一个写 handler 都读它**，所以它必须
+   * 从会话校验里带出来，而不是让 handler 各自再查一次库——各查各的意味着
+   * 「有一处忘了查」，而那一处的表现是一个只读账号能改规则，且不会有任何报错。
+   *
+   * 值来自 `AdminStore` 的 `parseAdminRole`：库里认不出来的取值一律折成
+   * `readonly`。**这一层不会给出 `undefined`**，落到安全侧的判断在更下面。
+   */
+  role: AdminRole
 }
 
 /** "记住此设备" 勾选时的会话有效期（spec.md §4.1 登录页文案原文即 30 天） */
@@ -70,6 +79,14 @@ export interface AdminAuth {
   verifySession(token: string, now: number): Promise<AdminIdentity>
   revokeSession(token: string): Promise<void>
   revokeAllSessionsFor(adminId: string): Promise<void>
+  /**
+   * 吊销这个账号**除当前这一条之外**的全部会话，返回撤销条数（阶段 5 · A8）。
+   *
+   * 改密码之后调它：旧密码换来的会话不该在密码换掉之后还活着（spec §11 缺口 5）。
+   * `keepToken` 是**明文令牌**，与 revokeSession 的入参同型——哈希在这一层做，
+   * 调用方（handler）拿到的就是 cookie 里那个明文，不必知道存的是哈希。
+   */
+  revokeOtherSessionsFor(adminId: string, keepToken: string): Promise<number>
 }
 
 export function createAdminAuth(deps: AdminAuthDeps): AdminAuth {
@@ -119,7 +136,7 @@ export function createAdminAuth(deps: AdminAuthDeps): AdminAuth {
         await deps.store.touchSessionExpiry(tokenHash, now + ADMIN_SESSION_REMEMBER_DAYS * 86400)
       }
 
-      return { adminId: account.id, username: account.username }
+      return { adminId: account.id, username: account.username, role: account.role }
     },
 
     async revokeSession(token) {
@@ -128,6 +145,10 @@ export function createAdminAuth(deps: AdminAuthDeps): AdminAuth {
 
     async revokeAllSessionsFor(adminId) {
       await deps.store.deleteSessionsByAdminId(adminId)
+    },
+
+    async revokeOtherSessionsFor(adminId, keepToken) {
+      return deps.store.deleteSessionsByAdminIdExcept(adminId, hashToken(keepToken))
     },
   }
 }

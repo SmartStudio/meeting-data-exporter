@@ -70,6 +70,26 @@ export interface ProgramsStore {
     expiresAt: number | null
     now: number
   }): Promise<boolean>
+  /**
+   * 停用 / 启用一个程序（阶段 5 · A8，spec §11 缺口 4）。
+   * 返回是否真的改到了一行——id 不存在时 false，由 handler 报 404。
+   *
+   * **停用不动它的授权。** 停用是一个可逆动作，连带删授权会让「停用再启用」
+   * 变成一次不可逆的数据丢失（几十场逐会议授权没有地方可以恢复）。
+   * 「停用之后取不到数据」由 `src/policy/access.ts` 的 AccessGate 保证，
+   * 它在读规则和改写**之前**就因 `enabled = 0` 拒绝。
+   */
+  setEnabled(id: string, enabled: boolean): Promise<boolean>
+  /**
+   * 轮换凭据（阶段 5 · A8，spec §11 缺口 4）。返回是否真的改到了一行。
+   *
+   * 传进来的是**哈希**不是明文，与 `create` 同一个理由：明文只在 handler 那一次
+   * 响应里出现，不进这一层，也就不可能被哪个日志或异常栈捎带出去。
+   *
+   * **没有配套的"再看一次"方法，也不会有。** 库里只有哈希，服务端此后无从还原
+   * ——那正是哈希存储的意义。想找回只能再轮换一次。
+   */
+  rotateSecret(id: string, secretHash: string): Promise<boolean>
 }
 
 /** SELECT 列表里**没有 secret_hash**，这是本模块的核心约束，不是省了一列 */
@@ -140,6 +160,27 @@ export function createProgramsStore(pool: Pool): ProgramsStore {
         if (isDuplicateEntry(err)) return false
         throw err
       }
+    },
+
+    async setEnabled(id, enabled) {
+      const [res] = await pool.execute<ResultSetHeader>(
+        `UPDATE service_accounts SET enabled = ? WHERE id = ?`,
+        [enabled ? 1 : 0, id],
+      )
+      // affectedRows 而不是 changedRows：把一个已经停用的程序再停用一次，
+      // changedRows 是 0 而这一行确实存在。调用方要区分的是「有没有这个程序」，
+      // 不是「值有没有变」——用 changedRows 会让重复点一次停用报 404
+      return res.affectedRows === 1
+    },
+
+    async rotateSecret(id, secretHash) {
+      const [res] = await pool.execute<ResultSetHeader>(
+        `UPDATE service_accounts SET secret_hash = ? WHERE id = ?`,
+        [secretHash, id],
+      )
+      // 只写 secret_hash 一列：enabled / expires_at / name 一个都不碰。
+      // 轮换凭据不该顺手把一个停用的程序启用回来
+      return res.affectedRows === 1
     },
   }
 }

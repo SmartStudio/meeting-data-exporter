@@ -77,7 +77,18 @@ async function main(): Promise<void> {
   const policyStore = createPolicyStore(pool)
   // 网关这边只读改写，不写。写侧在控制台的管理端点里（阶段 4）
   const grantsStore = createGrantsStore(pool)
-  const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
+  // 采集程序（`service_accounts`）的控制台读侧。**建在 accessGate 之前**：
+  // 判定要问它「这个程序还启用着吗」（阶段 5 · A8，spec §11 缺口 4）。
+  // 下面 AppDeps.programs 用的是同一个实例——两处各建一个不会出错，但会让
+  // 「判定读的是不是控制台改的那张表」变成一句要去核对的话
+  const programsStore = createProgramsStore(pool)
+  const accessGate = createAccessGate({
+    store: policyStore,
+    grants: grantsStore,
+    // 查不到的程序按「不启用」处理：它被删掉之后令牌可能还没过期，
+    // 而「查不到」与「停用了」对判定而言是同一件事（见 ProgramStatusSource）
+    programs: { isProgramEnabled: async (id) => (await programsStore.find(id))?.enabled === true },
+  })
   // 网关只用它读「这场会议归档了没有」（规则的 arch 条件）——归档流水线的写侧
   // 在 worker 进程里，两边共用同一份 store 定义，不各写一遍 SQL
   const archivesStore = createArchivesStore(pool)
@@ -114,8 +125,8 @@ async function main(): Promise<void> {
   const cookieSecure = new URL(config.gatewayBaseUrl).protocol === 'https:'
 
   // 采集授权（阶段 4 · T7，A3）。程序列表与建号的读写侧——注意这个 store 的读侧
-  // 类型里没有 secret_hash，控制台想漏也漏不出去（见 store/programs.ts 的文件头）
-  const programsStore = createProgramsStore(pool)
+  // 类型里没有 secret_hash，控制台想漏也漏不出去（见 store/programs.ts 的文件头）。
+  // 实例在上面 accessGate 那里就建好了（阶段 5 · A8 之后判定也要读它）
 
   /**
    * 采集清单（`worker/visibility.ts`）要批量的会议元数据。正主就是 T1 的
@@ -160,6 +171,11 @@ async function main(): Promise<void> {
         '连通探测与「立即清理已到期」会相应降级（详见 http/handlers/console/storage.ts）',
     )
   }
+  // 定时任务的读写侧。**一个实例给两处用**：AppDeps.jobs（定时任务页）与
+  // 下面 StorageDeps.jobFailures（归档存储页的「归档失败 N 场」，阶段 5 · A8）。
+  // 各建一个不会出错，但会让「两个页面上的失败数是不是同一个来源」变成一句
+  // 要去核对的话
+  const jobsStore = createJobsStore(pool)
   const storage: StorageDeps = {
     nasRoot: nasRoot === '' ? null : nasRoot,
     // 容量与连通只有这一个来源。handler 里绝不另跑 statfs，否则控制台看到的数字
@@ -178,6 +194,9 @@ async function main(): Promise<void> {
             // 确认，不去伪造这个常量
             execute: (t) => executeCleanup({ archives: archivesStore, localRoot: localArchiveRoot }, t, true),
           },
+    // spec §4.9 的「归档失败」计数（阶段 5 · A8）。与定时任务页读的是同一张
+    // job_failures、同一个实例
+    jobFailures: jobsStore,
   }
 
   // 控制台的会议查询（阶段 4 · T5，A2）。
@@ -240,7 +259,7 @@ async function main(): Promise<void> {
     // 网关是多实例的，四个任务各跑 N 份意味着 N 个实例同时对同一批本地文件
     // 执行不可逆删除。
     jobs: {
-      jobs: createJobsStore(pool),
+      jobs: jobsStore,
       audit: auditStore,
       // **必须与调度器进程用同一个值**，两处读的是同一个环境变量。
       // 配得不一样时「下次运行」会比真实时刻差几个小时，而且不报任何错。

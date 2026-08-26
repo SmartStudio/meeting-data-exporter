@@ -63,7 +63,7 @@
 import type { AssetKey } from '@yaowu/mde-engine'
 import type { RouteCtx } from '../../router'
 import { json, readJson } from '../../respond'
-import { requireAdminAuth } from '../../middleware'
+import { requireAdminAuth, requireAdminWrite } from '../../middleware'
 import type { AdminIdentity } from '../../../auth/admin'
 import { generateServiceSecret, hashServiceSecret } from '../../../auth/service'
 import { buildAuditDetail } from '../../../store/audit'
@@ -238,7 +238,7 @@ interface CreateProgramBody {
  * 丢了不能找回，只能轮换——这一点前端要在向导的最后一步说清楚。
  */
 export async function createProgram(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const body = await readJson<CreateProgramBody>(req)
@@ -299,6 +299,121 @@ export async function createProgram(req: Request, ctx: RouteCtx): Promise<Respon
     /** 明文凭据。**只有这一次**——库里只存哈希，服务端此后无从还原 */
     secret,
     secretShownOnce: true,
+    // 阶段 5 · A8：与轮换那条端点共用同一句话，见 SECRET_SHOWN_ONCE_NOTE
+    secretNote: SECRET_SHOWN_ONCE_NOTE,
+  })
+}
+
+/**
+ * 明文凭据只出现这一次，响应里必须把这件事说出来（阶段 5 · A8）。
+ *
+ * 建号与轮换两条路径共用同一句话：它们给出的是同一种东西，说法不一致会让
+ * 对接方以为其中一条另有找回的办法。**没有任何"再看一次"的端点**——
+ * 有的话就等于把哈希存储的意义整个抵消掉。
+ */
+const SECRET_SHOWN_ONCE_NOTE =
+  '这是唯一一次能看到这个凭据明文的机会：服务端只存哈希，此后无从还原。' +
+  '现在就把它存进对接方的密钥管理里——丢了不能找回，只能再轮换一次（旧凭据会当场失效）。'
+
+interface PatchProgramBody {
+  enabled?: unknown
+}
+
+/**
+ * 停用 / 启用一个采集程序（spec §11 缺口 4）。
+ *
+ * ## 停用之后，它已有的授权怎么办：保留
+ *
+ * 计划 §11.2 的裁定，理由是**停用是一个可逆动作**。连带删授权会让「停用再启用」
+ * 变成一次不可逆的数据丢失——几十场逐会议授权删掉之后没有任何地方可以恢复，
+ * 而管理员按下「停用」时想表达的是「先别取了」，不是「把我配了一下午的授权清掉」。
+ *
+ * 「停用之后确实取不到数据」由 `src/policy/access.ts` 保证：AccessGate 在读规则
+ * **和改写**之前就因 `enabled = 0` 拒绝。这一条必须在那一层，不能只靠
+ * `auth/service.ts` 的登录校验——那里只挡「拿凭据换令牌」，而**已经签发出去的
+ * 访问令牌在停用之后仍然有效到自然过期**。只挡登录，等于「停用」这个按钮在
+ * 最长一个令牌生命周期内什么都没做。
+ */
+export async function patchProgram(req: Request, ctx: RouteCtx): Promise<Response> {
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
+  if (!auth.ok) return auth.response
+
+  const id = ctx.params.id!
+  const body = await readJson<PatchProgramBody>(req)
+  if (body === null) return json(400, { error: 'invalid_json' })
+  // 只认真正的布尔值。`"false"` / `0` / `undefined` 一律 400——把它们各自
+  // 折成某一侧，就会出现「点了停用、程序还在取数据」而且没有任何报错
+  if (typeof body.enabled !== 'boolean') {
+    return json(400, { error: 'invalid_enabled', hint: 'enabled 必须是 true 或 false' })
+  }
+  const enabled = body.enabled
+
+  const before = await ctx.deps.programs.find(id)
+  if (before === null) return json(404, { error: 'program_not_found' })
+
+  const changed = await ctx.deps.programs.setEnabled(id, enabled)
+  // find 到 setEnabled 之间被别人删掉了。不能当成改成功
+  if (!changed) return json(404, { error: 'program_not_found' })
+
+  await recordAdminWrite(ctx, auth.identity, {
+    action: enabled ? 'enable_program' : 'disable_program',
+    meetingId: null,
+    target: id,
+    subMeetingId: '',
+    detail: enabled
+      ? `启用采集程序 ${before.name}——它此前的逐会议授权一直保留着，现在重新生效`
+      : `停用采集程序 ${before.name}。已有授权保留（停用可逆），但采集判定一律拒绝，` +
+        `包括已经签发、还没过期的访问令牌`,
+  })
+
+  // 回显写后重读的真值，而不是回显请求体：前端照它更新卡片，
+  // 回显请求体等于让界面显示「我以为写进去的东西」
+  const after = await ctx.deps.programs.find(id)
+  return json(200, after ?? { id, enabled })
+}
+
+/**
+ * 轮换一个采集程序的凭据（spec §11 缺口 4）。
+ *
+ * **新凭据只在这一次响应里出现**，库里只存 argon2id 哈希——与建号那条路径逐字
+ * 一致（两处共用 `src/auth/service.ts` 的 `generateServiceSecret` /
+ * `hashServiceSecret`，那个文件里就是校验凭据的地方，产出与校验因此不可能各用一套）。
+ *
+ * **旧凭据当场失效**，这是轮换的全部意义。所以它不是一个可以随手点的按钮：
+ * 对接方那边的定时任务会在下一次换令牌时开始 401，前端必须在按下之前说清这件事。
+ *
+ * 轮换**不改 `enabled`**：给一个停用中的程序轮换凭据，它仍然是停用的。
+ */
+export async function rotateProgramSecret(req: Request, ctx: RouteCtx): Promise<Response> {
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
+  if (!auth.ok) return auth.response
+
+  const id = ctx.params.id!
+  const program = await ctx.deps.programs.find(id)
+  if (program === null) return json(404, { error: 'program_not_found' })
+
+  const secret = generateServiceSecret()
+  const rotated = await ctx.deps.programs.rotateSecret(id, await hashServiceSecret(secret))
+  if (!rotated) return json(404, { error: 'program_not_found' })
+
+  await recordAdminWrite(ctx, auth.identity, {
+    action: 'rotate_program_secret',
+    meetingId: null,
+    target: id,
+    subMeetingId: '',
+    // 明文与它的任何片段都不进审计。这一行要回答的是「谁在什么时候换的」，
+    // 不是「换成了什么」
+    detail: `轮换采集程序 ${program.name} 的凭据，旧凭据即刻失效`,
+  })
+
+  return json(200, {
+    id,
+    name: program.name,
+    rotatedAt: ctx.deps.now(),
+    /** 明文凭据。**只有这一次**——库里只存哈希，服务端此后无从还原 */
+    secret,
+    secretShownOnce: true,
+    secretNote: SECRET_SHOWN_ONCE_NOTE,
   })
 }
 
@@ -408,7 +523,7 @@ interface GrantBody {
 }
 
 export async function grantMeeting(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const body = await readJson<GrantBody>(req)
@@ -457,7 +572,7 @@ export async function grantMeeting(req: Request, ctx: RouteCtx): Promise<Respons
 }
 
 export async function revokeGrant(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const meetingId = ctx.params.meetingId ?? ''
@@ -495,7 +610,7 @@ interface OverrideBody {
  * `kind` 与 `effect` **原样递给 store**，这一层不判合法值，理由见文件头第三节。
  */
 export async function putOverride(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const body = await readJson<OverrideBody>(req)
@@ -541,7 +656,7 @@ export async function putOverride(req: Request, ctx: RouteCtx): Promise<Response
 }
 
 export async function revokeOverride(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const meetingId = ctx.params.meetingId ?? ''

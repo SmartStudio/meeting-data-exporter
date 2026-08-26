@@ -18,6 +18,8 @@ import type { AssetKey } from '@yaowu/mde-engine'
 import {
   listPrograms,
   createProgram,
+  patchProgram,
+  rotateProgramSecret,
   programInventory,
   grantMeeting,
   revokeGrant,
@@ -40,7 +42,7 @@ import type { RowDataPacket } from 'mysql2/promise'
 import { withTestDb } from '../helpers/testdb'
 import { buildTestApp, insertPolicyRule } from './testApp'
 
-const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice', role: 'admin' }
 const DAY = 86_400
 /** 2026-06-01T00:00:00Z——整数秒，好让每个到期时刻都能心算复核 */
 const NOW = Date.UTC(2026, 5, 1) / 1000
@@ -127,6 +129,10 @@ interface Rig {
   writes: { grant: unknown[]; revoke: unknown[]; putOverride: unknown[]; revokeOverride: unknown[] }
   /** programs.create 收到的入参（凭据哈希在这里被截获） */
   created: Parameters<ProgramsStore['create']>[0][]
+  /** programs.setEnabled 收到的入参（阶段 5 · A8） */
+  enabledCalls: Array<{ id: string; enabled: boolean }>
+  /** programs.rotateSecret 收到的入参——新凭据的哈希在这里被截获（阶段 5 · A8） */
+  rotateCalls: Array<{ id: string; secretHash: string }>
 }
 
 interface Fixture {
@@ -150,6 +156,8 @@ function rig(f: Fixture = {}): Rig {
   const audits: AuditEntry[] = []
   const writes: Rig['writes'] = { grant: [], revoke: [], putOverride: [], revokeOverride: [] }
   const created: Parameters<ProgramsStore['create']>[0][] = []
+  const enabledCalls: Rig['enabledCalls'] = []
+  const rotateCalls: Rig['rotateCalls'] = []
 
   const has = (
     keys: readonly { meetingId: string; subMeetingId: string }[],
@@ -174,6 +182,19 @@ function rig(f: Fixture = {}): Rig {
     async create(input) {
       created.push(input)
       return f.createReturns ?? true
+    },
+    async setEnabled(id, enabled) {
+      const target = (f.programs ?? []).find((p) => p.id === id)
+      if (target === undefined) return false
+      // 原地改：后面 handler 会写后重读一次，读到的必须是改过的值
+      target.enabled = enabled
+      enabledCalls.push({ id, enabled })
+      return true
+    },
+    async rotateSecret(id, secretHash) {
+      if (!(f.programs ?? []).some((p) => p.id === id)) return false
+      rotateCalls.push({ id, secretHash })
+      return true
     },
   }
 
@@ -266,7 +287,14 @@ function rig(f: Fixture = {}): Rig {
     },
   }
 
-  return { ctx: { params: f.params ?? {}, deps: deps as unknown as AppDeps }, audits, writes, created }
+  return {
+    ctx: { params: f.params ?? {}, deps: deps as unknown as AppDeps },
+    audits,
+    writes,
+    created,
+    enabledCalls,
+    rotateCalls,
+  }
 }
 
 function req(method: string, path: string, body?: unknown, loggedIn = true): Request {
@@ -1053,4 +1081,194 @@ test('T13：subject 是 NULL 的会议不会被低优先级的 allow 规则放�
   } finally {
     await cleanup()
   }
+})
+
+
+// ── PATCH /api/v1/admin/programs/:id —— 停用 / 启用（阶段 5 · A8，spec §11 缺口 4）──
+
+test('patchProgram 未登录返回 401，且一行都不写', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    anon('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { enabled: false }),
+    r.ctx,
+  )
+  expect(res.status).toBe(401)
+  expect(r.enabledCalls).toEqual([])
+})
+
+test('patchProgram 对不存在的程序返回 404，不写任何一行', async () => {
+  const r = rig({ params: { id: 'nope' }, programs: [program()] })
+  const res = await patchProgram(req('PATCH', '/api/v1/admin/programs/nope', { enabled: false }), r.ctx)
+  expect(res.status).toBe(404)
+  expect(await res.json()).toMatchObject({ error: 'program_not_found' })
+  expect(r.enabledCalls).toEqual([])
+  expect(r.audits).toEqual([])
+})
+
+test('patchProgram 的 enabled 必须是真布尔值——"false" / 0 / 缺省一律 400', async () => {
+  // 把它们各自折成某一侧，就会出现「点了停用、程序还在取数据」而且没有任何报错
+  for (const body of [{}, { enabled: 'false' }, { enabled: 0 }, { enabled: null }]) {
+    const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+    const res = await patchProgram(req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, body), r.ctx)
+    expect({ body, status: res.status }).toEqual({ body, status: 400 })
+    expect(r.enabledCalls).toEqual([])
+  }
+})
+
+test('patchProgram 停用：写库、回显写后重读的真值、记审计', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { enabled: false }),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  expect(r.enabledCalls).toEqual([{ id: PROGRAM, enabled: false }])
+  // 回显的是重读的结果，不是请求体——回显请求体等于让界面显示「我以为写进去的东西」
+  expect((await res.json()) as Record<string, unknown>).toMatchObject({ id: PROGRAM, enabled: false })
+
+  expect(r.audits).toHaveLength(1)
+  expect(r.audits[0]).toMatchObject({
+    actorType: 'admin',
+    actorId: 'admin-1',
+    action: 'disable_program',
+    assetId: PROGRAM,
+    decision: 'allow',
+    clientKind: 'console',
+  })
+  // 「授权保留」这条裁定要能从审计里读出来——否则事后没人说得清停用当时发生了什么
+  expect(r.audits[0]!.detail).toContain('授权保留')
+})
+
+test('patchProgram 启用：动作名与停用分得开（审计页要按动作筛选）', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program({ enabled: false })] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { enabled: true }),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  expect(r.enabledCalls).toEqual([{ id: PROGRAM, enabled: true }])
+  expect(r.audits[0]).toMatchObject({ action: 'enable_program' })
+})
+
+test('patchProgram 停用不碰任何授权——停用可逆，连带删授权会让「停用再启用」变成不可逆的数据丢失', async () => {
+  const r = rig({
+    params: { id: PROGRAM },
+    programs: [program()],
+    grants: [grant('m-1'), grant('m-2')],
+  })
+  await patchProgram(req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { enabled: false }), r.ctx)
+  expect(r.writes.revoke).toEqual([])
+  expect(r.writes.revokeOverride).toEqual([])
+})
+
+// ── POST /api/v1/admin/programs/:id/rotate-secret（阶段 5 · A8）──────────
+
+test('rotateProgramSecret 未登录返回 401，且不生成新凭据', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await rotateProgramSecret(
+    anon('POST', `/api/v1/admin/programs/${PROGRAM}/rotate-secret`),
+    r.ctx,
+  )
+  expect(res.status).toBe(401)
+  expect(r.rotateCalls).toEqual([])
+})
+
+test('rotateProgramSecret 对不存在的程序返回 404，不写任何一行', async () => {
+  const r = rig({ params: { id: 'nope' }, programs: [program()] })
+  const res = await rotateProgramSecret(req('POST', '/api/v1/admin/programs/nope/rotate-secret'), r.ctx)
+  expect(res.status).toBe(404)
+  expect(r.rotateCalls).toEqual([])
+  expect(r.audits).toEqual([])
+})
+
+test('rotateProgramSecret：明文只在这一次响应里出现，库里收到的是哈希', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await rotateProgramSecret(
+    req('POST', `/api/v1/admin/programs/${PROGRAM}/rotate-secret`),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  const body = (await res.json()) as { secret: string; secretShownOnce: boolean; secretNote: string }
+
+  expect(typeof body.secret).toBe('string')
+  expect(body.secret.length).toBeGreaterThan(20)
+  expect(body.secretShownOnce).toBe(true)
+  // 响应里要说清「这是唯一一次能看到它的机会」——不说的话，对接方会以为
+  // 总有个地方能再查一遍，于是不存
+  expect(body.secretNote).toContain('唯一一次')
+
+  expect(r.rotateCalls).toHaveLength(1)
+  const stored = r.rotateCalls[0]!.secretHash
+  expect(stored).not.toBe(body.secret)
+  expect(stored).not.toContain(body.secret)
+  expect(stored.startsWith('$argon2')).toBe(true)
+})
+
+test('rotateProgramSecret 给出的新凭据真能通过 ServiceAuth 的校验（产出与校验同源）', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await rotateProgramSecret(
+    req('POST', `/api/v1/admin/programs/${PROGRAM}/rotate-secret`),
+    r.ctx,
+  )
+  const { secret } = (await res.json()) as { secret: string }
+  const stored = r.rotateCalls[0]!.secretHash
+
+  const account: ServiceAccount = {
+    id: PROGRAM,
+    name: '知识库索引器',
+    secretHash: stored,
+    tmUserId: 'tm-001',
+    enabled: true,
+    expiresAt: null,
+    createdAt: NOW - 100 * DAY,
+  }
+  const serviceAuth = createServiceAuth({ store: { async findServiceAccount() { return account } } })
+  const identity = await serviceAuth.authenticate(PROGRAM, secret, NOW)
+  expect(identity.programId).toBe(PROGRAM)
+  // 轮换之后旧凭据当场失效——这正是轮换的全部意义
+  await expect(serviceAuth.authenticate(PROGRAM, 'the-old-secret', NOW)).rejects.toThrow()
+})
+
+test('rotateProgramSecret 记审计，且审计里绝不出现明文凭据', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await rotateProgramSecret(
+    req('POST', `/api/v1/admin/programs/${PROGRAM}/rotate-secret`),
+    r.ctx,
+  )
+  const { secret } = (await res.json()) as { secret: string }
+
+  expect(r.audits).toHaveLength(1)
+  expect(r.audits[0]).toMatchObject({
+    actorType: 'admin',
+    actorId: 'admin-1',
+    action: 'rotate_program_secret',
+    assetId: PROGRAM,
+    decision: 'allow',
+    clientKind: 'console',
+  })
+  expect(JSON.stringify(r.audits)).not.toContain(secret)
+  // 片段也不行：审计日志的读者比凭据的读者多得多
+  expect(JSON.stringify(r.audits)).not.toContain(secret.slice(0, 8))
+})
+
+test('rotateProgramSecret 不改 enabled——给一个停用中的程序换凭据，它仍然是停用的', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program({ enabled: false })] })
+  const res = await rotateProgramSecret(
+    req('POST', `/api/v1/admin/programs/${PROGRAM}/rotate-secret`),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  expect(r.enabledCalls).toEqual([])
+})
+
+test('建号那条路径也带上同一句「只有这一次」的说明（两处说法不一致会让人以为其中一条另有找回的办法）', async () => {
+  const r = rig()
+  const res = await createProgram(
+    req('POST', '/api/v1/admin/programs', { id: 'new-prog', name: '新程序', tmUserId: 'tm-9' }),
+    r.ctx,
+  )
+  expect(res.status).toBe(201)
+  const body = (await res.json()) as { secretNote: string; secretShownOnce: boolean }
+  expect(body.secretShownOnce).toBe(true)
+  expect(body.secretNote).toContain('唯一一次')
 })

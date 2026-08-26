@@ -42,6 +42,17 @@ export const JOB_NAMES = [
 export type JobName = (typeof JOB_NAMES)[number]
 
 /**
+ * 归档任务的名字，单独导出（阶段 5 · A8）。
+ *
+ * 它有两个跨模块的消费方：写侧是 worker 的归档轮（往 `job_failures` 落行），
+ * 读侧是 `handlers/console/storage.ts` 的「归档失败 N 场」（spec §4.9 的第三个数）。
+ * 两处各写一个 `'archive_nas'` 字面量的话，哪天任务改名，写侧照常记账、
+ * 读侧照常返回 0——界面上显示「一场都没失败」，没有任何东西会报错。
+ * 与 `ACTION_EXTEND_RETENTION`（store/audit.ts）是同一个先例。
+ */
+export const JOB_ARCHIVE_NAS: JobName = 'archive_nas'
+
+/**
  * 触发频率。三种形状覆盖 spec §4.8 的四个任务，**不做通用 cron 表达式**：
  * cron 的表达力这里一条都用不上，而它换来的是一个要自己写解析器与夏令时语义的东西。
  */

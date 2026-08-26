@@ -178,6 +178,16 @@ type Handler = (req: Request, ctx: RouteCtx) => Promise<Response>
 
 interface Route {
   method: string
+  /**
+   * 声明时那个带 `:param` 的原始路径。
+   *
+   * 编译成正则之后就再也还原不出它了，而**有一条测试要遍历这张表**
+   * （`tests/http/console-readonly.test.ts`：每一条非 GET 的 admin 路由都必须
+   * 挡住只读账号）。把路径留在这里，是为了让那条测试**自动覆盖将来新增的端点**
+   * ——靠人在评审时一条条数是数不住的，而漏掉一条的表现是一个只读账号能改规则，
+   * 不会有任何报错。
+   */
+  path: string
   pattern: RegExp
   keys: string[]
   handler: Handler
@@ -196,7 +206,7 @@ function compile(method: string, path: string, handler: Handler): Route {
       return segment
     })
     .join('/')
-  return { method, pattern: new RegExp(`^${pattern}$`), keys, handler }
+  return { method, path, pattern: new RegExp(`^${pattern}$`), keys, handler }
 }
 
 const ROUTES: Route[] = [
@@ -225,6 +235,9 @@ const ROUTES: Route[] = [
   compile('POST', '/api/v1/admin/auth/login', consoleAuthHandlers.login),
   compile('POST', '/api/v1/admin/auth/logout', consoleAuthHandlers.logout),
   compile('GET', '/api/v1/admin/auth/me', consoleAuthHandlers.me),
+  // 修改密码（阶段 5 · A8，spec §11 缺口 5）。改的永远是当前会话对应的账号，
+  // 路径上没有 :id——见 handlers/console/auth.ts 的 changePassword
+  compile('POST', '/api/v1/admin/auth/password', consoleAuthHandlers.changePassword),
   compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
   compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
   compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
@@ -235,6 +248,11 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/programs', consoleGrantsHandlers.listPrograms),
   compile('POST', '/api/v1/admin/programs', consoleGrantsHandlers.createProgram),
   compile('GET', '/api/v1/admin/programs/:id/inventory', consoleGrantsHandlers.programInventory),
+  // 停用 / 启用与轮换凭据（阶段 5 · A8，spec §11 缺口 4）。
+  // `/:id` 与 `/:id/rotate-secret` 段数不同，compile 出来的 `[^/]+` 不跨段，
+  // 与上面那条 `/:id/inventory` 三者互不相吃
+  compile('PATCH', '/api/v1/admin/programs/:id', consoleGrantsHandlers.patchProgram),
+  compile('POST', '/api/v1/admin/programs/:id/rotate-secret', consoleGrantsHandlers.rotateProgramSecret),
   compile('POST', '/api/v1/admin/meetings/:meetingId/grants', consoleGrantsHandlers.grantMeeting),
   compile('DELETE', '/api/v1/admin/meetings/:meetingId/grants/:programId', consoleGrantsHandlers.revokeGrant),
   compile('PUT', '/api/v1/admin/meetings/:meetingId/override', consoleGrantsHandlers.putOverride),
@@ -276,6 +294,20 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/jobs', consoleJobsHandlers.listJobs),
   compile('POST', '/api/v1/admin/jobs/:name/run', consoleJobsHandlers.runJob),
 ]
+
+/**
+ * 路由表的只读投影（方法 + 声明路径），供测试遍历。
+ *
+ * 导出的是一份拷贝而不是 `ROUTES` 本身：handler 引用不该跨出这个模块，
+ * 而遍历者要的只有「有哪些端点」。
+ *
+ * 唯一的消费方是 `tests/http/console-readonly.test.ts`，它靠这张表保证
+ * 「每一条非 GET 的 admin 端点都挡得住只读账号」这句话对**将来新增的端点**
+ * 也成立。见 Route.path 的注释。
+ */
+export function listRoutes(): readonly { method: string; path: string }[] {
+  return ROUTES.map((r) => ({ method: r.method, path: r.path }))
+}
 
 /**
  * 依赖企业微信的路由。企微未配置（`deps.wecomClient === null`）时统一返回 501。

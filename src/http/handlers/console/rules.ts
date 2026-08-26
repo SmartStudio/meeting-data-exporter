@@ -92,7 +92,7 @@ import {
   type HandKind,
 } from '../../../store/console-meetings'
 import { PolicyRuleInvalid, type AdminRule, type RuleDraft, type RulePatch } from '../../../store/policy'
-import { requireAdminAuth } from '../../middleware'
+import { requireAdminAuth, requireAdminWrite } from '../../middleware'
 import { json, readJson } from '../../respond'
 import type { RouteCtx } from '../../router'
 
@@ -303,7 +303,7 @@ export async function listRules(req: Request, ctx: RouteCtx): Promise<Response> 
 // ── 端点：写 ──────────────────────────────────────────────────────────────
 
 export async function createRule(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const body = await readJson<Body>(req)
@@ -341,7 +341,7 @@ export async function createRule(req: Request, ctx: RouteCtx): Promise<Response>
 }
 
 export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const id = parseRuleId(ctx.params.id)
@@ -414,7 +414,7 @@ export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> 
 }
 
 export async function deleteRule(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const id = parseRuleId(ctx.params.id)
@@ -696,7 +696,7 @@ function stoppedFetching(
  *   规则编辑器一次只编一条，这个写法省得前端把整份规则回传一遍
  */
 export async function previewRules(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const body = await readJson<Body>(req)

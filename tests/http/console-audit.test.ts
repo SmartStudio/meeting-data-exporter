@@ -33,7 +33,7 @@ import { buildTestApp } from './testApp'
 
 const NOW = 1_756_000_000
 const DAY = 86_400
-const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice', role: 'admin' }
 
 function fakeAdminAuth(): AdminAuth {
   return {
@@ -43,6 +43,7 @@ function fakeAdminAuth(): AdminAuth {
     async verifySession() { return ADMIN },
     async revokeSession() { throw new Error('not stubbed') },
     async revokeAllSessionsFor() { throw new Error('not stubbed') },
+    async revokeOtherSessionsFor() { throw new Error('not stubbed') },
   }
 }
 

@@ -36,7 +36,7 @@ import type { RuleCond } from '../../src/policy/conds'
 import type { StackKind } from '../../src/policy/stacks'
 
 const NOW = 1_700_000_000
-const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice', role: 'admin' }
 
 // ── 假依赖 ────────────────────────────────────────────────────────────────
 
@@ -56,6 +56,9 @@ function fakeAdminAuth(verify?: () => Promise<AdminIdentity>): AdminAuth {
       throw new Error('not stubbed')
     },
     async revokeAllSessionsFor() {
+      throw new Error('not stubbed')
+    },
+    async revokeOtherSessionsFor() {
       throw new Error('not stubbed')
     },
   }

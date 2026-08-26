@@ -30,7 +30,7 @@
  */
 import type { RouteCtx } from '../../router'
 import { json } from '../../respond'
-import { requireAdminAuth } from '../../middleware'
+import { requireAdminAuth, requireAdminWrite } from '../../middleware'
 import { buildAuditDetail, type AuditEntry, type AuditStore } from '../../../store/audit'
 import {
   JOB_CATALOG,
@@ -217,7 +217,7 @@ export async function listJobs(req: Request, ctx: RouteCtx): Promise<Response> {
  * 回退意味着管理员按下「拉取新录制」却跑了一次不可逆的到期清理。
  */
 export async function runJob(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const name = ctx.params.name ?? ''
