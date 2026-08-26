@@ -176,17 +176,20 @@ describe('AppShell · 左栏与路由', () => {
     expect(screen.getByRole('link', { name: '采集授权' })).toHaveAttribute('aria-current', 'page')
   })
 
-  test('六个空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
+  test('还没接线的空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
     // `_Placeholder` 在 F0 删掉了：七个页面任务并行开工，每人只碰
     // `pages/<自己>/`，路由表不再有人回来改。空壳仍然不许是白页——
     // 演示时白页看起来像坏了。
+    //
+    // **接线完成的页面要从这张表里划掉**：这一条断言的是「页面上写着由哪个任务
+    // 接线」，而那句话本身就是空壳的标记。留着它等于要求一个已经做好的页面继续
+    // 自称没做好。`/preview/m1`（F6）已接线，见下一条与 tests/pages/Preview.test.tsx。
     const cases: Array<[string, string, string]> = [
       ['/consumers', '采集授权', 'F4'],
       ['/rules', '自动规则', 'F3'],
       ['/jobs', '定时任务', 'F5a'],
       ['/storage', '归档存储', 'F5b'],
       ['/audit', '操作审计', 'F5c'],
-      ['/preview/m1', '内容预览', 'F6'],
     ]
     for (const [path, title, phase] of cases) {
       const { unmount } = renderApp(path)
@@ -194,6 +197,18 @@ describe('AppShell · 左栏与路由', () => {
       expect(screen.getByText(new RegExp(phase))).toBeInTheDocument()
       unmount()
     }
+  })
+
+  test('内容预览页（F6，已接线）在外壳里挂得起来，且仍不占左栏导航', async () => {
+    // 这个文件的 fetch stub 只答登录探测与系统状态两条，内容那三条会抛，
+    // 于是这一页落到它自己的错误态。**这正是要验的**：外壳里挂一个真的会发
+    // 请求的页面，后端不给内容时它照样有 h1、有说得出话的错误态，不是一片白。
+    // 内容本身的行为在 tests/pages/Preview.test.tsx 里测。
+    const { unmount } = renderApp('/preview/m1')
+    expect(await screen.findByRole('heading', { name: '内容预览', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByText(/这场会议的内容读不出来/)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '内容预览' })).not.toBeInTheDocument()
+    unmount()
   })
 
   test('内容区是唯一的 <main>——空壳页自己不再套一个', async () => {

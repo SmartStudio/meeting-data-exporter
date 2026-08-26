@@ -219,9 +219,15 @@ export const ASSET_LABEL: Record<AssetKey, string> = {
   ai_ds_minutes: '会议摘要',
 }
 
-/** 认不出的 `asset_type` 原样显示，不折成「其他」——那会把一个新引擎藏起来。 */
-export function assetLabel(assetKey: AssetKey | null, assetType: string): string {
-  return assetKey === null ? assetType : ASSET_LABEL[assetKey]
+/**
+ * 认不出的 `asset_type` 原样显示，不折成「其他」——那会把一个新引擎藏起来。
+ *
+ * `assetKey` 收 `string | null` 而不是 `AssetKey | null`：`selected.assetKey`
+ * 在契约里就是一个字符串（后端接新引擎时会出现表里没有的取值），传进来查不到
+ * 就退回 `assetType` 原值。
+ */
+export function assetLabel(assetKey: string | null, assetType: string): string {
+  return (assetKey === null ? undefined : ASSET_LABEL[assetKey as AssetKey]) ?? assetType
 }
 
 /**

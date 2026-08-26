@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { fmtDateTime, fmtDuration, fmtBytes, daysLeft, fmtDay } from '../src/lib/format'
+import { fmtDateTime, fmtDuration, fmtBytes, daysLeft, fmtDay, fmtClock } from '../src/lib/format'
 
 describe('format', () => {
   test('fmtDateTime 用本地时区，不补年（同年）', () => {
@@ -64,5 +64,37 @@ describe('format', () => {
     const now = new Date(2026, 7, 23, 8, 0)
     const exp = new Date(2026, 7, 23, 23, 59).getTime() / 1000
     expect(daysLeft(exp, now)).toBe(0)
+  })
+})
+
+/**
+ * `fmtClock` —— 播放位置 / 转写时间戳专用（F6 内容预览页）。
+ *
+ * 它与 `fmtDuration` 是两件事，不能互相顶替：`fmtDuration(65)` 是 `0:01`
+ * （一场 65 秒的会议开了「不到一分钟」），而转写里第 65 秒那一段必须显示
+ * `1:05`。把时长格式套到时间戳上，点开的就是另一个位置。
+ */
+describe('fmtClock（播放位置 / 转写时间戳）', () => {
+  test('一小时以内是 分:秒，秒补零、分不补', () => {
+    expect(fmtClock(0)).toBe('0:00')
+    expect(fmtClock(65)).toBe('1:05')
+    expect(fmtClock(599)).toBe('9:59')
+    expect(fmtClock(600)).toBe('10:00')
+  })
+
+  test('满一小时补出小时段，分秒都补零', () => {
+    expect(fmtClock(3600)).toBe('1:00:00')
+    expect(fmtClock(3661)).toBe('1:01:01')
+    expect(fmtClock(36000)).toBe('10:00:00')
+  })
+
+  test('与 fmtDuration 不是一回事：同一个 65 秒，一个是时长一个是时间戳', () => {
+    expect(fmtDuration(65)).toBe('0:01')
+    expect(fmtClock(65)).toBe('1:05')
+  })
+
+  test('小数按秒向下取整，负数夹到 0——播放位置不存在「负几秒」', () => {
+    expect(fmtClock(65.9)).toBe('1:05')
+    expect(fmtClock(-3)).toBe('0:00')
   })
 })
