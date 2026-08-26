@@ -9,6 +9,8 @@ import {
   putOverride,
   revokeGrant,
   revokeOverride,
+  rotateProgramSecret,
+  setProgramEnabled,
 } from '../../src/api/admin/grants'
 
 interface Call {
@@ -120,7 +122,7 @@ describe('程序（programs）三条', () => {
   })
 
   test('createProgram 不填 expiresAt 时不把这个键发出去（"永不过期" ≠ expiresAt: undefined）', async () => {
-    install(201, { ...PROGRAM, id: 'new-prog', secret: 's3cr3t', secretShownOnce: true })
+    install(201, { ...PROGRAM, id: 'new-prog', secret: 's3cr3t', secretShownOnce: true, secretNote: '这是唯一一次能看到它的机会。' })
     const got = await createProgram({ id: 'new-prog', name: '新程序', tmUserId: 'tm-9' })
     expect(calls[0]!.init.method).toBe('POST')
     expect(sentBody()).toEqual({ id: 'new-prog', name: '新程序', tmUserId: 'tm-9' })
@@ -129,7 +131,7 @@ describe('程序（programs）三条', () => {
   })
 
   test('createProgram 填了 expiresAt 就带上', async () => {
-    install(201, { ...PROGRAM, expiresAt: 1800000000, secret: 'x', secretShownOnce: true })
+    install(201, { ...PROGRAM, expiresAt: 1800000000, secret: 'x', secretShownOnce: true, secretNote: '只此一次。' })
     await createProgram({ id: 'p', name: 'n', tmUserId: 't', expiresAt: 1800000000 })
     expect(sentBody()).toMatchObject({ expiresAt: 1800000000 })
   })
@@ -152,6 +154,84 @@ describe('程序（programs）三条', () => {
     expect(got.fetchable[0]!.decision?.ruleId).toBe(100)
     expect(got.blocked[0]!.decision).toBeNull()
     expect(got.blocked[0]!.blockers[0]!.code).toBe('local_purged')
+  })
+
+  test('createProgram 读 secretNote——建号与轮换要说同一句话', async () => {
+    install(201, {
+      ...PROGRAM,
+      secret: 's',
+      secretShownOnce: true,
+      secretNote: '这是唯一一次能看到这个凭据明文的机会。',
+    })
+    const got = await createProgram({ id: 'p', name: 'n', tmUserId: 't' })
+    expect(got.secretNote).toBe('这是唯一一次能看到这个凭据明文的机会。')
+  })
+})
+
+describe('停用 / 启用（PATCH /programs/:id）', () => {
+  test('发的是 PATCH，请求体只有一个真布尔 enabled', async () => {
+    install(200, { ...PROGRAM, enabled: false })
+    const got = await setProgramEnabled('kb-indexer', false)
+    expect(calls[0]!.url).toBe('/api/v1/admin/programs/kb-indexer')
+    expect(calls[0]!.init.method).toBe('PATCH')
+    expect(sentBody()).toEqual({ enabled: false })
+    // 写后重读的完整 ServiceProgram，不是一个 { ok: true }
+    expect(got.enabled).toBe(false)
+    expect(got.name).toBe('知识库索引器')
+  })
+
+  test('程序 id 走 encodeURIComponent', async () => {
+    install(200, PROGRAM)
+    await setProgramEnabled('a/b c', true)
+    expect(calls[0]!.url).toBe('/api/v1/admin/programs/a%2Fb%20c')
+  })
+
+  test('404 原样带着后端的错误码抛出来', async () => {
+    install(404, { error: 'program_not_found' })
+    const err = (await setProgramEnabled('nope', false).catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(404)
+    expect(err.body).toEqual({ error: 'program_not_found' })
+  })
+
+  test('响应缺 enabled 时抛形状错误，不当成"停用成功"', async () => {
+    const { enabled: _drop, ...withoutEnabled } = PROGRAM
+    install(200, withoutEnabled)
+    await expect(setProgramEnabled('kb-indexer', false)).rejects.toBeInstanceOf(ApiShapeError)
+  })
+})
+
+describe('轮换凭据（POST /programs/:id/rotate-secret）', () => {
+  const ROTATED = {
+    id: 'kb-indexer',
+    name: '知识库索引器',
+    rotatedAt: 1700000000,
+    secret: 'new-plaintext',
+    secretShownOnce: true,
+    secretNote: '这是唯一一次能看到这个凭据明文的机会：服务端只存哈希。',
+  }
+
+  test('发的是 POST，且没有请求体', async () => {
+    install(200, ROTATED)
+    const got = await rotateProgramSecret('kb-indexer')
+    expect(calls[0]!.url).toBe('/api/v1/admin/programs/kb-indexer/rotate-secret')
+    expect(calls[0]!.init.method).toBe('POST')
+    expect(calls[0]!.init.body).toBeUndefined()
+    expect(got.secret).toBe('new-plaintext')
+    expect(got.secretNote).toContain('唯一一次')
+  })
+
+  test('缺 secret 时抛形状错误——绝不给一个空串当凭据', async () => {
+    const { secret: _drop, ...withoutSecret } = ROTATED
+    install(200, withoutSecret)
+    await expect(rotateProgramSecret('kb-indexer')).rejects.toBeInstanceOf(ApiShapeError)
+  })
+
+  test('403 只读角色照常抛出来（前端禁用了按钮不代表这条路径不会被走到）', async () => {
+    install(403, { error: 'readonly_role', message: '这个账号是只读角色。' })
+    const err = (await rotateProgramSecret('kb-indexer').catch((e: unknown) => e)) as ApiError
+    expect(err.status).toBe(403)
+    expect(err.message).toBe('这个账号是只读角色。')
   })
 })
 

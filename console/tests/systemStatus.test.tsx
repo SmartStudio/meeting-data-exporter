@@ -105,7 +105,7 @@ function install(backend: Backend): void {
       const url = String(input)
       seen.push(url)
       if (url.endsWith('/api/v1/admin/auth/me')) {
-        return jsonOf({ adminId: 'admin-1', username: 'chen.yw' })
+        return jsonOf({ adminId: 'admin-1', username: 'chen.yw', role: 'admin' })
       }
       if (url.endsWith('/api/v1/admin/storage')) {
         return (backend.storage ?? (() => jsonOf(storagePayload())))()

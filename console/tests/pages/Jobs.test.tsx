@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { TENCENT_DOWN_STREAK, fetchStreakText } from '../../src/api/admin/health'
 import JobsPage from '../../src/pages/Jobs'
@@ -416,5 +417,33 @@ describe('「新建任务」按钮已删（裁定 G-g）', () => {
     await screen.findAllByTestId('job-card')
     expect(screen.queryByRole('button', { name: /新建任务/ })).toBeNull()
     expect(screen.queryByText(/新建任务/)).toBeNull()
+  })
+})
+
+describe('只读账号（spec §11 缺口 1）', () => {
+  test('「立即运行」禁用而不是消失，并且说得出为什么', async () => {
+    stubApi(payload())
+    renderAsRole(<JobsPage />, 'readonly')
+    const btns = await screen.findAllByRole('button', { name: '立即运行' })
+    expect(btns).toHaveLength(4)
+    for (const b of btns) {
+      expect(b).toBeDisabled()
+      expect(b).toHaveAttribute('title', '只读账号不能改')
+    }
+  })
+
+  test('页头有一句说明，不用把鼠标停在按钮上才知道', async () => {
+    stubApi(payload())
+    renderAsRole(<JobsPage />, 'readonly')
+    await screen.findAllByTestId('job-card')
+    expect(screen.getByTestId('readonly-banner')).toHaveTextContent('只读角色')
+  })
+
+  test('管理员这一侧不受影响：按钮能点', async () => {
+    stubApi(payload())
+    render(<JobsPage />)
+    const btns = await screen.findAllByRole('button', { name: '立即运行' })
+    expect(btns[0]).toBeEnabled()
+    expect(screen.queryByTestId('readonly-banner')).toBeNull()
   })
 })

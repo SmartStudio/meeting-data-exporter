@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { listPrograms } from '@/api/admin/grants'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { useResource } from '@/lib/useResource'
 import { Button } from '@/ui/Button'
 import { PageShell } from '@/ui/PageShell'
@@ -28,6 +29,7 @@ export default function ConsumersPage() {
   // 挂载时冻结一次。同一屏里"剩 N 天"要按同一个此刻算，不能一个卡片一个时钟。
   const [now] = useState(() => new Date())
   const [wizardOpen, setWizardOpen] = useState(false)
+  const readonly = useReadonly()
   const res = useResource(() => listPrograms(), [])
 
   return (
@@ -35,7 +37,12 @@ export default function ConsumersPage() {
       title="采集授权"
       description="外部程序按会议逐个授权。程序真正能取到 = 有授权 且 在保留期内 且 规则允许采集，三个条件缺一不可，且分别在三个页面上维护。"
       actions={
-        <Button variant="primary" onClick={() => setWizardOpen(true)}>
+        <Button
+          variant="primary"
+          onClick={() => setWizardOpen(true)}
+          disabled={readonly}
+          title={readonlyTitle(readonly)}
+        >
           接入新程序
         </Button>
       }
@@ -76,7 +83,7 @@ export default function ConsumersPage() {
         ) : (
           <ul className={styles.cards}>
             {res.data.map((p) => (
-              <ProgramCard key={p.id} program={p} now={now} />
+              <ProgramCard key={p.id} program={p} now={now} onChanged={res.retry} />
             ))}
           </ul>
         ))}

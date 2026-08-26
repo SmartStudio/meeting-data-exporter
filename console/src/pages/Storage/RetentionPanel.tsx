@@ -1,3 +1,4 @@
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
 import type { PillTone } from '@/ui/Pill'
@@ -73,6 +74,9 @@ export function RetentionPanel(props: RetentionPanelProps) {
   const { retention: r, busy, onTogglePause, onEditDays, onExport, onCleanup } = props
   const d = describeDefaultDays(r)
   const anyBusy = busy !== null
+  // 「导出可采集清单」不在其中：它是一条 GET，只读账号本来就该能导。
+  const readonly = useReadonly()
+  const roTitle = readonlyTitle(readonly)
 
   return (
     <section className={styles.panel} aria-labelledby="storage-retention-title">
@@ -121,13 +125,19 @@ export function RetentionPanel(props: RetentionPanelProps) {
       </p>
 
       <div className={styles.actions}>
-        <Button onClick={onEditDays} disabled={anyBusy}>
+        <Button onClick={onEditDays} disabled={anyBusy || readonly} title={roTitle}>
           修改默认保留天数
         </Button>
         <Button variant="quiet" onClick={onExport} disabled={anyBusy} aria-busy={busy === 'export'}>
           导出可采集清单
         </Button>
-        <Button variant="quiet" onClick={onCleanup} disabled={anyBusy} aria-busy={busy === 'cleanup'}>
+        <Button
+          variant="quiet"
+          onClick={onCleanup}
+          disabled={anyBusy || readonly}
+          title={roTitle}
+          aria-busy={busy === 'cleanup'}
+        >
           立即清理已到期文件
         </Button>
         {/* 暂停开关与它的状态摆在一起。文案随状态换，但按钮名字本身就是它要做的事，
@@ -135,7 +145,8 @@ export function RetentionPanel(props: RetentionPanelProps) {
         <Button
           variant={r.cleanupPaused ? 'primary' : 'warn'}
           onClick={onTogglePause}
-          disabled={anyBusy}
+          disabled={anyBusy || readonly}
+          title={roTitle}
           aria-busy={busy === 'pause'}
         >
           {r.cleanupPaused ? '恢复到期清理' : '暂停到期清理'}

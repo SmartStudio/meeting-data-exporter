@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { READONLY_WHY, useReadonly } from '@/app/session'
 import styles from './PageShell.module.css'
 
 export interface PageShellProps {
@@ -24,6 +25,7 @@ export interface PageShellProps {
  */
 export function PageShell({ title, description, actions, children }: PageShellProps) {
   const titleId = `page-title-${title}`
+  const readonly = useReadonly()
   return (
     <section className={styles.page} aria-labelledby={titleId}>
       <header className={styles.head}>
@@ -35,6 +37,14 @@ export function PageShell({ title, description, actions, children }: PageShellPr
         </div>
         {actions !== undefined && <div className={styles.actions}>{actions}</div>}
       </header>
+      {/* 只读账号：一页一句，说清为什么下面那些按钮点不动（spec §11 缺口 1）。
+          它放在页头里而不是每个按钮旁边——按钮上的 title 只有把鼠标停上去才
+          看得见，而"我这个账号本来就改不了"这件事该在动手之前就知道。 */}
+      {readonly && (
+        <p className={styles.readonly} data-testid="readonly-banner" role="note">
+          {READONLY_WHY}
+        </p>
+      )}
       {children}
     </section>
   )

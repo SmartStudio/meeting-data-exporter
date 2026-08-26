@@ -101,34 +101,5 @@
   margin: 0 var(--s-1);
 }
 
-.user {
-  font: inherit;
-  font-size: var(--t-sm);
-  color: var(--ink);
-  background: none;
-  border: var(--s-px) solid transparent;
-  border-radius: var(--r);
-  padding: var(--s-0) var(--s-2) var(--s-0) var(--s-1);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-
-.user:hover {
-  background: var(--surface);
-  border-color: var(--line);
-}
-
-.avatar {
-  width: var(--s-6);
-  height: var(--s-6);
-  border-radius: var(--r);
-  display: grid;
-  place-items: center;
-  font-size: var(--t-2xs);
-  font-weight: 600;
-  color: var(--ink-2);
-  background: var(--surface);
-  box-shadow: inset 0 0 0 var(--s-px) var(--line);
-}
+/* .user / .avatar 跟着用户菜单搬去了 UserMenu.module.css——那两条样式
+   现在只服务那一个组件，留在顶栏里就是两处各写一份的开始。 */

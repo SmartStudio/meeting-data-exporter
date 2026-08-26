@@ -57,6 +57,25 @@ export interface ServiceProgram {
 export interface CreatedProgram extends ServiceProgram {
   secret: string
   secretShownOnce: boolean
+  /** 后端那一句「这是唯一一次能看到它的机会」。建号与轮换用的是同一句，
+   *  所以两处都读它、都不自己改写——改写就会变成两句不一样的话。 */
+  secretNote: string
+}
+
+/**
+ * 轮换凭据的响应（`POST /programs/:id/rotate-secret`，A8 新增）。
+ *
+ * **明文只在这一次响应里出现**，库里只存哈希。没有、也不会有「再看一次」的
+ * 端点——那等于把 hash 存储的意义抵消掉。所以界面上必须在用户离开这一屏之前
+ * 让他意识到这件事，而不是关掉之后才发现。
+ */
+export interface RotatedSecret {
+  id: string
+  name: string
+  rotatedAt: number
+  secret: string
+  secretShownOnce: boolean
+  secretNote: string
 }
 
 export interface CreateProgramInput {
@@ -265,6 +284,47 @@ export async function createProgram(input: CreateProgramInput): Promise<CreatedP
     ...readProgram(r, o, ''),
     secret: r.str(o, 'secret', ''),
     secretShownOnce: r.bool(o, 'secretShownOnce', ''),
+    secretNote: r.str(o, 'secretNote', ''),
+  }
+}
+
+/**
+ * `PATCH /api/v1/admin/programs/:id` —— 停用 / 启用一个采集程序（A8 新增）。
+ *
+ * 两件必须在界面上说清的事（A8 报告原话）：
+ * 1. 停用**不删任何授权**。停用可逆，「停用再启用」不会丢配置。
+ * 2. 停用**立刻生效**，包括那个程序手上已经签发、还没过期的访问令牌——
+ *    判定在 `AccessGate`，不是只在拿凭据换令牌那一层。
+ *
+ * `enabled` 必须是真布尔值：后端对 `"false"` / `0` / `null` 一律回 400，
+ * **不会折成某一侧**。这里的签名把这件事挡在编译期。
+ */
+export async function setProgramEnabled(programId: string, enabled: boolean): Promise<ServiceProgram> {
+  const endpoint = `PATCH ${BASE}/programs/:id`
+  const path = `${BASE}/programs/${encodeURIComponent(programId)}`
+  const raw = await apiSend<unknown>('PATCH', path, { enabled })
+  return readProgram(reader(endpoint), raw, '')
+}
+
+/**
+ * `POST /api/v1/admin/programs/:id/rotate-secret` —— 轮换凭据（A8 新增）。
+ *
+ * **旧凭据当场失效**，对接方的定时任务会在下一次换令牌时开始 401。所以按钮
+ * 按下之前要有二次确认。轮换**不改 `enabled`**。
+ */
+export async function rotateProgramSecret(programId: string): Promise<RotatedSecret> {
+  const endpoint = `POST ${BASE}/programs/:id/rotate-secret`
+  const path = `${BASE}/programs/${encodeURIComponent(programId)}/rotate-secret`
+  const raw = await apiSend<unknown>('POST', path)
+  const r = reader(endpoint)
+  const o = r.object(raw, '')
+  return {
+    id: r.str(o, 'id', ''),
+    name: r.str(o, 'name', ''),
+    rotatedAt: r.num(o, 'rotatedAt', ''),
+    secret: r.str(o, 'secret', ''),
+    secretShownOnce: r.bool(o, 'secretShownOnce', ''),
+    secretNote: r.str(o, 'secretNote', ''),
   }
 }
 

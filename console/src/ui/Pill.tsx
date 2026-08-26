@@ -22,8 +22,21 @@ interface PillBaseProps {
 }
 
 type PillProps =
-  | (PillBaseProps & { onRemove?: undefined; removeLabel?: undefined })
-  | (PillBaseProps & { onRemove: () => void; removeLabel: string })
+  | (PillBaseProps & {
+      onRemove?: undefined
+      removeLabel?: undefined
+      removeDisabled?: undefined
+      removeTitle?: undefined
+    })
+  | (PillBaseProps & {
+      onRemove: () => void
+      removeLabel: string
+      /** 移除角标禁用（只读角色、或这一条正在提交中）。禁用而不是不渲染——
+       *  角标消失会让人以为这条授权本来就收不回来。 */
+      removeDisabled?: boolean
+      /** 禁用的原因，挂在原生 title 上。禁用了却不说为什么，就是一个坏掉的按钮。 */
+      removeTitle?: string
+    })
 
 /**
  * 徽标基元：软底文字标签（默认）或实底计数徽标（solid）。
@@ -32,7 +45,16 @@ type PillProps =
  * 带 onRemove 时渲染一个可点的移除角标，removeLabel 是它的 aria-label
  *（如"收回 kb-indexer"）——不能只留一个裸的 ✕ 没有文本。
  */
-export function Pill({ tone = 'neutral', solid = false, onRemove, removeLabel, children, className }: PillProps) {
+export function Pill({
+  tone = 'neutral',
+  solid = false,
+  onRemove,
+  removeLabel,
+  removeDisabled = false,
+  removeTitle,
+  children,
+  className,
+}: PillProps) {
   const classes = [styles.pill, TONE_CLASS[tone], solid ? styles.solid : undefined, className]
     .filter(Boolean)
     .join(' ')
@@ -41,7 +63,14 @@ export function Pill({ tone = 'neutral', solid = false, onRemove, removeLabel, c
     <span className={classes}>
       <span>{children}</span>
       {onRemove ? (
-        <button type="button" className={styles.remove} onClick={onRemove} aria-label={removeLabel}>
+        <button
+          type="button"
+          className={styles.remove}
+          onClick={onRemove}
+          disabled={removeDisabled}
+          title={removeTitle}
+          aria-label={removeLabel}
+        >
           ✕
         </button>
       ) : null}

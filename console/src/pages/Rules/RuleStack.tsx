@@ -3,6 +3,7 @@ import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
 import { ApiError } from '@/api/client'
 import { setRuleEnabled, type Rule, type StackKind } from '@/api/admin/rules'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { fmtDay } from '@/lib/format'
 import { describeCondition, describeEffect } from './fields'
 import {
@@ -38,6 +39,7 @@ export function RuleStack(props: RuleStackProps) {
   const titleId = useId()
   const blocked = blockedByUnconditional(rules)
   const enabledCount = rules.filter((r) => r.enabled).length
+  const readonly = useReadonly()
 
   return (
     <section className={styles.group} aria-labelledby={titleId}>
@@ -73,7 +75,7 @@ export function RuleStack(props: RuleStackProps) {
         </ul>
       )}
 
-      <Button size="sm" onClick={() => props.onCreate(kind)}>
+      <Button size="sm" onClick={() => props.onCreate(kind)} disabled={readonly} title={readonlyTitle(readonly)}>
         {/* 加号只是装饰：留在可访问名里会让读屏念出「加号新建采集权限规则」 */}
         <span aria-hidden="true">+ </span>新建{meta.name}
       </Button>
@@ -133,6 +135,7 @@ interface RuleRowProps {
 
 function RuleRow(props: RuleRowProps) {
   const { rule } = props
+  const readonly = useReadonly()
   const [toggleError, setToggleError] = useState<string | null>(null)
   const joinWord = rule.join === 'or' ? '或' : '且'
   const neverMatches = neverMatchesForLackOfDataSource(rule)
@@ -238,10 +241,26 @@ function RuleRow(props: RuleRowProps) {
       </button>
 
       <div className={styles.ruleActions}>
-        <Button size="sm" variant="quiet" onClick={() => props.onEdit(rule)}>
+        {/* 「编辑」对只读账号也禁用：编辑器一打开就要发 `POST /rules/preview`
+            算影响预览，而那条在后端是写端点（A8 的 18 条之一），只读账号会
+            当场吃一个 403。规则本身的条件在上面这一行已经逐条写出来了，
+            要看命中哪几场还有「查看命中」（GET），两条读路径都留着。 */}
+        <Button
+          size="sm"
+          variant="quiet"
+          onClick={() => props.onEdit(rule)}
+          disabled={readonly}
+          title={readonlyTitle(readonly)}
+        >
           编辑
         </Button>
-        <Button size="sm" variant="quiet" onClick={toggle} disabled={props.busy}>
+        <Button
+          size="sm"
+          variant="quiet"
+          onClick={toggle}
+          disabled={props.busy || readonly}
+          title={readonlyTitle(readonly)}
+        >
           {props.busy ? '…' : rule.enabled ? '停用' : '启用'}
         </Button>
       </div>

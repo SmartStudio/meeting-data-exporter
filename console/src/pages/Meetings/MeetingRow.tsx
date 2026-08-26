@@ -1,5 +1,6 @@
 import type { ServiceProgram } from '@/api/admin/grants'
 import type { AdminMeeting } from '@/api/admin/meetings'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { daysLeft, fmtDateTime, fmtDay } from '@/lib/format'
 import { Pill } from '@/ui/Pill'
 import { ProgressBar } from '@/ui/ProgressBar'
@@ -153,6 +154,7 @@ function StageDot({
   isPending: (key: string) => boolean
   onToggle: (id: string, stage: Stage) => void
 }) {
+  const readonly = useReadonly()
   const raw = stage === 'fetch' ? m.fetch : m.archive
   const state = dotState(stage, raw)
   if (state === 'unknown') {
@@ -171,7 +173,8 @@ function StageDot({
       label={STAGE_NAME[stage]}
       overridden={m.hand.includes(stage)}
       onClick={() => onToggle(m.id, stage)}
-      disabled={pending}
+      disabled={pending || readonly}
+      disabledReason={readonlyTitle(readonly)}
     />
   )
 }
@@ -187,6 +190,9 @@ function KeepCell({
   isPending: (key: string) => boolean
   onExtend: (id: string) => void
 }) {
+  // 钩子必须在任何提前 return 之前调用——这个组件下面有三处 return。
+  const readonly = useReadonly()
+
   if (m.keep.filesGone) {
     return (
       <div className={styles.keepRow}>
@@ -237,7 +243,8 @@ function KeepCell({
         type="button"
         className={styles.extendBtn}
         onClick={() => onExtend(m.id)}
-        disabled={pending}
+        disabled={pending || readonly}
+        title={readonlyTitle(readonly)}
         aria-label={`把「${meetingTitle(m)}」的本地保留期延长 30 天`}
       >
         {pending ? '延长中…' : '＋30 天'}
@@ -259,6 +266,9 @@ function GrantCell({
   onOpenGrant: (id: string) => void
   onRevoke: (id: string, programId: string) => void
 }) {
+  // 同上：这个组件有六处提前 return，钩子只能在最前面。
+  const readonly = useReadonly()
+  const roTitle = readonlyTitle(readonly)
   const cell = grantCellKind(m)
 
   if (cell.kind === 'expired') return <span className={styles.grantNone}>授权已失效</span>
@@ -281,7 +291,13 @@ function GrantCell({
 
   if (m.grants.length === 0) {
     return (
-      <button type="button" className={styles.grantAdd} onClick={() => onOpenGrant(m.id)}>
+      <button
+        type="button"
+        className={styles.grantAdd}
+        onClick={() => onOpenGrant(m.id)}
+        disabled={readonly}
+        title={roTitle}
+      >
         ＋ 授权给…
       </button>
     )
@@ -297,6 +313,8 @@ function GrantCell({
             key={id}
             tone="brand"
             onRemove={pending ? () => undefined : () => onRevoke(m.id, id)}
+            removeDisabled={readonly}
+            removeTitle={roTitle}
             removeLabel={`收回 ${programName(programs, id)} 对「${title}」的授权`}
           >
             {programName(programs, id)}
@@ -308,6 +326,8 @@ function GrantCell({
         type="button"
         className={styles.grantAdd}
         onClick={() => onOpenGrant(m.id)}
+        disabled={readonly}
+        title={roTitle}
         aria-label={`再给「${title}」授权一个采集程序`}
       >
         ＋

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import RulesPage from '../../src/pages/Rules/index'
@@ -515,5 +516,54 @@ describe('规则编辑器', () => {
     expect(panel).toHaveAttribute('data-state', 'open')
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(panel).toHaveAttribute('data-state', 'closed'))
+  })
+})
+
+describe('只读账号（spec §11 缺口 1）', () => {
+  async function readonlyMount(): Promise<void> {
+    stubList([FETCH_RULE, ALLOW_RULE])
+    const router = createMemoryRouter([{ path: '/rules', element: <RulesPage /> }], {
+      initialEntries: ['/rules'],
+    })
+    renderAsRole(<RouterProvider router={router} />, 'readonly')
+    await screen.findByRole('heading', { name: '自动规则', level: 1 })
+  }
+
+  test('三个「新建…规则」全部禁用，且说得出为什么', async () => {
+    await readonlyMount()
+    const news = await screen.findAllByRole('button', { name: /新建/ })
+    expect(news.length).toBeGreaterThan(0)
+    for (const b of news) {
+      expect(b).toBeDisabled()
+      expect(b).toHaveAttribute('title', '只读账号不能改')
+    }
+  })
+
+  test('逐条的「编辑」「停用/启用」禁用', async () => {
+    await readonlyMount()
+    for (const b of await screen.findAllByRole('button', { name: '编辑' })) {
+      expect(b).toBeDisabled()
+    }
+    for (const b of screen.getAllByRole('button', { name: /^(停用|启用)$/ })) {
+      expect(b).toBeDisabled()
+    }
+  })
+
+  test('「查看命中」不禁用——那是 GET，只读账号该看得到规则命中了哪几场', async () => {
+    await readonlyMount()
+    const hits = await screen.findAllByRole('button', { name: /查看命中|场命中/ })
+    expect(hits[0]).toBeEnabled()
+  })
+
+  test('规则的条件本身仍然逐条写在列表上，只读账号看得到自己看不了编辑器的那部分', async () => {
+    await readonlyMount()
+    expect(screen.getAllByText(/财务/).length).toBeGreaterThan(0)
+  })
+
+  test('管理员这一侧照旧', async () => {
+    stubList([FETCH_RULE])
+    mount()
+    await screen.findByRole('heading', { name: '自动规则', level: 1 })
+    expect(screen.getAllByRole('button', { name: '编辑' })[0]).toBeEnabled()
   })
 })

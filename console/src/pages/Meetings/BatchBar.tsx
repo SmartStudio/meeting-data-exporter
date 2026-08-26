@@ -1,5 +1,6 @@
 import { Button } from '@/ui/Button'
 import { EXTEND_DEFAULT_DAYS } from '@/api/admin/meetings'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import styles from './BatchBar.module.css'
 
 /**
@@ -33,6 +34,10 @@ export interface BatchBarProps {
  */
 export function BatchBar({ count, offPage, busy, onAction, onGrant, onCancel }: BatchBarProps) {
   const show = count > 0
+  // 选行本身不是写操作，所以只读账号照样能选、能看见"选了几场"；
+  // 三个真的会改状态的按钮禁用，「取消」留着（它只是清空选择）。
+  const readonly = useReadonly()
+  const roTitle = readonlyTitle(readonly)
   return (
     <div
       className={styles.bar}
@@ -48,14 +53,26 @@ export function BatchBar({ count, offPage, busy, onAction, onGrant, onCancel }: 
         {offPage > 0 && <span className={styles.scope}>（其中 {offPage} 场不在本页）</span>}
       </span>
       <span className={styles.sep} aria-hidden="true" />
-      <Button size="sm" className={styles.btn} disabled={busy} onClick={() => onAction('extend')}>
+      <Button
+        size="sm"
+        className={styles.btn}
+        disabled={busy || readonly}
+        title={roTitle}
+        onClick={() => onAction('extend')}
+      >
         延长 {EXTEND_DEFAULT_DAYS} 天
       </Button>
-      <Button size="sm" variant="primary" disabled={busy} onClick={onGrant}>
+      <Button size="sm" variant="primary" disabled={busy || readonly} title={roTitle} onClick={onGrant}>
         授权给…
       </Button>
       <span className={styles.sep} aria-hidden="true" />
-      <Button size="sm" className={styles.btn} disabled={busy} onClick={() => onAction('revoke')}>
+      <Button
+        size="sm"
+        className={styles.btn}
+        disabled={busy || readonly}
+        title={roTitle}
+        onClick={() => onAction('revoke')}
+      >
         收回授权
       </Button>
       <Button size="sm" variant="quiet" className={styles.quiet} onClick={onCancel}>

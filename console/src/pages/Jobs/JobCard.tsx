@@ -1,4 +1,5 @@
 import type { JobItem, JobRun } from '@/api/admin/jobs'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { fmtDateTime } from '@/lib/format'
 import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
@@ -114,6 +115,7 @@ export interface JobCardProps {
 export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
   const hv = healthView(job.health)
   const pending = runState?.phase === 'pending'
+  const readonly = useReadonly()
 
   return (
     <li className={styles.job} data-testid="job-card" data-job={job.name} data-alarm={hv.alarm ? 'true' : 'false'}>
@@ -150,7 +152,8 @@ export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
           <b className={styles.nextAt}>{fmtDateTime(job.nextDueAt, new Date(now * 1000))}</b>
           <span className={styles.nextGap}>{fmtAfter(job.nextDueAt, now)}</span>
         </div>
-        <Button size="sm" onClick={() => onRun(job.name)} disabled={pending}>
+        {/* 只读账号禁用而不是隐藏：藏起来会让人以为这个系统没有手动触发这回事 */}
+        <Button size="sm" onClick={() => onRun(job.name)} disabled={pending || readonly} title={readonlyTitle(readonly)}>
           {pending ? '排队中…' : '立即运行'}
         </Button>
       </div>

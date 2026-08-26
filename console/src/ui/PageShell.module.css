@@ -41,3 +41,18 @@
   gap: var(--s-3);
   flex-wrap: wrap;
 }
+
+/* 只读账号的说明条。中性色而不是琥珀：只读不是一个需要处理的异常，是这个账号
+   本来的样子——琥珀的唯一含义是「这需要你看一眼并做点什么」，而这里什么都不用做。
+   负的上外边距是去掉 .head 的下外边距，让这一条紧贴页头、看起来属于页头。 */
+.readonly {
+  margin: calc(-1 * var(--s-6)) 0 var(--s-6);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}

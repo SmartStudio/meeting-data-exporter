@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import { render, renderAsRole } from './helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { SystemStateProvider } from '../src/app/SystemStatus'
@@ -1020,5 +1021,61 @@ describe('页面骨架与令牌', () => {
     const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
     expect(rowCss).toMatch(/\.extendBtn\s*\{[^}]*opacity:\s*0/)
     expect(rowCss).toMatch(/tr:hover \.extendBtn[^{]*\{\s*opacity:\s*1/)
+  })
+})
+
+/* ── 只读账号（spec §11 缺口 1）─────────────────────────────────── */
+
+describe('只读账号', () => {
+  async function readonlyReady(): Promise<void> {
+    const router = createMemoryRouter(
+      [
+        { path: '/meetings', element: <MeetingsPage /> },
+        { path: '/preview/:id', element: <h1>内容预览占位</h1> },
+      ],
+      { initialEntries: ['/meetings'] },
+    )
+    renderAsRole(
+      <SystemStateProvider initialState="ok">
+        <RouterProvider router={router} />
+      </SystemStateProvider>,
+      'readonly',
+    )
+    await waitFor(() => expect(screen.getByTestId('row-m1')).toBeInTheDocument())
+  }
+
+  test('行内的四个写入口全部禁用：两个阶段圆点、＋30 天、授权', async () => {
+    await readonlyReady()
+    const row = screen.getByTestId('row-m1')
+    for (const btn of within(row).getAllByRole('button')) {
+      const name = btn.getAttribute('aria-label') ?? btn.textContent ?? ''
+      if (/详情/.test(name)) continue // 打开抽屉是读，不禁用
+      if (/^拉取|^归档|30 天|授权/.test(name)) expect(btn, name).toBeDisabled()
+    }
+  })
+
+  test('标题仍然点得进内容预览——看内容是只读账号该有的权限（spec §2）', async () => {
+    await readonlyReady()
+    const row = screen.getByTestId('row-m1')
+    expect(within(row).getByRole('button', { name: '产品周会' })).toBeEnabled()
+    expect(within(row).getByRole('button', { name: /的详情$/ })).toBeEnabled()
+  })
+
+  test('选行不禁用，批量条里三个写动作禁用、「取消」留着', async () => {
+    await readonlyReady()
+    const box = within(screen.getByTestId('row-m1')).getByRole('checkbox')
+    expect(box).toBeEnabled()
+    await userEvent.click(box)
+
+    const bar = screen.getByTestId('batch-bar')
+    expect(within(bar).getByRole('button', { name: /延长/ })).toBeDisabled()
+    expect(within(bar).getByRole('button', { name: '授权给…' })).toBeDisabled()
+    expect(within(bar).getByRole('button', { name: '收回授权' })).toBeDisabled()
+    expect(within(bar).getByRole('button', { name: '取消' })).toBeEnabled()
+  })
+
+  test('页头有一句说明', async () => {
+    await readonlyReady()
+    expect(screen.getByTestId('readonly-banner')).toBeInTheDocument()
   })
 })

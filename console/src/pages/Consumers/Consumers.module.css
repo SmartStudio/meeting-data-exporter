@@ -65,7 +65,10 @@
 }
 
 .reach[data-kind='none'],
-.reach[data-kind='loading'] {
+.reach[data-kind='loading'],
+/* 已停用：中性，绝不能是蓝的——蓝底的含义就是「数据可被取走」，
+   而停用的程序一样都取不走。 */
+.reach[data-kind='disabled'] {
   border-color: var(--line);
   background: var(--surface-2);
   color: var(--ink-2);
@@ -93,6 +96,14 @@
 .reachNum {
   font-weight: 700;
   font-size: var(--t-xl);
+}
+
+/* 「已停用」占的是本来放数字的位置，所以后面那半句要退一档，
+   免得两段同重量的文字看起来像一句话被断开了。 */
+.reachStopped {
+  margin-left: var(--s-3);
+  font-size: var(--t-sm);
+  color: var(--ink-3);
 }
 
 .reachSoon {
@@ -243,4 +254,87 @@
   font-size: var(--t-xs);
   line-height: 1.7;
   color: var(--ink-2);
+}
+
+/* ── 停用 / 轮换（spec §11 缺口 4）──────────────────────────── */
+
+.actions {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line-soft);
+}
+
+.actionError {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+.confirmBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.confirmLead {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+.confirmLead b {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.confirmNote {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.confirmNote b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* 红只用于失败与不可逆。「明文马上就没了」是不可逆的一侧，所以这一句是红的。 */
+.confirmWarn {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  background: var(--fail-soft);
+  border: 1px solid var(--fail-line);
+  border-radius: var(--r);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--fail);
+}
+
+.confirmFoot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-3);
+  margin-top: var(--s-5);
+  flex-wrap: wrap;
+}
+
+.ack {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--tap-min);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ackBox {
+  accent-color: var(--brand);
+  cursor: pointer;
 }

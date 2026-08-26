@@ -24,6 +24,9 @@ export interface StatusDotProps {
    *  的开关）；不提供则是纯展示的状态点。 */
   onClick?: () => void
   disabled?: boolean
+  /** 禁用的原因。会拼进可读文本（aria-label 与 title 共用同一句）——一个点不动
+   *  的圆点如果不说为什么，看起来就是坏了。只在 `disabled` 为真时出现。 */
+  disabledReason?: string
   className?: string
 }
 
@@ -38,9 +41,11 @@ export function StatusDot({
   overridden = false,
   onClick,
   disabled = false,
+  disabledReason,
   className,
 }: StatusDotProps) {
-  const text = `${label}：${STATUS_DOT_LABEL[state]}${overridden ? ' · 人工改写' : ''}`
+  const why = disabled && disabledReason !== undefined && disabledReason !== '' ? `（${disabledReason}）` : ''
+  const text = `${label}：${STATUS_DOT_LABEL[state]}${overridden ? ' · 人工改写' : ''}${why}`
   const classes = [styles.dot, className].filter(Boolean).join(' ')
 
   const icon = (

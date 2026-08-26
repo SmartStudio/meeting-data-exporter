@@ -6,17 +6,26 @@ import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
 import { BlockedAside, ReachBlock, useInventory } from './ReachBlock'
 import { InventorySheet } from './InventorySheet'
+import { ProgramActions } from './ProgramActions'
 import styles from './Consumers.module.css'
 
 /**
  * 一个外部程序一张卡片（spec §4.5）。
  *
- * 卡片上**没有「停用」与「轮换凭据」**：这两个动作的后端端点还不存在
- * （spec §11 缺口 4，裁定 G-e / G-h：数据层的 `enabled` / `secret_hash` 两列已经
- * 在了，缺的是两个 handler，由 A8 补、F7 接）。留一个点了没反应的按钮比没有这个
- * 按钮更差——它会让人以为自己已经停用了一个程序，而那个程序还在取数。
+ * 「停用 / 启用」与「轮换凭据」在 `ProgramActions` 里（spec §11 缺口 4）——
+ * A8 把两条端点补上之后才放这两个按钮。在那之前这里一个按钮都没有，
+ * 因为「点了没反应的按钮」会让人以为自己已经停用了一个还在取数的程序。
  */
-export function ProgramCard({ program, now }: { program: ServiceProgram; now: Date }) {
+export function ProgramCard({
+  program,
+  now,
+  onChanged,
+}: {
+  program: ServiceProgram
+  now: Date
+  /** 停用 / 启用 / 轮换成功之后重取整个列表（不做乐观更新，裁定 G-c）。 */
+  onChanged: () => void
+}) {
   const [listOpen, setListOpen] = useState(false)
   const res = useInventory(program.id)
   const standing = programStanding(program, Math.floor(now.getTime() / 1000))
@@ -49,6 +58,8 @@ export function ProgramCard({ program, now }: { program: ServiceProgram; now: Da
           </Button>
         )}
       </div>
+
+      <ProgramActions program={program} onChanged={onChanged} />
 
       {res.state === 'ready' && (
         <InventorySheet

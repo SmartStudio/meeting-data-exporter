@@ -70,15 +70,43 @@ export function ReachBlock({
 
   const inv = res.data
   const line = reachLine(inv)
+
+  /* 停用的程序：**这一格显示「已停用」，不显示那个数**。
+   *
+   * 清单端点算的是 授权 ∩ 保留期 ∩ 规则，**不看 `enabled`**，所以一个停用的
+   * 程序照样会有一份非空清单。A8 之后网关那一侧已经会拒（判定挪进了
+   * `AccessGate`），于是这个数在界面上就成了 spec §1.3 点名要防的那种漂移：
+   * **控制台说准许、程序去取的时候被拒**。
+   *
+   * 所以数字换成状态本身，那份"如果它还能登录会是什么样"的清单降到下面一行——
+   * 它仍然有用（决定要不要恢复启用时看的就是它），但它不再冒充「现在可取走」。
+   * 根治是让重算也看 `enabled`，那会牵到调度器那一侧，留给后续。 */
+  if (standing === 'disabled') {
+    return (
+      <div className={styles.reach} data-kind="disabled" data-testid={`reach-${programId}`}>
+        <p className={styles.reachLine}>
+          <b className={styles.reachNum}>已停用</b>
+          <span className={styles.reachStopped}>现在 0 场会议对它开放</span>
+        </p>
+        <p className={styles.reachCaveat}>
+          停用立刻生效：它拿凭据换不到新令牌，手上还没过期的那张也一起失效。已有的授权一条都没删。
+        </p>
+        <p className={styles.reachNote} data-testid={`reach-${programId}-ifenabled`}>
+          {line.kind === 'none'
+            ? '恢复启用后它也一场都取不到——清单本身就是空的。'
+            : line.kind === 'reachable-no-assets'
+              ? `恢复启用后清单里有 ${line.count} 场，但一类资产都没列出来——这两件事自相矛盾，把这句话报给维护者。`
+              : `恢复启用后它能取走 ${line.count} 场会议的 ${line.assetsText}。这是「如果它还能登录」的结果，不是现在。`}
+        </p>
+      </div>
+    )
+  }
+
   // 「现在」这个词只有在程序真的能登录时才成立，见文件头第 3 条。
-  const verb =
-    standing === 'disabled' ? '恢复启用后可取走' : standing === 'expired' ? '换发凭据后可取走' : '现在可取走'
+  const verb = standing === 'expired' ? '换发凭据后可取走' : '现在可取走'
 
   return (
     <div className={styles.reach} data-kind={line.kind} data-testid={`reach-${programId}`}>
-      {standing === 'disabled' && (
-        <p className={styles.reachCaveat}>该程序已停用，凭据换不到令牌——下面这份清单是它恢复启用后的样子。</p>
-      )}
       {standing === 'expired' && (
         <p className={styles.reachCaveat}>凭据已过期，现在换不到令牌——下面这份清单是换发凭据后的样子。</p>
       )}

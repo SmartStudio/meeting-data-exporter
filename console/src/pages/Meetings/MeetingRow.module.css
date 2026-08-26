@@ -167,9 +167,15 @@ tr[data-cursor='true'] .extendBtn,
    只有两个含义（有人手动改写了规则 / 保留期快到了），拿它当强调色用，会让
    同一栏里"还剩 3 天"的那个琥珀降一级——一直响的警报等于没有警报。
    改成中性加重（描边 ink-4 + 文字 ink），和分诊格 `.card:hover` 是同一套语言。 */
-.extendBtn:hover {
+.extendBtn:hover:not(:disabled) {
   border-color: var(--ink-4);
   color: var(--ink);
+}
+
+/* 只读账号：按钮仍然浮出来（藏起来会让人以为这一栏根本不能延长），
+   只是点不动，原因挂在原生 title 上。 */
+.extendBtn:disabled {
+  cursor: not-allowed;
 }
 
 .grant {
@@ -195,12 +201,15 @@ tr[data-cursor='true'] .extendBtn,
   cursor: pointer;
   white-space: nowrap;
 }
-.grantAdd:hover {
+.grantAdd:hover:not(:disabled) {
   color: var(--brand-text);
   border-color: var(--brand);
 }
-.grantAdd:active {
+.grantAdd:active:not(:disabled) {
   transform: translateY(var(--s-px));
+}
+.grantAdd:disabled {
+  cursor: not-allowed;
 }
 
 .act {
