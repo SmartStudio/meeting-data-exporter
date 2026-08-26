@@ -40,6 +40,8 @@ import { createPolicyStore } from '../../src/store/policy'
 import { createAccessGate } from '../../src/policy/access'
 import { createArchivesStore } from '../../src/store/archives'
 import { createAuditStore } from '../../src/store/audit'
+import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
+import type { VisibilityDeps } from '../../src/worker/visibility'
 import { createAuditRecorder } from '../../src/audit/recorder'
 import { createAuthStore } from '../../src/store/auth'
 import { createDeviceFlow } from '../../src/auth/device'
@@ -54,7 +56,6 @@ import { createProgramsStore } from '../../src/store/programs'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 // 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
-import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
 import {
   startFakeTencentServer,
   createFakeTencentState,
@@ -178,6 +179,14 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const adminAuth = createAdminAuth({ store: adminStore })
   const gatewayBaseUrl = 'https://gw.e2e.example'
 
+  // 控制台会议查询（阶段 4 · T5，A2）。装配方式跟随 src/index.ts
+  const meetingVisibility: VisibilityDeps = {
+    policy: policyStore,
+    grants: createGrantsStore(dbPool),
+    archives: archivesStore,
+    getMeetings: (keys) => consoleMeetings.getMeetings(keys),
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret: JWT_SECRET,
@@ -233,6 +242,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     // 阶段 4 · T6（A3 规则 API）。跟随 src/index.ts：会议查询 store 与 getMeetings
     // 用同一个实例，注入的 policy 也是同一份
     consoleMeetings,
+    meetingVisibility,
+    meetingHistory: auditStore,
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

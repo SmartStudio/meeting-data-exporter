@@ -35,6 +35,8 @@ import type { AuditMeetingLookup } from './handlers/console/audit'
 // 冲突保持成纯追加型才好合。
 import type { ConsoleMeetingsStore } from '../store/console-meetings'
 import * as consoleRulesHandlers from './handlers/console/rules'
+import * as consoleMeetingsHandlers from './handlers/console/meetings'
+import type { VisibilityDeps } from '../worker/visibility'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -117,10 +119,25 @@ export interface AppDeps {
    */
   auditStore: AuditStore
   /**
-   * 控制台的会议查询（T1）。影响预览与「这条规则命中哪几场」要一批会议的事实，
-   * 会议全集只有这一个来源（`meetings` 表，见计划 §0 E-a）。
+   * 控制台的会议查询（T1）。会议记录页的查询底座，也是影响预览与「这条规则命中
+   * 哪几场」要的会议事实来源——会议全集只有这一个来源：`meetings` 那张表，
+   * 不碰 `meeting_cache`（见计划 §0 E-a）。
    */
   consoleMeetings: ConsoleMeetingsStore
+  /**
+   * 单场会议的采集权限答疑（`explainMeetingAccess`）与整页批量求值
+   * （`evaluateInventory`）共用的那组读法。**与采集清单重算是同一套依赖**——
+   * 控制台说「准许采集」而网关取的时候被拒，就是这两处各判一遍的下场。
+   */
+  meetingVisibility: VisibilityDeps
+  /**
+   * 会议详情抽屉底部那一段操作历史（阶段 4 · T3 的读侧）。
+   *
+   * 收窄到 `listForMeeting` 一个方法：这个 handler 只答「这场会议发生过什么」，
+   * 不做审计流的分页筛选（那是 A5 的事）。与 `archives: Pick<ArchivesStore, …>`
+   * 同一个理由——依赖上写着用得到的那几件事，读代码的人不必去猜。
+   */
+  meetingHistory: Pick<AuditQueryStore, 'listForMeeting'>
 }
 
 export interface RouteCtx {
@@ -211,6 +228,12 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/rules/:id/matches', consoleRulesHandlers.ruleMatches),
   compile('PATCH', '/api/v1/admin/rules/:id', consoleRulesHandlers.patchRule),
   compile('DELETE', '/api/v1/admin/rules/:id', consoleRulesHandlers.deleteRule),
+  // A2 会议查询（阶段 4 · T5）。**triage 必须排在 :meetingId 前面**——路由是
+  // 顺序匹配的，`:meetingId` 编译成 `([^/]+)`，会先把 `/meetings/triage` 吃掉，
+  // 于是分诊条请求变成「查一场 id 为 triage 的会议」，稳定返回 404。
+  compile('GET', '/api/v1/admin/meetings/triage', consoleMeetingsHandlers.meetingTriage),
+  compile('GET', '/api/v1/admin/meetings', consoleMeetingsHandlers.listMeetings),
+  compile('GET', '/api/v1/admin/meetings/:meetingId', consoleMeetingsHandlers.getMeeting),
 ]
 
 /**

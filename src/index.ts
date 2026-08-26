@@ -34,6 +34,7 @@ import { createConsoleStorageStore } from './store/console-storage'
 import { probeNas } from './worker/nas-probe'
 import { previewCleanup, executeCleanup } from './worker/retention'
 import type { StorageDeps } from './http/handlers/console/storage'
+import type { VisibilityDeps } from './worker/visibility'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -165,6 +166,18 @@ async function main(): Promise<void> {
           },
   }
 
+  // 控制台的会议查询（阶段 4 · T5，A2）。
+  // meetingVisibility 的四件依赖与 worker 的采集清单重算（computeProgramInventory）
+  // 是**同一组**——控制台答「这场会议准不准采集」和网关真去取时的判定必须同源，
+  // 各判一遍的下场是「详情抽屉说准许、程序取的时候被拒」。
+  // 会议查询 store 用上面那一个实例，不另建。
+  const meetingVisibility: VisibilityDeps = {
+    policy: policyStore,
+    grants: grantsStore,
+    archives: archivesStore,
+    getMeetings: (keys) => consoleMeetings.getMeetings(keys),
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret: config.jwtSecret,
@@ -202,6 +215,8 @@ async function main(): Promise<void> {
     // 两份实例指向同一个池只是多一层间接，而 triage 的「待授权」与影响预览都要
     // 求值采集权限栈，注入的 policy 必须是同一份
     consoleMeetings,
+    meetingVisibility,
+    meetingHistory: auditStore,
   }
 
   const app = createApp(deps)

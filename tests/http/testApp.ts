@@ -39,6 +39,7 @@ import type { RowDataPacket } from 'mysql2/promise'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import type { StorageDeps } from '../../src/http/handlers/console/storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
+import type { VisibilityDeps } from '../../src/worker/visibility'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -144,6 +145,15 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const adminAuth = createAdminAuth({ store: adminStore })
   const gatewayBaseUrl = 'https://gw.example'
 
+  // 控制台会议查询（阶段 4 · T5，A2）。装配方式跟随 src/index.ts：
+  // meetingVisibility 与 worker 的采集清单重算共用同一组读法，两处不各判一遍
+  const meetingVisibility: VisibilityDeps = {
+    policy: policyStore,
+    grants: createGrantsStore(pool),
+    archives: archivesStore,
+    getMeetings: (keys) => consoleMeetings.getMeetings(keys),
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret,
@@ -199,6 +209,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     // 阶段 4 · T6（A3 规则 API）。跟随 src/index.ts：会议查询 store 与 getMeetings
     // 用同一个实例，注入的 policy 也是同一份
     consoleMeetings,
+    meetingVisibility,
+    meetingHistory: auditStore,
   }
 
   return { app: createApp(deps), deps, pool }
