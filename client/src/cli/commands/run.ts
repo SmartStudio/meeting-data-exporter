@@ -1,4 +1,5 @@
 import { loadConfig } from '../../config'
+import { warnIfLeaseLocked } from '../lease-hint'
 import { openDb, createStore, createLocalStorage, downloadAsset, discover, runExecutor, runProbes, writeMeetingManifests } from '@yaowu/mde-engine'
 import { createGatewayClient } from '../../gateway/client'
 import type { ParsedCommand } from '../index'
@@ -24,6 +25,7 @@ export async function cmdRun(cmd: ParsedCommand, env: Record<string, string | un
   await runProbes(deps, now)
   const r = await runExecutor(deps, { concurrency: cfg.concurrency, leaseSec: cfg.leaseSec }, now)
   console.log(`completed=${r.completed} failed=${r.failed} skipped=${r.skipped}`)
+  await warnIfLeaseLocked(store, r, cfg.leaseSec)
   // 一轮的收尾：给每场会议写 meeting.json / _manifest.json（US-6.2）。写失败只 warn 不改
   // 退出码——文件已经在盘上了，一份没写出来的清单不该把一轮成功的下载判成失败。
   const man = await writeMeetingManifests({ store, storage, generatedBy: 'mde-engine' }, meetingsById, now)

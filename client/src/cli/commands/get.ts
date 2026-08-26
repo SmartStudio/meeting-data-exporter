@@ -1,4 +1,5 @@
 import { loadConfig } from '../../config'
+import { warnIfLeaseLocked } from '../lease-hint'
 import { openDb, createStore, createLocalStorage, downloadAsset, discover, runExecutor, runProbes } from '@yaowu/mde-engine'
 import { createGatewayClient } from '../../gateway/client'
 import type { ParsedCommand } from '../index'
@@ -22,6 +23,7 @@ export async function cmdGet(cmd: ParsedCommand, env: Record<string, string | un
   await runProbes(deps, now)
   const r = await runExecutor(deps, { concurrency: cfg.concurrency, leaseSec: cfg.leaseSec }, now)
   console.log(`completed=${r.completed} failed=${r.failed} skipped=${r.skipped}`)
+  await warnIfLeaseLocked(store, r, cfg.leaseSec)
   return r.failed > 0 ? 1 : 0
 }
 
