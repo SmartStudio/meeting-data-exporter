@@ -92,3 +92,15 @@
 .card[data-tone='zero'] .count {
   color: var(--ink-3);
 }
+
+/* ── 窄屏（≤56em）：两列，且是明说的两列 ──────────────────────────
+   现状（spec §11 记的「分诊条两列」）是 `min-width: 14ch` 撞出来的结果——
+   字号一改列数就变，而它是这一页最先被看到的东西。这里把它定死成两列：
+   五格排成 2+2+1，每格仍然带全数字、口径与提示，一个字都不删。
+   断点写死 56em 的理由见 ui/Table.module.css。 */
+@media (max-width: 56em) {
+  .card {
+    flex: 1 1 calc(50% - var(--s-3));
+    min-width: 0;
+  }
+}

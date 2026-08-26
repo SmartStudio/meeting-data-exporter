@@ -1,0 +1,153 @@
+/* 用户菜单。触发按钮那两条（.user / .avatar）原样搬自 GlobalBar.module.css——
+   它们现在跟着菜单走，顶栏那边不再各留一份。 */
+
+.wrap {
+  /* Popover 是纯 CSS 定位，要求触发按钮和它一起包在 position: relative 的容器里 */
+  position: relative;
+  display: inline-flex;
+}
+
+.user {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  background: none;
+  border: var(--s-px) solid transparent;
+  border-radius: var(--r);
+  padding: var(--s-0) var(--s-2) var(--s-0) var(--s-1);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  white-space: nowrap;
+}
+
+.user:hover,
+.user[aria-expanded='true'] {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.avatar {
+  width: var(--s-6);
+  height: var(--s-6);
+  flex: none;
+  border-radius: var(--r);
+  display: grid;
+  place-items: center;
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 var(--s-px) var(--line);
+}
+
+.menu {
+  padding: 0;
+}
+
+.who {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-px);
+  padding: var(--s-4);
+  border-bottom: var(--s-px) solid var(--line);
+}
+
+.whoName {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.whoRole {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+
+.acts {
+  display: flex;
+  flex-direction: column;
+  padding: var(--s-1);
+}
+
+.item {
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  color: var(--ink-2);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: var(--s-2) var(--s-3);
+  min-height: var(--tap-min);
+  cursor: pointer;
+}
+
+.item:hover {
+  background: color-mix(in oklab, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+
+/* ── 修改密码面板 ────────────────────────────────────────────── */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.lead {
+  margin: 0;
+  font-size: var(--t-md);
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.note b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.label {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--t-2xs);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+/* 常驻占位：出错时表单不因为多出一行而跳动（与登录页同一处理）。 */
+.errorSlot {
+  min-height: var(--s-5);
+  font-size: var(--t-xs);
+  line-height: 1.6;
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+.foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}

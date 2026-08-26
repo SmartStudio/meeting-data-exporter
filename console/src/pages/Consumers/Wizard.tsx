@@ -15,6 +15,7 @@ import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
 import { Sheet } from '@/ui/Sheet'
 import { ReachBlock, useInventory } from './ReachBlock'
+import { SecretRow } from './SecretRow'
 import styles from './Wizard.module.css'
 
 const STEPS = ['基本信息', '生成凭据', '可取资产', '接入方式'] as const
@@ -187,6 +188,13 @@ export function Wizard({ open, onDone }: { open: boolean; onDone: (created: bool
             凭据已生成。<strong className={styles.strong}>Secret 明文只出现这一次</strong>
             ，库里只存 argon2id 哈希，丢了找不回来。请立刻存进你的密钥管理。
           </p>
+          {/* 后端下发的那一句原样上屏。建号与轮换现在共用同一句话（A8），
+              前端不改写它——改写就会变成两句不一样的、迟早会漂的话。 */}
+          {created.secretNote !== '' && (
+            <p className={styles.note} data-testid="secret-note">
+              {created.secretNote}
+            </p>
+          )}
           <SecretRow label="CLIENT ID" value={created.id} />
           <SecretRow label="SECRET" value={created.secret} />
           <label className={styles.ack} htmlFor={`${uid}-ack`}>
@@ -248,35 +256,6 @@ function AssetsStep({ created }: { created: CreatedProgram }) {
         三件事分别在「会议记录」「归档存储」「自动规则」三页上维护。下面是它此刻的实测清单：
       </p>
       <ReachBlock programId={created.id} standing={standing} res={res} />
-    </div>
-  )
-}
-
-function SecretRow({ label, value }: { label: string; value: string }) {
-  const [said, setSaid] = useState<string | null>(null)
-
-  async function copy(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(value)
-      setSaid('已复制')
-    } catch {
-      // 剪贴板在非安全上下文里不可用。说出来，别让按钮点了没反应。
-      setSaid('复制不了，请手动选中')
-    }
-  }
-
-  return (
-    <div className={styles.secretRow}>
-      <span className={styles.secretK}>{label}</span>
-      <code className={styles.secretV}>{value}</code>
-      <Button size="sm" variant="quiet" onClick={() => void copy()} aria-label={`复制 ${label}`}>
-        复制
-      </Button>
-      {said !== null && (
-        <span className={styles.copied} role="status">
-          {said}
-        </span>
-      )}
     </div>
   )
 }

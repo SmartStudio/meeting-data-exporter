@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import type { OverrideKind, ServiceProgram } from '@/api/admin/grants'
 import type { AdminMeeting, AdminWhy } from '@/api/admin/meetings'
 import { fetchMeetingHistory, getMeeting } from '@/api/admin/meetings'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { daysLeft, fmtBytes, fmtDateTime, fmtDay, fmtDuration } from '@/lib/format'
 import { useResource } from '@/lib/useResource'
 import { Button } from '@/ui/Button'
@@ -189,6 +190,8 @@ function StageSection({
   const state = dotState(stage, raw)
   const overridden = m.hand.includes(stage)
   const pending = isPending(wkey(m.id, stage))
+  const readonly = useReadonly()
+  const roTitle = readonlyTitle(readonly)
 
   return (
     <section className={styles.section} data-testid={`section-${stage}`} data-stale={stale}>
@@ -207,11 +210,11 @@ function StageSection({
       {children}
       <div className={styles.acts}>
         {overridden ? (
-          <Button size="sm" disabled={pending} onClick={() => onClearOverride(stage)}>
+          <Button size="sm" disabled={pending || readonly} title={roTitle} onClick={() => onClearOverride(stage)}>
             {pending ? '撤销中…' : '撤销人工改写'}
           </Button>
         ) : (
-          <Button size="sm" disabled={pending} onClick={() => onOverride(stage)}>
+          <Button size="sm" disabled={pending || readonly} title={roTitle} onClick={() => onOverride(stage)}>
             人工改写这一阶段…
           </Button>
         )}
@@ -347,6 +350,7 @@ function KeepSection({
 }) {
   const { keep } = m
   const pending = isPending(wkey(m.id, 'extend'))
+  const readonly = useReadonly()
   const left = keep.expiresAt === null ? null : daysLeft(keep.expiresAt, now)
   const extended = extendedText(keep)
 
@@ -395,7 +399,8 @@ function KeepSection({
       <div className={styles.acts}>
         <Button
           size="sm"
-          disabled={pending || keep.expiresAt === null || keep.filesGone}
+          disabled={pending || readonly || keep.expiresAt === null || keep.filesGone}
+          title={readonlyTitle(readonly)}
           onClick={() => onExtend(m.id)}
         >
           {pending ? '延长中…' : '延长 30 天'}
@@ -428,6 +433,8 @@ function GrantSection({
   const cell = grantCellKind(m)
   const overridden = m.hand.includes('allow')
   const pending = isPending(wkey(m.id, 'allow'))
+  const readonly = useReadonly()
+  const roTitle = readonlyTitle(readonly)
 
   return (
     <section className={styles.section} data-testid="section-allow">
@@ -449,6 +456,8 @@ function GrantSection({
               key={id}
               tone="brand"
               onRemove={() => onRevoke(m.id, id)}
+              removeDisabled={readonly}
+              removeTitle={roTitle}
               removeLabel={`收回 ${programName(programs, id)} 对「${meetingTitle(m)}」的授权`}
             >
               {programName(programs, id)}
@@ -458,15 +467,15 @@ function GrantSection({
       )}
 
       <div className={styles.acts}>
-        <Button size="sm" onClick={() => onOpenGrant(m.id)}>
+        <Button size="sm" onClick={() => onOpenGrant(m.id)} disabled={readonly} title={roTitle}>
           授权给…
         </Button>
         {overridden ? (
-          <Button size="sm" disabled={pending} onClick={() => onClearOverride('allow')}>
+          <Button size="sm" disabled={pending || readonly} title={roTitle} onClick={() => onClearOverride('allow')}>
             {pending ? '撤销中…' : '撤销人工改写'}
           </Button>
         ) : (
-          <Button size="sm" disabled={pending} onClick={() => onOverride('allow')}>
+          <Button size="sm" disabled={pending || readonly} title={roTitle} onClick={() => onOverride('allow')}>
             人工改写采集权限…
           </Button>
         )}

@@ -51,6 +51,31 @@ export class UnauthorizedError extends ApiError {
   }
 }
 
+/**
+ * 权限不够（403）。目前只有一个来源：只读角色发了写请求（A8 的 `readonly_role`）。
+ *
+ * **必须与 401 分开**：401 是"这张会话过期了"，出口是跳登录；403 是"这张会话
+ * 好好的，只是这个账号不能做这件事"，出口是就地说明。混成一个的表现是只读账号
+ * 每点一次禁用按钮之外的写入口就被踢回登录页一次，登录之后还是不能改。
+ *
+ * 界面上的禁用只是"别让人白点"，不是权限；**这条 403 才是权限**。所以哪怕前端
+ * 每一个写入口都禁用了，这条路径也必须留着并且说得出人话——绕过界面（另一个
+ * 标签页里过期的界面、直接发的请求）时它是唯一会说话的那一层。
+ */
+export class ForbiddenError extends ApiError {
+  constructor(status: number, endpoint: string, message: string, body?: unknown) {
+    super(status, endpoint, message, body)
+    this.name = 'ForbiddenError'
+  }
+}
+
+/** 后端 403 体里的 `message` 是一句可以直接显示的中文，有就用它，不要自己再拼一句。 */
+function humanMessage(body: unknown): string | null {
+  if (body === null || typeof body !== 'object' || !('message' in body)) return null
+  const msg = (body as { message: unknown }).message
+  return typeof msg === 'string' && msg.trim() !== '' ? msg : null
+}
+
 type UnauthorizedHandler = () => void
 
 let unauthorizedHandler: UnauthorizedHandler | null = null
@@ -154,6 +179,18 @@ async function request<T>(
     const errBody = await readBody(res)
     unauthorizedHandler?.()
     throw new UnauthorizedError(401, endpoint, `${endpoint} 会话已过期或未登录`, errBody)
+  }
+
+  if (res.status === 403) {
+    const errBody = await readBody(res)
+    const said = humanMessage(errBody)
+    const detail = describeBody(errBody)
+    throw new ForbiddenError(
+      403,
+      endpoint,
+      said ?? `${endpoint} 被拒绝（403${detail === '' ? '' : `：${detail}`}）：这个账号没有做这件事的权限。`,
+      errBody,
+    )
   }
 
   if (!res.ok) {

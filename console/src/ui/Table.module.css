@@ -56,3 +56,91 @@
 .table tbody tr[data-dim='true'] td {
   color: var(--ink-3);
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   窄屏：一行一张卡片（spec §11 缺口 2）
+   ══════════════════════════════════════════════════════════════════
+
+   断点写死 56em（896px）而不是引用令牌：CSS 自定义属性在媒体查询的**条件
+   部分**不生效（`@media (max-width: var(--x))` 是无效语法），这是规范本身的
+   限制，不是这里偷懒。同一个数在 Preview.module.css / Player.module.css /
+   AppShell / Rail / GlobalBar 里各出现一次，注释都指回这一条。
+
+   为什么是「卡片」而不是「让它横滚」：横滚的表在触屏上要横向甩动才看得到
+   后半张表，而后半张表里恰好是「本地保留」「已授权给」——最需要被看到的两列。
+   spec §11 把这条列为缺口，用词是「能看，不好用」。
+
+   `display: block` 会让浏览器丢掉 table 角色（读屏不再念列名），所以每个格子
+   自己带 `data-label`，用 ::before 显示成可见文本。这是标准做法，也是为什么
+   `cards` 是一个显式开关：忘了给 data-label 的表在窄屏会悄悄丢掉列名。 */
+@media (max-width: 56em) {
+  .cards .scroll {
+    overflow-x: visible;
+  }
+
+  .cards .table,
+  .cards .table tbody,
+  .cards .table tbody tr,
+  .cards .table tbody td {
+    display: block;
+  }
+
+  /* 列名改由每个格子自己带，表头这一行没有意义了 */
+  .cards .table thead {
+    display: none;
+  }
+
+  /* 一行 = 一张卡片。分隔线从格子挪到行上。 */
+  .cards .table tbody tr {
+    padding: var(--s-4) var(--s-5);
+    border-bottom: var(--s-px) solid var(--line);
+  }
+  .cards .table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .cards .table tbody td {
+    padding: var(--s-1) 0;
+    border-bottom: 0;
+  }
+
+  /* 有 data-label 的格子排成「列名 ｜ 值」两栏；没有的（勾选框、标题、
+     行尾的动作）占满一行——它们本来就不需要列名。 */
+  .cards .table tbody td[data-label] {
+    display: flex;
+    gap: var(--s-3);
+    align-items: baseline;
+  }
+  .cards .table tbody td[data-label]::before {
+    content: attr(data-label);
+    flex: none;
+    /* em 而不是 ch：`ch` 量的是「0」这个西文字形的宽度，而这些列名全是中文，
+       一个汉字约等于 2ch——按 ch 给宽度会让「拉取 · 归档」在槽里折成两行。
+       6em 放得下最长的那个列名（「拉取 · 归档」约 5.5em）。 */
+    width: 6em;
+    white-space: nowrap;
+    font-size: var(--t-xs);
+    color: var(--ink-3);
+  }
+
+  /* 卡片里的行不再整行换底色——那在竖排布局下会糊成一大块。
+     选中/光标改用左侧的一道色条，与宽屏 tr[data-cursor] 是同一种语言。 */
+  .cards .table tbody tr:hover td,
+  .cards .table tbody tr[data-selected='true'] td {
+    background: none;
+  }
+  .cards .table tbody tr[data-selected='true'] {
+    background: color-mix(in oklab, var(--brand) 8%, transparent);
+  }
+  .cards .table tbody tr[data-cursor='true'] td:first-child {
+    box-shadow: none;
+  }
+  .cards .table tbody tr[data-cursor='true'] {
+    box-shadow: inset var(--s-1) 0 0 var(--brand);
+  }
+
+  /* 空态/错误态那种 colSpan 横跨整表的格子：不要那条 7ch 的列名槽 */
+  .cards .table tbody td[colspan] {
+    padding: 0;
+  }
+}

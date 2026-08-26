@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import ConsumersPage from '../../src/pages/Consumers'
@@ -234,7 +235,7 @@ describe('「现在可取走 N 场会议的 X」', () => {
     expect(screen.getByText(/规则拒绝/)).toBeInTheDocument()
   })
 
-  test('程序被停用时不许说"现在可取走"——清单端点不看 enabled，它给的是"如果它还能登录"', async () => {
+  test('程序被停用时这一格显示「已停用」，不显示那个会骗人的数（F7 / spec §1.3）', async () => {
     respond(/GET .*\/admin\/programs$/, () => [200, [{ ...KB, enabled: false }]])
     respond(/GET .*\/inventory$/, () => [
       200,
@@ -243,9 +244,45 @@ describe('「现在可取走 N 场会议的 X」', () => {
     renderPage()
 
     const reach = await screen.findByTestId('reach-kb-indexer')
+    expect(reach).toHaveAttribute('data-kind', 'disabled')
+    // 数字的位置上是状态本身，不是 4
+    expect(within(reach).getByText('已停用')).toBeInTheDocument()
+    expect(reach).toHaveTextContent('现在 0 场会议对它开放')
     expect(reach).not.toHaveTextContent('现在可取走')
-    expect(reach).toHaveTextContent('恢复启用后可取走 4 场会议的 AI 纪要')
-    expect(reach).toHaveTextContent('凭据换不到令牌')
+    expect(reach).not.toHaveTextContent('可取走 4 场')
+  })
+
+  test('那份"如果它还能登录"的清单降到下面一行，仍然说得出来，但不冒充「现在」', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, [{ ...KB, enabled: false }]])
+    respond(/GET .*\/inventory$/, () => [
+      200,
+      inventory({ fetchableCount: 4, assetTypes: ['ai_minutes'] }),
+    ])
+    renderPage()
+
+    const note = await screen.findByTestId('reach-kb-indexer-ifenabled')
+    expect(note).toHaveTextContent('恢复启用后它能取走 4 场会议的 AI 纪要')
+    expect(note).toHaveTextContent('不是现在')
+  })
+
+  test('停用且清单本来就是空的时候，下面那一行说的是"恢复启用后也一场都取不到"', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, [{ ...KB, enabled: false }]])
+    respond(/GET .*\/inventory$/, () => [200, inventory()])
+    renderPage()
+
+    expect(await screen.findByTestId('reach-kb-indexer-ifenabled')).toHaveTextContent(
+      '恢复启用后它也一场都取不到',
+    )
+  })
+
+  test('停用立刻生效这件事写在界面上（已签发的令牌也失效），并且说清授权没删', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, [{ ...KB, enabled: false }]])
+    respond(/GET .*\/inventory$/, () => [200, inventory({ fetchableCount: 4, assetTypes: ['ai_minutes'] })])
+    renderPage()
+
+    const reach = await screen.findByTestId('reach-kb-indexer')
+    expect(reach).toHaveTextContent('停用立刻生效')
+    expect(reach).toHaveTextContent('已有的授权一条都没删')
   })
 
   test('凭据过期时同理，说的是"换发凭据后"', async () => {
@@ -418,6 +455,8 @@ describe('接入向导', () => {
     createdAt: 1700000000,
     secret: 's_7Qk2vXe4NpR8tLmA3zYbW6hJfD1cGuS',
     secretShownOnce: true,
+    // A8 之后建号与轮换下发同一句话，界面上两处都读它、都不改写
+    secretNote: '这是唯一一次能看到这个凭据明文的机会：服务端只存哈希，此后无从还原。',
   }
 
   async function openWizard(): Promise<HTMLElement> {
@@ -571,16 +610,178 @@ describe('接入向导', () => {
   })
 })
 
-/* ─────────────── 这一轮明确不做的两个动作 ─────────────── */
+/* ─────────────── 停用 / 轮换（spec §11 缺口 4，端点由 A8 补）─────────────── */
 
-describe('停用程序 / 轮换凭据这一轮不放按钮', () => {
-  test('卡片上没有这两个动作——端点还不存在，放一个点了没反应的按钮更差', async () => {
+const ROTATED = {
+  id: 'kb-indexer',
+  name: '知识库索引器',
+  rotatedAt: 1700000000,
+  secret: 'brand-new-secret',
+  secretShownOnce: true,
+  secretNote: '这是唯一一次能看到这个凭据明文的机会：服务端只存哈希，此后无从还原。',
+}
+
+async function cardReady(program: Record<string, unknown> = KB): Promise<void> {
+  respond(/GET .*\/admin\/programs$/, () => [200, [program]])
+  respond(/GET .*\/inventory$/, () => [200, inventory({ fetchableCount: 1, assetTypes: ['ai_minutes'] })])
+  renderPage()
+  await screen.findByTestId('reach-kb-indexer')
+}
+
+describe('停用 / 启用', () => {
+  test('按「停用」先弹二次确认，这时还没发任何请求', async () => {
+    await cardReady()
+    const before = calls.length
+    await userEvent.click(screen.getByRole('button', { name: '停用' }))
+    expect(await screen.findByTestId('confirm-disable')).toBeInTheDocument()
+    expect(calls.length).toBe(before)
+  })
+
+  test('确认框里说清了两件事：立刻生效（含已签发的令牌）、授权一条都不删', async () => {
+    await cardReady()
+    await userEvent.click(screen.getByRole('button', { name: '停用' }))
+    const box = await screen.findByTestId('confirm-disable')
+    expect(box).toHaveTextContent('立刻')
+    expect(box).toHaveTextContent('已经签发、还没过期的访问令牌')
+    expect(box).toHaveTextContent('已有的授权一条都不会删')
+    expect(box).toHaveTextContent('停用是可逆的')
+  })
+
+  test('确认之后发 PATCH，且请求体是真布尔 false', async () => {
+    await cardReady()
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [200, { ...KB, enabled: false }])
+    await userEvent.click(screen.getByRole('button', { name: '停用' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认停用' }))
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === 'PATCH')
+      expect(patch).toBeDefined()
+      expect(patch!.body).toEqual({ enabled: false })
+    })
+  })
+
+  test('成功之后重取列表——不做乐观更新，卡片上的状态是后端说的', async () => {
+    await cardReady()
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [200, { ...KB, enabled: false }])
+    const getsBefore = calls.filter((c) => c.method === 'GET' && c.url.endsWith('/admin/programs')).length
+
+    await userEvent.click(screen.getByRole('button', { name: '停用' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认停用' }))
+
+    await waitFor(() => {
+      const after = calls.filter((c) => c.method === 'GET' && c.url.endsWith('/admin/programs')).length
+      expect(after).toBeGreaterThan(getsBefore)
+    })
+  })
+
+  test('已停用的程序上那个按钮是「启用」，确认框说凭据没变', async () => {
+    await cardReady({ ...KB, enabled: false })
+    await userEvent.click(screen.getByRole('button', { name: '启用' }))
+    const box = await screen.findByTestId('confirm-enable')
+    expect(box).toHaveTextContent('凭据没有变')
+  })
+
+  test('后端拒绝时把它那句话原样显示出来，不是一句"操作失败"', async () => {
+    await cardReady()
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [
+      400,
+      { error: 'invalid_enabled', hint: 'enabled 必须是 true 或 false' },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: '停用' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认停用' }))
+
+    const err = await screen.findByTestId('action-error-kb-indexer')
+    expect(err).toHaveTextContent('invalid_enabled')
+    expect(err).toHaveTextContent('/api/v1/admin/programs/kb-indexer')
+  })
+})
+
+describe('轮换凭据：一次性展示', () => {
+  test('先二次确认，且说清旧凭据当场失效', async () => {
+    await cardReady()
+    await userEvent.click(screen.getByRole('button', { name: '轮换凭据' }))
+    const box = await screen.findByTestId('confirm-rotate')
+    expect(box).toHaveTextContent('旧凭据当场失效')
+    expect(box).toHaveTextContent('401')
+    expect(box).toHaveTextContent('只显示这一次')
+  })
+
+  test('确认之后发 POST，新明文与后端那句话都上屏', async () => {
+    await cardReady()
+    respond(/POST .*\/rotate-secret$/, () => [200, ROTATED])
+    await userEvent.click(screen.getByRole('button', { name: '轮换凭据' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认轮换' }))
+
+    const panel = await screen.findByTestId('rotated-secret')
+    expect(within(panel).getByText('brand-new-secret')).toBeInTheDocument()
+    // 后端下发的那句原样上屏，前端不改写
+    expect(screen.getByTestId('rotated-note')).toHaveTextContent(ROTATED.secretNote)
+  })
+
+  test('没勾「我已经保存好了」就关，会被再问一遍，而不是一声不吭地关掉', async () => {
+    await cardReady()
+    respond(/POST .*\/rotate-secret$/, () => [200, ROTATED])
+    await userEvent.click(screen.getByRole('button', { name: '轮换凭据' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认轮换' }))
+    await screen.findByTestId('rotated-secret')
+
+    await userEvent.click(screen.getByRole('button', { name: '关掉这一屏' }))
+    expect(await screen.findByTestId('rotated-leave-warn')).toHaveTextContent('再也拿不到')
+    // 面板还在：明文没有被悄悄收走
+    expect(screen.getByTestId('rotated-secret')).toBeInTheDocument()
+  })
+
+  test('勾了之后才关得掉', async () => {
+    await cardReady()
+    respond(/POST .*\/rotate-secret$/, () => [200, ROTATED])
+    await userEvent.click(screen.getByRole('button', { name: '轮换凭据' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认轮换' }))
+    await screen.findByTestId('rotated-secret')
+
+    await userEvent.click(screen.getByLabelText('我已经把新 Secret 保存好了'))
+    await userEvent.click(screen.getByRole('button', { name: '关掉这一屏' }))
+    await waitFor(() => expect(screen.queryByTestId('rotated-secret')).toBeNull())
+  })
+
+  test('轮换失败时不弹那一屏，改把错误说出来', async () => {
+    await cardReady()
+    respond(/POST .*\/rotate-secret$/, () => [404, { error: 'program_not_found' }])
+    await userEvent.click(screen.getByRole('button', { name: '轮换凭据' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认轮换' }))
+
+    expect(await screen.findByTestId('action-error-kb-indexer')).toHaveTextContent('program_not_found')
+    expect(screen.queryByTestId('rotated-secret')).toBeNull()
+  })
+})
+
+describe('只读账号（spec §11 缺口 1）', () => {
+  async function readonlyCard(): Promise<void> {
     respond(/GET .*\/admin\/programs$/, () => [200, [KB]])
     respond(/GET .*\/inventory$/, () => [200, inventory({ fetchableCount: 1, assetTypes: ['ai_minutes'] })])
-    renderPage()
-
+    const router = createMemoryRouter([{ path: '/consumers', element: <ConsumersPage /> }], {
+      initialEntries: ['/consumers'],
+    })
+    renderAsRole(<RouterProvider router={router} />, 'readonly')
     await screen.findByTestId('reach-kb-indexer')
-    expect(screen.queryByRole('button', { name: /停用/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /轮换/ })).toBeNull()
+  }
+
+  test('三个写入口全部禁用，且都说得出为什么', async () => {
+    await readonlyCard()
+    for (const name of ['接入新程序', '停用', '轮换凭据']) {
+      const btn = screen.getByRole('button', { name })
+      expect(btn, name).toBeDisabled()
+      expect(btn, name).toHaveAttribute('title', '只读账号不能改')
+    }
+  })
+
+  test('「查看清单」不禁用——它是读，只读账号本来就该看得到', async () => {
+    await readonlyCard()
+    expect(screen.getByRole('button', { name: '查看清单' })).toBeEnabled()
+  })
+
+  test('禁用了也不隐藏：按钮还在，只是点不动', async () => {
+    await readonlyCard()
+    expect(screen.getByRole('button', { name: '停用' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '轮换凭据' })).toBeInTheDocument()
   })
 })

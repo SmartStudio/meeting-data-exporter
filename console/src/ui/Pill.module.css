@@ -76,6 +76,13 @@
   border-radius: var(--r-pill);
   transition: background-color var(--dur-1) var(--ease-out);
 }
-.remove:hover {
+.remove:hover:not(:disabled) {
   background: color-mix(in oklab, var(--ink) 12%, transparent);
+}
+
+/* 禁用的移除角标：仍然在（看得见、Tab 得到、读屏念得出"禁用"），只是点不动。
+   不降透明度——徽标上的 ✕ 与标签同色是上面那段注释里的不变式，降透明度会把
+   这个白拿来的对比度保证弄丢。改用 not-allowed 光标 + 不响应 hover。 */
+.remove:disabled {
+  cursor: not-allowed;
 }

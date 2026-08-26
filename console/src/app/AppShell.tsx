@@ -7,6 +7,7 @@ import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
 import GlobalBar from './GlobalBar'
 import Rail from './Rail'
+import { SessionProvider } from './session'
 import ShortcutBar from './ShortcutBar'
 import SystemStatus, { SystemHealthProvider } from './SystemStatus'
 import styles from './AppShell.module.css'
@@ -81,21 +82,25 @@ export default function AppShell() {
   // `SystemHealthProvider` 在登录态确认**之后**才挂：它要发两条真实的 admin
   // 请求，没有会话时发出去只会拿到 401，然后触发上面那个全局出口——
   // 一次本来不需要发生的跳转。
+  // `SessionProvider` 包在最外层：角色决定了下面每一个写入口画成什么样
+  // （`app/session.tsx` 说明了为什么"没有 Provider"必须落到只读一侧）。
   return (
-    <SystemHealthProvider>
-      <div className={styles.shell}>
-        <Rail />
-        <div className={styles.main}>
-          <GlobalBar />
-          <SystemStatus />
-          {/* 唯一的 <main>：一页只能有一个，所以它在外壳这一层，
-              页面自己用 PageShell 的 <section aria-labelledby> */}
-          <main className={styles.view}>
-            <Outlet />
-          </main>
+    <SessionProvider identity={identity.data}>
+      <SystemHealthProvider>
+        <div className={styles.shell}>
+          <Rail />
+          <div className={styles.main}>
+            <GlobalBar />
+            <SystemStatus />
+            {/* 唯一的 <main>：一页只能有一个，所以它在外壳这一层，
+                页面自己用 PageShell 的 <section aria-labelledby> */}
+            <main className={styles.view}>
+              <Outlet />
+            </main>
+          </div>
+          <ShortcutBar />
         </div>
-        <ShortcutBar />
-      </div>
-    </SystemHealthProvider>
+      </SystemHealthProvider>
+    </SessionProvider>
   )
 }

@@ -3,6 +3,7 @@ import type { SystemState } from '@/api/types'
 import { useTheme, type Theme } from '@/theme/useTheme'
 import { isProtoMode } from './proto'
 import { SYSTEM_STATE_OPTIONS, useSystemState } from './SystemStatus'
+import UserMenu from './UserMenu'
 import styles from './GlobalBar.module.css'
 
 const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
@@ -89,13 +90,10 @@ export default function GlobalBar() {
 
       <span className={styles.sep} />
 
-      {/* F1 只是入口，不实现下拉菜单——那是 Popover（T4）+ Menu 组合的活 */}
-      <button type="button" className={styles.user}>
-        <span className={styles.avatar} aria-hidden="true">
-          陈
-        </span>
-        陈运维
-      </button>
+      {/* 账号名、角色、改密码、退出登录都在这里（spec §11 缺口 1 / 5）。
+          F1 那个写死「陈运维」的占位按钮已经换掉了——写死的名字在一个
+          多人共用的运维面板上，是一句每次都在骗人的话。 */}
+      <UserMenu />
     </header>
   )
 }

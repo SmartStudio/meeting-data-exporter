@@ -1,5 +1,6 @@
 import type { ServiceProgram } from '@/api/admin/grants'
 import type { AdminMeeting } from '@/api/admin/meetings'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { daysLeft, fmtDateTime, fmtDay } from '@/lib/format'
 import { Pill } from '@/ui/Pill'
 import { ProgressBar } from '@/ui/ProgressBar'
@@ -88,9 +89,15 @@ export function MeetingRow(props: MeetingRowProps) {
         </div>
       </td>
 
-      <td className={styles.host}>{m.missing.includes('host') ? '—' : m.host}</td>
+      {/* data-label 是窄屏卡片形态下的列名（`ui/Table` 的 cards 开关）。
+          宽屏下它不显示——列名在 thead 里。漏一个的表现是窄屏上那一格
+          只剩一个没人看得懂的值。 */}
+      <td className={styles.host} data-label="主持人">
+        {m.missing.includes('host') ? '—' : m.host}
+      </td>
 
       <td
+        data-label="资产"
         className={styles.assets}
         data-state={total === 0 ? 'na' : got < total ? 'partial' : 'full'}
         title={
@@ -103,7 +110,7 @@ export function MeetingRow(props: MeetingRowProps) {
         {m.unknownAssetTypes.length > 0 && <sup aria-hidden="true">?</sup>}
       </td>
 
-      <td className={styles.stage}>
+      <td className={styles.stage} data-label="拉取 · 归档">
         <div className={styles.stageRow}>
           <StageDot m={m} stage="fetch" isPending={isPending} onToggle={onToggleStage} />
           {/* 两阶段之间的连线：拉取完成才是实线，否则虚线——顺序关系是这一栏
@@ -113,11 +120,11 @@ export function MeetingRow(props: MeetingRowProps) {
         </div>
       </td>
 
-      <td className={styles.keep} data-testid={`keep-${m.id}`}>
+      <td className={styles.keep} data-label="本地保留" data-testid={`keep-${m.id}`}>
         <KeepCell m={m} now={now} isPending={isPending} onExtend={onExtend} />
       </td>
 
-      <td className={styles.grant} data-testid={`grant-${m.id}`}>
+      <td className={styles.grant} data-label="已授权给" data-testid={`grant-${m.id}`}>
         <GrantCell m={m} programs={programs} isPending={isPending} onOpenGrant={onOpenGrant} onRevoke={onRevoke} />
       </td>
 
@@ -153,6 +160,7 @@ function StageDot({
   isPending: (key: string) => boolean
   onToggle: (id: string, stage: Stage) => void
 }) {
+  const readonly = useReadonly()
   const raw = stage === 'fetch' ? m.fetch : m.archive
   const state = dotState(stage, raw)
   if (state === 'unknown') {
@@ -171,7 +179,8 @@ function StageDot({
       label={STAGE_NAME[stage]}
       overridden={m.hand.includes(stage)}
       onClick={() => onToggle(m.id, stage)}
-      disabled={pending}
+      disabled={pending || readonly}
+      disabledReason={readonlyTitle(readonly)}
     />
   )
 }
@@ -187,6 +196,9 @@ function KeepCell({
   isPending: (key: string) => boolean
   onExtend: (id: string) => void
 }) {
+  // 钩子必须在任何提前 return 之前调用——这个组件下面有三处 return。
+  const readonly = useReadonly()
+
   if (m.keep.filesGone) {
     return (
       <div className={styles.keepRow}>
@@ -237,7 +249,8 @@ function KeepCell({
         type="button"
         className={styles.extendBtn}
         onClick={() => onExtend(m.id)}
-        disabled={pending}
+        disabled={pending || readonly}
+        title={readonlyTitle(readonly)}
         aria-label={`把「${meetingTitle(m)}」的本地保留期延长 30 天`}
       >
         {pending ? '延长中…' : '＋30 天'}
@@ -259,6 +272,9 @@ function GrantCell({
   onOpenGrant: (id: string) => void
   onRevoke: (id: string, programId: string) => void
 }) {
+  // 同上：这个组件有六处提前 return，钩子只能在最前面。
+  const readonly = useReadonly()
+  const roTitle = readonlyTitle(readonly)
   const cell = grantCellKind(m)
 
   if (cell.kind === 'expired') return <span className={styles.grantNone}>授权已失效</span>
@@ -281,7 +297,13 @@ function GrantCell({
 
   if (m.grants.length === 0) {
     return (
-      <button type="button" className={styles.grantAdd} onClick={() => onOpenGrant(m.id)}>
+      <button
+        type="button"
+        className={styles.grantAdd}
+        onClick={() => onOpenGrant(m.id)}
+        disabled={readonly}
+        title={roTitle}
+      >
         ＋ 授权给…
       </button>
     )
@@ -297,6 +319,8 @@ function GrantCell({
             key={id}
             tone="brand"
             onRemove={pending ? () => undefined : () => onRevoke(m.id, id)}
+            removeDisabled={readonly}
+            removeTitle={roTitle}
             removeLabel={`收回 ${programName(programs, id)} 对「${title}」的授权`}
           >
             {programName(programs, id)}
@@ -308,6 +332,8 @@ function GrantCell({
         type="button"
         className={styles.grantAdd}
         onClick={() => onOpenGrant(m.id)}
+        disabled={readonly}
+        title={roTitle}
         aria-label={`再给「${title}」授权一个采集程序`}
       >
         ＋

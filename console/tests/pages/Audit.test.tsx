@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { fmtDateTime } from '../../src/lib/format'
@@ -520,6 +521,30 @@ describe('页面骨架', () => {
     expect(declarations).not.toMatch(/\brgba?\(/)
     // 1px 边框是门槛明确豁免的那一个
     expect(declarations.replace(/\b[01]px\b/g, '')).not.toMatch(/\b\d+px\b/)
+  })
+})
+
+describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
+  test('六个格子都带 data-label——卡片形态下 thead 不渲染，列名靠它', async () => {
+    const tr = await ready()
+    const labels = [...tr.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
+    expect(labels).toEqual(['时间', '操作者', '动作', '对象', '结果', '细节'])
+  })
+})
+
+describe('只读账号（spec §11 缺口 1）', () => {
+  test('这一页本来就没有写入口，只读账号看到的与管理员一模一样', async () => {
+    const router = createMemoryRouter([{ path: '/audit', element: <AuditPage /> }], {
+      initialEntries: ['/audit'],
+    })
+    renderAsRole(<RouterProvider router={router} />, 'readonly')
+    await screen.findByRole('heading', { name: '操作审计', level: 1 })
+    // 页头那句说明照常在（一个只读账号在哪一页都该知道自己是只读的）
+    expect(screen.getByTestId('readonly-banner')).toBeInTheDocument()
+    // 但没有任何一个按钮因为角色被禁用
+    for (const b of screen.getAllByRole('button')) {
+      expect(b).not.toHaveAttribute('title', '只读账号不能改')
+    }
   })
 })
 

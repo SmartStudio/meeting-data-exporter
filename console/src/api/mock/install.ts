@@ -274,7 +274,10 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
   const nowSec = Math.floor(Date.now() / 1000)
 
   if (path === `${PREFIX}/auth/me` && method === 'GET') {
-    return json({ adminId: 'proto', username: '原型模式' })
+    // `role` 是 A8 之后契约的一部分（`GET /auth/me` 必发）。少了它前端按
+    // `readonly` 处理（安全的一侧），于是原型模式整个变成只读——演示和
+    // a11y 门槛里那几个"点开抽屉/授权/延长"的场景会当场点不动。
+    return json({ adminId: 'proto', username: '原型模式', role: 'admin' })
   }
 
   /* ── 自动规则（三栈 + 影响预览） ─────────────────────────────── */

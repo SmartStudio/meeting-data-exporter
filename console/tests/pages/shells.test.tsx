@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
+import { render, renderAsRole } from '../helpers/session'
 import { PageShell } from '../../src/ui/PageShell'
 
 /**
@@ -40,6 +41,23 @@ describe('PageShell', () => {
     expect(screen.getByText('四个内置任务')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '立即运行' })).toBeInTheDocument()
     expect(screen.getByText('内容')).toBeInTheDocument()
+  })
+
+  test('只读账号：每一页都带一句说明，管理员不带', () => {
+    renderAsRole(<PageShell title="自动规则" />, 'readonly')
+    const note = screen.getByTestId('readonly-banner')
+    expect(note).toHaveTextContent('只读角色')
+    // 说清"不能改什么"与"去找谁"，不是一句"权限不足"
+    expect(note).toHaveTextContent('管理员')
+  })
+
+  test('没有 SessionProvider 时落到只读一侧（安全的那一侧）', () => {
+    // 这条是回归：`useRole()` 的默认值一旦改成 admin，少包一层 Provider
+    // 的页面就会把写入口画成可点的。
+    render(<PageShell title="定时任务" />)
+    expect(screen.queryByTestId('readonly-banner')).toBeNull() // 包了 admin，所以没有
+    renderAsRole(<PageShell title="定时任务" />, 'readonly')
+    expect(screen.getAllByTestId('readonly-banner').length).toBe(1)
   })
 
   test('CSS 里没有裸值——色值与间距一律走令牌', () => {

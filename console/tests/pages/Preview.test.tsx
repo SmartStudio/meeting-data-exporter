@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
+import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import PreviewPage from '../../src/pages/Preview'
@@ -644,5 +645,21 @@ describe('样式令牌', () => {
       expect(decls, file).not.toMatch(/\brgba?\(/)
       expect(decls.replace(/\b[01]px\b/g, ''), file).not.toMatch(/\b\d+px\b/)
     }
+  })
+})
+
+describe('只读账号（spec §2：看内容是它该有的权限）', () => {
+  test('内容照常看得到——`GET .../content` 在 A8 的白名单里，读内容不降级', async () => {
+    const router = createMemoryRouter(
+      [
+        { path: '/preview/:id', element: <PreviewPage /> },
+        { path: '/meetings', element: <div>会议记录页</div> },
+      ],
+      { initialEntries: ['/preview/m-1'] },
+    )
+    renderAsRole(<RouterProvider router={router} />, 'readonly')
+    await waitFor(() => expect(screen.getByRole('heading', { name: '产品周会' })).toBeInTheDocument())
+    // 三个 tab 都点得动：它们是读
+    for (const b of screen.getAllByRole('tab')) expect(b).toBeEnabled()
   })
 })

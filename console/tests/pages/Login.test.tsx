@@ -43,7 +43,7 @@ function installFetchMock(validCredentials: { username: string; password: string
 
     if (url.endsWith('/api/v1/admin/auth/me') && method === 'GET') {
       return authenticated.value
-        ? jsonResponse(200, { adminId: 'admin-1', username: validCredentials.username })
+        ? jsonResponse(200, { adminId: 'admin-1', username: validCredentials.username, role: 'admin' })
         : jsonResponse(401, { error: 'missing_admin_session' })
     }
 
@@ -55,7 +55,7 @@ function installFetchMock(validCredentials: { username: string; password: string
       }
       if (body.username === validCredentials.username && body.password === validCredentials.password) {
         authenticated.value = true
-        return jsonResponse(200, { adminId: 'admin-1', username: body.username })
+        return jsonResponse(200, { adminId: 'admin-1', username: body.username, role: 'admin' })
       }
       return jsonResponse(401, { error: 'invalid_credentials' })
     }
@@ -113,7 +113,7 @@ describe('AppShell 路由守卫：管理员登录态检查', () => {
         // 第一次报 500（网络/服务错误，非 401），第二次（点重试后）恢复正常
         return calls === 1
           ? jsonResponse(500, { error: 'internal_error' })
-          : jsonResponse(200, { adminId: 'admin-1', username: CREDS.username })
+          : jsonResponse(200, { adminId: 'admin-1', username: CREDS.username, role: 'admin' })
       }
       throw new Error(`未预期的 fetch ${url}`)
     })

@@ -102,7 +102,9 @@ export function MeetingTable(props: MeetingTableProps) {
 
   return (
     <div className={styles.wrap}>
-      <Table className={styles.table}>
+      {/* cards：窄屏（≤56em）一行一张卡片，而不是横向滚动（spec §11 缺口 2）。
+          每个 <td> 因此必须带 data-label——见 MeetingRow。 */}
+      <Table className={styles.table} cards>
         <thead>
           <tr>
             <th className={styles.check}>

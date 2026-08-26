@@ -138,7 +138,7 @@ beforeEach(() => {
           headers: { 'content-type': 'application/json' },
         })
       if (url.endsWith('/api/v1/admin/auth/me')) {
-        return json({ adminId: 'admin-1', username: 'chen.yw' })
+        return json({ adminId: 'admin-1', username: 'chen.yw', role: 'admin' })
       }
       if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
       if (url.endsWith('/api/v1/admin/jobs')) return json(healthyJobs())

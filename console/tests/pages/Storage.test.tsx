@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import StoragePage from '../../src/pages/Storage'
 import { fmtBytes, fmtDateTime } from '../../src/lib/format'
@@ -730,5 +731,37 @@ describe('CSS 令牌', () => {
       expect(css, file).not.toMatch(/\brgba?\(/)
       expect(css, file).not.toMatch(/\b\d+px\b/)
     }
+  })
+})
+
+describe('只读账号（spec §11 缺口 1）', () => {
+  async function readonlyReady(): Promise<void> {
+    renderAsRole(<StoragePage />, 'readonly')
+    await screen.findByRole('heading', { name: 'NAS 归档', level: 2 })
+  }
+
+  test('三个写动作禁用，并说得出为什么', async () => {
+    await readonlyReady()
+    for (const name of ['修改默认保留天数', '立即清理已到期文件', '暂停到期清理']) {
+      const btn = screen.getByRole('button', { name })
+      expect(btn, name).toBeDisabled()
+      expect(btn, name).toHaveAttribute('title', '只读账号不能改')
+    }
+  })
+
+  test('「导出可采集清单」**不**禁用——它是一条 GET，只读账号本来就该能导', async () => {
+    await readonlyReady()
+    expect(screen.getByRole('button', { name: '导出可采集清单' })).toBeEnabled()
+  })
+
+  test('页头有一句说明', async () => {
+    await readonlyReady()
+    expect(screen.getByTestId('readonly-banner')).toBeInTheDocument()
+  })
+
+  test('管理员这一侧照旧能点', async () => {
+    await renderReady()
+    expect(screen.getByRole('button', { name: '修改默认保留天数' })).toBeEnabled()
+    expect(screen.queryByTestId('readonly-banner')).toBeNull()
   })
 })

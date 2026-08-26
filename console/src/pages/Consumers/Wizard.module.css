@@ -117,37 +117,8 @@
 
 /* ── 凭据 ───────────────────────────────────────────────────── */
 
-.secretRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-3) var(--s-4);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-}
-
-.secretK {
-  flex: none;
-  width: var(--s-11);
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-}
-
-.secretV {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-  color: var(--ink);
-  overflow-wrap: anywhere;
-}
-
-.copied {
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-}
+/* .secretRow / .secretK / .secretV / .copied 搬去了 SecretRow.module.css：
+   建号与轮换凭据现在共用同一个组件。*/
 
 .ack {
   display: flex;

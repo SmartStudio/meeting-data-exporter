@@ -5,6 +5,7 @@ import { Skeleton } from '@/ui/Skeleton'
 import { Toast } from '@/ui/Toast'
 import { useResource } from '@/lib/useResource'
 import { listRules, type Rule, type StackKind } from '@/api/admin/rules'
+import { readonlyTitle, useReadonly } from '@/app/session'
 import { STACK_META, groupByStack } from './order'
 import { RuleStack } from './RuleStack'
 import { RuleEditor } from './RuleEditor'
@@ -167,6 +168,7 @@ function RuleStacks(props: StacksProps) {
  * 而界面上如果一个字都不提，管理员会以为自己建的那条规则丢了。
  */
 function UnknownStack({ rules, onEdit }: { rules: Rule[]; onEdit: (r: Rule) => void }) {
+  const readonly = useReadonly()
   return (
     <section className={styles.group} aria-labelledby="stack-unknown">
       <h2 id="stack-unknown" className={styles.groupTitle}>
@@ -181,7 +183,13 @@ function UnknownStack({ rules, onEdit }: { rules: Rule[]; onEdit: (r: Rule) => v
           <li key={r.id} className={styles.unknownRow} aria-label={`认不出的规则 #${r.id}`}>
             <span className={styles.unknownKind}>kind「{r.kind}」</span>
             <span className={styles.unknownNote}>{r.note ?? '（没有说明）'}</span>
-            <Button size="sm" variant="quiet" onClick={() => onEdit(r)}>
+            <Button
+              size="sm"
+              variant="quiet"
+              onClick={() => onEdit(r)}
+              disabled={readonly}
+              title={readonlyTitle(readonly)}
+            >
               编辑
             </Button>
           </li>

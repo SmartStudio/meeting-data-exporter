@@ -54,7 +54,9 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
           没有待处理的失败项。
         </p>
       ) : (
-        <Table data-testid="failures-table">
+        /* cards：窄屏（≤56em）一行一张卡片，不横滚（spec §11 缺口 2）。
+           每个 td 因此必须带 data-label。 */
+        <Table data-testid="failures-table" cards>
           <thead>
             <tr>
               <th scope="col">最近失败</th>
@@ -68,12 +70,12 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
           <tbody>
             {o.failures.map((f) => (
               <tr key={f.id} data-testid="failure-row" data-escalated={f.escalated ? 'true' : 'false'}>
-                <td className={styles.nowrap}>
+                <td className={styles.nowrap} data-label="最近失败">
                   {fmtDateTime(f.lastFailedAt, base)}
                   <span className={styles.sub}>{fmtAgo(f.lastFailedAt, now)}</span>
                 </td>
-                <td className={styles.nowrap}>{labelOf(f.jobName)}</td>
-                <td>
+                <td className={styles.nowrap} data-label="任务">{labelOf(f.jobName)}</td>
+                <td data-label="对象">
                   {/* 拿不到人读的名字时照 target 显示。留空会让这一行看起来
                       像"不知道是哪一场"，而 target 恰恰就是那个键 */}
                   <span className={styles.targetName}>
@@ -86,8 +88,8 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
                     </span>
                   )}
                 </td>
-                <td className={styles.reason}>{f.reason}</td>
-                <td className={styles.nowrap}>
+                <td className={styles.reason} data-label="原因">{f.reason}</td>
+                <td className={styles.nowrap} data-label="已重试">
                   {attemptsText(f)}
                   {f.escalated && (
                     // 到上限的含义是**该找人了**，不是"系统放弃了"：四个任务的
@@ -95,7 +97,7 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
                     <span className={styles.escalated}>已到上限 · 需要人工介入</span>
                   )}
                 </td>
-                <td className={styles.impactCell}>{f.impact}</td>
+                <td className={styles.impactCell} data-label="影响">{f.impact}</td>
               </tr>
             ))}
           </tbody>

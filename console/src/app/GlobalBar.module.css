@@ -101,34 +101,40 @@
   margin: 0 var(--s-1);
 }
 
-.user {
-  font: inherit;
-  font-size: var(--t-sm);
-  color: var(--ink);
-  background: none;
-  border: var(--s-px) solid transparent;
-  border-radius: var(--r);
-  padding: var(--s-0) var(--s-2) var(--s-0) var(--s-1);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-}
+/* .user / .avatar 跟着用户菜单搬去了 UserMenu.module.css——那两条样式
+   现在只服务那一个组件，留在顶栏里就是两处各写一份的开始。 */
 
-.user:hover {
-  background: var(--surface);
-  border-color: var(--line);
-}
+/* ── 窄屏（≤56em）：一行放不下就换行 ──────────────────────────────
+   这一条是 spec §11 缺口 2 里**真正够不着**的那一半：定高 48px + 不换行的
+   flex 行，在 375px 下把搜索、主题三档、用户菜单一路推到 781px，
+   再被 `overflow-x: clip` 切掉。换行之后它们都回到视口里。
+   断点写死 56em 的理由见 Table.module.css。 */
+@media (max-width: 56em) {
+  .gbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: var(--s-2);
+    padding: var(--s-2) var(--s-4);
+  }
 
-.avatar {
-  width: var(--s-6);
-  height: var(--s-6);
-  border-radius: var(--r);
-  display: grid;
-  place-items: center;
-  font-size: var(--t-2xs);
-  font-weight: 600;
-  color: var(--ink-2);
-  background: var(--surface);
-  box-shadow: inset 0 0 0 var(--s-px) var(--line);
+  /* 弹性占位在换行布局里只会把同一行的东西推走，反而制造溢出 */
+  .spacer {
+    display: none;
+  }
+
+  /* 竖线是给一行排布准备的分隔，换行之后它落在行首行尾都没有意义 */
+  .sep {
+    display: none;
+  }
+
+  .search {
+    /* 让它自己占满一行：与主题三档挤在一行会把两边都压到读不出来 */
+    flex: 1 0 100%;
+    min-height: var(--tap-min);
+  }
+
+  .themeBtn {
+    min-height: var(--tap-min);
+    padding: var(--s-1) var(--s-4);
+  }
 }

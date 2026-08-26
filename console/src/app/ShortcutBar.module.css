@@ -31,3 +31,13 @@
   border-radius: var(--r-xs);
   padding: 0 var(--s-1);
 }
+
+/* 窄屏（≤56em）不渲染这条快捷键提示。**这是唯一一处"隐藏"**，理由是它提示的
+   东西在触屏上不存在：`J/K`、`E`、`G`、`Esc` 需要一个物理键盘。它本来就
+   `aria-hidden`、不接任何事件，纯提示。留着的代价是六七行提示条固定压在
+   内容上——窄屏下那是一大块。断点写死 56em 的理由见 Table.module.css。 */
+@media (max-width: 56em) {
+  .bar {
+    display: none;
+  }
+}
