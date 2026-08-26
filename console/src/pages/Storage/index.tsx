@@ -254,8 +254,23 @@ export default function StoragePage() {
   )
 }
 
-/** 错误落到界面上时说清是哪条端点、后端说了什么——`ApiError.message` 里两样都有。 */
+/**
+ * 错误落到界面上的说法。
+ *
+ * **后端给了整句话的时候用它那句**（`body.message`），后面缀上端点与状态码。
+ * 这一族错误里最该被原样读到的两条都带 message：503「本进程没挂载本地归档区」
+ * 和 A8 之后的 403「这个账号是只读角色」——把它们压成一句
+ * "返回 403：readonly_role"，读的人还得去查那个码是什么意思。
+ * 没有 message 时退回 `ApiError.message`，里面已经带着端点名与后端错误码。
+ */
 function msgOf(e: unknown): string {
+  if (e instanceof ApiError) {
+    const body = e.body
+    if (body !== null && typeof body === 'object' && 'message' in body) {
+      const m = (body as { message: unknown }).message
+      if (typeof m === 'string' && m !== '') return `${m}（${e.endpoint} 返回 ${e.status}）`
+    }
+  }
   return e instanceof Error ? e.message : String(e)
 }
 
@@ -276,14 +291,12 @@ function describeDaysError(e: unknown): string {
   return msgOf(e)
 }
 
-/** 503 时把后端那句话原样摆出来——它说的是"没挂载本地归档区"，不是"没有可清理的"。 */
+/**
+ * 清理这条路径上的错误。503 那句"本进程没挂载本地归档区（MDE_ARCHIVE_ROOT
+ * 未配置）"必须原样读到——它与"没有可清理的文件"是完全不同的两件事，
+ * 而后者会让人以为清理跑过了。`msgOf` 已经优先用 `body.message`，这里只是
+ * 给这条路径一个有名字的出口，免得下一个人把它简化成 `String(e)`。
+ */
 function describeCleanupError(e: unknown): string {
-  if (e instanceof ApiError && e.status === 503) {
-    const body = e.body
-    if (body !== null && typeof body === 'object' && 'message' in body) {
-      const m = (body as { message: unknown }).message
-      if (typeof m === 'string') return m
-    }
-  }
   return msgOf(e)
 }

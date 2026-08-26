@@ -384,6 +384,27 @@ describe('暂停到期清理（系统状态横幅链到这一页的那个动作�
     expect(stat('archived')).toHaveTextContent('71')
   })
 
+  test('只读账号（A8 之后）被拒时，读到的是后端那句人话，不是一个错误码', async () => {
+    // A8 给四条写端点加了 requireAdminWrite，只读角色拿到 403 + 一句解释。
+    // 压成"返回 403：readonly_role"的话，读的人还得去查那个码是什么意思。
+    // （按角色把入口禁掉是 F7 的活，这一页这一轮只保证拒绝的理由读得懂。）
+    answer('/api/v1/admin/storage/cleanup-pause', {
+      status: 403,
+      body: {
+        error: 'readonly_role',
+        role: 'viewer',
+        message: '这个账号是只读角色（spec §2），只能查看、不能改任何状态。',
+      },
+    })
+    const user = userEvent.setup()
+    await renderReady()
+
+    await user.click(screen.getByRole('button', { name: '暂停到期清理' }))
+    await waitFor(() => expect(screen.getByTestId('storage-toast')).toHaveTextContent('只读角色'))
+    expect(screen.getByTestId('storage-toast')).toHaveTextContent('403')
+    expect(screen.getByTestId('cleanup-state')).toHaveTextContent('正常运行')
+  })
+
   test('请求失败时说出错误，且状态不擅自翻面', async () => {
     answer('/api/v1/admin/storage', ok(storagePayload()))
     answer('/api/v1/admin/storage/cleanup-pause', { status: 500, body: { error: 'db_down' } })

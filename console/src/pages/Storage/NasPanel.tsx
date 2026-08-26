@@ -102,7 +102,14 @@ export function NasPanel({ nas }: NasPanelProps) {
           id="pending"
           label="尚未归档完成"
           value={nas.pendingMeetings}
-          note="含还没轮到的和一直归档不成功的两种——库里现在分不出来，所以这一格不是纯粹的「排队中」。"
+          note={
+            // 这一格从来不是纯粹的"排队中"。后端接上 job_failures 之前，
+            // "一直归档不成功"的那些在库里与"还没轮到"长得一模一样；接上之后
+            // 两个数**有意重叠**——一场归档不上的会议两边各算一次。
+            nas.failedMeetings === null
+              ? '含还没轮到的和一直归档不成功的两种——后者现在还没有单独的数（见右边那一格）。'
+              : '含还没轮到的和一直归档不成功的两种，与右边的「归档失败」有意重叠：一场归档不上的会议两边各算一次。'
+          }
         />
         <Stat
           id="archive-failed"
