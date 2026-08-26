@@ -1,0 +1,382 @@
+/* 定时任务页（spec.md §4.8）。
+ *
+ * 色值与间距一律走 tokens.css。窄屏靠 flex-wrap 折行，不写宽度断点——
+ * 这个工程里没有一处按宽度分档的 @media，一个新页面不该开这个头。
+ */
+
+/* ── 页面级横幅（落后 / 拉取连续失败）────────────────────────── */
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-5);
+  margin: 0 0 var(--s-5);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+}
+
+.banner[data-sev='fail'] {
+  background: var(--fail-soft);
+  border-color: var(--fail-line);
+}
+
+.banner[data-sev='warn'] {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+}
+
+.bannerText {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.bannerSub {
+  color: var(--ink-2);
+}
+
+/* ── 任务格子 ──────────────────────────────────────────────── */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-5);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+/* 已经落后 = 调度器多半挂了。这一条要显眼：整格换成告警底，不只是一个小徽标。 */
+.job[data-alarm='true'] {
+  background: var(--fail-soft);
+  border-color: var(--fail-line);
+}
+
+/* 换了底就得重新算对比度。浅色主题下 --ink-3 压 --fail-soft 实测只有 4.32:1
+ * （要 4.5:1），所以这格里的次要文字整体上提一档到 --ink-2。
+ * 仍然只引用令牌，不在组件里定义新色值。 */
+.job[data-alarm='true'] .ord,
+.job[data-alarm='true'] .last,
+.job[data-alarm='true'] .impact,
+.job[data-alarm='true'] .noRuns,
+.job[data-alarm='true'] .nextKey,
+.job[data-alarm='true'] .nextGap,
+.job[data-alarm='true'] .sumItem::before {
+  color: var(--ink-2);
+}
+
+/* 基准宽度用 em 而不是 px：它是"这段文字大约多宽才排得开"，
+   不是一个间距取值，落不到 4pt 标尺上。 */
+.main {
+  flex: 1 1 24em;
+  min-width: 0;
+}
+
+.name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.ord {
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.what {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.healthNote {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.last {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* 摘要里的每一项。用中点分隔而不是画格子——它是一行说明，不是一张表。
+ * 分隔符是 content 生成的**文字**，所以走 --ink-3 不走 --ink-4：后者是图形专用，
+ * 白底只有 3.72:1（tokens.css 第 2 条硬规矩）。 */
+.sumItem::before {
+  content: ' · ';
+  color: var(--ink-3);
+}
+
+.sumValue {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.lastError {
+  display: block;
+  margin-top: var(--s-0);
+  color: var(--fail);
+}
+
+.impact {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-5);
+  margin-left: auto;
+}
+
+/* ── sparkline ────────────────────────────────────────────── */
+
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-0);
+  height: var(--s-7);
+}
+
+.bar {
+  display: block;
+  width: var(--s-1);
+  border-radius: var(--r-xs);
+  background: var(--brand);
+}
+
+.bar[data-tone='fail'] {
+  background: var(--fail);
+}
+
+/* 既非成功也非失败（排队 / 正在跑 / 跳过 / 被中断）。--ink-4 是图形专用令牌，
+   这里正是它的用途。 */
+.bar[data-tone='other'] {
+  background: var(--ink-4);
+}
+
+/* 还没跑完 = **没有耗时数据**，所以画成空心的：实心柱子会被读成"这么高就是
+   跑了这么久"，而那个高度是我们编的。 */
+.bar[data-unfinished='true'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 var(--s-px) var(--ink-4);
+}
+
+.noRuns {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.next {
+  text-align: right;
+}
+
+.nextKey {
+  display: block;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.nextAt {
+  display: block;
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.nextGap {
+  display: block;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+/* 手动触发之后那一句。整格宽，排在格子最底下 */
+.runNote {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-sm);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.runNote[data-kind='error'] {
+  background: var(--fail-soft);
+  color: var(--ink);
+}
+
+/* ── 失败项表 ─────────────────────────────────────────────── */
+
+.failures {
+  margin-top: var(--s-8);
+}
+
+.h2 {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.failuresNote {
+  margin: var(--s-2) 0 0;
+  max-width: 74ch;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* 被 100 条上限截断。这句话不是提示，是"你看到的不是全部"这个事实本身 */
+.truncated {
+  margin: var(--s-3) 0 0;
+  padding: var(--s-3) var(--s-4);
+  border: var(--s-px) solid var(--warn-line);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  margin: var(--s-4) 0 0;
+  padding: var(--s-7) var(--s-5);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  text-align: center;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+.failures table {
+  margin-top: var(--s-4);
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.sub {
+  display: block;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.targetName {
+  font-weight: 500;
+}
+
+.reason {
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+.escalated {
+  display: block;
+  font-size: var(--t-2xs);
+  color: var(--fail);
+  white-space: nowrap;
+}
+
+.impactCell {
+  color: var(--fail);
+  font-size: var(--t-xs);
+  overflow-wrap: anywhere;
+}
+
+/* ── 三态：加载 / 读不到 ──────────────────────────────────── */
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.loadingText {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+.loadingRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-5);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.errorBox {
+  padding: var(--s-8) var(--s-6);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  text-align: center;
+}
+
+.errorText {
+  margin: var(--s-3) auto 0;
+  max-width: 60ch;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.errorActs {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--s-5);
+}
+
+.errorDetail {
+  margin: var(--s-5) auto 0;
+  max-width: 72ch;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
