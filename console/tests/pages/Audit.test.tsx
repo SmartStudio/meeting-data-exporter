@@ -103,7 +103,12 @@ describe('筛选条件 → 查询参数', () => {
   test('时间范围一律换算成 from（unix 秒），不是天数', () => {
     const q = toQuery({ ...AUDIT_DEFAULT_UI, rangeId: 'd7' }, NOW)
     expect(q.from).toBe(NOW - 7 * 86_400)
-    expect(q.to).toBeUndefined()
+  })
+
+  test('上界也钉在锚点上 —— audit_log 一直在写，不钉的话翻页会重看一条、跳过一条', () => {
+    // 半开区间 [from, to)，所以是 NOW + 1：恰好落在锚点那一秒的记录也要在里面
+    expect(toQuery({ ...AUDIT_DEFAULT_UI }, NOW).to).toBe(NOW + 1)
+    expect(toQuery({ ...AUDIT_DEFAULT_UI, rangeId: 'all' }, NOW).to).toBe(NOW + 1)
   })
 
   test('「全部时间」发 from=0，而不是干脆不发 —— 不发的话后端会兜一个看不见的 7 天窗口', () => {
@@ -334,14 +339,17 @@ describe('筛选', () => {
     await waitFor(() => expect(lastQuery().getAll('action')).toEqual(['login', 'list_meetings']))
   })
 
-  test('翻页只改 offset，时间下界不动 —— 两页看的必须是同一段时间', async () => {
+  test('翻页只改 offset，时间窗口两头都不动 —— 两页看的必须是同一段时间', async () => {
     serve([row()], { total: 120, limit: 50, offset: 0 })
     const user = userEvent.setup()
     await ready()
     const from = lastQuery().get('from')
+    const to = lastQuery().get('to')
+    expect(to).not.toBeNull()
     await user.click(screen.getByRole('button', { name: '下一页' }))
     await waitFor(() => expect(lastQuery().get('offset')).toBe('50'))
     expect(lastQuery().get('from')).toBe(from)
+    expect(lastQuery().get('to')).toBe(to)
   })
 
   test('改每页条数回到第一页', async () => {

@@ -101,9 +101,23 @@ function multi(raw: string): string[] | undefined {
 }
 
 /**
- * 界面取值 → 请求参数。`nowSec` 是**这一次查询的时间锚点**，由页面冻住：
- * 每次渲染现取的话，翻页时下界会跟着往前挪，第 2 页与第 1 页看的不是同一段
- * 时间——中间那几条记录会从两页之间漏掉，而屏幕上看不出来。
+ * 界面取值 → 请求参数。`nowSec` 是**这一次查询的时间锚点**，由页面冻住。
+ *
+ * ## 上下界都钉死在锚点上，翻页才对得上
+ *
+ * 下界好理解：每次渲染现取 `Date.now()` 的话，翻页时下界会跟着往前挪。
+ *
+ * **上界同样得钉**，而这一条更隐蔽：`audit_log` 是一张一直在写的表。
+ * 不给上界的话，第 1 页看完到点第 2 页之间新写进来的记录会从顶上插进来，
+ * 把所有记录往后推一格——于是第 2 页的 `offset=50` 指向的已经不是原来那一条：
+ * **有一条被看两遍，另一条被跳过去**，而屏幕上完全看不出来。
+ * 审计页最不能出的就是"翻完所有页仍然漏了一条"。
+ *
+ * 所以每次查询是一次**快照**：上界 = 锚点。代价是新记录要按「刷新」才出现，
+ * 补偿是那个上界会原样回显在界面上（`window.to`），不是一条隐形的规则。
+ *
+ * `+1` 是因为区间是半开的 `[from, to)`：不加的话，恰好落在锚点那一秒的记录
+ * 会被排除在外。
  */
 export function toQuery(ui: AuditUiFilter, nowSec: number): AuditFilter {
   const range = rangeOf(ui.rangeId)
@@ -113,6 +127,7 @@ export function toQuery(ui: AuditUiFilter, nowSec: number): AuditFilter {
     // 实际只查了一周。审计页最不能有的就是这种看不见的窗口——管理员找不到某条
     // 记录会读成"这件事没发生过"。
     from: range.days === 0 ? 0 : nowSec - range.days * DAY_SEC,
+    to: nowSec + 1,
     limit: ui.pageSize,
     offset: (Math.max(1, ui.page) - 1) * ui.pageSize,
   }
