@@ -270,6 +270,11 @@ const ROUTES: Route[] = [
   // /preview 与 /:id 不会互相吃掉：compile 出来的 `[^/]+` 不跨段，
   // 而 preview 是 POST、:id 是 PATCH/DELETE，方法先一步就分开了
   compile('GET', '/api/v1/admin/rules', consoleRulesHandlers.listRules),
+  // 条件字段与运算符清单（阶段 5 · A9）。**只读、不碰库**，一份常量序列化出去，
+  // 换掉规则编辑器里那几份镜像（见 handlers/console/rules.ts 的 rulesSchema）。
+  // 不会与下面 `/rules/:id/matches` 打架：那条是三段，这条是两段，
+  // compile 出来的 `[^/]+` 不跨段；也没有 `GET /rules/:id`，所以不必排在谁前面
+  compile('GET', '/api/v1/admin/rules/schema', consoleRulesHandlers.rulesSchema),
   compile('POST', '/api/v1/admin/rules', consoleRulesHandlers.createRule),
   compile('POST', '/api/v1/admin/rules/preview', consoleRulesHandlers.previewRules),
   compile('GET', '/api/v1/admin/rules/:id/matches', consoleRulesHandlers.ruleMatches),

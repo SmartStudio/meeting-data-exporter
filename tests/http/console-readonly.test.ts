@@ -220,6 +220,9 @@ test('只读账号读得到规则、程序、审计、任务四张表', async ()
   const { app } = buildTestApp(pool, { now: () => NOW })
   for (const path of [
     '/api/v1/admin/rules',
+    // 条件字段与运算符清单（阶段 5 · A9）。只读角色也要能打开规则编辑器看
+    // 「这条规则是按什么判的」，拿不到清单那一页就只剩一堆英文字段名
+    '/api/v1/admin/rules/schema',
     '/api/v1/admin/programs',
     '/api/v1/admin/audit',
     '/api/v1/admin/jobs',

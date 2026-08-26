@@ -74,7 +74,17 @@
  */
 
 import type { AdminIdentity } from '../../../auth/admin'
-import { matchesRule, type MeetingFacts, type RuleCond } from '../../../policy/conds'
+import {
+  CONDITION_FIELDS,
+  COND_VALUE_TYPE,
+  KEYWORD_SEPARATOR_SOURCE,
+  OP_LABELS,
+  matchesRule,
+  type MeetingFacts,
+  type RuleCond,
+} from '../../../policy/conds'
+import { ASSET_LABEL } from '../../../domain/asset-labels'
+import { ALL_ASSET_KEYS } from '@yaowu/mde-engine'
 import { meetingFacts } from '../../../policy/access'
 import { fetchStackUnconfigured } from '../../../policy/fetch-compat'
 import {
@@ -84,8 +94,15 @@ import {
   type PreviewSubject,
   type StackImpactPreview,
 } from '../../../policy/preview'
-import { describeStackRuleIssues, type StackDecision, type StackKind, type StackRule } from '../../../policy/stacks'
+import {
+  STACK_SCHEMA,
+  describeStackRuleIssues,
+  type StackDecision,
+  type StackKind,
+  type StackRule,
+} from '../../../policy/stacks'
 import { buildAuditDetail, type AuditEntry } from '../../../store/audit'
+import { AUDIT_ACTION } from '../../../audit/actions'
 import {
   consoleMeetingId,
   type ConsoleMeetingRow,
@@ -113,7 +130,16 @@ function isStackKind(v: unknown): v is StackKind {
  */
 const AUDIT_KIND_MAX = 64
 
-type RuleAction = 'rule_create' | 'rule_update' | 'rule_delete' | 'rule_toggle'
+/**
+ * 这四个动作的原值来自 `src/audit/actions.ts` 的动作登记表（阶段 5 · A9）——
+ * 那张表同时管着「动作原值 → 中文标签」，从那里取意味着一个动作不可能只有写入
+ * 而没有界面上的名字。
+ */
+type RuleAction =
+  | typeof AUDIT_ACTION.ruleCreate
+  | typeof AUDIT_ACTION.ruleUpdate
+  | typeof AUDIT_ACTION.ruleDelete
+  | typeof AUDIT_ACTION.ruleToggle
 
 /**
  * 按**码点**裁到 MySQL 的 VARCHAR(n)（JS 的 `.length` 数的是 UTF-16 码元，
@@ -283,6 +309,89 @@ function patchedFields(patch: RulePatch): string[] {
 
 // ── 端点：读 ──────────────────────────────────────────────────────────────
 
+/**
+ * `GET /api/v1/admin/rules/schema`——条件字段与运算符清单（阶段 5 · A9）。
+ *
+ * ## 这条端点补的是哪个洞
+ *
+ * `src/policy/conds.ts` 的 `CONDITION_FIELDS` 自己写着「**这张表是唯一事实源**：
+ * 求值、静态检查、将来的规则编辑器都读它，不许任何一处另抄一份 op 列表」。
+ * 而在这条端点出现之前，rules 的六条端点里**没有一条下发它**，于是规则编辑器
+ * 只能抄一份（`console/src/pages/Rules/fields.ts`，它的文件头把这件事记成了缺口）。
+ *
+ * 镜像的问题不是它今天错，是**后端加一个新运算符，前端不会知道**——
+ * 下拉框里就是没有那一项，界面上一个字都不会提。漂移是静默的。
+ *
+ * ## 下发什么
+ *
+ * 够规则编辑器把**整个条件构建器**渲染出来，不必再硬编码任何一份清单：
+ *
+ * | 块 | 出处 | 换掉的镜像 |
+ * | --- | --- | --- |
+ * | `fields[]` | `CONDITION_FIELDS` + `OP_LABELS` + `COND_VALUE_TYPE` | `fields.ts` 的 `CONDITION_FIELDS` / `OP_LABEL` |
+ * | `fields[].value.splitPattern` | `KEYWORD_SEPARATOR_SOURCE` | `fields.ts` 的 `splitKeywords` |
+ * | `joins[]` | spec §5.2 | 编辑器里的两个字面量 |
+ * | `stacks[]` | `STACK_SCHEMA`（`policy/stacks.ts`） | `RuleEditor.tsx` 的 `EFFECT_OPTIONS` / `isPositiveEffect` |
+ * | `assetTypes[]` | `ALL_ASSET_KEYS` + `ASSET_LABEL` | `fields.ts` 的 `ASSET_KEYS` |
+ *
+ * ## 三件刻意的事
+ *
+ * 1. **只读，不碰库**。一份常量序列化出去，没有任何数据库往返——所以它也是
+ *    唯一一条不需要 `policyStore` 的 rules 端点。
+ * 2. **`unavailableReason` 缺省是 `null` 而不是空串**：「有数据源」与「没有数据源
+ *    但没人写原因」在前端要分得开。后者是 bug，不该长得像前者。
+ * 3. **archive 栈的 effect 不列成闭集**。除 `skip` 外它是一段归档目录模板，
+ *    列一个假的「全部目录」清单比不列更糟；改由 `freeform` 说清这件事。
+ */
+export async function rulesSchema(req: Request, ctx: RouteCtx): Promise<Response> {
+  // GET：只读角色照常放行（A8 的角色判断只挡非 GET）
+  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  if (!auth.ok) return auth.response
+
+  const fields = Object.entries(CONDITION_FIELDS).map(([f, spec]) => {
+    const shape = COND_VALUE_TYPE[spec.value]
+    return {
+      f,
+      label: spec.label,
+      available: spec.available,
+      unavailableReason: spec.unavailableReason ?? null,
+      ops: spec.ops.map((op) => ({
+        op,
+        // 漏写标签时**不拿 op 原值顶上**：顶上去之后下拉框里会出现一个
+        // 看着像中文名的英文单词，谁都不会去核对。给 null，让它自己显形
+        label: OP_LABELS[op]?.label ?? null,
+        unitSuffix: OP_LABELS[op]?.unitSuffix ?? null,
+      })),
+      value: {
+        kind: spec.value,
+        type: shape.type,
+        multiple: shape.multiple,
+        // 闭集字段才有 options。今天一个都没有——`dept` 本该是（spec §5.3 的
+        // 「部门多选」），但通讯录没接，部门清单根本取不到，所以它是 null 而不是 []
+        options: null,
+        unit: spec.unit ?? null,
+        placeholder: spec.placeholder ?? null,
+        // 关键词字段才需要切法。其余形态给 null，免得前端以为都要 split 一遍
+        splitPattern: spec.value === 'keywords' ? KEYWORD_SEPARATOR_SOURCE : null,
+      },
+    }
+  })
+
+  return json(200, {
+    fields,
+    // spec §5.2：一条规则内只有一个连接词，不支持括号与混用
+    joins: [
+      { value: 'and', label: '全部满足' },
+      { value: 'or', label: '任一满足' },
+    ],
+    stacks: STACK_SCHEMA,
+    assetTypes: ALL_ASSET_KEYS.map((key) => ({ value: key, label: ASSET_LABEL[key] })),
+    // `['*']` 是「全部八类」的写法，`normalizeAssetTypes` 会展开它
+    assetAll: '*',
+  })
+}
+
+
 export async function listRules(req: Request, ctx: RouteCtx): Promise<Response> {
   const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
@@ -313,7 +422,7 @@ export async function createRule(req: Request, ctx: RouteCtx): Promise<Response>
   try {
     const created = await ctx.deps.policyStore.createRule(draft)
     await recordRuleAudit(ctx, auth.identity, {
-      action: 'rule_create',
+      action: AUDIT_ACTION.ruleCreate,
       ok: true,
       kind: created.kind,
       ruleId: created.id,
@@ -324,7 +433,7 @@ export async function createRule(req: Request, ctx: RouteCtx): Promise<Response>
   } catch (err) {
     if (!(err instanceof PolicyRuleInvalid)) throw err
     await recordRuleAudit(ctx, auth.identity, {
-      action: 'rule_create',
+      action: AUDIT_ACTION.ruleCreate,
       ok: false,
       kind: draft.kind,
       ruleId: null,
@@ -369,7 +478,7 @@ export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> 
     const toggled = await ctx.deps.policyStore.setEnabled(id, enabled, ctx.deps.now())
     if (toggled === null) return json(404, { error: 'rule_not_found' })
     await recordRuleAudit(ctx, auth.identity, {
-      action: 'rule_toggle',
+      action: AUDIT_ACTION.ruleToggle,
       ok: true,
       kind: toggled.kind,
       ruleId: toggled.id,
@@ -386,7 +495,7 @@ export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> 
     if (updated === null) return json(404, { error: 'rule_not_found' })
     const changed = changedFields(before, updated)
     await recordRuleAudit(ctx, auth.identity, {
-      action: 'rule_update',
+      action: AUDIT_ACTION.ruleUpdate,
       ok: true,
       kind: updated.kind,
       ruleId: updated.id,
@@ -402,7 +511,7 @@ export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> 
   } catch (err) {
     if (!(err instanceof PolicyRuleInvalid)) throw err
     await recordRuleAudit(ctx, auth.identity, {
-      action: 'rule_update',
+      action: AUDIT_ACTION.ruleUpdate,
       ok: false,
       kind: has(body, 'kind') ? body.kind : before.kind,
       ruleId: id,
@@ -426,7 +535,7 @@ export async function deleteRule(req: Request, ctx: RouteCtx): Promise<Response>
   if (deleted === null) return json(404, { error: 'rule_not_found' })
 
   await recordRuleAudit(ctx, auth.identity, {
-    action: 'rule_delete',
+    action: AUDIT_ACTION.ruleDelete,
     ok: true,
     kind: deleted.kind,
     ruleId: deleted.id,

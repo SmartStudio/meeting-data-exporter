@@ -292,6 +292,18 @@ export function normalizeAssetTypes(raw: unknown): AssetNorm {
   return { keys, issues }
 }
 
+/**
+ * effect 是不是「这一栈的肯定侧」——只有肯定侧才带出资产类型。
+ *
+ * **导出给规则 schema 端点（阶段 5 · A9）用**：规则编辑器要知道选中某个 effect
+ * 之后「资产类型」那一栏还起不起作用（选了「不拉取」再勾资产类型是没有意义的）。
+ * 前端另写一份 `isPositiveEffect` 的话，某一天多一个 effect 取值时，
+ * 界面上会出现一个勾了却不生效的资产列表——而它看起来完全正常。
+ */
+export function effectCarriesAssetTypes(kind: StackKind, effect: string): boolean {
+  return isPositive(kind, effect)
+}
+
 /** effect 是不是「这一栈的肯定侧」——只有肯定侧才带出资产类型 */
 function isPositive(kind: StackKind, effect: string): boolean {
   if (kind === 'fetch') return effect === 'all'
@@ -316,6 +328,108 @@ function describeFallback(kind: StackKind): string {
   if (kind === 'archive') return '默认不归档'
   return '默认拒绝'
 }
+
+// ── 规则编辑器要的取值域（阶段 5 · A9）──────────────────────────
+
+export interface StackEffectOption {
+  value: string
+  /** 单选按钮上的那几个字 */
+  label: string
+  /** 一句解释，直接上屏。说的是「选了它之后会发生什么」 */
+  hint: string
+  /** 选了它之后「资产类型」那一栏还起不起作用（= `isPositive`） */
+  withAssetTypes: boolean
+}
+
+export interface StackSchema {
+  kind: StackKind
+  label: string
+  /**
+   * 闭集时列全部取值。**archive 栈的 effect 不是闭集**（除 `skip` 外是一段
+   * 归档目录模板），那时这里只有 `skip`，另由 `freeform` 说明剩下的取值是什么。
+   * 列一个假的「全部目录」清单比不列更糟。
+   */
+  effects: readonly StackEffectOption[]
+  /** effect 不是闭集时的说明；闭集为 null */
+  freeform: string | null
+  /** 一条规则都不匹配时的兜底（spec §5.1 第 4 步） */
+  fallback: { value: string; label: string }
+  /** allow 栈的主体必须是采集程序；另两栈是系统级行为，主体必须为 null */
+  subjectType: 'program' | null
+}
+
+/**
+ * 三栈的 effect 取值域、兜底与主体规矩，供规则 schema 端点下发（阶段 5 · A9）。
+ *
+ * **`fallback` 与 `withAssetTypes` 都是从上面那两个函数算出来的**，不是另抄一份：
+ * 兜底取 `FALLBACK`，`withAssetTypes` 取 `isPositive`。取值本身
+ * （`all` / `skip` / `allow` / `deny`）与 `normalizeEffect` 认的那几个必须一致，
+ * 这一条由 `tests/http/console-rules-schema.test.ts` 逐个喂进 `normalizeEffect`
+ * 验一遍——列了一个求值器不认的 effect，那条用例当场红。
+ */
+export const STACK_SCHEMA: readonly StackSchema[] = [
+  {
+    kind: 'fetch',
+    label: STACK_KIND_LABEL.fetch,
+    effects: [
+      {
+        value: 'all',
+        label: '拉取',
+        hint: '把这场会议的资产拉回本系统。具体拉哪几类由资产类型决定',
+        withAssetTypes: isPositive('fetch', 'all'),
+      },
+      {
+        value: 'skip',
+        label: '不拉取',
+        hint: '本系统不持有副本。腾讯会议侧的保留期一到，这场会议就没有了',
+        withAssetTypes: isPositive('fetch', 'skip'),
+      },
+    ],
+    freeform: null,
+    fallback: { value: FALLBACK.fetch, label: describeFallback('fetch') },
+    subjectType: null,
+  },
+  {
+    kind: 'archive',
+    label: STACK_KIND_LABEL.archive,
+    effects: [
+      {
+        value: 'skip',
+        label: '不归档',
+        hint: '拉回来的副本只留在本地，不写进 NAS',
+        withAssetTypes: isPositive('archive', 'skip'),
+      },
+    ],
+    freeform:
+      '除 skip 外，归档规则的 effect 是一段**归档目录模板**（例如 /nas/meetings/{yyyy}/{mm}），' +
+      '不是一组固定取值。改目录不会搬迁已经归档过的文件——历史文件留在原路径，' +
+      '只有之后新归档的会写到新目录。',
+    fallback: { value: FALLBACK.archive, label: describeFallback('archive') },
+    subjectType: null,
+  },
+  {
+    kind: 'allow',
+    label: STACK_KIND_LABEL.allow,
+    effects: [
+      {
+        value: 'allow',
+        label: '准许采集',
+        hint: '仍需在会议列表里授权给具体程序才真的能取走，两者是「与」的关系',
+        withAssetTypes: isPositive('allow', 'allow'),
+      },
+      {
+        value: 'deny',
+        label: '禁止采集',
+        hint: '照常拉取、照常归档进 NAS，但任何外部程序都取不到',
+        withAssetTypes: isPositive('allow', 'deny'),
+      },
+    ],
+    freeform: null,
+    fallback: { value: FALLBACK.allow, label: describeFallback('allow') },
+    // allow 栈的主体是 `service_accounts.id`（见 `checkSubject`）
+    subjectType: 'program',
+  },
+]
 
 /** 规则在判定理由里的称呼：有 note 就带上，没有就只报编号，不留空引号 */
 function ruleLabel(kind: StackKind, rule: StackRule): string {
