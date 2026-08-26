@@ -65,6 +65,7 @@
 import type { AdminIdentity } from '../../../auth/admin'
 import { matchesRule, type MeetingFacts, type RuleCond } from '../../../policy/conds'
 import { meetingFacts } from '../../../policy/access'
+import { fetchStackUnconfigured } from '../../../policy/fetch-compat'
 import {
   changedStackKinds,
   previewStackImpact,
@@ -630,6 +631,35 @@ function newlyOpened(
 }
 
 /**
+ * 拉取栈的兼容兜底翻面时那条琥珀警告（阶段 4 · T16）。
+ *
+ * 与上面 `newlyOpened` 是同一个先例（spec §4.7：「有会议从未对外开放过却将被这条规则
+ * 放行时额外出一条」），**这一条比它更该警告**：那一条报的是「多放行了几场」，
+ * 管理员至少能从 `opened` 那个数上看见；这一条报的是**管理员没在做、却真的会发生**
+ * 的那件事——库里此前一条启用的拉取规则都没有，worker 走的是兼容兜底「时间窗内全拉」
+ * （`src/policy/fetch-compat.ts`）；建下第一条拉取规则的那一刻兜底就翻面成 spec §4.6
+ * 的 `skip`，**没被这条规则命中的会议从此不再被拉取**。管理员以为自己在新增一条放行
+ * 规则，实际是在给整条拉取链路装上闸门。
+ *
+ * **同样是把 `ImpactChange` 读出来，不是重算**：`before.effect === 'all'` 且
+ * `after.effect === 'skip'` 就是「本来在拉、将不再拉」。被人工改写挡住的不算——
+ * 它们在 `preview.shielded` 里，实际结果不会变。
+ */
+function stoppedFetching(
+  preview: StackImpactPreview,
+  meta: Map<string, SubjectMeta>,
+): Array<{ id: string; title: string }> {
+  const out = new Map<string, { id: string; title: string }>()
+  for (const c of preview.changed) {
+    if (c.aspect !== 'effect' || c.before.effect !== 'all' || c.after.effect !== 'skip') continue
+    const m = meta.get(c.key)
+    if (m === undefined) continue
+    out.set(m.rowId, { id: m.rowId, title: m.title })
+  }
+  return [...out.values()]
+}
+
+/**
  * 影响预览。**这个端点一行都不落库**（spec §5.5 / 验收 1）：它读当前规则集与一批
  * 会议，跑的是 `policy/preview.ts` 的纯函数，`PolicyStore` 的四个写方法一个都不碰。
  *
@@ -717,6 +747,27 @@ export async function previewRules(req: Request, ctx: RouteCtx): Promise<Respons
       },
     })
 
+    if (kind === 'fetch') {
+      // 只在**兜底真的翻面**的那一次报：库里此前零条启用的拉取规则、这次之后有了。
+      // 「什么时候算兼容模式」读的是与 worker、与预览器同一个 `fetchStackUnconfigured`
+      if (!fetchStackUnconfigured(oldRules) || fetchStackUnconfigured(newRules)) continue
+      const stopped = stoppedFetching(preview, meta)
+      // 一场都不停的话就不报——那正是推荐的上线路径（第一条先建无条件「全拉」，
+      // 把现状显式化）。那种时候弹一条琥珀，下一次真出事就没人看了
+      if (stopped.length === 0) continue
+      warnings.push({
+        level: 'amber',
+        code: 'fetch_compat_off',
+        text:
+          `有 ${stopped.length} 场此刻正在被拉取的会议将不再被拉取。` +
+          '库里此前一条启用的拉取规则都没有，worker 走的是兼容兜底「时间窗内全拉」；' +
+          '建下第一条拉取规则的那一刻兜底就翻面成 spec §4.6 的 skip，' +
+          '从此没有被任何一条拉取规则命中的会议都不再拉取。' +
+          '想先把现状显式化，请先建一条无条件的「全拉」规则，再用影响预览逐步收紧',
+        meetings: stopped.slice(0, CHANGE_SAMPLE_LIMIT),
+      })
+      continue
+    }
     if (kind !== 'allow') continue
     const opened = newlyOpened(preview, meta)
     if (opened.length === 0) continue

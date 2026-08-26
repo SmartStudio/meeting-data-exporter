@@ -60,6 +60,27 @@
  * 顺带一条：**只改 `note` 不算改动**。note 不参与判定，只影响判定理由的措辞；
  * 若把它算进指纹，改个错别字就会让全库会议进入范围、报出一堆 `decider`。
  *
+ * ## 三点五、「当前规则集」指的是**当前实际在发生的事**（阶段 4 · T16）
+ *
+ * 拉取栈有一条兼容兜底：库里一条启用的拉取规则都没有时，worker 走的不是 spec §4.6
+ * 字面上的 `skip`，而是一条合成的「全拉」（`./fetch-compat.ts`，与
+ * `src/worker/fetch-policy.ts`、控制台的 `why.fetch` 共用同一份定义）。
+ *
+ * 预览若不认这条兜底，管理员建**第一条**拉取规则时会读到两个都偏乐观的数：
+ * 规则命中的那几场报成「新增拉取」（其实本来就在拉），**没命中的那些一个字都不提**
+ * （其实会从在拉变成不拉）。后者是真事故——管理员以为在新增一条放行规则，
+ * 实际是在给整条拉取链路装上闸门。
+ *
+ * 所以 fetch 栈的新旧两侧各过一遍 `fetchRulesInEffect`。这件事**不许在这里另写一遍**
+ * （`configured.length === 0 ? …`）：预览与真实判定各存一份兜底定义，正是本节在修的毛病。
+ *
+ * **兜底翻面时第一节那条收范围的安全性论证不成立**，必须逐场全算。那条论证的前提是
+ * 「没被改动过的规则够不着的会议，两次求值经过的规则序列相同」——而兜底翻面换掉的是
+ * **整栈的兜底**，一条规则都没命中的会议恰恰是受它支配的那批。少了这一步，
+ * 「M 场从在拉变成不拉」一场都报不出来。
+ *
+ * archive 栈（兜底 `skip`）与 allow 栈（兜底 `deny`）**没有兼容模式**，这一节与它们无关。
+ *
  * ## 四、写坏的规则要标出来
  *
  * 命中的规则 effect 是脏数据时，`stacks.ts` 会落到本栈安全侧并标
@@ -68,6 +89,12 @@
  */
 
 import { matchesRule, type MeetingFacts } from './conds'
+import {
+  FETCH_COMPAT_DECIDER_LABEL,
+  decidedByFetchCompat,
+  fetchRulesInEffect,
+  fetchStackUnconfigured,
+} from './fetch-compat'
 import {
   describeStackEffect,
   evaluateAllowStack,
@@ -286,6 +313,20 @@ export function changedStackKinds(
 
 // ── 求值：一律走 stacks.ts，这里不重复实现 ────────────────────
 
+/**
+ * 这一份规则集**实际**会让三栈怎么判。
+ *
+ * 只有 fetch 栈需要转一道：库里一条启用的拉取规则都没有时，真实行为是兼容兜底
+ * （全拉），不是 spec §4.6 字面上的 `skip`（见文件头第三点五节）。
+ * archive / allow 原样返回——它们没有兼容模式，这里一个字都不该改它们。
+ *
+ * `fetchRulesInEffect` 自己会筛 `kind === 'fetch' && enabled`，所以三栈混在一起、
+ * 含 disabled 的整份规则集直接递进去就对。
+ */
+function rulesInEffect(kind: StackKind, rules: readonly StackRule[]): readonly StackRule[] {
+  return kind === 'fetch' ? fetchRulesInEffect(rules) : rules
+}
+
 function decide(
   kind: StackKind,
   rules: readonly StackRule[],
@@ -361,6 +402,9 @@ function diffDecisions(kind: StackKind, before: StackDecision, after: StackDecis
 
 /** 一次判定是谁做出的，一句话 */
 function describeDecider(decision: StackDecision): string {
+  // 兼容兜底是一条**合成**规则，库里没有它。说成「拉取规则 #0」会把管理员送去
+  // 规则页找一条不存在的规则——那正是计划 E-c 骂过的「把一个缺口伪装成一次判定」
+  if (decidedByFetchCompat(decision)) return FETCH_COMPAT_DECIDER_LABEL
   const label = STACK_KIND_LABEL[decision.kind]
   if (decision.ruleId === null) return `兜底（没有任何${label}匹配）`
   const note = decision.note !== null && decision.note !== '' ? `「${decision.note}」` : ''
@@ -435,10 +479,22 @@ export function previewStackImpact(options: StackImpactOptions): StackImpactPrev
   const { kind, oldRules, newRules, subjects, now } = options
   const isOverridden = toPredicate(options.overridden)
 
-  // 1. 这次改动动了哪几条**本栈**的规则。别的栈的改动够不着本栈的判定
+  // 1. 这次改动动了哪几条**本栈**的规则。别的栈的改动够不着本栈的判定。
+  //    这一步只看**库里/候选里真有的**规则，兼容兜底不参与——它不是库里的规则，
+  //    混进来会让 `changedRuleIds` 报出一个界面上根本点不开的 #0
   const touched = diffRules(oldRules, newRules).filter((change) =>
     [...change.before, ...change.after].some((rule) => rule.kind === kind),
   )
+
+  // 求值用的是「这一刻实际生效的规则集」，不是库里那份（文件头第三点五节）
+  const oldInEffect = rulesInEffect(kind, oldRules)
+  const newInEffect = rulesInEffect(kind, newRules)
+
+  // 拉取栈的兼容兜底在这次改动里翻了面（配上了第一条规则，或者最后一条被删/停用）。
+  // **整栈的兜底行为换了**，于是第一节那条收范围的安全性论证失效：一条规则都没命中的
+  // 会议恰恰是受兜底支配的那批，它们的判定必然跟着翻。那一次只能逐场全算。
+  const fallbackFlipped =
+    kind === 'fetch' && fetchStackUnconfigured(oldRules) !== fetchStackUnconfigured(newRules)
 
   const changed: ImpactChange[] = []
   const deciderOnly: ImpactChange[] = []
@@ -461,12 +517,12 @@ export function previewStackImpact(options: StackImpactOptions): StackImpactPrev
     const hitAfter = touched.some((change) => hitBy(change.after, subject, now))
     const hitBefore = touched.some((change) => hitBy(change.before, subject, now))
     if (hitAfter) counts.hits += 1
-    if (!hitAfter && !hitBefore) continue
+    if (!hitAfter && !hitBefore && !fallbackFlipped) continue
     counts.scanned += 1
 
     // 3. 只在范围内跑两次整栈求值做对比
-    const before = decide(kind, oldRules, subject, now)
-    const after = decide(kind, newRules, subject, now)
+    const before = decide(kind, oldInEffect, subject, now)
+    const after = decide(kind, newInEffect, subject, now)
     const diff = diffDecisions(kind, before, after)
     if (diff === null) continue
 

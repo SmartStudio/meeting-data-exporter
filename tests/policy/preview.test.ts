@@ -5,7 +5,8 @@ import {
   previewStackImpact,
   type PreviewSubject,
 } from '../../src/policy/preview'
-import { evaluateAllowStack, type StackRule } from '../../src/policy/stacks'
+import { fetchRulesInEffect } from '../../src/policy/fetch-compat'
+import { evaluateAllowStack, evaluateFetchStack, type StackRule } from '../../src/policy/stacks'
 
 /** 2026-01-01 00:00:00 UTC。预览是纯函数，所有用例显式传这个 now */
 const NOW = 1767225600
@@ -355,9 +356,15 @@ test('空 → 有：第一条规则把兜底顶掉', () => {
 })
 
 test('有 → 空：全部回落到本栈兜底', () => {
+  // 本来写的是 fetch 栈，T16 改成 archive：**fetch 栈的「空」不是兜底 skip**，
+  // 是兼容全拉（`src/policy/fetch-compat.ts`），拿它当「回落到兜底」的例子是错的。
+  // 原意（规则删光 ⇒ 全部落到本栈兜底 ⇒ 收紧）一字未改，换的是一个兜底真是 skip 的栈；
+  // fetch 那一面由下面「兼容兜底」一节的用例接管。
   const subjects = [subject('m-1'), subject('m-2')]
   const p = previewStackImpact({
-    kind: 'fetch', oldRules: [rule({ id: 1, kind: 'fetch', effect: 'all', note: '兜底全拉' })], newRules: [],
+    kind: 'archive',
+    oldRules: [rule({ id: 1, kind: 'archive', effect: '/nas/meetings/{年}/', note: '兜底归档' })],
+    newRules: [],
     subjects, now: NOW,
   })
   expect(p.counts.scanned).toBe(2)
@@ -375,6 +382,170 @@ test('空的会议集合：预览不崩，三个数都是 0', () => {
   expect(p.counts.total).toBe(0)
   expect(p.counts.scanned).toBe(0)
   expect(p.changed).toHaveLength(0)
+})
+
+// ── 兼容兜底：fetch 栈的「空规则集」不是 skip（阶段 4 · T16）────
+
+/**
+ * 这一节的事故原型：管理员在一个还没配过拉取规则的环境里建**第一条**拉取规则。
+ *
+ * 库里零条启用的拉取规则时，worker 走的是兼容兜底——**时间窗内全拉**
+ * （`src/policy/fetch-compat.ts`，与 `src/worker/fetch-policy.ts` 共用一份定义）。
+ * 预览若照 spec §4.6 的字面把空规则集算成 `skip`，会得出两个都偏乐观的数：
+ * 命中的那几场报成「新增拉取」（其实本来就在拉），没命中的那些**一个字都不提**
+ * （其实会从在拉变成不拉）。后者才是事故：管理员以为在新增一条放行规则，
+ * 实际是在给整条拉取链路装上闸门。
+ */
+test('库里零条拉取规则 + 第一条规则：报的是「M 场停止拉取」，不是「N 场新增拉取」', () => {
+  const subjects = [
+    subject('m-1', { title: '财务季度复盘' }),
+    subject('m-2', { title: '技术周会' }),
+    subject('m-3', { title: '项目复盘' }),
+  ]
+  const first = rule({
+    id: 1, kind: 'fetch', effect: 'all', note: '财务会议要拉',
+    conds: [{ f: 'title', op: 'has', v: '财务' }],
+  })
+  const p = previewStackImpact({ kind: 'fetch', oldRules: [], newRules: [first], subjects, now: NOW })
+
+  // 财务那场本来就在拉（兼容兜底），这条规则没让它「新增」任何东西，只是换了理由
+  expect(p.counts.opened).toBe(0)
+  expect(p.counts.deciderOnly).toBe(1)
+  expect(p.deciderOnly.map((c) => c.key)).toEqual(['m-1'])
+
+  // 本任务真正要防的：另外两场会从「在拉」变成「不拉」，预览必须说出来
+  expect(p.counts.tightened).toBe(2)
+  expect(p.changed.map((c) => c.key)).toEqual(['m-2', 'm-3'])
+  expect(p.changed.every((c) => c.direction === 'tightened')).toBe(true)
+  expect(p.changed[0]!.before.effect).toBe('all')
+  expect(p.changed[0]!.after.effect).toBe('skip')
+  expect(p.summary).toContain('停止拉取')
+
+  // 兜底翻面时「只算命中(旧) ∪ 命中(新)」的安全性论证不成立：三场全要算
+  expect(p.counts.scanned).toBe(3)
+  expect(p.counts.hits).toBe(1)
+})
+
+test('第一条规则若是无条件全拉，预览要说得出「一场都不会变」——推荐的那条上线路径', () => {
+  const subjects = [subject('m-1', { title: '财务季度复盘' }), subject('m-2', { title: '技术周会' })]
+  const catchAll = rule({ id: 1, kind: 'fetch', effect: 'all', note: '把现状显式化：无条件全拉' })
+  const p = previewStackImpact({ kind: 'fetch', oldRules: [], newRules: [catchAll], subjects, now: NOW })
+
+  expect(p.changed).toHaveLength(0)
+  expect(p.counts.tightened).toBe(0)
+  expect(p.counts.opened).toBe(0)
+  // 判定没变、只是从兼容兜底换成一条真规则说了算
+  expect(p.counts.deciderOnly).toBe(2)
+})
+
+test('兼容兜底不冒充库里的规则：一句话汇总里不许出现「拉取规则 #0」', () => {
+  const first = rule({
+    id: 7, kind: 'fetch', effect: 'all', note: '财务会议要拉',
+    conds: [{ f: 'title', op: 'has', v: '财务' }],
+  })
+  const p = previewStackImpact({
+    kind: 'fetch', oldRules: [], newRules: [first],
+    subjects: [subject('m-2', { title: '技术周会' })], now: NOW,
+  })
+  const c = p.changed[0]!
+  expect(c.before.ruleId).toBe(0)
+  // 库里没有 #0，把它显示成一条规则会把管理员送去规则页找一条不存在的规则
+  expect(c.summary).not.toContain('#0')
+  expect(c.summary).toContain('兼容兜底')
+})
+
+test('把最后一条拉取规则删掉 / 停用：兜底翻回兼容全拉，不是「全部停止拉取」', () => {
+  const subjects = [subject('m-1', { title: '财务季度复盘' }), subject('m-2', { title: '技术周会' })]
+  const only = rule({
+    id: 1, kind: 'fetch', effect: 'all', note: '财务会议要拉',
+    conds: [{ f: 'title', op: 'has', v: '财务' }],
+  })
+
+  const deleted = previewStackImpact({ kind: 'fetch', oldRules: [only], newRules: [], subjects, now: NOW })
+  // 规则删光之后 worker 回到兼容模式全拉，所以技术周会是**重新开始被拉**
+  expect(deleted.changed.map((c) => c.key)).toEqual(['m-2'])
+  expect(deleted.changed[0]!.direction).toBe('opened')
+  expect(deleted.counts.tightened).toBe(0)
+
+  // 停用等同于删掉它的作用，结论必须一样
+  const disabled = previewStackImpact({
+    kind: 'fetch', oldRules: [only], newRules: [{ ...only, enabled: false }], subjects, now: NOW,
+  })
+  expect(disabled.changed.map((c) => c.key)).toEqual(['m-2'])
+  expect(disabled.changed[0]!.direction).toBe('opened')
+})
+
+test('库里还有别的启用拉取规则时不进兼容模式：新增一条只够得着它命中的会议', () => {
+  const subjects = [subject('m-1', { title: '财务季度复盘' }), subject('m-2', { title: '技术周会' })]
+  const base = rule({ id: 1, kind: 'fetch', priority: 100, effect: 'skip', note: '兜底不拉' })
+  const added = rule({
+    id: 2, kind: 'fetch', priority: 200, effect: 'all', note: '财务会议要拉',
+    conds: [{ f: 'title', op: 'has', v: '财务' }],
+  })
+  const p = previewStackImpact({ kind: 'fetch', oldRules: [base], newRules: [base, added], subjects, now: NOW })
+  // 兜底没翻面，§5.5 的收范围照旧
+  expect(p.counts.scanned).toBe(1)
+  expect(p.changed.map((c) => c.key)).toEqual(['m-1'])
+  expect(p.changed[0]!.direction).toBe('opened')
+})
+
+test('兼容兜底只在 fetch 栈：archive 的空规则集仍是 skip，allow 的仍是 deny', () => {
+  const subjects = [subject('m-1', { title: '财务季度复盘' }), subject('m-2', { title: '技术周会' })]
+
+  // archive：零条规则 = 不归档。建第一条只归档财务的规则 = 那一场「开始归档」，
+  // 另一场本来就不归档，判定不变、也不进范围
+  const archive = previewStackImpact({
+    kind: 'archive', oldRules: [],
+    newRules: [rule({
+      id: 1, kind: 'archive', effect: '/nas/meetings-finance/{年}/',
+      conds: [{ f: 'title', op: 'has', v: '财务' }],
+    })],
+    subjects, now: NOW,
+  })
+  expect(archive.counts.scanned).toBe(1)
+  expect(archive.counts.opened).toBe(1)
+  expect(archive.counts.tightened).toBe(0)
+  expect(archive.changed.map((c) => c.key)).toEqual(['m-1'])
+
+  // allow：零条规则 = 一律 deny（数据出企业边界的唯一闸门，默认必须是关的）
+  const allow = previewStackImpact({
+    kind: 'allow', oldRules: [],
+    newRules: [rule({
+      id: 1, kind: 'allow', effect: 'allow',
+      conds: [{ f: 'title', op: 'has', v: '财务' }],
+    })],
+    subjects, now: NOW,
+  })
+  expect(allow.counts.scanned).toBe(1)
+  expect(allow.counts.opened).toBe(1)
+  expect(allow.counts.tightened).toBe(0)
+  expect(allow.changed.map((c) => c.key)).toEqual(['m-1'])
+})
+
+test('预览与 worker 读同一份兼容兜底：预览的判定与真实判定逐场一致', () => {
+  // 两处各存一份兜底定义，正是 T16 在修的毛病。这条用例把「同一份」钉死：
+  // 对照组直接走 `fetchRulesInEffect` + `evaluateFetchStack`，也就是 worker
+  // 与控制台 `why.fetch` 走的那条路。
+  const subjects: PreviewSubject[] = []
+  for (let i = 1; i <= 30; i++) {
+    subjects.push(subject(`m-${i}`, { title: i % 3 === 0 ? `财务评审 ${i}` : `周会 ${i}` }))
+  }
+  const first = rule({
+    id: 1, kind: 'fetch', effect: 'all', note: '财务会议要拉',
+    conds: [{ f: 'title', op: 'has', v: '财务' }],
+  })
+
+  const p = previewStackImpact({ kind: 'fetch', oldRules: [], newRules: [first], subjects, now: NOW })
+  const listed = new Map([...p.changed, ...p.deciderOnly].map((c) => [c.key, c]))
+
+  for (const s of subjects) {
+    const before = evaluateFetchStack(fetchRulesInEffect([]), { facts: s.facts, now: NOW })
+    const after = evaluateFetchStack(fetchRulesInEffect([first]), { facts: s.facts, now: NOW })
+    const c = listed.get(s.key)
+    expect(c, s.key).toBeDefined()
+    expect(c!.before.effect, s.key).toBe(before.effect)
+    expect(c!.after.effect, s.key).toBe(after.effect)
+  }
 })
 
 // ── 写坏的规则：预览不崩，且标得出来 ──────────────────────────

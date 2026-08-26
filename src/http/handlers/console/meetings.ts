@@ -104,7 +104,8 @@ import type { MeetingKey } from '../../../store/grants'
 import {
   FETCH_STACK_UNCONFIGURED_REASON,
   fetchRulesInEffect,
-} from '../../../worker/fetch-policy'
+  fetchStackUnconfigured,
+} from '../../../policy/fetch-compat'
 import { evaluateInventory, explainMeetingAccess } from '../../../worker/visibility'
 import { requireAdminAuth } from '../../middleware'
 import { json } from '../../respond'
@@ -388,7 +389,9 @@ function fetchWhy(
   // 「一条规则都没配」那一支——兼容模式同样认改写（fetch-policy.ts 的文件头）
   if (wasOverridden(decision)) return { by: 'hand', text: decision.reason }
 
-  if (stage.fetchRules.length === 0) {
+  // 「算不算兼容模式」不在这里再写一个 `length === 0`：与 worker、与影响预览
+  // 共用 `fetchStackUnconfigured`，三处漂移的后果就是界面、预览、worker 各说各话
+  if (fetchStackUnconfigured(stage.fetchRules)) {
     // 兼容模式：判定确实发生了，但做决定的是一条**合成的**兜底规则，不在库里。
     // 报 `by:'rule'` 会把管理员送去规则页找一条并不存在的规则，那正是 E-c 骂过的事
     return { by: 'na', text: FETCH_STACK_UNCONFIGURED_REASON }
