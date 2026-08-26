@@ -176,14 +176,16 @@ describe('AppShell · 左栏与路由', () => {
     expect(screen.getByRole('link', { name: '采集授权' })).toHaveAttribute('aria-current', 'page')
   })
 
-  test('六个空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
+  test('还没接线的空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
     // `_Placeholder` 在 F0 删掉了：七个页面任务并行开工，每人只碰
     // `pages/<自己>/`，路由表不再有人回来改。空壳仍然不许是白页——
     // 演示时白页看起来像坏了。
+    //
+    // **这份名单只减不增**：一页接完线，它就不再是空壳，那一行要从这里删掉
+    // （F5a 删掉了 `/jobs`）。六行全没了的时候，这条测试也该跟着删。
     const cases: Array<[string, string, string]> = [
       ['/consumers', '采集授权', 'F4'],
       ['/rules', '自动规则', 'F3'],
-      ['/jobs', '定时任务', 'F5a'],
       ['/storage', '归档存储', 'F5b'],
       ['/audit', '操作审计', 'F5c'],
       ['/preview/m1', '内容预览', 'F6'],
