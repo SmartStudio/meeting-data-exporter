@@ -69,3 +69,9 @@
   color: var(--ground);
   border-color: color-mix(in oklab, var(--ground) 28%, transparent);
 }
+
+/* 批量提交中。反相表面上的强调色必须用 --accent-invert，不能用 --brand。 */
+.busy {
+  font-size: var(--t-xs);
+  color: var(--accent-invert);
+}

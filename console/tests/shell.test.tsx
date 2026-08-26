@@ -1,13 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { routes } from '../src/app/routes'
 import { PROTO_STORAGE_KEY } from '../src/app/proto'
-import { SystemStateProvider, useSystemState } from '../src/app/SystemStatus'
-import { useMeetings } from '../src/pages/Meetings/useMeetings'
+import { SystemStateProvider } from '../src/app/SystemStatus'
 
 /**
  * `AppShell`（Task 6）挂载时会探一次管理员登录态（`fetchAdminIdentity()`，
@@ -88,6 +87,46 @@ export function healthyJobs(): unknown {
   }
 }
 
+/** 会议记录页要的一行。字段名照 api-contracts.md §6，少一个前端就崩。 */
+const SHELL_MEETING = {
+  id: 'm1',
+  meetingId: 'm1',
+  subMeetingId: '',
+  title: '产品周会',
+  code: '881-123-40',
+  startAt: 1699900000,
+  durationSec: 3600,
+  host: 'zouyanjian',
+  missing: [],
+  assets: { ai_minutes: { got: 3, total: 3 } },
+  unknownAssetTypes: [],
+  fetch: 'done',
+  archive: 'done',
+  grants: [],
+  hand: [],
+  keep: {
+    archivedAt: 1699950000,
+    expiresAt: 1702542000,
+    extended: 0,
+    extendedSource: 'none',
+    extendedDays: 0,
+    retentionDays: 30,
+    filesGone: false,
+  },
+  nasPath: '/nas/meetings/2023/11/88112340/',
+  sizeBytes: 120000000,
+  allow: 'allow',
+  why: {
+    fetch: { by: 'rule', text: '拉取规则 #100' },
+    archive: { by: 'rule', text: '归档规则 #100' },
+    allow: { by: 'rule', text: '权限规则 #100' },
+  },
+  history: [],
+}
+
+/** 分诊五格。**它有自己的端点**，与上面那一行没有关系（F2 的回归点之一）。 */
+const TRIAGE = { archiveFailed: 1, expiringIn7d: 0, awaitingGrant: 1, inProgress: 0, nasOnly: 0 }
+
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
@@ -103,6 +142,14 @@ beforeEach(() => {
       }
       if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
       if (url.endsWith('/api/v1/admin/jobs')) return json(healthyJobs())
+      // F2 之后会议记录页也走真实端点。这个文件测的是外壳，不是那一页，
+      // 所以这三条给一份最小的合法响应就够——那一页自己的行为在
+      // tests/meetings.test.tsx 里测。
+      if (url.includes('/api/v1/admin/meetings/triage')) return json(TRIAGE)
+      if (url.includes('/api/v1/admin/meetings')) {
+        return json({ rows: [SHELL_MEETING], total: 1, limit: 10, offset: 0 })
+      }
+      if (url.includes('/api/v1/admin/programs')) return json([])
       throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
     }),
   )
@@ -286,69 +333,51 @@ describe('AppShell · 顶栏', () => {
   })
 })
 
-describe('SystemStatus · nas-down 必须体现在数据里', () => {
-  // 这三条测的是数据层，但都借顶栏那个状态下拉来切换形态，而它默认不渲染
-  // （见 src/app/GlobalBar.tsx 的 useProtoControls），所以同样要先把标志打开。
+describe('SystemStatus · NAS 断连：横幅是前端的活，数据不是', () => {
+  // 这几条借顶栏那个状态下拉来切换形态，而它默认不渲染
+  // （见 src/app/GlobalBar.tsx 的 useProtoControls），所以要先把标志打开。
   beforeEach(() => sessionStorage.setItem(PROTO_STORAGE_KEY, '1'))
   afterEach(() => sessionStorage.removeItem(PROTO_STORAGE_KEY))
 
-  test('nas-down：受影响会议的保留窗口清零、授权撤下——不是只挂一条横幅', async () => {
+  /**
+   * F1 时代这里有两条测试，断言"切到 nas-down 之后受影响会议的保留窗口清零、
+   * 授权撤下"。那是 mock 数据层（`applyNasDown`）做的事。
+   *
+   * **接真 API 之后这件事不再由前端做，也不该由前端做。** NAS 断了会不会让
+   * 某几场会议变成归档失败，是后端算出来的事实；前端照着一个横幅去改写会议
+   * 数据，等于凭一个全局状态编造几场归档失败——那正是这一整轮在防的那类错误。
+   * 所以这两条测试换成下面这一条：**横幅要出来，表格不许被前端改写。**
+   *
+   * spec §7.2 那个数据形态仍然要能一键复现，它搬到了原型模式的假后端里
+   * （`api/mock/install.ts`，由 `tests/mock.test.ts` 盯着）。
+   */
+  test('切到 nas-down：横幅出来，但会议表格照旧显示服务端给的那一行', async () => {
     const user = userEvent.setup()
     renderApp('/meetings', 'ok')
 
-    // 基线：只有 1 场归档失败（m3）。m1 归档成功、保留期在走、还授权给了程序。
-    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1'))
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 28 天')
-    expect(screen.getByTestId('grant-m1')).toHaveTextContent('知识库索引器')
+    await waitFor(() => expect(screen.getByTestId('row-m1')).toBeInTheDocument())
+    expect(screen.getByTestId('keep-m1')).not.toHaveTextContent('归档失败')
+    expect(systemBanner()).toBeNull()
 
     await user.selectOptions(screen.getByRole('combobox', { name: /系统状态/ }), 'nas-down')
 
-    // spec.md §7.2：归档失败从 1 变 5，受影响会议的保留窗口清零、授权撤下——
-    // 只断言横幅出现等于没测到这个状态真正的含义，这里逐场读表格里的实际内容。
-    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('5'))
-    for (const id of ['m1', 'm2', 'm7', 'm9']) {
-      expect(screen.getByTestId(`keep-${id}`)).toHaveTextContent('归档失败，未开始计时')
-      expect(screen.getByTestId(`grant-${id}`)).not.toHaveTextContent('知识库索引器')
-    }
+    await waitFor(() => expect(systemBanner()).not.toBeNull())
+    // 表格没有被前端改写：服务端说这一场归档成功，它就还是归档成功
+    expect(screen.getByTestId('keep-m1')).not.toHaveTextContent('归档失败')
+    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1')
   })
 
-  test('nas-down：具体某场会议（m1）的字段真的变了，不是巧合的计数吻合', async () => {
-    // 绕开 UI 文案，直接用外壳导出的 Context/hook 断言字段本身——
-    // 这是「T6 会用同一个 hook 拿数据」的那个接口点。
-    function Probe() {
-      const { setState } = useSystemState()
-      const meetings = useMeetings()
-      const m1 = meetings.state === 'ready' ? meetings.data.find((m) => m.id === 'm1') : undefined
-      return (
-        <div>
-          <button type="button" onClick={() => setState('nas-down')}>
-            切到 NAS 断连
-          </button>
-          <div data-testid="m1-archive">{m1?.archive}</div>
-          <div data-testid="m1-archived-at">{String(m1?.keep.archivedAt)}</div>
-          <div data-testid="m1-grants">{m1?.grants.length}</div>
-        </div>
-      )
-    }
+  test('会议数据不看那个手动状态 —— 它只驱动横幅与三个数据态', async () => {
+    const user = userEvent.setup()
+    renderApp('/meetings', 'ok')
+    await waitFor(() => expect(screen.getByTestId('row-m1')).toBeInTheDocument())
+    const before = screen.getByTestId('row-m1').textContent
 
-    render(
-      <SystemStateProvider initialState="ok">
-        <Probe />
-      </SystemStateProvider>,
-    )
-
-    await waitFor(() => expect(screen.getByTestId('m1-archive')).toHaveTextContent('done'))
-    expect(screen.getByTestId('m1-archived-at')).not.toHaveTextContent('null')
-    expect(screen.getByTestId('m1-grants')).toHaveTextContent('2')
-
-    await act(async () => {
-      screen.getByRole('button', { name: '切到 NAS 断连' }).click()
-    })
-
-    await waitFor(() => expect(screen.getByTestId('m1-archive')).toHaveTextContent('failed'))
-    expect(screen.getByTestId('m1-archived-at')).toHaveTextContent('null')
-    expect(screen.getByTestId('m1-grants')).toHaveTextContent('0')
+    await user.selectOptions(screen.getByRole('combobox', { name: /系统状态/ }), 'tencent-down')
+    await waitFor(() => expect(systemBanner()).not.toBeNull())
+    expect(screen.getByTestId('row-m1').textContent).toBe(before)
   })
+
 
   test('nas-down：「暂停到期清理」是一个真的去得到那个动作的链接，不是假按钮', async () => {
     // F1 的那个按钮点一下只改本地 state，什么都没暂停。这个动作有真实端点

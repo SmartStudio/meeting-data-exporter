@@ -1,0 +1,287 @@
+/* 会议详情抽屉（spec.md §4.3）。抽屉的外壳、焦点管理与 Esc 来自 ui/Drawer，
+   这里只管四段内容自己的版式。 */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+}
+
+.meta {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* 详情还在读 / 读不到时的那一句。它不是错误块——下面显示的仍然是真实内容，
+   只是可能不是最新的一版，所以是提示语的分量，不是一整块红。 */
+.stale {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding-bottom: var(--s-5);
+  border-bottom: var(--s-px) solid var(--line-soft);
+}
+.section:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+/* 详情还没到、显示的是列表那一行时整段压暗一点——"这不是最新的"要看得见，
+   但不能暗到读不清（对比度门槛按正文口径查这里的文字）。 */
+.section[data-stale='true'] {
+  opacity: 0.92;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.state {
+  font-size: var(--t-xs);
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.text {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: 1.7;
+}
+
+.note {
+  margin: 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.6;
+}
+
+.muted {
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+.acts {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+/* ── 判定理由 ─────────────────────────────────────────────── */
+
+/* `why.by` 决定样式。中性是默认，琥珀＝人工改写，红＝失败。
+   生命周期原因（expired / wait / na）与"理由缺失"保持中性——
+   前者不是谁的过错，后者是一条待查的线索，都不是告警。 */
+.why {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r);
+  border: var(--s-px) solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.why b {
+  display: block;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  margin-bottom: var(--s-px);
+  color: var(--ink-3);
+}
+
+.why[data-tone='warn'] {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.why[data-tone='warn'] b {
+  color: var(--warn);
+}
+
+.why[data-tone='fail'] {
+  border-color: var(--fail-line);
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+.why[data-tone='fail'] b {
+  color: var(--fail);
+}
+
+/* ── 资产表 ───────────────────────────────────────────────── */
+
+.assets {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+
+.caption {
+  text-align: left;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  padding-bottom: var(--s-2);
+}
+
+.assets th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--ink-2);
+  padding: var(--s-1) 0;
+}
+
+.assets td {
+  text-align: right;
+  padding: var(--s-1) 0;
+}
+
+.assetNum {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+/* 部分失败（7/19）用琥珀：它需要人看一眼。全拿到的不上色。 */
+.assetNum[data-partial='true'] {
+  color: var(--warn);
+  font-weight: 500;
+}
+
+/* ── 事实清单（NAS 路径 / 时间 / 体积）───────────────────── */
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s-2) var(--s-5);
+  margin: 0;
+  font-size: var(--t-sm);
+}
+
+.facts dt {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--ink-2);
+  min-width: 0;
+}
+
+.pathRow {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.path {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink);
+  background: var(--surface-2);
+  border: var(--s-px) solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: var(--s-0) var(--s-2);
+  overflow-wrap: anywhere;
+}
+
+/* 「这个动作后端还没有」。中性框而不是琥珀：它不是一次告警，
+   是一条事实说明——琥珀留给"有人绕过了规则"。 */
+.gap {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border: var(--s-px) dashed var(--line);
+  border-radius: var(--r);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+
+/* ── 本地保留：大号剩余天数 ───────────────────────────────── */
+
+.bigDays {
+  margin: 0;
+  font-size: var(--t-3xl);
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.bigDays b {
+  font-weight: 600;
+}
+.bigDays[data-soon='true'] {
+  color: var(--warn);
+}
+
+.gone {
+  font-size: var(--t-lg);
+  color: var(--ink-3);
+}
+
+/* ── 采集授权 ─────────────────────────────────────────────── */
+
+.grantRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+/* ── 操作历史 ─────────────────────────────────────────────── */
+
+.history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.historyRow {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s-3);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.historyAt {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.historyText {
+  overflow-wrap: anywhere;
+}
+
+/* 被拒绝的那几条要看得出来——"谁想取但没取到"和"谁取走了"是两件事。 */
+.historyRow[data-deny='true'] .historyText {
+  color: var(--fail);
+}

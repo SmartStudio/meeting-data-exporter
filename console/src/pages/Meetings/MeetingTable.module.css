@@ -22,39 +22,6 @@
   cursor: pointer;
 }
 
-/* 跨页全选的逃生门。它长在表格上沿而不是弹窗里——要让人在按下第二次之前
-   看见"到底会选中多少场"。 */
-.selectAllHint {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-3) var(--s-5);
-  margin-bottom: var(--s-2);
-  border: var(--s-px) solid var(--brand-line);
-  border-radius: var(--r);
-  background: var(--brand-soft);
-  color: var(--brand-text);
-  font-size: var(--t-sm);
-  flex-wrap: wrap;
-}
-
-.num {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-}
-
-.hintBtn {
-  font: inherit;
-  font-weight: 600;
-  background: none;
-  border: 0;
-  padding: 0;
-  color: var(--brand-text);
-  text-decoration: underline;
-  text-underline-offset: var(--s-0);
-  cursor: pointer;
-}
-
 /* ── 三态：大空态（系统里一场都没有 / 读不到）───────────────── */
 
 .big {
@@ -183,4 +150,11 @@
   border-color: var(--brand);
   color: var(--on-brand);
   font-weight: 500;
+}
+
+/* 页码窗口两侧的省略号。总页数很多时页码只画一个窗口（见 MeetingTable
+   的 pageWindow），省略号是"中间还有"的唯一提示。 */
+.pagerGap {
+  color: var(--ink-3);
+  padding: 0 var(--s-1);
 }

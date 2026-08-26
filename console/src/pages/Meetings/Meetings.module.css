@@ -1,36 +1,5 @@
-/* 会议记录页的版式。表格自身的列宽/行样式在 MeetingTable / MeetingRow 里。 */
-
-/* 左右留白与底部给快捷键条让位的空间由 AppShell 的 .view 统一提供，
-   这里不重复加一层——加了就是双份内边距。 */
-.page {
-  min-width: 0;
-}
-
-.head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-5);
-  flex-wrap: wrap;
-}
-
-.title {
-  margin: 0;
-  font-size: var(--t-2xl);
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.note {
-  margin: 0;
-  font-size: var(--t-sm);
-  color: var(--ink-3);
-  max-width: 62ch;
-  line-height: 1.7;
-}
-.note b {
-  font-weight: 500;
-  color: var(--ink-2);
-}
+/* 会议记录页的版式。页头骨架来自 ui/PageShell，表格自身的列宽/行样式在
+   MeetingTable / MeetingRow 里，详情抽屉在 MeetingDetail.module.css。 */
 
 .toolbar {
   display: flex;
@@ -82,12 +51,76 @@
   font-weight: 500;
 }
 
-.rangeCount {
-  font-family: var(--mono);
+/* ── 筛选菜单里的三态分组 ─────────────────────────────────── */
+
+.triGroup {
+  padding-bottom: var(--s-2);
+}
+.triGroup + .triGroup {
+  border-top: var(--s-px) solid var(--line-soft);
+  padding-top: var(--s-2);
+}
+
+.triHead {
+  margin: 0;
+  padding: var(--s-1) var(--s-3);
   font-size: var(--t-xs);
-  font-variant-numeric: tabular-nums;
+  font-weight: 600;
   color: var(--ink-3);
 }
+
+.triNote {
+  margin: 0;
+  padding: var(--s-3);
+  border-top: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-2xs);
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: var(--popover-max-w);
+  white-space: normal;
+}
+
+/* ── 写操作失败的出口 ─────────────────────────────────────── */
+
+/* 写失败不能只闪一条 toast：toast 会自己消失，而失败的那次操作没有。
+   这一条留在页面上，直到人按下"知道了"。 */
+.writeError {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin-bottom: var(--s-4);
+  padding: var(--s-4);
+  border: var(--s-px) solid var(--fail-line);
+  border-radius: var(--r);
+  background: var(--fail-soft);
+  color: var(--fail);
+  font-size: var(--t-sm);
+  line-height: 1.7;
+}
+
+.writeHint {
+  margin: var(--s-1) 0 0;
+  color: var(--ink-2);
+}
+
+.writeDetail {
+  margin: var(--s-1) 0 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* 采集程序列表读不到：它只影响"显示名"，不影响任何判定，所以是一句话不是一块红。 */
+.softError {
+  margin: 0 0 var(--s-4);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* ── 图例 ─────────────────────────────────────────────────── */
 
 .legend {
   display: flex;
@@ -107,93 +140,4 @@
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
-}
-
-/* ── 详情抽屉（F1 只放判定理由）───────────────────────────── */
-
-.detail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-5);
-}
-
-.detailMeta {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-}
-
-.detailSection {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-}
-
-.detailHead {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  margin: 0;
-  font-size: var(--t-md);
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.detailState {
-  font-size: var(--t-xs);
-  font-weight: 400;
-  color: var(--ink-3);
-}
-
-.detailText {
-  margin: 0;
-  font-size: var(--t-sm);
-  color: var(--ink-2);
-  line-height: 1.7;
-}
-
-.detailFoot {
-  margin: 0;
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-}
-
-/* 判定理由：`why.by` 决定样式。中性是默认，琥珀＝人工改写 / 规则明确拒绝，
-   红＝失败。生命周期原因（expired / wait / na）保持中性——那不是谁的过错。 */
-.why {
-  margin: 0;
-  font-size: var(--t-sm);
-  line-height: 1.7;
-  padding: var(--s-3) var(--s-4);
-  border-radius: var(--r);
-  border: var(--s-px) solid var(--line);
-  background: var(--surface-2);
-  color: var(--ink-2);
-}
-
-.why b {
-  display: block;
-  font-size: var(--t-xs);
-  font-weight: 600;
-  margin-bottom: var(--s-px);
-  color: var(--ink-3);
-}
-
-.why[data-tone='warn'] {
-  border-color: var(--warn-line);
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-.why[data-tone='warn'] b {
-  color: var(--warn);
-}
-
-.why[data-tone='fail'] {
-  border-color: var(--fail-line);
-  background: var(--fail-soft);
-  color: var(--fail);
-}
-.why[data-tone='fail'] b {
-  color: var(--fail);
 }
