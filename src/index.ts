@@ -120,12 +120,24 @@ async function main(): Promise<void> {
    * `ConsoleMeetingsStore.getMeetings`——它与 `VisibilityDeps.getMeetings` 的语义
    * 逐条对得上，包括「查不到的会议不造空壳顶上」那一条。
    *
-   * **一处已知的缺口（T13）**：`meetings` 表的列全部 nullable，而 `getMeetings`
+   * **曾经的一处缺口（T13），已修**：`meetings` 表的列全部 nullable，而 `getMeetings`
    * 把 `subject IS NULL` 折成空串。空标题会让 `title has X → allow` 判不匹配
    * （落在安全侧），但同样会让 `title has X → deny` 判不匹配——**落在放行侧**，
-   * 再被一条低优先级的 allow 规则接手。元数据不全的会议应当在 allow 栈上落到
-   * 拒绝并说明原因，那是「不许静默放行」这条全局约束的直接要求。
-   * 修法见阶段 4 计划的 T13，**不要在这里就地折衷**。
+   * 再被一条低优先级的 allow 规则接手。
+   *
+   * **修法**：判定分开「事实为空」与「没有这个事实」，一共加了三段，都不是重构：
+   *
+   * 1. `getMeetings` 折成空串的**同时记一笔账**——`MeetingMeta.missingFacts`
+   *    （`store/console-meetings.ts` 的 `toDomainMeeting`）。行照样返回，不丢掉：
+   *    对一行确实存在、只是列是 NULL 的记录，说「在 meetings 表里查不到」是假话。
+   * 2. `policy/conds.ts`：用到了缺失事实的条件返回新的 `fact_missing`，
+   *    与「真的比对过，不成立」是两条路径；整条规则据此给出 `undecidable`。
+   * 3. `policy/stacks.ts`：判不出来的规则**说了算但说不清楚**，与 effect 脏数据
+   *    同一个处理——不再往下找，落到本栈的安全侧（allow → deny，fetch / archive
+   *    → skip），`source` 记 `'undecidable'`，理由里写明是元数据不全而非不匹配。
+   *
+   * 归档侧的同一个口子（`worker/archive.ts` 的 `factsFor` 也在 `?? ''`）一并堵上。
+   * 清单里这类会议报 `meeting_unknown`，但理由与「表里查不到」不是同一句话。
    */
   const consoleMeetings = createConsoleMeetingsStore(pool, { policy: policyStore })
   // 归档存储页（阶段 4 · T8，A3）。两个根目录走 process.env 而不是 loadConfig，

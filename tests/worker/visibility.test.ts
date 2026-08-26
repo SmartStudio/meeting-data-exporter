@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { AssetKey } from '@yaowu/mde-engine'
-import type { Meeting } from '../../src/domain/types'
+import type { MeetingMeta } from '../../src/policy/access'
 import type { StackRule } from '../../src/policy/stacks'
 import { archiveStateKey, type MeetingArchiveRecord } from '../../src/store/archives'
 import type { MeetingGrant, MeetingOverride } from '../../src/store/grants'
@@ -29,7 +29,7 @@ const PROGRAM = 'prog-1'
 
 // ── 造数据 ────────────────────────────────────────────────────
 
-function meeting(meetingId: string, over: Partial<Meeting> = {}): Meeting {
+function meeting(meetingId: string, over: Partial<MeetingMeta> = {}): MeetingMeta {
   return {
     meetingId,
     subMeetingId: '',
@@ -107,7 +107,7 @@ interface Fixture {
   archives?: MeetingArchiveRecord[]
   /** 本地有 completed 资产的会议 id */
   localAssets?: string[]
-  meetings?: Meeting[]
+  meetings?: MeetingMeta[]
   overrides?: MeetingOverride[]
 }
 
@@ -491,6 +491,76 @@ test('会议在 meetings 表里查不到 → 判不出来，落到拒绝一侧�
   const entry = only(inv.entries, 'm-1')
   expect(codes(entry)).toEqual(['meeting_unknown'])
   expect(entry.decision).toBeNull()
+})
+
+// ── T13 元数据不全：行是在的，但判不出来 ──────────────────────
+
+/** 缺口的原样复现：按标题拒绝的高优先级规则 + 放行全部的低优先级规则 */
+const T13_RULES: StackRule[] = [
+  rule({ id: 1, priority: 200, effect: 'deny', note: '财务会议不外放',
+    conds: [{ f: 'title', op: 'has', v: '财务' }] }),
+  rule({ id: 2, priority: 50, effect: 'allow', note: '其余一律放行' }),
+]
+
+test('T13：标题在库里是 NULL 的会议不许被低优先级的 allow 放出去', async () => {
+  const { deps } = rig(healthy({
+    rules: T13_RULES,
+    meetings: [meeting('m-1', { subject: '', missingFacts: ['title'] })],
+  }))
+  const inv = await computeProgramInventory(deps, { programId: PROGRAM, now: NOW })
+
+  expect(inv.fetchable).toEqual([])
+  const entry = only(inv.entries, 'm-1')
+  expect(entry.decision?.effect).toBe('deny')
+  expect(entry.decision?.source).toBe('undecidable')
+  expect(entry.assetTypes).toEqual([])
+})
+
+test('T13：理由报「行在、元数据不全」，不是「在 meetings 表里查不到」——对一行存在的记录那句话是假的', async () => {
+  const { deps } = rig(healthy({
+    rules: T13_RULES,
+    meetings: [meeting('m-1', { subject: '', missingFacts: ['title'] })],
+  }))
+  const inv = await computeProgramInventory(deps, { programId: PROGRAM, now: NOW })
+  const entry = only(inv.entries, 'm-1')
+
+  // 与「查不到」共用同一档 code（对管理员是同一件事：元数据有问题，不是规则做的决定）
+  expect(codes(entry)).toEqual(['meeting_unknown'])
+  const blocker = entry.blockers[0]!
+  expect(blocker.gate).toBe('rule')
+  expect(blocker.remedy).toBe('pipeline')
+  // 但话不一样：说得出行是在的、是哪条规则判不出来
+  expect(blocker.reason).toContain('有这一行')
+  expect(blocker.reason).toContain('判不出来')
+  expect(blocker.ruleId).toBe(1)
+  // 判定本身留下来了（不是 null）——详情抽屉要拿它说话，而查不到的那种压根没跑过规则
+  expect(entry.decision).not.toBeNull()
+})
+
+test('T13：元数据不全但规则用不到那项事实时，照常判定，不被牵连', async () => {
+  const { deps } = rig(healthy({
+    // 规则问的是主持人，缺的是标题
+    rules: [rule({ id: 1, priority: 200, effect: 'allow', conds: [{ f: 'host', op: 'is', v: 'host-1' }] })],
+    meetings: [meeting('m-1', { subject: '', missingFacts: ['title'] })],
+  }))
+  const inv = await computeProgramInventory(deps, { programId: PROGRAM, now: NOW })
+  expect(inv.fetchable.map((e) => e.meetingId)).toEqual(['m-1'])
+})
+
+test('T13：人工改写优先于所有规则——判不出来也一样被改写接管', async () => {
+  const { deps } = rig(healthy({
+    rules: T13_RULES,
+    meetings: [meeting('m-1', { subject: '', missingFacts: ['title'] })],
+    overrides: [override('m-1', { effect: 'allow', assetTypes: ['transcript'] })],
+  }))
+  const inv = await computeProgramInventory(deps, { programId: PROGRAM, now: NOW })
+  const entry = only(inv.entries, 'm-1')
+
+  expect(entry.decision?.effect).toBe('allow')
+  expect(entry.overridden).toBe(true)
+  expect(entry.fetchable).toBe(true)
+  // 改写接管之后就不再是「规则判不出来」了，那条 blocker 不该出现
+  expect(codes(entry)).toEqual([])
 })
 
 // ── 批量：调用次数必须是常数级 ────────────────────────────────

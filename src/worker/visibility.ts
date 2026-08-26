@@ -62,8 +62,7 @@
  */
 
 import { ALL_ASSET_KEYS, type AssetKey } from '@yaowu/mde-engine'
-import type { Meeting } from '../domain/types'
-import { isVisible, meetingFacts } from '../policy/access'
+import { isVisible, meetingFacts, type MeetingMeta } from '../policy/access'
 import {
   applyOverride,
   indexOverrides,
@@ -101,7 +100,19 @@ export type InventoryBlockCode =
   | 'rule_denied'
   /** 规则放行了，但授权行把资产范围收成了空集，实际一类都取不到（D-y） */
   | 'grant_scope_empty'
-  /** 会议元数据查不到，判不出来——落到拒绝一侧，不是静默放行 */
+  /**
+   * 会议元数据取不到，判不出来——落到拒绝一侧，不是静默放行。
+   *
+   * **两种形态共用这一档**（阶段 4 · T13），因为对管理员来说它们是同一件事
+   * 「这场会议的元数据有问题，不是哪条规则做的决定」，去处也一样（`pipeline`）：
+   *
+   * 1. `meetings` 表里**根本没有这一行**——授权行指着一场不存在的会议；
+   * 2. 有这一行，但判定要用的列是 NULL——行是真的，元数据不全。
+   *
+   * 两者的 `reason` 说的是两句不同的话（第 2 种说得出缺的是哪几列，且带得出是哪条
+   * 规则判不出来）。**第 2 种不许退化成第 1 种的说法**：对一行确实存在的记录说
+   * 「在 meetings 表里查不到」，管理员照着去查会一无所获。
+   */
   | 'meeting_unknown'
 
 /** 管理员该去哪儿处理。三个「与」由不同的人在不同的页面维护，这个字段就是那条指路 */
@@ -200,8 +211,8 @@ export interface InventoryMaterial {
   archives: readonly MeetingArchiveRecord[]
   /** 本地还有 completed 资产的会议，用 `archiveStateKey()` 编码 */
   localAssets: ReadonlySet<string>
-  /** 会议元数据。规则求值只认事实，事实从这里来 */
-  meta: readonly Meeting[]
+  /** 会议元数据。规则求值只认事实，事实从这里来。元数据不全的行带着 `missingFacts` */
+  meta: readonly MeetingMeta[]
   /** 这批会议当前生效的人工改写，三栈混在一起给就行——这里只挑 allow 那一条 */
   overrides: readonly PolicyOverride[]
 }
@@ -225,8 +236,13 @@ export interface VisibilityDeps {
    * 查不到的会议**不要造一个空壳顶上**：返回的数组里没有它，本文件会把它判成
    * 「判不出来」并落到拒绝一侧。空壳会让一条 `title has 财务` 的规则对着空标题
    * 判不匹配，看起来一切正常。
+   *
+   * 查得到但**元数据不全**（`meetings` 的列是 NULL）的行要照样返回，并在
+   * `MeetingMeta.missingFacts` 上说明缺了哪几项（阶段 4 · T13）。这类行**不能**
+   * 按「查不到」处理：那会让上面那句「在 meetings 表里查不到」变成假话。
+   * 它们的判定同样落到拒绝一侧，走的是另一条理由。
    */
-  getMeetings: (keys: readonly MeetingKey[]) => Promise<readonly Meeting[]>
+  getMeetings: (keys: readonly MeetingKey[]) => Promise<readonly MeetingMeta[]>
 }
 
 // ── 到期时刻 ──────────────────────────────────────────────────
@@ -354,6 +370,33 @@ function ruleBlocker(decision: OverriddenDecision<AllowEffect>): InventoryBlocke
   }
 }
 
+/**
+ * 元数据不全导致判不出来时那条 blocker（阶段 4 · T13）。
+ *
+ * 与「meetings 表里查不到」共用 `meeting_unknown` 这一档（见那个取值的注释），
+ * 但**理由是两句不同的话**：这里说得出行是在的、缺的是哪几列、是哪条规则判不出来。
+ * 沿用「查不到」那句话会把管理员支去查一行明明存在的记录。
+ */
+function incompleteMetaBlocker(
+  key: MeetingKey,
+  decision: OverriddenDecision<AllowEffect>,
+): InventoryBlocker {
+  return {
+    code: 'meeting_unknown',
+    gate: 'rule',
+    reason:
+      `会议 ${key.meetingId}${key.subMeetingId === '' ? '' : `/${key.subMeetingId}`} ` +
+      // 「有这一行」这四个字是这条理由的全部要点，不能省成「元数据有问题」——
+      // 管理员读到「查不到」会去查一行明明存在的记录
+      `在 meetings 表里有这一行，但判定要用的元数据不全，采集权限规则判不出来，按拒绝处理：` +
+      `${decision.reason}`,
+    // 补元数据不是改规则能办到的，去处与「查不到」一样是流水线那边
+    remedy: 'pipeline',
+    ruleId: decision.ruleId,
+    note: decision.note,
+  }
+}
+
 /** 授权行把范围收成空集时那条 blocker。三种收法要分得开，见函数体 */
 function scopeBlocker(
   grant: MeetingGrant,
@@ -463,7 +506,18 @@ export function evaluateInventory(material: InventoryMaterial): InventoryEntry[]
       const set = indexOverrides(overridesByMeeting.get(k) ?? [])
       decision = applyOverride(base, set.allow)
       ruleOk = isVisible(decision)
-      if (!ruleOk) blockers.push(ruleBlocker(decision))
+      if (!ruleOk) {
+        // 「规则拒绝」与「判不出来」是两条理由、两个去处（阶段 4 · T13）：
+        // 前者去自动规则页改规则，后者改多少规则都没用，要修的是这场会议的元数据。
+        // 报成 rule_denied 会把管理员送到一页他改不动的地方。
+        // 判定被人工改写接管时（source 变成 override / override_invalid）不走这条：
+        // 改写优先于所有规则，那时候「规则判不出来」已经不是结论了。
+        blockers.push(
+          decision.source === 'undecidable'
+            ? incompleteMetaBlocker(key, decision)
+            : ruleBlocker(decision),
+        )
+      }
     }
 
     // 资产类型求交（D-y）。规则侧那一份已经含了人工改写，见 intersect 的注释

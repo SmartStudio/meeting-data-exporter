@@ -957,3 +957,78 @@ test('走真实路由派发：授权落到 ?sub= 那一场，清单现算，审�
     await cleanup()
   }
 })
+
+test('T13：subject 是 NULL 的会议不会被低优先级的 allow 规则放出去（从真库到清单整条路）', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const { app, deps } = buildTestApp(pool)
+    await deps.adminStore.createAccount({ id: 'admin-1', username: 'alice', passwordHash: 'x', now: 1_000 })
+    const { token } = await deps.adminAuth.issueSession('admin-1', false, deps.now())
+    const cookie = `${ADMIN_SESSION_COOKIE}=${token}`
+    await deps.programs.create({
+      id: PROGRAM, name: '知识库索引器', secretHash: 'h', tmUserId: 'tm-1',
+      expiresAt: null, now: deps.now(),
+    })
+
+    // meetings 表的列全部 nullable，这一行的 subject 就是 NULL——
+    // 会议真的存在，只是元数据不全
+    await pool.execute(
+      `INSERT INTO meetings (meeting_id, sub_meeting_id, meeting_code, subject, host_userid,
+                             start_time, end_time, created_at, updated_at)
+       VALUES ('m-null', '', '881-108-71', NULL, 'host-1', ?, ?, ?, ?)`,
+      [deps.now() - 7200, deps.now() - 3600, deps.now(), deps.now()],
+    )
+    // 本地有下载完成的资产，保留期那个「与」就成立了，判定卡在哪一环因此没有歧义
+    await pool.execute(
+      `INSERT INTO meeting_assets
+         (meeting_id, sub_meeting_id, asset_type, remote_id, asset_id,
+          status, completed_at, created_at, updated_at)
+       VALUES ('m-null', '', 'ai_minutes', 'r-1', 'a-1', 'completed', ?, ?, ?)`,
+      [deps.now() - 1000, deps.now(), deps.now()],
+    )
+
+    // 缺口的原样复现：按标题拒绝的高优先级规则 + 放行全部的低优先级规则。
+    // 标题被折成空串时，deny 判「不匹配」落到放行侧，再被下面这条 allow 接手
+    await insertPolicyRule(pool, {
+      priority: 200, programId: PROGRAM, assetTypes: ['*'], effect: 'deny',
+      conds: [{ f: 'title', op: 'has', v: '财务' }], note: '财务会议不外放',
+    })
+    await insertPolicyRule(pool, {
+      priority: 50, programId: PROGRAM, assetTypes: ['*'], effect: 'allow', note: '其余一律放行',
+    })
+
+    const granted = await app(
+      new Request('https://gw.example/api/v1/admin/meetings/m-null/grants', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ programId: PROGRAM, assetTypes: null }),
+      }),
+    )
+    expect(granted.status).toBe(200)
+
+    const inv = await app(
+      new Request(`https://gw.example/api/v1/admin/programs/${PROGRAM}/inventory`, { headers: { cookie } }),
+    )
+    const body = (await inv.json()) as {
+      fetchableCount: number
+      blocked: {
+        meetingId: string
+        decision: { effect: string; source: string } | null
+        blockers: { code: string; reason: string; remedy: string }[]
+      }[]
+    }
+
+    // 缺口修好之前这里是 1：会议被静默放行
+    expect(body.fetchableCount).toBe(0)
+    const blocked = body.blocked.find((e) => e.meetingId === 'm-null')!
+    expect(blocked.decision).toMatchObject({ effect: 'deny', source: 'undecidable' })
+    expect(blocked.blockers.map((b) => b.code)).toEqual(['meeting_unknown'])
+    // 理由必须说得出是「元数据不全，判不出来」，而不是「不匹配」或「按兜底拒绝」；
+    // 也不能说成「在 meetings 表里查不到」——这一行是真的在
+    expect(blocked.blockers[0]!.reason).toContain('有这一行')
+    expect(blocked.blockers[0]!.reason).toContain('判不出来')
+    expect(blocked.blockers[0]!.reason).not.toContain('按兜底处理')
+  } finally {
+    await cleanup()
+  }
+})

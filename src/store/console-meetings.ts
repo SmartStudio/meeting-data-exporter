@@ -1,7 +1,7 @@
 import { ALL_ASSET_KEYS, GATEWAY_TYPE_TO_ASSET_KEY, type AssetKey } from '@yaowu/mde-engine'
 import type { RowDataPacket } from 'mysql2'
-import type { Meeting } from '../domain/types'
-import { isVisible, meetingFacts } from '../policy/access'
+import { isVisible, meetingFacts, type MeetingMeta } from '../policy/access'
+import type { MeetingFactKey } from '../policy/conds'
 import {
   applyOverride,
   indexOverrides,
@@ -101,6 +101,11 @@ export interface Triage {
  *
  * 所以 NULL 仍然按仓库既有口径补成空串 / 0（契约的字段类型只装得下这个），
  * 但**同时**在这里记一笔——不是悄悄变的，是记了账的。
+ *
+ * **这一份是给界面看的，判定用的是另一份**（阶段 4 · T13）：`missingFactsOf` 产出
+ * `MeetingFactKey[]`，字段名与 `policy/conds.ts` 的 `MeetingFacts` 逐字对齐，
+ * 且不含 `code`（会议号不参与任何条件求值）。两份故意不合并——一份要跟着契约走、
+ * 一份要跟着求值器走，合并之后任何一边改字段名都会悄悄弄坏另一边。
  */
 export type MeetingNullField = 'title' | 'code' | 'host' | 'startAt' | 'endAt'
 
@@ -230,8 +235,12 @@ export interface ConsoleMeetingsStore {
    *
    * **查不到的会议不造空壳顶上**：返回的数组里就是没有它。理由写在那个依赖上——
    * 空壳会让一条 `title has 财务` 的规则对着空标题判不匹配，看起来一切正常。
+   *
+   * **查得到但元数据不全的行照样返回**，只是带上 `MeetingMeta.missingFacts`
+   * （阶段 4 · T13）。不能像查不到那样把它整行丢掉：那会让清单报「在 meetings 表里
+   * 查不到」，而对一行确实存在、只是列是 NULL 的记录，那句话是假的。
    */
-  getMeetings(keys: readonly MeetingKey[]): Promise<readonly Meeting[]>
+  getMeetings(keys: readonly MeetingKey[]): Promise<readonly MeetingMeta[]>
 }
 
 // ── 行 id ────────────────────────────────────────────────────────────────
@@ -654,11 +663,42 @@ function assembleRow(
   }
 }
 
-/** `meetings` 的一行 → 网关的域模型 `Meeting`。空值口径见 `getMeetings` 的注释 */
-function toDomainMeeting(r: MeetingMetaColumns): Meeting {
+/**
+ * 这一行**哪几项判定事实在库里是 NULL**（阶段 4 · T13）。
+ *
+ * 与上面那份给界面看的 `MeetingNullField` 是两套词汇，故意不合并：那份多一个
+ * `code`（会议号不参与任何条件求值），少了「事实」这一层的口径；这份要与
+ * `policy/conds.ts` 的 `MeetingFacts` 字段名逐字对上，否则求值器那边对不上号。
+ * 两处各自的注释都指着对方，改一处时看得见另一处。
+ */
+function missingFactsOf(r: MeetingMetaColumns): MeetingFactKey[] {
+  const missing: MeetingFactKey[] = []
+  if (r.subject === null) missing.push('title')
+  if (r.host_userid === null) missing.push('hostUserId')
+  if (r.start_time === null) missing.push('startTime')
+  if (r.end_time === null) missing.push('endTime')
+  return missing
+}
+
+/**
+ * `meetings` 的一行 → 网关的域模型 `Meeting`。空值口径见 `getMeetings` 的注释。
+ *
+ * **NULL 照旧折成空串 / 0，但同时记一笔账**（阶段 4 · T13）：折完之后一场
+ * `subject IS NULL` 的会议与一场标题真的是空串的会议在求值器眼里一模一样，
+ * 于是 `title has 财务 → deny` 对前者判「不匹配」、落到放行侧，再被一条低优先级的
+ * allow 接手——静默放行。`missingFacts` 就是那笔账，`policy/access.ts` 的
+ * `meetingFacts` 会把它转成 `MeetingFacts.missing`。
+ *
+ * **改回去（不填 missingFacts）会怎样**：判定重新退回「事实齐全」，上面那条路
+ * 原样回来；而且没有任何地方会报错，只有生产上被多放出去的会议。
+ */
+function toDomainMeeting(r: MeetingMetaColumns): MeetingMeta {
+  const missingFacts = missingFactsOf(r)
   return {
     meetingId: r.meeting_id,
     subMeetingId: r.sub_meeting_id,
+    // 空数组一律不带出去，让下游只有「有没有」一种判断形态
+    ...(missingFacts.length > 0 ? { missingFacts } : {}),
     // `meetings` 表没有这一列，判定事实（`meetingFacts`）也不读它。
     // 与 `src/worker/archive.ts` 的 factsFor 同一裁定：填空串，不编一个 id。
     meetingRecordId: '',
@@ -865,7 +905,8 @@ export function createConsoleMeetingsStore(
     for (const c of candidates) {
       // 候选行只取了求值事实用得上的四列（`meetingFacts` 读 subject / host_userid /
       // start_time / end_time，见 policy/conds.ts 的 MeetingFacts），meeting_code
-      // 不参与任何条件，所以不查也不填。
+      // 不参与任何条件，所以不查也不填——这里传 null 也**不会**被记成缺失事实
+      // （`missingFactsOf` 只认那四列），否则每一行都会平白判成「元数据不全」。
       const facts = meetingFacts(
         toDomainMeeting({
           meeting_id: c.meeting_id,
@@ -1021,6 +1062,8 @@ export function createConsoleMeetingsStore(
       // 的注释写明了原因）。查得到但列是 NULL 的行照样返回：那场会议真的存在，
       // 只是元数据不全，按仓库既有口径补成空串 / 0 交给求值器——
       // 与「这场会议不在库里」是两回事，不许混成一件。
+      // 补空串的同时 `toDomainMeeting` 会记一笔 `missingFacts`（阶段 4 · T13），
+      // 求值器据此把这场会议判成「判不出来」而不是「不匹配」。
       return rows.map(toDomainMeeting)
     },
   }

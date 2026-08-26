@@ -66,8 +66,7 @@
  */
 
 import { GATEWAY_TYPE_TO_ASSET_KEY, type AssetKey } from '@yaowu/mde-engine'
-import type { Meeting } from '../../../domain/types'
-import { isVisible, meetingFacts } from '../../../policy/access'
+import { isVisible, meetingFacts, type MeetingMeta } from '../../../policy/access'
 import {
   applyOverride,
   indexOverrides,
@@ -265,11 +264,16 @@ function summarizeAllow(verdicts: readonly AllowVerdict[]): { allow: AllowState;
   const decision = example.decision!
   const by: WhyKind = wasOverridden(decision)
     ? 'hand'
-    : // deny 只配「有一条规则明确拒绝」用：兜底（source='default'）与
-      // 「规则判 allow 却一类合法资产都没列出」都不是明确拒绝，报 rule
-      decision.source === 'rule' && decision.effect === 'deny'
-      ? 'deny'
-      : 'rule'
+    : // 元数据不全、规则判不出来（阶段 4 · T13）：与上面那条「表里查不到」是同一件事的
+      // 另一种形态，报 `na` ——它不是某条规则做出的决定，管理员去改规则改不动它。
+      // 报 `rule` 会把他送去自动规则页找一条并不存在的规则。
+      decision.source === 'undecidable'
+      ? 'na'
+      : // deny 只配「有一条规则明确拒绝」用：兜底（source='default'）与
+        // 「规则判 allow 却一类合法资产都没列出」都不是明确拒绝，报 rule
+        decision.source === 'rule' && decision.effect === 'deny'
+        ? 'deny'
+        : 'rule'
 
   const head =
     verdicts.length > 1
@@ -290,8 +294,11 @@ function withProgram(programId: string, reason: string): string {
 interface StageMaterial {
   now: number
   archiveRules: readonly StackRule[]
-  /** 会议元数据。查不到时 undefined——**不造空壳顶上**，见 `VisibilityDeps.getMeetings` */
-  meta: Meeting | undefined
+  /**
+   * 会议元数据。查不到时 undefined——**不造空壳顶上**，见 `VisibilityDeps.getMeetings`。
+   * 查得到但元数据不全的行带着 `missingFacts`，归档栈据此判「判不出来」（阶段 4 · T13）。
+   */
+  meta: MeetingMeta | undefined
   overrides: MeetingOverrideSet
 }
 
