@@ -53,6 +53,7 @@ import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
+import { createJobsStore } from '../../src/store/jobs'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 // 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
@@ -244,6 +245,9 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     consoleMeetings,
     meetingVisibility,
     meetingHistory: auditStore,
+    // 阶段 4 · T11（A4 定时任务）：网关只装读侧与手动触发的排队，
+    // 调度器在 worker 进程里，不进这条端到端链路
+    jobs: { jobs: createJobsStore(dbPool), audit: auditStore, tzOffsetSec: 0 },
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

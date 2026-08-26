@@ -58,6 +58,9 @@ describe('runMigrations', () => {
       expect(names).toContain('archived_assets')
       expect(names).toContain('meeting_archives')
       expect(names).toContain('system_settings')
+      // 008 的表（阶段 4 · T11）
+      expect(names).toContain('job_runs')
+      expect(names).toContain('job_failures')
 
       const [uk] = await pool.query<any[]>(
         `SELECT column_name FROM information_schema.statistics
@@ -66,6 +69,63 @@ describe('runMigrations', () => {
       )
       const ukCols = uk.map((r) => (r.column_name ?? r.COLUMN_NAME) as string)
       expect(ukCols).toEqual(['meeting_id', 'sub_meeting_id', 'asset_type', 'remote_id', 'file_type'])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('008 给 audit_log 补上 detail 列，且重复执行不报错（ADD COLUMN 没有 IF NOT EXISTS）', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const { runMigrations } = await import('../../src/store/db')
+      // 第二遍必须走 information_schema 守卫的 DO 0 分支，而不是撞 ER_DUP_FIELDNAME
+      await runMigrations(pool)
+
+      const [cols] = await pool.query<any[]>(
+        `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND table_name = 'audit_log' AND column_name = 'detail'`,
+      )
+      expect(cols).toHaveLength(1)
+      // TEXT 而不是 VARCHAR(N)：它要装的是「一条规则的全文」/「一句拒绝原因」，
+      // 长度由管理员写的内容决定，挑任何一个 N 都是在赌（见 008 表头第四节）
+      expect((cols[0].data_type ?? cols[0].DATA_TYPE) as string).toBe('text')
+      // 可空：现存记录写下时还没有这一列，NULL 与空串是两回事
+      expect((cols[0].is_nullable ?? cols[0].IS_NULLABLE) as string).toBe('YES')
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('008 只加列、不动任何现有写入方：audit_log 原有的列一个不少', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const [cols] = await pool.query<any[]>(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND table_name = 'audit_log'`,
+      )
+      const names = cols.map((r) => (r.column_name ?? r.COLUMN_NAME) as string)
+      for (const c of [
+        'id', 'occurred_at', 'actor_type', 'actor_id', 'action',
+        'meeting_id', 'asset_id', 'asset_type', 'decision', 'matched_rule', 'client_kind',
+      ]) {
+        expect(names).toContain(c)
+      }
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('job_failures 的 (job_name, target) 唯一键生效——重复失败是累加不是新增', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const insert = (): Promise<unknown> =>
+        pool.execute(
+          `INSERT INTO job_failures
+             (job_name, target, reason, impact, max_attempts, first_failed_at, last_failed_at)
+           VALUES ('archive_nas', 'm-1|', 'x', 'y', 5, 1, 1)`,
+        )
+      await insert()
+      await expect(insert()).rejects.toThrow()
     } finally {
       await cleanup()
     }

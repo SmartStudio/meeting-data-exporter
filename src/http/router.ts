@@ -37,6 +37,11 @@ import type { ConsoleMeetingsStore } from '../store/console-meetings'
 import * as consoleRulesHandlers from './handlers/console/rules'
 import * as consoleMeetingsHandlers from './handlers/console/meetings'
 import type { VisibilityDeps } from '../worker/visibility'
+// 阶段 4 · T11（A4 定时任务）新增的一条依赖与两条路由。同样只追加，不动上面任何一行。
+// **这里 import 的是 handler 与 store，不是 src/worker/scheduler.ts**——
+// 调度器属于 worker 进程，网关一行都不许碰，见那个文件的文件头。
+import * as consoleJobsHandlers from './handlers/console/jobs'
+import type { JobsDeps } from './handlers/console/jobs'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -138,6 +143,14 @@ export interface AppDeps {
    * 同一个理由——依赖上写着用得到的那几件事，读代码的人不必去猜。
    */
   meetingHistory: Pick<AuditQueryStore, 'listForMeeting'>
+  /**
+   * 定时任务的**读侧 + 手动触发的排队**（阶段 4 · T11，A4）。
+   *
+   * 它只握着 `JobsStore` 与审计写侧——**网关不执行任何任务**。「立即运行」在这里
+   * 落一行 `job_runs.status='queued'`，由 worker 进程的调度器认领。网关是多实例的，
+   * 四个任务各跑 N 份意味着 N 个实例同时对同一批本地文件执行不可逆删除。
+   */
+  jobs: JobsDeps
 }
 
 export interface RouteCtx {
@@ -234,6 +247,11 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/meetings/triage', consoleMeetingsHandlers.meetingTriage),
   compile('GET', '/api/v1/admin/meetings', consoleMeetingsHandlers.listMeetings),
   compile('GET', '/api/v1/admin/meetings/:meetingId', consoleMeetingsHandlers.getMeeting),
+  // A4 定时任务（阶段 4 · T11）。spec §4.8。
+  // `/jobs/:name/run` 与 `/jobs` 段数不同，compile 出来的 `[^/]+` 不跨段，
+  // 两者不会互相吃掉
+  compile('GET', '/api/v1/admin/jobs', consoleJobsHandlers.listJobs),
+  compile('POST', '/api/v1/admin/jobs/:name/run', consoleJobsHandlers.runJob),
 ]
 
 /**

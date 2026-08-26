@@ -429,6 +429,71 @@ test('archivePendingMeetings：一场会议的 archiveMeeting 抛出不连累其
   })
 })
 
+test('归档失败落 job_failures（阶段 4 · T11）：只有真抛出的那一场进去，成功的不进', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedCompletedAsset(pool, { meetingId: 'm-ok', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'ok.bin' })
+    await seedCompletedAsset(pool, { meetingId: 'm-bad', subMeetingId: 's-2', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'bad.bin' })
+    await writeLocalFile(localRoot, 'ok.bin', 'fine')
+    await writeLocalFile(localRoot, 'bad.bin', 'will throw')
+
+    const hashFile = async (path: string): Promise<string> => {
+      if (path.endsWith('bad.bin')) throw new Error('NAS 挂住了')
+      return realSha256(path)
+    }
+    const recorded: Array<{ meetingId: string; subMeetingId: string; reason: string }> = []
+    const deps: ArchiveDeps = {
+      archives, localRoot, nasRoot, hashFile,
+      getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides,
+      recordFailure: async (input) => { recorded.push(input) },
+    }
+    const result = await archivePendingMeetings(deps, () => 10_000)
+
+    expect(result.failed).toBe(1)
+    // 归档失败在这之前只是本轮内存里的一个计数 + 一行 console.error，进程一退就没了
+    // （计划 E-d）。spec §4.8 要求它留在「失败项 · 需要处理」里等重试。
+    expect(recorded).toEqual([
+      { meetingId: 'm-bad', subMeetingId: 's-2', reason: 'NAS 挂住了' },
+    ])
+  })
+})
+
+test('记账口没接线不影响归档本身，也不静默——只是警告一句', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedCompletedAsset(pool, { meetingId: 'm-bad', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'bad.bin' })
+    await writeLocalFile(localRoot, 'bad.bin', 'will throw')
+    const hashFile = async (): Promise<string> => { throw new Error('boom') }
+    const deps: ArchiveDeps = {
+      archives, localRoot, nasRoot, hashFile,
+      getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides,
+    }
+    // recordFailure 缺席时不许抛出：记账是记账，归档轮次不能被它带倒
+    const result = await archivePendingMeetings(deps, () => 10_000)
+    expect(result.failed).toBe(1)
+  })
+})
+
+test('记账口自己炸了也不连累归档轮次', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedCompletedAsset(pool, { meetingId: 'm-bad', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'bad.bin' })
+    await seedCompletedAsset(pool, { meetingId: 'm-ok', assetType: 'video', remoteId: 'r-1', fileType: 'mp4', targetPath: 'ok.bin' })
+    await writeLocalFile(localRoot, 'bad.bin', 'will throw')
+    await writeLocalFile(localRoot, 'ok.bin', 'fine')
+    const hashFile = async (path: string): Promise<string> => {
+      if (path.endsWith('bad.bin')) throw new Error('boom')
+      return realSha256(path)
+    }
+    const deps: ArchiveDeps = {
+      archives, localRoot, nasRoot, hashFile,
+      getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides,
+      recordFailure: async () => { throw new Error('数据库连不上') },
+    }
+    const result = await archivePendingMeetings(deps, () => 10_000)
+    expect(result.failed).toBe(1)
+    // 排在失败会议后面的那一场照样归档得掉——记账失败不许升级成归档失败
+    expect(result.newlyArchived).toBe(1)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // NAS 上那份自解释 sidecar（US-6.2）
 //

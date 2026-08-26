@@ -254,6 +254,29 @@ export interface ArchiveDeps {
    * 那时这个 `?` 就该去掉。
    */
   contents?: ContentsStore
+  /**
+   * 归档失败的落库口（阶段 4 · T11，A4）。**只在 `archiveMeeting` 整场抛出时调**——
+   * 哈希校验不一致那种「归档动作完成了但结果不可信」走 `verificationFailed`，下一轮
+   * 自动重试，不是「需要处理的失败项」。
+   *
+   * ## 为什么是一个只收三个字段的回调，而不是 `JobsStore`
+   *
+   * 归档流水线不该认识「任务」这个词汇：`job_name` / `impact`（那句「未归档，到期会
+   * 永久丢失」）/ `max_attempts` 全都属于调度那一层，由它按任务定义补齐。
+   * 递整个 store 进来的话，同一句「影响」迟早会在两处各写一遍，然后分叉。
+   * 与 `getMeeting` / `listArchiveRules` 收成函数是同一个先例。
+   *
+   * ## 为什么是可选的
+   *
+   * 与 `contents` 同一处破例：本任务的文件边界不含 `src/worker/index.ts`（那里也组装
+   * ArchiveDeps），做成必填会让仓库当场编译不过。代价用同一种方式补上——**没接线时
+   * 每一次归档失败都会 warn 一句**，而不是什么都不发生。
+   */
+  recordFailure?: (input: {
+    meetingId: string
+    subMeetingId: string
+    reason: string
+  }) => Promise<void>
 }
 
 /**
@@ -859,7 +882,33 @@ export async function archivePendingMeetings(
       }
     } catch (err) {
       result.failed++
+      const reason = err instanceof Error ? err.message : String(err)
       console.error(`archiveMeeting failed for meeting=${meetingId} subMeeting=${subMeetingId}:`, err)
+      // 【阶段 4 · T11（A4）新增的唯一一处】归档失败**落库**，不是只留一行 console.error。
+      //
+      // spec §4.8 的硬要求是「失败项不会静默丢弃，会一直留在下方的『失败项 · 需要处理』
+      // 表里等重试」。在这一行之前，`result.failed` 只是本轮内存里的一个计数，进程一退
+      // 就没了，而唯一的线索是一行日志——归档失败恰恰是 dev-plan 里级别最高的那条告警
+      // （spec §1.2：没有归档成功的会议，本地保留期一到就彻底没有了）。
+      //
+      // 落的是 job_failures，不是 meeting_assets：拉取侧的失败已经有地方了
+      // （`meeting_assets.attempts` + `last_error`），而这一层的失败**不属于某个具体
+      // 资产行**——它是「这场会议整场没归成」，可能死在读元数据、判目录、写 sidecar
+      // 任何一步上（计划 E-d）。
+      //
+      // 落库失败不许连累归档：这里只是记账，为了记账失败而让整轮归档中止是本末倒置。
+      // 但也不静默吞掉——降级要留痕，与 sidecar 写失败同一口径。
+      if (deps.recordFailure !== undefined) {
+        await deps
+          .recordFailure({ meetingId, subMeetingId, reason })
+          .catch((e: unknown) => console.warn(`archive failure record failed for meeting=${meetingId}:`, e))
+      } else {
+        // 没接线时喊一句，理由与 ingestAssetContent 完全相同：这个依赖是可选的，
+        // 而"忘了接线"的后果是失败项悄悄丢掉——正是这一段要消灭的失效形态。
+        console.warn(
+          `archive failure NOT recorded (ArchiveDeps.recordFailure 未接线): meeting=${meetingId} subMeeting=${subMeetingId}`,
+        )
+      }
     }
   }
   return result
