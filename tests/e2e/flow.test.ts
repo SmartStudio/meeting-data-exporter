@@ -53,6 +53,7 @@ import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
+import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 import {
   startFakeTencentServer,
   createFakeTencentState,
@@ -223,6 +224,9 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
       audit: auditStore,
       cleanup: null,
     },
+    // 审计读侧（阶段 4 · A5）：与 auditRecorder 同源，装配方式跟随 src/index.ts
+    auditQuery: auditStore,
+    auditMeetings: createAuditMeetingLookup(dbPool),
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

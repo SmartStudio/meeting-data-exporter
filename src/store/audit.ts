@@ -16,7 +16,9 @@ export interface AuditEntry {
 
 /**
  * 读出来的一条审计记录。比写侧的 `AuditEntry` 多一个自增 `id`——分页要一个稳定的
- * 次序键，`occurred_at` 是调用方给的毫秒时间戳，同一毫秒里挤进几条是常事
+ * 次序键，`occurred_at` 是调用方给的 **unix 秒**（唯一写入者 `audit/recorder.ts`
+ * 取的是 `deps.now()`，网关与 worker 两个进程的 `now` 都是 `Date.now() / 1000`）。
+ * 同一秒里挤进几条是常事
  * （一次批量下载就是），只按它排的话翻页会漏行或重行。
  *
  * `decision` 在这里放宽成 `string`，与写侧的 `'allow' | 'deny'` 不同，**这是故意的**：
@@ -33,7 +35,7 @@ export interface AuditRecord extends Omit<AuditEntry, 'decision'> {
 /**
  * 审计筛选条件（spec §4.10：按操作者 / 类型 / 时间范围筛选，外加把被拒绝的单独挑出来）。
  *
- * 时间范围是**半开区间 `[from, to)`**。闭区间会让「按天翻页」时边界那一毫秒的记录
+ * 时间范围是**半开区间 `[from, to)`**。闭区间会让「按天翻页」时边界那一秒的记录
  * 同时落进相邻两页——审计流里出现一条重复记录，看的人第一反应是「这个操作真做了两次」。
  *
  * `actorTypes` / `actions` 传空数组表示**一条都不匹配**，不是「不筛选」。
@@ -122,7 +124,7 @@ export const AUDIT_MEETING_HISTORY_LIMIT = 200
 const SELECT_COLUMNS = `id, occurred_at, actor_type, actor_id, action, meeting_id,
           asset_id, asset_type, decision, matched_rule, client_kind`
 
-/** 占位符能接的实参。审计查询的每一个条件值不是字符串就是毫秒时间戳，
+/** 占位符能接的实参。审计查询的每一个条件值不是字符串就是 unix 秒时间戳，
  *  故意不放宽到 unknown——放宽了就等于把「这个值有没有被拼进 SQL」的检查交出去 */
 type SqlParam = string | number
 

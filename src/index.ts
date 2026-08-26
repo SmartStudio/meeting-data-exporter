@@ -23,6 +23,7 @@ import { createIdentityMapper } from './auth/identity'
 import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
+import { createAuditMeetingLookup } from './http/handlers/console/audit'
 import { createLoginRateLimiter } from './http/ratelimit'
 import { createProgramsStore } from './store/programs'
 import { createConsoleMeetingsStore } from './store/console-meetings'
@@ -193,6 +194,10 @@ async function main(): Promise<void> {
     auditStore,
     getMeetings: consoleMeetings.getMeetings,
     storage,
+    // 审计读侧（阶段 4 · A5）。与 auditRecorder 是同一个 createAuditStore 的
+    // 两个面：写侧只有 record()，读侧只有查询，两者共用同一份 SQL 定义
+    auditQuery: auditStore,
+    auditMeetings: createAuditMeetingLookup(pool),
   }
 
   const app = createApp(deps)

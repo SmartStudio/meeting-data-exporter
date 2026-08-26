@@ -27,6 +27,9 @@ import type { PolicyStore } from '../store/policy'
 import type { AuditStore } from '../store/audit'
 import type { Meeting } from '../domain/types'
 import * as consoleGrantsHandlers from './handlers/console/grants'
+import type { AuditQueryStore } from '../store/audit'
+import * as consoleAuditHandlers from './handlers/console/audit'
+import type { AuditMeetingLookup } from './handlers/console/audit'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -96,6 +99,12 @@ export interface AppDeps {
    *  handlers/console/storage.ts 的文件头——NAS 探测、到期清理、审计写侧都在里面，
    *  刻意不复用上面那个收窄成 listArchivedMeetingKeys 的 `archives` 字段 */
   storage: StorageDeps
+  /** 审计读侧（阶段 4 · T3）。与写侧 auditRecorder 分成两个字段是故意的——
+   *  只写不读的调用点不该被迫实现两个用不上的查询，见 store/audit.ts 的注释 */
+  auditQuery: AuditQueryStore
+  /** 审计「对象」列的会议标题批量补齐（阶段 4 · T9）。audit_log 只存 id，
+   *  标题在 meetings / meeting_cache 两张表里，逐行查一页就是 200 次往返 */
+  auditMeetings: AuditMeetingLookup
 }
 
 export interface RouteCtx {
@@ -174,6 +183,9 @@ const ROUTES: Route[] = [
   compile('POST', '/api/v1/admin/storage/cleanup-pause', consoleStorageHandlers.setCleanupPause),
   compile('POST', '/api/v1/admin/storage/cleanup-now', consoleStorageHandlers.cleanupNow),
   compile('POST', '/api/v1/admin/meetings/:meetingId/extend', consoleStorageHandlers.extendMeetingRetention),
+  // 操作审计（阶段 4 · A5，T9）。spec §4.10
+  compile('GET', '/api/v1/admin/audit', consoleAuditHandlers.listAudit),
+  compile('GET', '/api/v1/admin/meetings/:meetingId/history', consoleAuditHandlers.meetingHistory),
 ]
 
 /**

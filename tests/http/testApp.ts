@@ -38,6 +38,7 @@ import type { Meeting } from '../../src/domain/types'
 import type { RowDataPacket } from 'mysql2/promise'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import type { StorageDeps } from '../../src/http/handlers/console/storage'
+import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -198,6 +199,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
       audit: auditStore,
       cleanup: null,
     } satisfies StorageDeps,
+    // 审计读侧（阶段 4 · A5）：与 auditRecorder 同源，装配方式跟随 src/index.ts
+    auditQuery: auditStore,
+    auditMeetings: createAuditMeetingLookup(pool),
   }
 
   return { app: createApp(deps), deps, pool }
