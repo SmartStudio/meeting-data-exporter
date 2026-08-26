@@ -23,6 +23,7 @@ import { createIdentityMapper } from './auth/identity'
 import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
+import { createAuditMeetingLookup } from './http/handlers/console/audit'
 import { createLoginRateLimiter } from './http/ratelimit'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
@@ -121,6 +122,10 @@ async function main(): Promise<void> {
     adminAuth,
     adminStore,
     cookieSecure,
+    // 审计读侧（阶段 4 · A5）。与 auditRecorder 是同一个 createAuditStore 的
+    // 两个面：写侧只有 record()，读侧只有查询，两者共用同一份 SQL 定义
+    auditQuery: auditStore,
+    auditMeetings: createAuditMeetingLookup(pool),
   }
 
   const app = createApp(deps)

@@ -19,6 +19,9 @@ import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
 import * as consoleAuthHandlers from './handlers/console/auth'
 import type { RateLimiter } from './ratelimit'
+import type { AuditQueryStore } from '../store/audit'
+import * as consoleAuditHandlers from './handlers/console/audit'
+import type { AuditMeetingLookup } from './handlers/console/audit'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -52,6 +55,12 @@ export interface AppDeps {
   adminStore: AdminStore
   /** 生产环境必须为 true（cookie 的 Secure 属性依据它）；本地 http 开发环境为 false */
   cookieSecure: boolean
+  /** 审计读侧（阶段 4 · T3）。与写侧 auditRecorder 分成两个字段是故意的——
+   *  只写不读的调用点不该被迫实现两个用不上的查询，见 store/audit.ts 的注释 */
+  auditQuery: AuditQueryStore
+  /** 审计「对象」列的会议标题批量补齐（阶段 4 · T9）。audit_log 只存 id，
+   *  标题在 meetings / meeting_cache 两张表里，逐行查一页就是 200 次往返 */
+  auditMeetings: AuditMeetingLookup
 }
 
 export interface RouteCtx {
@@ -113,6 +122,10 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
   compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
   compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
+
+  // 操作审计（阶段 4 · A5，T9）。spec §4.10
+  compile('GET', '/api/v1/admin/audit', consoleAuditHandlers.listAudit),
+  compile('GET', '/api/v1/admin/meetings/:meetingId/history', consoleAuditHandlers.meetingHistory),
 ]
 
 /**
