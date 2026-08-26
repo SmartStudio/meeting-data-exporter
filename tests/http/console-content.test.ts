@@ -600,7 +600,18 @@ test('章节端点同样留痕（管理员查看会议内容会留痕，spec §2
   await getChapters(req(), h.ctx)
   expect(h.audits.length).toBe(1)
   expect(h.audits[0]!.action).toBe('view_restricted_content')
-  expect(h.audits[0]!.assetType).toContain('chapters')
+  // 「看了什么」在 detail 列（migrations/008），不再塞进 asset_type
+  expect(h.audits[0]!.assetType).toBeNull()
+  expect(h.audits[0]!.detail).toContain('chapters')
+  // 受限查看的对价是留痕，所以留痕要留得住话：当时为什么禁止采集也一并记下
+  const data = JSON.parse(h.audits[0]!.detail!.split('\n')[1]!) as {
+    restricted: boolean
+    allow: string
+    why: { by: string; text: string }
+  }
+  expect(data.restricted).toBe(true)
+  expect(data.allow).toBe('deny')
+  expect(data.why.text.length).toBeGreaterThan(0)
 })
 
 // ── 转写解析器（纯函数） ──────────────────────────────────────────────────

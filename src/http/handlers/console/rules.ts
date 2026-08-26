@@ -38,18 +38,29 @@
  * `policy_rules` 没有软删除列，删完这条规则在库里就不存在了，「它当时长什么样」
  * 只能由这一行记住。
  *
- * ### 一处与计划对不上的地方，裁定记在这里
+ * ### 快照写在 `audit_log.detail` 里（阶段 4 · T15）
  *
- * `audit_log` 没有放得下一条完整规则的列：能用的只有 `asset_id VARCHAR(255)`。
- * 加一列 `detail TEXT` 才是正解，但迁移编号在本波次里已经分给了 T4（007）与
- * T11（008），一个 handler 任务顺手插一个迁移号进去，合并时是最难拆的那种冲突。
- * 因此这里的裁定是：**快照写成紧凑 JSON，超列宽显式截断并留下 `…` 标记**
- * （见 `fitAuditColumn`），而不是指望 MySQL 非严格模式替我们静默截断——
- * 截掉一半又看不出被截过的审计记录，比没有更糟。
- * 改规则只记**真的变了的那几个字段的前后两版**（见 `diffShape`），255 个字符
- * 因此几乎总是够用：它要回答的问题就是「哪个字段被谁改成了什么」。
+ * 这里曾经有一处将就：`audit_log` 当时没有放得下一条完整规则的列，能用的最宽一列
+ * 是 `asset_id VARCHAR(255)`，于是快照被写成紧凑 JSON 塞进那一列，超长显式截断
+ * 留一个 `…`，改规则也只记**真的变了的那几个字段**——为的是让 255 个字符够用。
+ *
+ * `migrations/008` 把 `detail TEXT` 加了出来之后这些将就全部撤掉：
+ *
+ * - 快照（含改动前后的**完整两版**）走 `detail`，`buildAuditDetail` 组装，
+ *   上限 `AUDIT_DETAIL_MAX_CHARS`，超限时在结尾写明「原文多少字、上限多少」；
+ * - `asset_id` 回到它的本义——这次动作的**对象键**，写成 `rule:{id}`；
+ * - `asset_type` 仍是这条规则所属的栈名（`fetch` / `archive` / `allow`）。
+ *   它是 VARCHAR(64)，脏 kind 仍会被裁到列宽，但**不再丢信息**：
+ *   完整的脏值就在 detail 的快照里。
+ *
+ * 改规则记完整两版而不是只记 diff：只记 diff 能答出「哪个字段被改成了什么」，
+ * 答不出「改完之后这条规则整体长什么样」，而后者正是事后复盘「那天为什么放行」
+ * 要问的问题——`policy_rules` 会被后续的修改继续覆盖，答案只在这一行里。
+ * 同时另记一个 `changed` 字段列出真的变了的那几个，好让人一眼看出改动范围。
  *
  * 被校验挡下的写入也记一行，`decision = 'deny'`：审计流要答得出「谁试过把闸门改开」。
+ * 逐条 `issues` 一并写进 detail——spec §4.10 要求被拒绝的记录写明拒绝原因，
+ * 而在 detail 之前那几条原因只回给了前端，审计里一个字都没留。
  * 规则不存在（404）不记——那次调用什么都没碰到，记一行只是噪音。
  *
  * ### 时间单位：写 unix 秒
@@ -73,7 +84,7 @@ import {
   type StackImpactPreview,
 } from '../../../policy/preview'
 import { describeStackRuleIssues, type StackDecision, type StackKind, type StackRule } from '../../../policy/stacks'
-import type { AuditEntry } from '../../../store/audit'
+import { buildAuditDetail, type AuditEntry } from '../../../store/audit'
 import {
   consoleMeetingId,
   type ConsoleMeetingRow,
@@ -92,22 +103,24 @@ function isStackKind(v: unknown): v is StackKind {
 
 // ── 审计 ──────────────────────────────────────────────────────────────────
 
-/** `audit_log.asset_id` 的列宽。快照写在这一列里 */
-const AUDIT_OBJECT_MAX = 255
-/** `audit_log.asset_type` 的列宽。这里存的是栈名 */
+/**
+ * `audit_log.asset_type` 的列宽。这里存的是栈名（`fetch` / `archive` / `allow`）。
+ *
+ * 正常取值最长 7 个字符，这条裁剪只在 `kind` 是脏值时才起作用——请求体里的
+ * `kind` 原样往下传（见 `draftFromBody`），它可能是任意长度的字符串。
+ * **裁掉不丢信息**：完整的脏值就在 `detail` 的快照里（`SHAPE_FIELDS` 含 `kind`）。
+ */
 const AUDIT_KIND_MAX = 64
 
 type RuleAction = 'rule_create' | 'rule_update' | 'rule_delete' | 'rule_toggle'
 
 /**
- * 按**码点**截断，与 MySQL 的 VARCHAR(n) 一致（JS 的 `.length` 数的是 UTF-16 码元，
- * 一个 emoji 会算成 2）。截断必须看得见——留一个 `…`，否则读审计的人会以为
- * 那条规则本来就长这样。
+ * 按**码点**裁到 MySQL 的 VARCHAR(n)（JS 的 `.length` 数的是 UTF-16 码元，
+ * 一个 emoji 会算成 2，切在代理对中间会产生 utf8mb4 插不进去的孤立代理项）。
  */
 function fitAuditColumn(s: string, max: number): string {
   const chars = [...s]
-  if (chars.length <= max) return s
-  return `${chars.slice(0, max - 1).join('')}…`
+  return chars.length <= max ? s : chars.slice(0, max).join('')
 }
 
 /** 一条规则里会改变判定或说明的那几个字段。`id` 单独记在 `matched_rule` 列里 */
@@ -134,23 +147,15 @@ function shapeOf(rule: Pick<StackRule, ShapeField>): RuleShape {
 }
 
 /**
- * 只留**真的变了**的字段的前后两版。
- *
- * 不是为了好看：`asset_id` 只有 255 个字符，把没改的 conds 与 note 一起塞进去，
- * 真正改掉的那个字段就会被挤到截断线外面——而它正是这一行审计存在的理由。
+ * 真的变了的那几个字段名。**只用来给人看改动范围**，前后两版本身完整记在
+ * `before` / `after` 里——从前这份 diff 是快照本身（255 字符装不下整条规则），
+ * 现在它退回它该有的角色：一句「这次动了哪几个字段」。
  */
-function diffShape(
+function changedFields(
   before: Pick<StackRule, ShapeField>,
   after: Pick<StackRule, ShapeField>,
-): { was: RuleShape; now: RuleShape } {
-  const was: RuleShape = {}
-  const now: RuleShape = {}
-  for (const f of SHAPE_FIELDS) {
-    if (JSON.stringify(before[f]) === JSON.stringify(after[f])) continue
-    was[f] = before[f]
-    now[f] = after[f]
-  }
-  return { was, now }
+): ShapeField[] {
+  return SHAPE_FIELDS.filter((f) => JSON.stringify(before[f]) !== JSON.stringify(after[f]))
 }
 
 interface RuleAuditInput {
@@ -161,8 +166,10 @@ interface RuleAuditInput {
   kind: unknown
   /** 哪一条。新建被拒时没有 id */
   ruleId: number | null
-  /** 快照。`{ now }` = 现在长这样，`{ was }` = 当时长这样，两个都有 = 改动前后 */
-  object: unknown
+  /** `detail` 的第一行：一句人话。被拒时它就是拒绝原因（spec §4.10） */
+  text: string
+  /** `detail` 的附文：完整快照。序列化失败不会让这一行审计丢掉，见 `buildAuditDetail` */
+  data: unknown
 }
 
 async function recordRuleAudit(
@@ -177,13 +184,16 @@ async function recordRuleAudit(
     action: input.action,
     // 规则不是针对某一场会议的，这一列留空。哪一栈的哪一条见 assetType / matchedRuleId
     meetingId: null,
-    assetId: fitAuditColumn(JSON.stringify(input.object), AUDIT_OBJECT_MAX),
+    // 这次动作的对象键。新建被校验挡下时还没有 id，写 `rule:new`——
+    // 留空的话这条记录在审计流里看不出对象是「一条规则」
+    assetId: input.ruleId === null ? 'rule:new' : `rule:${input.ruleId}`,
     assetType: fitAuditColumn(String(input.kind), AUDIT_KIND_MAX),
     // 管理侧的 decision 读作「这次操作成没成立」，与网关侧的「放行 / 拒绝」是
-    // 同一列的两种读法（`recordLogin` 早有先例：它用这一列记登录成没成功）
+    // 同一列的两种读法
     decision: input.ok ? 'allow' : 'deny',
     matchedRuleId: input.ruleId,
     clientKind: 'console',
+    detail: buildAuditDetail({ text: input.text, data: input.data }),
   }
   await ctx.deps.auditStore.record(entry)
 }
@@ -306,7 +316,8 @@ export async function createRule(req: Request, ctx: RouteCtx): Promise<Response>
       ok: true,
       kind: created.kind,
       ruleId: created.id,
-      object: { id: created.id, now: shapeOf(created) },
+      text: `新建 ${String(created.kind)} 栈规则 #${created.id}`,
+      data: { rule: shapeOf(created) },
     })
     return json(201, { rule: created })
   } catch (err) {
@@ -316,7 +327,13 @@ export async function createRule(req: Request, ctx: RouteCtx): Promise<Response>
       ok: false,
       kind: draft.kind,
       ruleId: null,
-      object: { rejected: shapeOf(draft as unknown as Pick<StackRule, ShapeField>) },
+      // 逐条 issues 就是这一行的拒绝原因（spec §4.10）。分号连成一句进第一行，
+      // 原样的数组进附文——一句话给人看，数组给将来的统计看
+      text: `新建规则被校验挡下：${err.issues.join('；')}`,
+      data: {
+        rejected: shapeOf(draft as unknown as Pick<StackRule, ShapeField>),
+        issues: err.issues,
+      },
     })
     return json(400, { error: 'rule_invalid', issues: err.issues })
   }
@@ -355,7 +372,8 @@ export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> 
       ok: true,
       kind: toggled.kind,
       ruleId: toggled.id,
-      object: { id: toggled.id, was: { enabled: before.enabled }, now: { enabled: toggled.enabled } },
+      text: `${toggled.enabled ? '启用' : '停用'}规则 #${toggled.id}`,
+      data: { before: { enabled: before.enabled }, after: { enabled: toggled.enabled } },
     })
     return json(200, { rule: toggled })
   }
@@ -365,13 +383,19 @@ export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> 
     // 读到了、改的时候没了：并发删除。仍然是 404（这次调用没改到任何东西），
     // 不是 500——服务端一切正常，只是那条规则已经不在了
     if (updated === null) return json(404, { error: 'rule_not_found' })
-    const { was, now } = diffShape(before, updated)
+    const changed = changedFields(before, updated)
     await recordRuleAudit(ctx, auth.identity, {
       action: 'rule_update',
       ok: true,
       kind: updated.kind,
       ruleId: updated.id,
-      object: { id: updated.id, was, now },
+      // 「一个字段都没实际变化」也是事实的一种：请求带了字段但值与原来相同。
+      // 说成「改了 0 个字段」比含糊其辞的「已更新」有用
+      text:
+        changed.length === 0
+          ? `修改规则 #${updated.id}：提交了 ${fields.join('、')}，但没有字段实际发生变化`
+          : `修改规则 #${updated.id}：改了 ${changed.join('、')}`,
+      data: { changed, before: shapeOf(before), after: shapeOf(updated) },
     })
     return json(200, { rule: updated })
   } catch (err) {
@@ -381,7 +405,8 @@ export async function patchRule(req: Request, ctx: RouteCtx): Promise<Response> 
       ok: false,
       kind: has(body, 'kind') ? body.kind : before.kind,
       ruleId: id,
-      object: { id, was: shapeOf(before), rejected: fields },
+      text: `修改规则 #${id} 被校验挡下：${err.issues.join('；')}`,
+      data: { before: shapeOf(before), patchedFields: fields, issues: err.issues },
     })
     return json(400, { error: 'rule_invalid', issues: err.issues })
   }
@@ -404,7 +429,8 @@ export async function deleteRule(req: Request, ctx: RouteCtx): Promise<Response>
     ok: true,
     kind: deleted.kind,
     ruleId: deleted.id,
-    object: { id: deleted.id, was: shapeOf(deleted) },
+    text: `删除规则 #${deleted.id}`,
+    data: { deleted: shapeOf(deleted) },
   })
   // 回一份被删的内容而不是 204：规则页要在「已删除」的提示里说清删掉的是哪一条，
   // 而这份内容库里已经没有了，再查一次也查不回来

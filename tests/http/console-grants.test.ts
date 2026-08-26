@@ -652,21 +652,43 @@ test('grantMeeting 成功：把 sub 场次带进 store，返回生效的授权�
   // 场次与目标程序都要能从审计记录里读出来
   expect(r.audits[0]!.assetId).toContain(PROGRAM)
   expect(r.audits[0]!.assetId).toContain('s-7')
+  // 一句话明细走 detail 列；asset_type 不再当自由文本用
+  expect(r.audits[0]!.assetType).toBeNull()
+  expect(r.audits[0]!.detail).toContain('ai_minutes')
 })
 
-test('grantMeeting 的审计明细不会超出 audit_log.asset_type 的 64 字符', async () => {
+test('grantMeeting 的资产范围完整落进 detail，不再被 64 字符切掉', async () => {
+  const all = [
+    'video', 'audio', 'transcript', 'ai_transcript',
+    'ai_minutes', 'ai_topic_minutes', 'ai_speaker_minutes', 'ai_ds_minutes',
+  ]
   const r = rig({ params: { meetingId: 'm-1' }, programs: [program()] })
   await grantMeeting(
-    req('POST', '/api/v1/admin/meetings/m-1/grants', {
-      programId: PROGRAM,
-      assetTypes: [
-        'video', 'audio', 'transcript', 'ai_transcript',
-        'ai_minutes', 'ai_topic_minutes', 'ai_speaker_minutes', 'ai_ds_minutes',
-      ],
-    }),
+    req('POST', '/api/v1/admin/meetings/m-1/grants', { programId: PROGRAM, assetTypes: all }),
     r.ctx,
   )
-  expect((r.audits[0]!.assetType ?? '').length).toBeLessThanOrEqual(64)
+  const detail = r.audits[0]!.detail ?? ''
+  // 全八类连起来 100 出头，从前必然被截；现在一类都不许少——
+  // 「授权了什么范围」正是这一行审计要回答的问题
+  expect(detail.length).toBeGreaterThan(64)
+  for (const t of all) expect(detail).toContain(t)
+  expect(detail).not.toContain('...')
+})
+
+test('grantMeeting 的空集范围在 detail 里说得清，不与「不限制」混成一样', async () => {
+  const empty = rig({ params: { meetingId: 'm-1' }, programs: [program()] })
+  await grantMeeting(
+    req('POST', '/api/v1/admin/meetings/m-1/grants', { programId: PROGRAM, assetTypes: [] }),
+    empty.ctx,
+  )
+  expect(empty.audits[0]!.detail).toContain('什么都不授权')
+
+  const unlimited = rig({ params: { meetingId: 'm-1' }, programs: [program()] })
+  await grantMeeting(
+    req('POST', '/api/v1/admin/meetings/m-1/grants', { programId: PROGRAM, assetTypes: null }),
+    unlimited.ctx,
+  )
+  expect(unlimited.audits[0]!.detail).not.toContain('什么都不授权')
 })
 
 // ── DELETE /api/v1/admin/meetings/:meetingId/grants/:programId ──
@@ -701,7 +723,7 @@ test('revokeGrant 撤了个本来就没有的授权：revoked = false，但仍�
   expect(await res.json()).toEqual({ revoked: false })
   expect(r.audits).toHaveLength(1)
   expect(r.audits[0]!.decision).toBe('allow')
-  expect(r.audits[0]!.assetType).toContain('noop')
+  expect(r.audits[0]!.detail).toContain('noop')
 })
 
 // ── PUT /api/v1/admin/meetings/:meetingId/override ─────────────

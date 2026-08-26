@@ -28,7 +28,7 @@ import type { AdminAuth, AdminIdentity } from '../../src/auth/admin'
 import { createApp, type AppDeps, type RouteCtx } from '../../src/http/router'
 import type { AdminRule, PolicyStore, RuleDraft, RulePatch } from '../../src/store/policy'
 import { PolicyRuleInvalid } from '../../src/store/policy'
-import type { AuditEntry, AuditStore } from '../../src/store/audit'
+import { AUDIT_DETAIL_MAX_CHARS, type AuditEntry, type AuditStore } from '../../src/store/audit'
 import type { ConsoleMeetingRow, ConsoleMeetingsStore, HandKind } from '../../src/store/console-meetings'
 import { consoleMeetingId } from '../../src/store/console-meetings'
 import type { Meeting } from '../../src/domain/types'
@@ -365,6 +365,19 @@ test('新建成功：created_by 用当前管理员、时刻用网关的秒级 no
   // 「哪一栈的哪一条」（验收 2）
   expect(e.matchedRuleId).toBe(7)
   expect(e.assetType).toBe('allow')
+  // asset_id 是这次动作的**对象键**，不再拿它当快照的容器（T15）
+  expect(e.assetId).toBe('rule:7')
+  // 快照完整落在 detail 里：第一行人话，第二行是这条规则的全部字段
+  const [head, ...rest] = (e.detail ?? '').split('\n')
+  expect(head).toContain('#7')
+  const snapshot = JSON.parse(rest.join('\n')) as { rule: Record<string, unknown> }
+  expect(snapshot.rule).toMatchObject({
+    kind: 'allow',
+    effect: 'allow',
+    subjectValue: 'svc-a',
+    note: '财务会议给数据组',
+    conds: [{ f: 'title', op: 'has', v: '财务' }],
+  })
 })
 
 test('新建被校验挡下：400 + 逐条 issues 原样下发（交接 2），且一行都没落库', async () => {
@@ -390,6 +403,11 @@ test('新建被校验挡下：400 + 逐条 issues 原样下发（交接 2），�
   expect(audit.entries).toHaveLength(1)
   expect(audit.entries[0]!.decision).toBe('deny')
   expect(audit.entries[0]!.action).toBe('rule_create')
+  // spec §4.10：被拒绝的记录要写明拒绝原因。逐条 issues 从前只回给了前端，
+  // 审计这一侧一个字都没留——detail 装得下之后就不该再丢
+  const detail = audit.entries[0]!.detail ?? ''
+  expect(detail.split('\n')[0]).toContain(issues[0]!)
+  expect(JSON.parse(detail.split('\n').slice(1).join('\n')).issues).toEqual(issues)
 })
 
 test('请求体不是 JSON 时 400，不把 undefined 喂给 store', async () => {
@@ -402,7 +420,7 @@ test('请求体不是 JSON 时 400，不把 undefined 喂给 store', async () =>
 
 // ── 改 ───────────────────────────────────────────────────────────────────
 
-test('改内容走 updateRule，审计只记真的变了的字段（前后各一份）', async () => {
+test('改内容走 updateRule，审计记下改动前后的完整两版（不再只记变了的字段）', async () => {
   const before = rule({ id: 3, effect: 'deny', note: '先关着' })
   const after = rule({ id: 3, effect: 'allow', note: '先关着', updatedAt: NOW })
   let patch: RulePatch | null = null
@@ -432,11 +450,23 @@ test('改内容走 updateRule，审计只记真的变了的字段（前后各一
   expect(e.action).toBe('rule_update')
   expect(e.matchedRuleId).toBe(3)
   expect(e.assetType).toBe('allow')
-  // 「谁把这条规则从 deny 改成 allow」必须在这一行里读得出来
-  expect(e.assetId ?? '').toContain('deny')
-  expect(e.assetId ?? '').toContain('allow')
-  // 没改的字段不该塞进这一行——255 个字符要留给真的改动
-  expect(e.assetId ?? '').not.toContain('先关着')
+  expect(e.assetId).toBe('rule:3')
+
+  const [head, ...rest] = (e.detail ?? '').split('\n')
+  // 「谁把这条规则从 deny 改成 allow」必须一眼读得出来
+  expect(head).toContain('effect')
+  const d = JSON.parse(rest.join('\n')) as {
+    changed: string[]
+    before: Record<string, unknown>
+    after: Record<string, unknown>
+  }
+  expect(d.changed).toEqual(['effect'])
+  expect(d.before.effect).toBe('deny')
+  expect(d.after.effect).toBe('allow')
+  // 没改的字段现在也一起记：detail 装得下之后，「改完之后这条规则长什么样」
+  // 就不该再靠翻另一张表去拼
+  expect(d.before.note).toBe('先关着')
+  expect(d.after.note).toBe('先关着')
 })
 
 test('只改 enabled 时走 setEnabled，动作是 rule_toggle——坏规则也必须关得掉', async () => {
@@ -538,16 +568,15 @@ test('删除时把被删规则的内容记进审计（交接 1：删完库里就
   expect(e.action).toBe('rule_delete')
   expect(e.matchedRuleId).toBe(12)
   expect(e.assetType).toBe('allow')
-  const snapshot = e.assetId ?? ''
+  expect(e.assetId).toBe('rule:12')
+  const snapshot = e.detail ?? ''
   // 「它当时长什么样」：effect、主体、条件三样缺一样都答不出「为什么当时能取走」
   expect(snapshot).toContain('allow')
   expect(snapshot).toContain('svc-b')
   expect(snapshot).toContain('董事会')
-  // audit_log.asset_id 是 VARCHAR(255)，写超了 MySQL 非严格模式会静默截断
-  expect([...snapshot].length).toBeLessThanOrEqual(255)
 })
 
-test('审计的对象字段超过列宽时显式截断，不指望数据库替我们截', async () => {
+test('一条大规则的快照完整落进 detail，不再被 255 字符切掉', async () => {
   const huge = rule({
     id: 13,
     note: '很长的说明'.repeat(60),
@@ -559,10 +588,68 @@ test('审计的对象字段超过列宽时显式截断，不指望数据库替�
     req('DELETE'),
     ctxOf({ policy: policy.store, audit: audit.store, params: { id: '13' } }),
   )
-  const snapshot = audit.entries[0]!.assetId ?? ''
-  expect([...snapshot].length).toBeLessThanOrEqual(255)
-  // 截断必须看得见，否则读审计的人会以为那条规则本来就长这样
-  expect(snapshot.endsWith('…')).toBe(true)
+  const snapshot = audit.entries[0]!.detail ?? ''
+  expect([...snapshot].length).toBeGreaterThan(255)
+  // 首尾两个条件都在——从前第 3 个条件之后就被截没了
+  expect(snapshot).toContain('关键词0')
+  expect(snapshot).toContain('关键词39')
+  expect(snapshot).toContain('很长的说明')
+  expect(snapshot).not.toContain('已截断')
+})
+
+test('detail 也不是无限：超上限时截断并留痕，且人话在头部先被保住', async () => {
+  const monstrous = rule({
+    id: 14,
+    // 远超 AUDIT_DETAIL_MAX_CHARS，逼出截断
+    note: '甲'.repeat(AUDIT_DETAIL_MAX_CHARS * 2),
+  })
+  const policy = fakePolicyStore({ deleteRule: async () => monstrous })
+  const audit = fakeAuditStore()
+  await deleteRule(
+    req('DELETE'),
+    ctxOf({ policy: policy.store, audit: audit.store, params: { id: '14' } }),
+  )
+  const snapshot = audit.entries[0]!.detail ?? ''
+  expect([...snapshot].length).toBe(AUDIT_DETAIL_MAX_CHARS)
+  // 截断这件事本身写在记录里——把截断从一列挪到另一列还不说，比不挪更糟
+  expect(snapshot).toContain('已截断')
+  expect(snapshot.split('\n')[0]).toContain('#14')
+})
+
+test('明细组装失败也照样落下这一行审计——账本上不许因此少一次操作', async () => {
+  // 一条 note 的 toJSON 会抛的规则。真实世界里 JSON.stringify 抛的路子有好几条
+  // （循环引用、BigInt、抛异常的 toJSON），共同点是：它抛在**组装明细**这一步，
+  // 而这一步失败绝不该把「谁删了哪条规则」这个事实一起带走。
+  // audit_log 是数据出境的唯一账本（spec §1.4 / §4.10）。
+  //
+  // 只炸第一次（也就是组装审计明细那一次）：这条用例盯的是审计这一侧，
+  // 响应体序列化炸不炸是另一件事，不该混进来。
+  let armed = true
+  const mine = {
+    toJSON(): string {
+      if (!armed) return '(已排雷)'
+      armed = false
+      throw new Error('明细里埋了个雷')
+    },
+  }
+  const cursed = rule({ id: 15, note: mine as unknown as string })
+  const policy = fakePolicyStore({ deleteRule: async () => cursed })
+  const audit = fakeAuditStore()
+
+  const res = await deleteRule(
+    req('DELETE'),
+    ctxOf({ policy: policy.store, audit: audit.store, params: { id: '15' } }),
+  )
+
+  expect(res.status).toBe(200)
+  expect(audit.entries).toHaveLength(1)
+  const e = audit.entries[0]!
+  expect(e.action).toBe('rule_delete')
+  expect(e.matchedRuleId).toBe(15)
+  // 人话那一行完好——「谁在什么时候删了 #15」照样答得出
+  expect(e.detail!.split('\n')[0]).toBe('删除规则 #15')
+  // 附文没了这件事本身也留痕，不是悄悄少一段
+  expect(e.detail).toContain('附文序列化失败')
 })
 
 test('删一条不存在的规则：404，且不落审计——这次调用什么都没删掉', async () => {

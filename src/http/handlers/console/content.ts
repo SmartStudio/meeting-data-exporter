@@ -57,6 +57,10 @@
  * 这一行**不 try/catch**：审计写不进去就没有对价，此时返回正文等于绕过 spec §2。
  * 让它抛出去、由 `router.ts` 的 `internalError` 变成 500，是这里唯一诚实的选择。
  *
+ * 明细走 `audit_log.detail`（阶段 4 · T15），除了「看了什么」还记下**当时的判定
+ * 理由原话**。事后复盘要问的是「他看的那一刻，这场会议为什么是禁止采集的」，
+ * 而 `matched_rule` 答不出这个——兜底 deny 时它本来就是 null。
+ *
  * ## 四、录像不代理（T10 验收 3）
  *
  * `?type=video` / `?type=audio` 直接 400。录像与音频既不入 `asset_contents`
@@ -88,7 +92,7 @@ import {
 import { isVisible } from '../../../policy/access'
 import { wasOverridden, type OverriddenDecision } from '../../../policy/override'
 import type { AllowEffect, StackRule } from '../../../policy/stacks'
-import type { AuditEntry } from '../../../store/audit'
+import { buildAuditDetail, type AuditEntry } from '../../../store/audit'
 import { parseConsoleMeetingId, type ConsoleMeetingRow } from '../../../store/console-meetings'
 import type { MeetingArchiveRecord } from '../../../store/archives'
 import type { AssetContentKey, AssetContentStatus } from '../../../store/contents'
@@ -414,16 +418,9 @@ const RESTRICTED_BANNER =
 // 留痕
 // ===========================================================================
 
-/** `audit_log.asset_type` 是 VARCHAR(64)（migrations/001）。自由文本必须先裁到 64 字符,
- *  否则严格模式下一条过长的说明会让整次审计写入报错，把「记账失败」变成「操作失败」。
- *  与 `handlers/console/storage.ts` 的 `clipDetail` 同一份逻辑、同一个理由 */
-const AUDIT_DETAIL_MAX = 64
-function clipDetail(s: string): string {
-  if (s.length <= AUDIT_DETAIL_MAX) return s
-  const cut = s.slice(0, AUDIT_DETAIL_MAX)
-  const last = cut.charCodeAt(cut.length - 1)
-  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
-}
+// 这里曾有一个 clipDetail（与 storage.ts / jobs.ts 三份同源）：自由文本被裁到
+// 64 字符塞进 audit_log.asset_type。migrations/008 的 detail TEXT 之后不再需要它，
+// 明细走 buildAuditDetail，上限与超限留痕收在 src/store/audit.ts 一处。
 
 /**
  * 写一行查看记录。**不 try/catch**：见文件头第三条——审计写不进去就没有对价，
@@ -443,14 +440,26 @@ async function recordView(
     // audit_log 没有 sub_meeting_id 列，周期性会议的场次落 asset_id——
     // 与 `handlers/console/storage.ts` 的管理员写操作同一个约定
     assetId: input.key.subMeetingId === '' ? null : `sub:${input.key.subMeetingId}`,
-    // asset_type 在管理员这一族里当「这次看了什么」的自由文本用，与 recorder.ts 的
-    // recordLogin（存拒绝原因）/ recordListing（存条数）同一用法
-    assetType: clipDetail(input.detail),
+    // 「这次看了什么」不是资产类型（它可能是 index / chapters 这种非资产的视图），
+    // 从前塞在这一列是因为 detail 列还不存在。现在留空
+    assetType: null,
     // 这次**查看**是被准许的（管理员豁免），所以恒为 allow。记成 deny 等于宣称
     // 一次没发生过的拒绝——被规则禁掉的是「采集」，不是这次查看
     decision: 'allow',
     matchedRuleId: input.access.ruleId,
     clientKind: 'console',
+    // 受限查看这一族的对价是「留痕」（spec §2），所以留痕要留得住话：
+    // 除了看了什么，把**当时的判定理由原话**一并记下——事后复盘要问的是
+    // 「他看的那一刻，这场会议为什么是禁止采集的」，而 matched_rule 答不出这个
+    detail: buildAuditDetail({
+      text: `查看 ${input.detail}`,
+      data: {
+        target: input.detail,
+        restricted: input.access.restricted,
+        allow: input.access.allow,
+        why: input.access.why,
+      },
+    }),
   }
   await ctx.deps.auditStore.record(entry)
   return action

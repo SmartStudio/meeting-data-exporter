@@ -12,6 +12,108 @@ export interface AuditEntry {
   decision: 'allow' | 'deny'
   matchedRuleId: number | null
   clientKind: string | null
+  /**
+   * 这次操作的明细（`audit_log.detail`，TEXT，migrations/008 加的列）。
+   *
+   * **没有明细就传 `null`，不要传空串**：`null` 是「这条记录没有明细」，空串是
+   * 「有明细，内容为空」，后者读起来像一次组装失败。
+   *
+   * 这个字段是**必填**的，尽管它可空——写入方必须显式回答「这次有没有明细」。
+   * 可选字段会让新增的写入方默默漏掉它，而漏掉的后果是审计流里一条说不出
+   * 「改了什么 / 为什么被拒」的记录，那正是这一列存在的理由。
+   *
+   * 内容请用 `buildAuditDetail` 组装：它保证「第一行是一句人话」这条读侧依赖的
+   * 约定成立、把上限与截断留痕这两件事收在一处，并且**永不抛异常**。
+   */
+  detail: string | null
+}
+
+/**
+ * `detail` 的字符上限。
+ *
+ * TEXT 的物理上限是 **65535 字节**，不是字符——一个中文字在 utf8mb4 里 3 字节，
+ * emoji 4 字节。所以这里按**码点**卡 8000：最坏情况 8000 × 4 = 32000 字节，
+ * 稳稳落在 TEXT 之内，同时给「一条完整规则的前后两版」留了十几倍的余量
+ * （实测一条带十来个条件的规则快照约 400–600 字符）。
+ *
+ * **给上限不是把截断从 asset_id 挪到 detail 就完事**：超限时 `buildAuditDetail`
+ * 会在结尾写明「原文多少字符、上限多少」，读的人一眼看得出这段明细被切过。
+ * 无上限才是真正危险的那个选择——一次误传的大对象会让审计写入直接失败，
+ * 而审计写失败的代价是丢掉一整行出境记录。
+ */
+export const AUDIT_DETAIL_MAX_CHARS = 8_000
+
+/** `buildAuditDetail` 的入参。约定见 `text` */
+export interface AuditDetailInput {
+  /**
+   * 一句人话，**必填**，会成为 `detail` 的第一行。
+   *
+   * 被拒绝的记录里它就是拒绝原因（spec §4.10「被拒绝的记录写明拒绝原因」），
+   * 读侧 `handlers/console/audit.ts` 直接取第一行当 reason。必填正是为了让这条
+   * 约定无条件成立：只要有一个写入方省掉它，读侧就会把一段 JSON 当成拒绝原因
+   * 显示给管理员。
+   */
+  text: string
+  /**
+   * 结构化附文，紧跟在人话后面另起一行，紧凑 JSON。
+   *
+   * 序列化失败（循环引用、BigInt、自己抛的 toJSON）**不会让这次审计写入丢失**，
+   * 只会把这一行换成一句说明——见 `buildAuditDetail`。
+   */
+  data?: unknown
+}
+
+/** 附文序列化失败时留下的标记。读的人要能分清「明细本来就这样」与「这里出过错」 */
+const DETAIL_SERIALIZE_FAILED = '附文序列化失败'
+
+/** 把任意异常转成一句能写进审计的话。它自己也不许抛 */
+function errText(err: unknown): string {
+  try {
+    return err instanceof Error ? err.message : String(err)
+  } catch {
+    return '（错误对象本身转不成文字）'
+  }
+}
+
+/** 按**码点**截断（`.length` 数的是 UTF-16 码元，emoji 会算成 2，切在代理对
+ *  中间会产生孤立代理项，utf8mb4 列插不进去）。截断必须看得见 */
+function clipToChars(s: string, max: number): string {
+  const chars = [...s]
+  if (chars.length <= max) return s
+  const mark = `…〔已截断：原文 ${chars.length} 字符，上限 ${max}〕`
+  const keep = max - [...mark].length
+  // 上限比标记本身还短是不该发生的配置错，此时宁可只留标记也不要留半段假内容
+  return keep <= 0 ? mark : chars.slice(0, keep).join('') + mark
+}
+
+/**
+ * 组装 `audit_log.detail`。**这个函数永不抛异常**。
+ *
+ * 这不是防御性编程的客套：`audit_log` 是数据出境的唯一账本（spec §1.4 / §4.10），
+ * 一次 `JSON.stringify` 撞上循环引用而抛出去，会让调用它的 handler 整条审计写不成
+ * ——本该被记住的那次出境从账本上消失，而界面上一切正常。所以序列化失败在这里
+ * 降级成一句留痕，绝不向上传播。
+ *
+ * 输出形状（读侧依赖）：
+ * ```
+ * 停用规则 #9                                              ← 第一行永远是人话
+ * {"before":{"enabled":true},"after":{"enabled":false}}    ← 有 data 时才有这一行
+ * ```
+ */
+export function buildAuditDetail(input: AuditDetailInput): string {
+  // 人话里的换行必须压平，否则「第一行是人话」会被内容本身破坏
+  const text = input.text.replace(/[\r\n]+/g, ' ').trim()
+  if (input.data === undefined) return clipToChars(text, AUDIT_DETAIL_MAX_CHARS)
+
+  let body: string
+  try {
+    // undefined / 函数 会让 JSON.stringify 返回 undefined（不是抛），兜一下
+    body = JSON.stringify(input.data) ?? String(input.data)
+  } catch (err) {
+    body = `〔${DETAIL_SERIALIZE_FAILED}：${errText(err)}〕`
+  }
+  // 先拼再截：人话在头部，超限时先被保住的正是它
+  return clipToChars(`${text}\n${body}`, AUDIT_DETAIL_MAX_CHARS)
 }
 
 /**
@@ -122,7 +224,7 @@ export const AUDIT_MAX_LIMIT = 200
 export const AUDIT_MEETING_HISTORY_LIMIT = 200
 
 const SELECT_COLUMNS = `id, occurred_at, actor_type, actor_id, action, meeting_id,
-          asset_id, asset_type, decision, matched_rule, client_kind`
+          asset_id, asset_type, decision, matched_rule, client_kind, detail`
 
 /** 占位符能接的实参。审计查询的每一个条件值不是字符串就是 unix 秒时间戳，
  *  故意不放宽到 unknown——放宽了就等于把「这个值有没有被拼进 SQL」的检查交出去 */
@@ -140,6 +242,8 @@ interface AuditSqlRow extends RowDataPacket {
   decision: string
   matched_rule: number | null
   client_kind: string | null
+  /** migrations/008 加的列。**既有记录里是 NULL**，读侧必须扛得住 */
+  detail: string | null
 }
 
 interface CountRow extends RowDataPacket {
@@ -163,6 +267,7 @@ function mapRow(r: AuditSqlRow): AuditRecord {
     decision: r.decision,
     matchedRuleId: r.matched_rule === null ? null : Number(r.matched_rule),
     clientKind: r.client_kind,
+    detail: r.detail,
   }
 }
 
@@ -307,17 +412,44 @@ export function buildMeetingHistorySql(
   }
 }
 
+/**
+ * `detail` 写不进去时替上的那一行。
+ *
+ * 必须短、且**一个字都不来自调用方的长文本**——第一次 INSERT 之所以失败，很可能
+ * 正是因为那段文本本身（超长、字符集），把它再拼进重试只会让重试也失败。
+ */
+function degradedDetail(err: unknown): string {
+  return clipToChars(`〔明细未能写入 audit_log.detail，已丢弃：${errText(err)}〕`, 200)
+}
+
 export function createAuditStore(pool: Pool): AuditStore & AuditQueryStore {
   return {
     async record(e) {
-      await pool.execute(
-        `INSERT INTO audit_log
-           (occurred_at, actor_type, actor_id, action, meeting_id, asset_id,
-            asset_type, decision, matched_rule, client_kind)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [e.occurredAt, e.actorType, e.actorId, e.action, e.meetingId, e.assetId,
-         e.assetType, e.decision, e.matchedRuleId, e.clientKind],
-      )
+      const insert = (detail: string | null): Promise<unknown> =>
+        pool.execute(
+          `INSERT INTO audit_log
+             (occurred_at, actor_type, actor_id, action, meeting_id, asset_id,
+              asset_type, decision, matched_rule, client_kind, detail)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [e.occurredAt, e.actorType, e.actorId, e.action, e.meetingId, e.assetId,
+           e.assetType, e.decision, e.matchedRuleId, e.clientKind, detail],
+        )
+
+      try {
+        await insert(e.detail)
+      } catch (err) {
+        // detail 是这条 INSERT 里**唯一**内容长度不受调用方所在列宽约束的列，
+        // 也就是唯一可能因为「内容本身」写不进去的列（其余列的宽度由各 handler
+        // 保证）。审计是数据出境的唯一账本（spec §1.4 / §4.10）：丢一整行远比
+        // 丢一段明细严重，所以这里退一步——把明细换成一句留痕，重记一次。
+        //
+        // 与 detail 无关的失败（连接断了、表没了）照抛：那不是能靠退让解决的事，
+        // 悄悄吞掉会让「审计写不进去」伪装成「操作成功了」。
+        if (e.detail === null) throw err
+        console.error('[audit] 带 detail 的写入失败，改记一行只留痕不留明细的：', err)
+        // 重试仍失败就没什么可退的了，如实往上抛
+        await insert(degradedDetail(err))
+      }
     },
 
     async query(q = {}) {

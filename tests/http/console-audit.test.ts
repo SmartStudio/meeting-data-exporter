@@ -59,6 +59,7 @@ function record(o: Partial<AuditRecord> = {}): AuditRecord {
     decision: 'allow',
     matchedRuleId: null,
     clientKind: 'cli',
+    detail: null,
     ...o,
   }
 }
@@ -317,13 +318,52 @@ test('拒绝理由只在能对回一条真实记录时才给', async () => {
   let body = await (await listAudit(req('/api/v1/admin/audit'), withRule.ctx)).json() as { rows: Array<{ result: { reason: string | null } }> }
   expect(body.rows[0]?.result.reason).toContain('#7')
 
-  // 命中规则为 null 的拒绝：库里没有任何一列说得出原因，就不许编一句
+  // 命中规则为 null、detail 也为 null 的拒绝：库里没有任何一列说得出原因，
+  // 就不许编一句
   const noRule = fakeCtx({ rows: [record({ decision: 'deny', matchedRuleId: null })] })
   body = await (await listAudit(req('/api/v1/admin/audit'), noRule.ctx)).json() as { rows: Array<{ result: { reason: string | null } }> }
   expect(body.rows[0]?.result.reason).toBeNull()
 })
 
-test('login 记录里被复用的 asset_type 列不当成资产类型显示', async () => {
+// ---------------------------------------------------------------- detail（T15）
+
+test('detail 原样带出，被拒绝的记录用它的第一行当拒绝原因（spec §4.10）', async () => {
+  const detail = '采集权限 #7「财务放行」覆盖的资产类型是 ai_minutes，不含「video」'
+  const { ctx } = fakeCtx({
+    rows: [record({ decision: 'deny', matchedRuleId: 7, detail })],
+  })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = await res.json() as { rows: Array<{ detail: string | null; result: { reason: string | null } }> }
+  expect(body.rows[0]?.detail).toBe(detail)
+  // 拒绝原因取 detail 而不是 `命中规则 #7`：前者说得出「为什么这条不放行」，
+  // 后者只说得出「命中了第几条」
+  expect(body.rows[0]?.result.reason).toBe(detail)
+})
+
+test('detail 的附文不进拒绝原因——那一行是给机器看的 JSON，不是给人看的一句话', async () => {
+  const detail = '修改规则 #12：改了 effect\n{"changed":["effect"],"before":{},"after":{}}'
+  const { ctx } = fakeCtx({ rows: [record({ action: 'rule_update', decision: 'deny', detail })] })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = await res.json() as { rows: Array<{ detail: string | null; result: { reason: string | null } }> }
+  // 完整 detail 照带（前端要展开看快照）
+  expect(body.rows[0]?.detail).toBe(detail)
+  // 拒绝原因只取第一行
+  expect(body.rows[0]?.result.reason).toBe('修改规则 #12：改了 effect')
+})
+
+test('detail 非空时，有 asset_id 的记录也读得到明细', async () => {
+  // 授权类记录的 asset_id 是对象键（程序 id@场次），asset_type 为 null，
+  // 明细在 detail 上。老的「asset_id 为空才算明细」判据在这里会漏掉整段明细
+  const { ctx } = fakeCtx({
+    rows: [record({ action: 'grant_meeting', assetId: 'svc-1@s-7', assetType: null, detail: '授权范围 ai_minutes' })],
+  })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = await res.json() as { rows: Array<{ asset: unknown; detail: string | null }> }
+  expect(body.rows[0]?.asset).toEqual({ id: 'svc-1@s-7', type: null })
+  expect(body.rows[0]?.detail).toBe('授权范围 ai_minutes')
+})
+
+test('detail 为 NULL 的既有记录仍按老读法取明细，不让它们的明细凭空消失', async () => {
   const row = record({
     action: 'login',
     decision: 'deny',
@@ -338,8 +378,18 @@ test('login 记录里被复用的 asset_type 列不当成资产类型显示', as
   expect(body.rows[0]?.asset).toBeNull()
   expect(body.rows[0]?.detail).toBe('wecom_exchange_failed')
   expect(body.rows[0]?.object).toBeNull()
-  // 登录失败的原因就存在那一列里，这是它唯一的出处
+  // 登录失败的原因就存在那一列里，这是那批老记录唯一的出处
   expect(body.rows[0]?.result.reason).toBe('wecom_exchange_failed')
+})
+
+test('detail 为 NULL 且带 asset_id 的既有记录：asset_type 仍是资产类型，不误当明细', async () => {
+  // 老的下载记录：asset_id 是资产键，asset_type 真的是资产类型。
+  // 回退判据必须只在「asset_id 为空」时生效，否则 video 会被显示成明细
+  const { ctx } = fakeCtx({ rows: [record({ assetId: 'rec-1:f-1:video:0', assetType: 'video', detail: null })] })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = await res.json() as { rows: Array<{ asset: unknown; detail: string | null }> }
+  expect(body.rows[0]?.asset).toEqual({ id: 'rec-1:f-1:video:0', type: 'video' })
+  expect(body.rows[0]?.detail).toBeNull()
 })
 
 test('对象补齐只发一次批量调用（不是逐行查）', async () => {

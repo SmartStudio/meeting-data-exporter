@@ -170,12 +170,15 @@ test('身份映射失败（account_not_provisioned）与授权失败明确区分
   expect(rows[0]!.status).toBe('pending')
 
   const [auditRows] = await pool.execute<RowDataPacket[]>(
-    "SELECT decision, asset_type FROM audit_log WHERE actor_id = ? AND action = 'login'",
+    "SELECT decision, asset_type, detail FROM audit_log WHERE actor_id = ? AND action = 'login'",
     ['ww-unmapped-1'],
   )
   expect(auditRows).toHaveLength(1)
   expect(auditRows[0]!.decision).toBe('deny')
-  expect(auditRows[0]!.asset_type).toBe('account_not_provisioned')
+  // 登录失败原因在 detail 列（migrations/008）。它从前被塞在 asset_type 上，
+  // 那是 detail 列还不存在时唯一装得下自由文本的地方
+  expect(auditRows[0]!.detail).toBe('account_not_provisioned')
+  expect(auditRows[0]!.asset_type).toBeNull()
 })
 
 test('refresh：刷新即轮换，旧 refresh_token 立即失效', async () => {

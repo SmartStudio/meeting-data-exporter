@@ -25,7 +25,7 @@
 import type { RouteCtx } from '../../router'
 import { json, readJson } from '../../respond'
 import { requireAdminAuth } from '../../middleware'
-import type { AuditEntry, AuditStore } from '../../../store/audit'
+import { buildAuditDetail, type AuditEntry, type AuditStore } from '../../../store/audit'
 import type { ArchivesStore } from '../../../store/archives'
 import type { ConsoleStorageStore } from '../../../store/console-storage'
 import type { NasProbeResult } from '../../../worker/nas-probe'
@@ -103,20 +103,10 @@ const EXTEND_DEFAULT_DAYS = 30
 
 const SEVEN_DAYS_SEC = 7 * 86_400
 
-/** audit_log.asset_type 是 VARCHAR(64)（migrations/001）。自由文本必须先裁到 64 字符，
- *  否则严格模式下一条过长的失败原因会让整次审计写入报错，把"记账失败"变成"操作失败"。 */
-const AUDIT_DETAIL_MAX = 64
-
-/**
- * 按 MySQL 的字符数裁剪。末尾若切在代理对中间（emoji）就把那半个也去掉——
- * 留一个孤立代理项会让 utf8mb4 列插入报错，那正是这里要防的。
- */
-function clipDetail(s: string): string {
-  if (s.length <= AUDIT_DETAIL_MAX) return s
-  const cut = s.slice(0, AUDIT_DETAIL_MAX)
-  const last = cut.charCodeAt(cut.length - 1)
-  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
-}
+// 这里曾有一个 clipDetail：自由文本被塞进 audit_log.asset_type（VARCHAR(64)），
+// 一条清理失败的原因（带 NAS 路径与 errno）几乎必然超过 64 字符，于是被裁掉后半段
+// ——而后半段正是查下去要用的东西。migrations/008 的 detail TEXT 之后不再需要它，
+// 明细走 buildAuditDetail，上限与截断留痕都收在 src/store/audit.ts 一处。
 
 /**
  * 「到期清理是不是被暂停了」。
@@ -164,6 +154,13 @@ function isValidDays(v: unknown): v is number {
 interface AdminAuditInput {
   adminId: string
   action: string
+  /**
+   * 一句话明细，进 `audit_log.detail`（TEXT，migrations/008）。
+   *
+   * 从前它被裁到 64 字符塞进 `asset_type`——清理失败的原因带着 NAS 路径与 errno，
+   * 被裁掉的正是能查下去的那半段。现在不再裁，上限与超限留痕由
+   * `buildAuditDetail` 统一负责（8000 码点，这一族明细离它差两个数量级）。
+   */
   detail: string
   decision: 'allow' | 'deny'
   meetingId?: string | null
@@ -180,12 +177,13 @@ async function recordAdminWrite(ctx: RouteCtx, i: AdminAuditInput): Promise<void
     action: i.action,
     meetingId: i.meetingId ?? null,
     assetId: i.subMeetingId === undefined || i.subMeetingId === null ? null : `sub:${i.subMeetingId}`,
-    // asset_type 这一列在管理员这一族里当"这次改了什么"的自由文本用，
-    // 与 recorder.ts 已有的 recordLogin（存拒绝原因）/ recordListing（存条数）同一用法
-    assetType: clipDetail(i.detail),
+    // 存储这一族的动作（改保留天数、暂停清理、删本地文件）对象不是某一份资产，
+    // 这一列没有值可填。从前它装着一句话明细，那是 detail 列还不存在时的将就
+    assetType: null,
     decision: i.decision,
     matchedRuleId: null,
     clientKind: 'console',
+    detail: buildAuditDetail({ text: i.detail }),
   }
   await ctx.deps.storage.audit.record(entry)
 }
