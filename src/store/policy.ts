@@ -304,7 +304,7 @@ function validateDraft(d: RuleDraft, now: number): string[] {
 
   if (!Number.isInteger(now) || now <= 0) {
     // 0 / NaN 会写出一条「1970 年建的」规则，审计里再也说不出它是什么时候进来的
-    issues.push(`写入时刻必须是正整数毫秒时间戳，收到「${String(now)}」`)
+    issues.push(`写入时刻必须是正整数 unix 秒时间戳，收到「${String(now)}」`)
   }
 
   const kindOk = RULE_KINDS.has(d.kind)
@@ -572,7 +572,7 @@ export function createPolicyStore(pool: Pool): PolicyStore {
 
     async setEnabled(id, enabled, now) {
       if (!Number.isInteger(now) || now <= 0) {
-        throw new PolicyRuleInvalid([`写入时刻必须是正整数毫秒时间戳，收到「${String(now)}」`])
+        throw new PolicyRuleInvalid([`写入时刻必须是正整数 unix 秒时间戳，收到「${String(now)}」`])
       }
       // **故意不校验规则内容**：一条 conds 坏掉的规则照样要停得掉。
       // 出事时「把这条规则关掉」是唯一能立刻止血的动作，若它也要先过校验，

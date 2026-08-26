@@ -54,13 +54,12 @@
  *
  * ### 时间单位：写 unix 秒
  *
- * T2 的报错文案写的是「毫秒时间戳」，但它的校验只要求正整数（`Number.isInteger(now) && now > 0`），
- * 秒同样过得去；而 `policy_rules.created_at / updated_at` 至今**没有任何读取方**，
+ * T2 的报错文案曾写成「毫秒时间戳」（其校验只要求正整数，秒同样过得去），已改对。
+ * `policy_rules.created_at / updated_at` 至今**没有任何读取方**，
  * 单位是由第一个写入方定的，也就是这里。仓库其余全部时间列是 unix 秒
  * （`audit_log.occurred_at` 也是，见 `src/index.ts` 的 `now()`），前端契约
  * （`console/src/api/types.ts` 开头）明写「所有时间字段都是 unix 秒」。
  * 写毫秒的话规则页会把建立时间渲染成公元 55841 年。**所以取秒，与全仓一致。**
- * T2 的那句文案该改，已在任务报告里记一笔。
  */
 
 import type { AdminIdentity } from '../../../auth/admin'

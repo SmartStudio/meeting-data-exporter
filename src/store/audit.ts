@@ -214,7 +214,7 @@ function buildWhere(q: AuditQuery): { clause: string; params: SqlParam[] } {
   }
   // occurred_at 上不套任何函数（不做 FROM_UNIXTIME/DATE 之类的转换）：
   // 一旦套上，两个索引的 occurred_at 列就都用不成了，整张审计表退化成全表扫。
-  // 时区、按天分桶这些事全部由调用方在传进来之前算成毫秒时间戳。
+  // 时区、按天分桶这些事全部由调用方在传进来之前算成 unix 秒时间戳。
   if (q.from !== undefined) {
     conds.push('occurred_at >= ?')
     params.push(q.from)
