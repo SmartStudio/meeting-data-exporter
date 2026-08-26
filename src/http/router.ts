@@ -18,6 +18,8 @@ import * as deviceHandlers from './handlers/device'
 import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
 import * as consoleAuthHandlers from './handlers/console/auth'
+import * as consoleStorageHandlers from './handlers/console/storage'
+import type { StorageDeps } from './handlers/console/storage'
 import type { RateLimiter } from './ratelimit'
 import type { ProgramsStore } from '../store/programs'
 import type { GrantsStore, MeetingKey } from '../store/grants'
@@ -90,6 +92,10 @@ export interface AppDeps {
    * 判成「判不出来」并落到拒绝一侧（见那个文件里 VisibilityDeps.getMeetings 的注释）。
    */
   getMeetings: (keys: readonly MeetingKey[]) => Promise<readonly Meeting[]>
+  /** 归档存储页与保留窗口动作（阶段 4 · T8，A3）。形状与理由见
+   *  handlers/console/storage.ts 的文件头——NAS 探测、到期清理、审计写侧都在里面，
+   *  刻意不复用上面那个收窄成 listArchivedMeetingKeys 的 `archives` 字段 */
+  storage: StorageDeps
 }
 
 export interface RouteCtx {
@@ -162,6 +168,12 @@ const ROUTES: Route[] = [
   compile('DELETE', '/api/v1/admin/meetings/:meetingId/grants/:programId', consoleGrantsHandlers.revokeGrant),
   compile('PUT', '/api/v1/admin/meetings/:meetingId/override', consoleGrantsHandlers.putOverride),
   compile('DELETE', '/api/v1/admin/meetings/:meetingId/override/:kind', consoleGrantsHandlers.revokeOverride),
+  // 归档存储与保留窗口（阶段 4 · T8，A3）——spec §4.9 两块 + §4.3 的「延长 30 天」
+  compile('GET', '/api/v1/admin/storage', consoleStorageHandlers.getStorage),
+  compile('POST', '/api/v1/admin/storage/retention-days', consoleStorageHandlers.setRetentionDays),
+  compile('POST', '/api/v1/admin/storage/cleanup-pause', consoleStorageHandlers.setCleanupPause),
+  compile('POST', '/api/v1/admin/storage/cleanup-now', consoleStorageHandlers.cleanupNow),
+  compile('POST', '/api/v1/admin/meetings/:meetingId/extend', consoleStorageHandlers.extendMeetingRetention),
 ]
 
 /**
