@@ -32,7 +32,7 @@
 import { GATEWAY_TYPE_TO_ASSET_KEY, type AssetKey } from '@yaowu/mde-engine'
 import type { ActorIdentity, AssetType, Meeting } from '../domain/types'
 import type { PolicyStore } from '../store/policy'
-import type { MeetingFacts } from './conds'
+import type { MeetingFactKey, MeetingFacts } from './conds'
 import { applyOverride, type MeetingOverride, type OverriddenDecision } from './override'
 import {
   decisionAllowsAsset,
@@ -42,9 +42,30 @@ import {
   type StackKind,
 } from './stacks'
 
+/**
+ * `Meeting` + 「这一行**哪几列在库里是 NULL**」（阶段 4 · T13）。
+ *
+ * 为什么要多这么一层，而不是把可空性做进 `domain/types.ts` 的 `Meeting`：
+ * 那个域模型的字段非空是一条被大量代码依赖的约定（腾讯 API 的响应里这些字段就是有的，
+ * 引擎侧、归档侧、下载侧全按非空写），为一张表的 nullable 列把它整体放开，
+ * 换来的是几十处新的 `?? ''`——而每一处 `?? ''` 都是这次要修的那个缺口的复制品。
+ * 所以「值」照旧按仓库既有口径折成空串 / 0（`store/console-meetings.ts` 的
+ * `toDomainMeeting`），**折的时候顺手记一笔账**，账就在这个字段上。
+ *
+ * **字段是可选的**：省略 = 每一项事实都有真值，也就是这个字段加进来之前的语义，
+ * 于是既有的调用方（`meeting_cache` 那条路径——001 建表时那几列都是 NOT NULL，
+ * 本来就不会缺）与既有测试一个字都不必改。代价是「漏传就退回放行侧」，
+ * 所以真正会读到 NULL 的那两处（`store/console-meetings.ts` 的 `toDomainMeeting`、
+ * `worker/archive.ts` 的 `factsFor`）都把这件事写在注释里钉住了。
+ */
+export interface MeetingMeta extends Meeting {
+  missingFacts?: readonly MeetingFactKey[]
+}
+
 export interface AccessInput {
   actor: ActorIdentity
-  meeting: Meeting
+  /** 元数据不全时带上 `missingFacts`，判定才分得开「标题是空的」与「没有标题」 */
+  meeting: MeetingMeta
   /**
    * 这场会议是否已写入 NAS——`arch` 条件（`isarch` / `notarch`）的数据源。
    * **由调用方查出来传进来，不在这里猜**：随手填 `false` 会让一条
@@ -114,9 +135,14 @@ export interface OverrideSource {
  *
  * `dept` 恒为 null：企业微信通讯录未接入（计划 §1.1，R0 已定不做）。
  * 求值器对它有专门的 `no_data_source` 分支，与「字段拼错了」是两句不同的话。
+ *
+ * `missing` 是第二处（阶段 4 · T13）：**「事实为空」与「没有这个事实」不是一回事**。
+ * 这里只做转运——真话从 `MeetingMeta.missingFacts` 来，由读到 NULL 的那一层填。
+ * 空数组一律传 `undefined`，让下游的判断只有「有没有」一种形态。
  */
-export function meetingFacts(meeting: Meeting, archived: boolean): MeetingFacts {
+export function meetingFacts(meeting: MeetingMeta, archived: boolean): MeetingFacts {
   const hasRealEnd = meeting.endTime > meeting.startTime
+  const missing = meeting.missingFacts
   return {
     title: meeting.subject,
     hostUserId: meeting.hostUserId,
@@ -125,6 +151,7 @@ export function meetingFacts(meeting: Meeting, archived: boolean): MeetingFacts 
     endTime: meeting.endTime,
     recordEndTime: hasRealEnd ? meeting.endTime : 0,
     archived,
+    missing: missing === undefined || missing.length === 0 ? undefined : missing,
   }
 }
 

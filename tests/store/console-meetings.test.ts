@@ -925,7 +925,7 @@ test('getMeetings 一次问清一批，且传空数组时不查库', async () =>
   }
 })
 
-test('getMeetings 的 NULL 列按仓库既有口径补齐（文本空串、时间 0），行本身照样返回', async () => {
+test('getMeetings 的 NULL 列按仓库既有口径补齐（文本空串、时间 0），行本身照样返回，并记一笔 missingFacts', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
     await seedMeeting(pool, {
@@ -944,7 +944,33 @@ test('getMeetings 的 NULL 列按仓库既有口径补齐（文本空串、时�
       startTime: 0,
       endTime: 0,
       state: 'completed',
+      // 阶段 4 · T13：折成空串的同时记账，判定才分得开「标题是空的」与「没有标题」。
+      // meeting_code 不在内——它不参与任何条件求值，不是一项「事实」
+      missingFacts: ['title', 'hostUserId', 'startTime', 'endTime'],
     })
+  } finally {
+    await cleanup()
+  }
+})
+
+test('getMeetings：列有真实值（哪怕是空串 / 0）时不记 missingFacts——这正是 T13 要分开的两件事', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, {
+      meetingId: 'm-empty', subject: '', hostUserId: '', meetingCode: '',
+      startTime: 0, endTime: 0,
+    })
+    await seedMeeting(pool, { meetingId: 'm-notitle', subject: null })
+
+    const store = createConsoleMeetingsStore(pool)
+    const [empty] = await store.getMeetings([{ meetingId: 'm-empty', subMeetingId: '' }])
+    const [noTitle] = await store.getMeetings([{ meetingId: 'm-notitle', subMeetingId: '' }])
+
+    // 两行的 subject 都是空串，但一行是「事实为空」、另一行是「没有这个事实」
+    expect(empty!.subject).toBe('')
+    expect(empty!.missingFacts).toBeUndefined()
+    expect(noTitle!.subject).toBe('')
+    expect(noTitle!.missingFacts).toEqual(['title'])
   } finally {
     await cleanup()
   }

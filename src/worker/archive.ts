@@ -18,7 +18,7 @@ import {
 import type { ArchivedAssetRecord, ArchivesStore, CompletedAssetRow } from '../store/archives'
 import { buildAssetContent, type ContentsStore } from '../store/contents'
 import { meetingFacts } from '../policy/access'
-import type { MeetingFacts } from '../policy/conds'
+import type { MeetingFactKey, MeetingFacts } from '../policy/conds'
 import { resolveArchiveDir, type ArchiveDirOutcome } from '../policy/archive-dir'
 import { applyOverride, type MeetingOverride } from '../policy/override'
 import { evaluateArchiveStack, type StackRule } from '../policy/stacks'
@@ -61,8 +61,19 @@ const DEFAULT_RETENTION_DAYS = 30
  * - `meetingRecordId` 引擎侧根本没有这个概念，`meetingFacts` 也不读它，填 `''`；
  * - `state` 填 `'completed'` 不是随手填的：能走到归档的会议，其录制早已转码完成、
  *   资产也已经下载完毕（`archiveMeeting` 只处理有 completed 资产的会议）。
+ *
+ * **补空值的同时要记账**（阶段 4 · T13）：`?? ''` / `?? 0` 一折，「这场会议没有标题」
+ * 就变得和「标题是空串」一模一样，于是一条 `title has X → skip` 的归档规则对它判
+ * 「不匹配」、被低优先级的规则接手——归档栈的表现是文件被写到一个本不该去的目录。
+ * `missingFacts` 把这笔账带给求值器，判不出来就落到归档栈的安全侧（不归档）。
+ * **改回去（只 `?? ''` 不记账）会怎样**：上面那条路原样回来，且没有任何报错。
  */
 function factsFor(meeting: Meeting, archived: boolean): MeetingFacts {
+  const missingFacts: MeetingFactKey[] = []
+  if (meeting.subject === null || meeting.subject === undefined) missingFacts.push('title')
+  if (meeting.hostUserId === null || meeting.hostUserId === undefined) missingFacts.push('hostUserId')
+  if (meeting.startTime === null || meeting.startTime === undefined) missingFacts.push('startTime')
+  if (meeting.endTime === null || meeting.endTime === undefined) missingFacts.push('endTime')
   return meetingFacts(
     {
       meetingId: meeting.meetingId,
@@ -74,6 +85,7 @@ function factsFor(meeting: Meeting, archived: boolean): MeetingFacts {
       startTime: meeting.startTime ?? 0,
       endTime: meeting.endTime ?? 0,
       state: 'completed',
+      ...(missingFacts.length > 0 ? { missingFacts } : {}),
     },
     archived,
   )

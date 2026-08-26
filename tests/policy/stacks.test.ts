@@ -457,3 +457,119 @@ test('describeStackRuleIssues：kind 与 priority 的脏数据', () => {
   expect(issues.some((s) => s.includes('fetchh'))).toBe(true)
   expect(issues.some((s) => s.includes('priority'))).toBe(true)
 })
+
+// ── T13 元数据不全：判不出来要落到本栈的安全侧 ────────────────
+
+/** 标题在 `meetings` 表里是 NULL——不是空标题，是**没有标题这个事实** */
+const noTitle = facts({ title: '', missing: ['title'] })
+
+test('T13 缺口：一条 title→deny 的规则对着「没有标题」的会议，不许当成不匹配放过去', () => {
+  // 缺口的原样复现：高优先级的 deny 按标题拒绝，低优先级的兜底 allow 放行全部。
+  // 标题折成空串时 deny 判不匹配、落到放行侧，这场会议就这样被放出去了。
+  const rules = [
+    rule({ id: 1, kind: 'allow', priority: 200, effect: 'deny', note: '财务会议不外放',
+      conds: [{ f: 'title', op: 'has', v: '财务' }] }),
+    rule({ id: 2, kind: 'allow', priority: 50, effect: 'allow', note: '其余一律放行' }),
+  ]
+  const d = evaluateAllowStack(rules, { facts: noTitle, now: NOW, programId: PROGRAM })
+
+  expect(d.effect).toBe('deny')
+  expect(d.assetTypes).toEqual([])
+  // 说得出是「判不出来」，不是「不匹配」、也不是「按兜底拒绝」
+  expect(d.source).toBe('undecidable')
+  expect(d.ruleId).toBe(1)
+  expect(d.reason).toContain('判不出来')
+  expect(d.reason).toContain('元数据')
+  // 判不出来的那条规则说了算，**不再往下找**：低优先级的 allow 不该接手
+  expect(d.trace.map((t) => t.ruleId)).toEqual([1])
+  expect(d.trace[0]!.outcome).toBe('undecidable')
+})
+
+test('T13：同一个「判不出来」在三栈上是同一个概念，只是安全侧不同', () => {
+  const conds = [{ f: 'title', op: 'has', v: '财务' }]
+  const f = evaluateFetchStack(
+    [rule({ id: 1, kind: 'fetch', priority: 200, effect: 'skip', conds }),
+     rule({ id: 2, kind: 'fetch', priority: 50, effect: 'all' })],
+    { facts: noTitle, now: NOW },
+  )
+  const a = evaluateArchiveStack(
+    [rule({ id: 3, kind: 'archive', priority: 200, effect: 'skip', conds }),
+     rule({ id: 4, kind: 'archive', priority: 50, effect: '/nas/all/' })],
+    { facts: noTitle, now: NOW },
+  )
+  // fetch / archive 的安全侧是 skip，不是 deny
+  expect(f.effect).toBe('skip')
+  expect(a.effect).toBe('skip')
+  for (const d of [f, a]) {
+    expect(d.source).toBe('undecidable')
+    expect(d.reason).toContain('判不出来')
+  }
+})
+
+test('T13：只有真的要用到那项事实时才判不出来——用不到的规则照旧求值', () => {
+  // 缺的是标题，这条规则问的是主持人：事实齐全，照常比对，不该被牵连
+  const rules = [
+    rule({ id: 1, kind: 'allow', priority: 200, effect: 'deny',
+      conds: [{ f: 'host', op: 'is', v: 'tm-bob' }] }),
+    rule({ id: 2, kind: 'allow', priority: 50, effect: 'allow' }),
+  ]
+  const d = evaluateAllowStack(rules, { facts: noTitle, now: NOW, programId: PROGRAM })
+  expect(d.effect).toBe('allow')
+  expect(d.ruleId).toBe(2)
+  expect(d.trace.map((t) => t.outcome)).toEqual(['not_matched', 'matched'])
+})
+
+test('T13：「且」规则里已经有一条确定不成立时，整条就是确定不成立，不算判不出来', () => {
+  // host 明确对不上 → 无论标题是什么这条「且」都不会命中，所以它是**判得出来的不匹配**，
+  // 应当继续往下找。把这种也当成判不出来，会让一条与缺失字段无关的规则平白拒掉整场会议。
+  const rules = [
+    rule({ id: 1, kind: 'allow', priority: 200, effect: 'deny', join: 'and',
+      conds: [{ f: 'host', op: 'is', v: 'tm-bob' }, { f: 'title', op: 'has', v: '财务' }] }),
+    rule({ id: 2, kind: 'allow', priority: 50, effect: 'allow' }),
+  ]
+  const d = evaluateAllowStack(rules, { facts: noTitle, now: NOW, programId: PROGRAM })
+  expect(d.effect).toBe('allow')
+  expect(d.ruleId).toBe(2)
+})
+
+test('T13：「或」规则里已有一条成立时照常命中，缺的那条不影响结论', () => {
+  const rules = [
+    rule({ id: 1, kind: 'allow', priority: 200, effect: 'deny', join: 'or',
+      conds: [{ f: 'title', op: 'has', v: '财务' }, { f: 'host', op: 'is', v: 'tm-alice' }] }),
+  ]
+  const d = evaluateAllowStack(rules, { facts: noTitle, now: NOW, programId: PROGRAM })
+  expect(d.effect).toBe('deny')
+  expect(d.source).toBe('rule')
+  expect(d.ruleId).toBe(1)
+})
+
+test('T13：缺开始时间时 dur 判不出来；缺结束时间时 age 判不出来', () => {
+  const noStart = facts({ startTime: 0, missing: ['startTime'] })
+  const noEnd = facts({ endTime: 0, recordEndTime: 0, missing: ['endTime'] })
+  const dur = evaluateAllowStack(
+    [rule({ id: 1, kind: 'allow', priority: 200, effect: 'deny', conds: [{ f: 'dur', op: 'gt', v: 30 }] }),
+     rule({ id: 2, kind: 'allow', priority: 50, effect: 'allow' })],
+    { facts: noStart, now: NOW, programId: PROGRAM },
+  )
+  const age = evaluateAllowStack(
+    [rule({ id: 1, kind: 'allow', priority: 200, effect: 'deny', conds: [{ f: 'age', op: 'before', v: 7 }] }),
+     rule({ id: 2, kind: 'allow', priority: 50, effect: 'allow' })],
+    { facts: noEnd, now: NOW, programId: PROGRAM },
+  )
+  expect(dur.effect).toBe('deny')
+  expect(dur.source).toBe('undecidable')
+  expect(age.effect).toBe('deny')
+  expect(age.source).toBe('undecidable')
+})
+
+test('T13：标题真的是空串（库里不是 NULL）时照旧按不匹配处理，不受影响', () => {
+  // 「事实为空」与「没有这个事实」必须分得开：空标题是一个**已知**的事实
+  const rules = [
+    rule({ id: 1, kind: 'allow', priority: 200, effect: 'deny',
+      conds: [{ f: 'title', op: 'has', v: '财务' }] }),
+    rule({ id: 2, kind: 'allow', priority: 50, effect: 'allow' }),
+  ]
+  const d = evaluateAllowStack(rules, { facts: facts({ title: '' }), now: NOW, programId: PROGRAM })
+  expect(d.effect).toBe('allow')
+  expect(d.ruleId).toBe(2)
+})

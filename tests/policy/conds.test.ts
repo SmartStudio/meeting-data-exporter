@@ -250,6 +250,73 @@ test('recordEndTime 缺失时 age 的两个 op 都不匹配（不是「1970 年�
   expect(evaluateCond({ f: 'age', op: 'before', v: 7 }, facts(noRec), NOW).reason).toBe('no_data_source')
 })
 
+// ── T13 「事实为空」与「没有这个事实」是两条路径 ──────────────────────
+
+test('missing 里的事实：条件判成 fact_missing，与 not_matched 分得开', () => {
+  const noTitle = facts({ title: '', missing: ['title'] })
+  // 空标题但**有**这个事实：真的比对过，不成立
+  expect(evaluateCond({ f: 'title', op: 'has', v: '财务' }, facts({ title: '' }), NOW).reason)
+    .toBe('not_matched')
+  // 标题这个事实压根不存在：判不出来
+  const ev = evaluateCond({ f: 'title', op: 'has', v: '财务' }, noTitle, NOW)
+  expect(ev.matched).toBe(false)
+  expect(ev.reason).toBe('fact_missing')
+  expect(ev.detail).toContain('NULL')
+  // 否定运算符尤其不许取巧判成 true——「没有标题」不等于「标题不含财务」
+  expect(evaluateCond({ f: 'title', op: 'nothas', v: '财务' }, noTitle, NOW).matched).toBe(false)
+})
+
+test('只有用得上那项事实的字段才受影响', () => {
+  const noTitle = facts({ title: '', missing: ['title'] })
+  // 主持人这项事实还在，照常比对
+  expect(evaluateCond({ f: 'host', op: 'is', v: 'tm-alice' }, noTitle, NOW).matched).toBe(true)
+  // 归档状态来自 meeting_archives，与 meetings 表的 NULL 列无关
+  expect(evaluateCond({ f: 'arch', op: 'notarch' }, noTitle, NOW).matched).toBe(true)
+})
+
+test('缺 startTime 时 dur 判不出来，而不是算出一个几十年的时长', () => {
+  const noStart = facts({ startTime: 0, missing: ['startTime'] })
+  // 照直算的话 endTime - 0 是五十多年，dur gt 30 会静默命中
+  expect(evaluateCond({ f: 'dur', op: 'gt', v: 30 }, noStart, NOW).reason).toBe('fact_missing')
+  expect(evaluateCond({ f: 'dur', op: 'lt', v: 30 }, noStart, NOW).reason).toBe('fact_missing')
+})
+
+test('字段拼错 / 值写错仍然优先报出来——静态问题在缺事实之前判', () => {
+  // store/policy.ts 的写侧静态校验拿一组假事实探这几种 reason，顺序不能倒
+  const noTitle = facts({ title: '', missing: ['title'] })
+  expect(evaluateCond({ f: 'titel', op: 'has', v: '财务' }, noTitle, NOW).reason).toBe('unknown_field')
+  expect(evaluateCond({ f: 'title', op: 'hasnt', v: '财务' }, noTitle, NOW).reason).toBe('unknown_op')
+  expect(evaluateCond({ f: 'title', op: 'has', v: 42 }, noTitle, NOW).reason).toBe('bad_value')
+})
+
+test('evaluateRule.undecidable：或规则有一条缺事实就判不出来；且规则要其余都不确定', () => {
+  const noTitle = facts({ title: '', missing: ['title'] })
+  const titleCond = { f: 'title', op: 'has', v: '财务' }
+
+  const or = evaluateRule({ join: 'or', conds: [titleCond, { f: 'host', op: 'is', v: 'tm-bob' }] }, noTitle, NOW)
+  expect(or.matched).toBe(false)
+  expect(or.undecidable).toBe(true)
+
+  // 「且」里已经有一条确定不成立 → 整条确定不命中，不是判不出来
+  const and = evaluateRule({ join: 'and', conds: [{ f: 'host', op: 'is', v: 'tm-bob' }, titleCond] }, noTitle, NOW)
+  expect(and.matched).toBe(false)
+  expect(and.undecidable).toBe(false)
+
+  // 「或」里有一条成立 → 命中了就是判出来了
+  const hit = evaluateRule({ join: 'or', conds: [titleCond, { f: 'host', op: 'is', v: 'tm-alice' }] }, noTitle, NOW)
+  expect(hit.matched).toBe(true)
+  expect(hit.undecidable).toBe(false)
+
+  // 规则自己写坏了（conds 不是数组）确定不命中，不算判不出来
+  expect(evaluateRule({ conds: 'nope' as unknown as CondRule['conds'] }, noTitle, NOW).undecidable).toBe(false)
+})
+
+test('missing 省略 / 为空时语义与这个字段加进来之前完全一致', () => {
+  expect(evaluateRule({ conds: [{ f: 'title', op: 'has', v: '财务' }] }, facts(), NOW).undecidable).toBe(false)
+  expect(evaluateRule({ conds: [{ f: 'title', op: 'has', v: '人事' }] }, facts({ missing: [] }), NOW).undecidable)
+    .toBe(false)
+})
+
 // ── evaluateRule：逐条理由可回溯 ────────────────────────────────────
 
 test('evaluateRule 逐条给出理由，供判定理由与规则编辑器使用', () => {

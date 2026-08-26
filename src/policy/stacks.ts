@@ -42,6 +42,14 @@
  * 写坏的高优先级 deny 被低优先级的 allow 顶掉，那是查不出来的静默放行。
  * 正确处理是「这条规则说了算，但它说不清楚」→ 落到本栈的安全侧（fetch/archive → skip，
  * allow → deny），`source` 记 `'rule_invalid'`，`issues` 里写明为什么。
+ *
+ * **同一条道理的第二种形态（阶段 4 · T13）**：规则没命中，但没命中是因为**这场会议
+ * 缺了它要用的事实**（`meetings` 表的列全部 nullable，`conds.ts` 的 `fact_missing`）。
+ * 这同样不是「不匹配」，一样不能继续往下找——`title has 财务 → deny` 对着一场
+ * 标题查不到的会议判不出来，往下找就会被一条低优先级的 `→ allow` 接手放行。
+ * 处理也一样：落到本栈的安全侧，`source` 记 `'undecidable'`，理由里说清是判不出来。
+ * 三栈共用这一段，所以「判不出来」在三栈上是同一个概念，只是安全侧不同
+ * （fetch / archive → skip，allow → deny）。
  */
 
 import { ALL_ASSET_KEYS, type AssetKey } from '@yaowu/mde-engine'
@@ -84,6 +92,16 @@ export type DecisionSource =
   | 'rule'
   /** 某条规则命中，但它的 effect 是脏数据，落到了本栈的安全侧 */
   | 'rule_invalid'
+  /**
+   * 某条规则**判不出来**（这场会议缺了它要用的事实），落到了本栈的安全侧
+   * （阶段 4 · T13，见文件头）。
+   *
+   * 与 `default` 分开是必要的，不是对称好看：`default` 是「全都比对过、一条都不匹配，
+   * 按兜底处理」，管理员读完知道再建一条规则就能改变结果；`undecidable` 是
+   * 「没法比对」，再建多少规则也没用，要去修的是这场会议的元数据。
+   * 两者合成一个取值，界面上就再也分不开「规则没覆盖到」和「数据不全」。
+   */
+  | 'undecidable'
   /** 一条都没匹配，用了本栈的兜底 */
   | 'default'
   /**
@@ -104,6 +122,8 @@ export type RuleOutcome =
   | 'matched'
   /** 条件不成立 */
   | 'not_matched'
+  /** 条件**判不出来**：这场会议缺了它要用的事实（阶段 4 · T13）。考察到这里就停 */
+  | 'undecidable'
   /** 主体不适用（只可能出现在 allow 栈） */
   | 'subject_mismatch'
 
@@ -388,13 +408,39 @@ function evaluateStack(
 
     const evaluation = evaluateRule(rule, input.facts, input.now)
     const detail = subject.detail === null ? evaluation.detail : `${evaluation.detail}（${subject.detail}）`
-    trace.push({
-      ruleId: rule.id,
-      priority: rule.priority,
-      note: rule.note,
-      outcome: evaluation.matched ? 'matched' : 'not_matched',
-      detail,
-    })
+    const outcome: RuleOutcome = evaluation.matched
+      ? 'matched'
+      : evaluation.undecidable
+        ? 'undecidable'
+        : 'not_matched'
+    trace.push({ ruleId: rule.id, priority: rule.priority, note: rule.note, outcome, detail })
+
+    // 判不出来（阶段 4 · T13）：**不继续往下找**，落到本栈的安全侧。
+    // 往下找就是这次要修的那个缺口——一条 `title has X → deny` 对着元数据不全的
+    // 会议判不出来，被一条低优先级的 `→ allow` 接手，会议被静默放行。
+    // **改回去（把这一段换成 continue）会怎样**：那个缺口原样回来，且没有任何报错。
+    if (outcome === 'undecidable') {
+      const fallback = FALLBACK[kind]!
+      return {
+        kind,
+        effect: fallback,
+        // 判不出来的是**这条**规则，说得出是哪条才查得下去
+        ruleId: rule.id,
+        note: rule.note,
+        source: 'undecidable',
+        reason:
+          `${ruleLabel(kind, rule)}判不出来：${detail}。` +
+          `判不出来不能当成「不匹配」继续往下找（那会让低优先级的规则接手，` +
+          `一条按标题拒绝的规则就这样被放行规则顶掉），按本栈的安全侧处理：${describeFallback(kind)}。` +
+          `要让它判得出来，得先把这场会议缺的元数据补上`,
+        assetTypes: [],
+        // issues 说的是**规则身上**的问题（effect 脏、资产名不认识），
+        // 而元数据不全是**这场会议**的问题，规则本身没毛病——记进去会让规则列表
+        // 平白多出一条它自己改不掉的告警。这件事由 reason 说，不由 issues 说。
+        issues: [],
+        trace,
+      }
+    }
     if (!evaluation.matched) continue
 
     const { effect, issue } = normalizeEffect(kind, rule.effect)

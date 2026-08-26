@@ -35,7 +35,59 @@
  * 把 `endTime <= startTime` 判成「没有结束时间数据」，两个 op 都不匹配，
  * 并留下 `no_data_source` 的理由。`age` 遇到缺失的 `recordEndTime` 同理——
  * 不能让它当成 1970 年、于是「早于 N 天」恒成立。
+ *
+ * ## 4. 「事实为空」与「没有这个事实」是两件事（阶段 4 · T13）
+ *
+ * `meetings` 表（002）的列**全部 nullable**，而读侧（`store/console-meetings.ts`
+ * 的 `toDomainMeeting`）按仓库既有口径把 NULL 折成空串 / 0——域模型 `Meeting`
+ * 的字段是非空的，装不下 NULL。折完之后，一场**标题真的是空串**的会议与一场
+ * **标题查不到**的会议在求值器眼里一模一样，于是：
+ *
+ * - `title has 财务 → allow` 对空标题判不匹配 —— 落在安全侧，没问题；
+ * - `title has 财务 → deny` 也判不匹配 —— **落在放行侧**，随后被一条低优先级的
+ *   `→ allow` 规则接手，这场会议就这样被放出去了。
+ *
+ * 所以 `MeetingFacts` 多了一个 `missing`：**哪几项事实在库里根本不存在**。
+ * 用到了缺失事实的条件返回 `fact_missing`（与 `not_matched` 是两条不同的路径、
+ * 两句不同的话），整条规则据此给出 `undecidable`，由 `stacks.ts` 落到本栈的安全侧。
+ *
+ * **改回去（把 `missing` 删掉、或让 `evaluateCond` 不看它）会怎样**：上面那条
+ * `deny` 规则重新变成「不匹配」，元数据不全的会议重新被低优先级的 allow 放出去——
+ * 而且没有任何地方会报错，这正是全局约束「不许静默放行」要防的那种事故。
  */
+
+/**
+ * 一项**在库里根本不存在**的事实。取值就是 `MeetingFacts` 上对应字段的名字，
+ * 免得两处对不上（`dept` 不在内：它是「字段没有数据源」，另一条路径）。
+ */
+export type MeetingFactKey = 'title' | 'hostUserId' | 'startTime' | 'endTime'
+
+/** 缺失的事实读给管理员看时的称呼。判定理由里要出现的是这几个词，不是字段名 */
+const FACT_LABEL: Record<MeetingFactKey, string> = {
+  title: '标题',
+  hostUserId: '主持人',
+  startTime: '开始时间',
+  endTime: '结束时间',
+}
+
+/**
+ * 每个条件字段**要用到哪几项事实**。列在这里而不是散在各个 `eval*` 里：
+ * 求值前的统一拦截只该有一处，否则新增字段时漏掉一处就是一个静默放行的口子。
+ *
+ * `dept` 空着是故意的——它恒无数据源，走 `evalDept` 的 `no_data_source` 分支；
+ * `arch` 也空着——归档状态来自 `meeting_archives` 有没有行，与 `meetings` 表的
+ * NULL 列无关，永远问得出答案。
+ */
+const FIELD_FACTS: Record<string, readonly MeetingFactKey[]> = {
+  title: ['title'],
+  dept: [],
+  host: ['hostUserId'],
+  // dur 要两头：开始时间是 NULL 时折成 0，照直算会得出一个几十年的时长
+  dur: ['startTime', 'endTime'],
+  // age 只看录制结束时间，而它由 endTime 派生（见 access.ts 的 meetingFacts）
+  age: ['endTime'],
+  arch: [],
+}
 
 /** 求值所需的全部事实。由调用方从 Meeting + 归档状态组装 */
 export interface MeetingFacts {
@@ -51,6 +103,18 @@ export interface MeetingFacts {
   recordEndTime: number
   /** 是否已写入 NAS */
   archived: boolean
+  /**
+   * 哪几项事实**在库里根本不存在**（`meetings` 表对应列是 NULL），
+   * 与「值是空串 / 0」不是一回事——完整推理见文件头第 4 节（阶段 4 · T13）。
+   *
+   * **省略或空数组 = 每一项事实都有真值**，也就是本字段加进来之前的语义，
+   * 所以既有的调用方与测试一个字都不必改。唯一的真实产出者是
+   * `access.ts` 的 `meetingFacts`，它从 `MeetingMeta.missingFacts` 抄过来；
+   * 而那份 `missingFacts` 由读到 NULL 的那一层（`store/console-meetings.ts` /
+   * `worker/archive.ts`）填。**中间任何一层漏传，这里就退回「事实齐全」**——
+   * 退回的方向是放行，所以那两处都写了注释钉住。
+   */
+  missing?: readonly MeetingFactKey[]
 }
 
 /** 一条条件。来自无 schema 校验的 JSON 列，字段类型一概不可信 */
@@ -76,6 +140,17 @@ export type CondReason =
   | 'not_matched'
   /** 字段有效，但它当前没有数据源（dept；或这场会议缺结束时间） */
   | 'no_data_source'
+  /**
+   * 字段有效、也有数据源，但**这场会议**的那项事实在库里根本不存在
+   * （`meetings` 表对应列是 NULL），所以这条条件**判不出来**（阶段 4 · T13）。
+   *
+   * 与 `not_matched` 分开是全部要点：`not_matched` 是「真的比对过，不成立」，
+   * 可以放心继续往下找规则；`fact_missing` 是「没法比对」，继续往下找就会让一条
+   * `title has X → deny` 被低优先级的 allow 顶掉。与 `no_data_source` 也分开：
+   * 那是**字段**级的（dept 恒无数据源，规则建出来就永远不命中，`describeRuleIssues`
+   * 静态就报得出来），这一档是**这一场会议**的数据问题，静态看不出来。
+   */
+  | 'fact_missing'
   /** 字段名不认识（多半是拼写错误） */
   | 'unknown_field'
   /** 字段认识，但不支持这个运算符 */
@@ -99,6 +174,16 @@ export interface RuleEvaluation {
   /** 与 conds 一一对应；conds 不是数组时为空 */
   conds: CondEvaluation[]
   detail: string
+  /**
+   * 这条规则**判不出来**：它没有命中，但没命中是因为这场会议缺了它要用的事实，
+   * 而不是真的比对过不成立（阶段 4 · T13）。`stacks.ts` 据此落到本栈的安全侧
+   * 而不是继续往下找。`matched` 为 true 时恒为 false——命中了就是判出来了。
+   *
+   * **不含「规则本身写坏了」**（conds 不是数组、字段拼错、值类型不对）：
+   * 那几种是静态可知、`describeRuleIssues` 报得出来的，且它们**确定**不成立，
+   * 继续往下找是对的。把它们也算进来，一条写错字的规则会拒掉全部会议。
+   */
+  undecidable: boolean
 }
 
 /** 值的形态，规则编辑器（阶段 5 · F3）据此渲染输入控件 */
@@ -274,6 +359,18 @@ function evalArch(op: string, archived: boolean): CondEvaluation {
 }
 
 /**
+ * 这条条件要用的事实里，有哪几项这场会议根本没有。
+ * `missing` 省略 / 为空（既有调用方的常态）时恒返回空数组，语义与本字段加进来之前一致。
+ */
+function absentFacts(field: string, facts: MeetingFacts): MeetingFactKey[] {
+  const need = FIELD_FACTS[field]
+  if (need === undefined || need.length === 0) return []
+  const missing = facts.missing
+  if (missing === undefined || missing.length === 0) return []
+  return need.filter((k) => missing.includes(k))
+}
+
+/**
  * 求值一条条件。**任何落不进合法分支的输入都返回不匹配**，
  * 并带上说得出口的理由。
  */
@@ -287,6 +384,24 @@ export function evaluateCond(cond: RuleCond, facts: MeetingFacts, now: number): 
   }
   const valueIssue = blockingValueIssue(cond.f, cond.v)
   if (valueIssue) return no('bad_value', `字段「${spec.label}」的${valueIssue}`)
+
+  // 这场会议缺了这条条件要用的事实 → 判不出来（阶段 4 · T13，见文件头第 4 节）。
+  //
+  // **位置有讲究，别往上挪**：上面那四个 return（形状 / 字段 / 运算符 / 值）是
+  // 与会议数据无关的静态结论，`store/policy.ts` 的 PROBE_FACTS 正是靠「它们都在
+  // 碰 facts 之前」拿一组假事实做写侧静态校验的。这一档必须留在它们之后。
+  //
+  // **改回去（删掉这一段）会怎样**：一场 `subject IS NULL` 的会议重新与一场标题
+  // 真的是空串的会议无法区分，`title has X → deny` 重新判成「不匹配」，
+  // 被低优先级的 allow 接手放行。
+  const absent = absentFacts(cond.f, facts)
+  if (absent.length > 0) {
+    return no(
+      'fact_missing',
+      `字段「${spec.label}」要用的会议元数据在库里根本没有` +
+        `（${absent.map((k) => FACT_LABEL[k]).join('、')}是 NULL，不是空值），这条条件判不出来`,
+    )
+  }
 
   // 到这里字段、运算符、值都已校验过，下面的类型断言是校验的结论而不是假设
   switch (cond.f) {
@@ -322,23 +437,63 @@ export function evaluateRule(rule: CondRule, facts: MeetingFacts, now: number): 
   if (!Array.isArray(rule.conds)) {
     // conds 是无 schema 校验的 JSON 列。不是数组时不能当成「空 conds → 匹配一切」——
     // 那等于让一条坏掉的规则放行全部会议。
-    return { matched: false, join, conds: [], detail: 'conds 不是数组，这条规则不参与匹配' }
+    // 这是规则**自己**写坏了，不是「判不出来」：它确定不命中任何会议，
+    // 所以 undecidable 为 false，判定照旧往下找（见 `undecidable` 的注释）。
+    return { matched: false, join, conds: [], detail: 'conds 不是数组，这条规则不参与匹配', undecidable: false }
   }
   if (rule.conds.length === 0) {
-    return { matched: true, join, conds: [], detail: '规则没有条件，匹配全部会议' }
+    return { matched: true, join, conds: [], detail: '规则没有条件，匹配全部会议', undecidable: false }
   }
 
   const conds = rule.conds.map((c) => evaluateCond(c, facts, now))
   if (join === 'or') {
     const first = conds.findIndex((c) => c.matched)
-    return first >= 0
-      ? { matched: true, join, conds, detail: `第 ${first + 1} 个条件成立：${conds[first]!.detail}` }
-      : { matched: false, join, conds, detail: `没有任何一个条件成立：${conds.map((c) => c.detail).join('；')}` }
+    if (first >= 0) {
+      return { matched: true, join, conds, detail: `第 ${first + 1} 个条件成立：${conds[first]!.detail}`, undecidable: false }
+    }
+    return {
+      matched: false,
+      join,
+      conds,
+      detail: `没有任何一个条件成立：${conds.map((c) => c.detail).join('；')}`,
+      // 「或」：只要有一条判不出来，它成立与否就可能翻转整条规则的结论
+      undecidable: isUndecidable(join, conds),
+    }
   }
   const firstBad = conds.findIndex((c) => !c.matched)
   return firstBad >= 0
-    ? { matched: false, join, conds, detail: `第 ${firstBad + 1} 个条件不成立：${conds[firstBad]!.detail}` }
-    : { matched: true, join, conds, detail: `全部 ${conds.length} 个条件都成立：${conds.map((c) => c.detail).join('；')}` }
+    ? {
+        matched: false,
+        join,
+        conds,
+        detail: `第 ${firstBad + 1} 个条件不成立：${conds[firstBad]!.detail}`,
+        undecidable: isUndecidable(join, conds),
+      }
+    : {
+        matched: true,
+        join,
+        conds,
+        detail: `全部 ${conds.length} 个条件都成立：${conds.map((c) => c.detail).join('；')}`,
+        undecidable: false,
+      }
+}
+
+/**
+ * 这条**没有命中**的规则，是「判不出来」还是「判得出来的不成立」（阶段 4 · T13）。
+ *
+ * - **或**：只要有一条 `fact_missing`，那条若成立整条就命中，所以判不出来；
+ * - **且**：还要求其余不成立的条件**全是** `fact_missing`。只要有一条是确定不成立的
+ *   （`not_matched` / `no_data_source` / 写坏了），整条「且」就**确定**不命中，
+ *   与缺失的那项事实无关，照旧往下找。
+ *
+ * 少了「且」的这半条会怎样：一条 `host is 别人 且 title has X` 的规则会因为
+ * 标题缺失就拒掉整场会议，而它本来无论如何都不会命中——那是无谓的过度拒绝。
+ */
+function isUndecidable(join: 'and' | 'or', conds: readonly CondEvaluation[]): boolean {
+  const hasMissing = conds.some((c) => c.reason === 'fact_missing')
+  if (!hasMissing) return false
+  if (join === 'or') return true
+  return conds.every((c) => c.matched || c.reason === 'fact_missing')
 }
 
 /** 一条规则在这场会议上成不成立 */

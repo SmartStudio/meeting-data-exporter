@@ -3,7 +3,7 @@ import type { MeetingCacheStore } from '../store/meetings'
 import type { RecordsApi } from '../tencent/records'
 import type { Catalog } from '../catalog/index'
 import type { StsManager } from '../sts/manager'
-import type { AccessGate } from '../policy/access'
+import type { AccessGate, MeetingMeta } from '../policy/access'
 import type { ArchivesStore } from '../store/archives'
 import type { AuditRecorder } from '../audit/recorder'
 import type { DeviceFlow } from '../auth/device'
@@ -25,7 +25,6 @@ import type { ProgramsStore } from '../store/programs'
 import type { GrantsStore, MeetingKey } from '../store/grants'
 import type { PolicyStore } from '../store/policy'
 import type { AuditStore } from '../store/audit'
-import type { Meeting } from '../domain/types'
 import * as consoleGrantsHandlers from './handlers/console/grants'
 import type { AuditQueryStore } from '../store/audit'
 import * as consoleAuditHandlers from './handlers/console/audit'
@@ -96,8 +95,11 @@ export interface AppDeps {
    *
    * 查不到的会议**不要造一个空壳顶上**：返回数组里没有它，`visibility.ts` 会把它
    * 判成「判不出来」并落到拒绝一侧（见那个文件里 VisibilityDeps.getMeetings 的注释）。
+   * 查得到但元数据不全的行照样返回，带上 `missingFacts`（阶段 4 · T13）——
+   * **类型必须是 `MeetingMeta` 而不是 `Meeting`**：两者结构上可以互相赋值，
+   * 写成 `Meeting` 编译一样过，但那笔账就在类型上看不见了，下一个人会以为没有。
    */
-  getMeetings: (keys: readonly MeetingKey[]) => Promise<readonly Meeting[]>
+  getMeetings: (keys: readonly MeetingKey[]) => Promise<readonly MeetingMeta[]>
   /** 归档存储页与保留窗口动作（阶段 4 · T8，A3）。形状与理由见
    *  handlers/console/storage.ts 的文件头——NAS 探测、到期清理、审计写侧都在里面，
    *  刻意不复用上面那个收窄成 listArchivedMeetingKeys 的 `archives` 字段 */
