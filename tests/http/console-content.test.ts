@@ -184,6 +184,7 @@ function row(over: Partial<ConsoleMeetingRow> = {}): ConsoleMeetingRow {
       archivedAt: START + 7200,
       expiresAt: START + 7200 + 30 * 86400,
       extended: 0,
+      extendedSource: 'none',
       extendedDays: 0,
       retentionDays: 30,
       filesGone: false,

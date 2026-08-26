@@ -25,7 +25,12 @@
 import type { RouteCtx } from '../../router'
 import { json, readJson } from '../../respond'
 import { requireAdminAuth } from '../../middleware'
-import type { AuditEntry, AuditStore } from '../../../store/audit'
+import {
+  ACTION_EXTEND_RETENTION,
+  auditSubMeetingAssetId,
+  type AuditEntry,
+  type AuditStore,
+} from '../../../store/audit'
 import type { ArchivesStore } from '../../../store/archives'
 import type { ConsoleStorageStore } from '../../../store/console-storage'
 import type { NasProbeResult } from '../../../worker/nas-probe'
@@ -179,7 +184,12 @@ async function recordAdminWrite(ctx: RouteCtx, i: AdminAuditInput): Promise<void
     actorId: i.adminId,
     action: i.action,
     meetingId: i.meetingId ?? null,
-    assetId: i.subMeetingId === undefined || i.subMeetingId === null ? null : `sub:${i.subMeetingId}`,
+    // 场次的编法由 audit.ts 那个共享函数说了算——`keep.extended` 正是按它去数的
+    // （阶段 4 · T17），两边各拼各的会让读侧一条都数不着而不报任何错
+    assetId:
+      i.subMeetingId === undefined || i.subMeetingId === null
+        ? null
+        : auditSubMeetingAssetId(i.subMeetingId),
     // asset_type 这一列在管理员这一族里当"这次改了什么"的自由文本用，
     // 与 recorder.ts 已有的 recordLogin（存拒绝原因）/ recordListing（存条数）同一用法
     assetType: clipDetail(i.detail),
@@ -517,7 +527,8 @@ export async function extendMeetingRetention(req: Request, ctx: RouteCtx): Promi
 
   await recordAdminWrite(ctx, {
     adminId: auth.identity.adminId,
-    action: 'extend_retention',
+    // 动作名走共享常量：`console-meetings.ts` 的 `keep.extended` 按它数条数
+    action: ACTION_EXTEND_RETENTION,
     meetingId,
     subMeetingId,
     detail: `延长 ${days} 天（累计 ${extendedDays} 天）`,

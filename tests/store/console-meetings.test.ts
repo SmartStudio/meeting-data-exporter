@@ -1,13 +1,21 @@
 import { expect, test } from 'bun:test'
+import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../src/store/db'
 import { withTestDb } from '../helpers/testdb'
 import {
   ARCHIVE_GRACE_SEC,
+  buildExtendCountSql,
   consoleMeetingId,
   createConsoleMeetingsStore,
   parseConsoleMeetingId,
 } from '../../src/store/console-meetings'
 import { expiresAt } from '../../src/worker/retention'
+// 延长次数那一族用例要按**写侧真正填的那两列**去数（阶段 4 · T17）。
+// 常量放在 audit.ts 而不是 handler 里，读写两侧共用同一份，见那里的注释。
+import { ACTION_EXTEND_RETENTION, auditSubMeetingAssetId, createAuditStore } from '../../src/store/audit'
+import { createArchivesStore } from '../../src/store/archives'
+import { extendMeetingRetention } from '../../src/http/handlers/console/storage'
+import { ADMIN_SESSION_COOKIE } from '../../src/http/middleware'
 
 /**
  * 会议查询 store（阶段 4 · T1）。控制台会议记录页（spec §4.2）的数据底座。
@@ -778,6 +786,307 @@ test('分页：total 是筛选后的总数，不是本页行数；顺序按开�
 
     const last = await store.list({ now: NOW, limit: 2, offset: 4 })
     expect(last.rows.map((r) => r.meetingId)).toEqual(['m-0', 'm-notime'])
+  } finally {
+    await cleanup()
+  }
+})
+
+// ── keep.extended：延长次数（阶段 4 · T17）────────────────────────────────
+
+/**
+ * 一条「延长保留」审计。**列的填法必须与 `recordAdminWrite` 逐字一致**，
+ * 否则这些用例测的是一个真实写侧从来不会产出的形状——所以 action 与 asset_id
+ * 都走 `src/store/audit.ts` 导出的那两个共享常量，不在这里另抄一份字面量。
+ */
+async function seedExtendAudit(
+  pool: Pool,
+  input: {
+    meetingId: string
+    subMeetingId?: string
+    occurredAt: number
+    action?: string
+    decision?: 'allow' | 'deny'
+  },
+): Promise<void> {
+  await pool.execute(
+    `INSERT INTO audit_log
+       (occurred_at, actor_type, actor_id, action, meeting_id, asset_id, asset_type,
+        decision, matched_rule, client_kind)
+     VALUES (?, 'admin', 'admin-1', ?, ?, ?, '延长 30 天（累计 30 天）', ?, NULL, 'console')`,
+    [
+      input.occurredAt,
+      input.action ?? ACTION_EXTEND_RETENTION,
+      input.meetingId,
+      auditSubMeetingAssetId(input.subMeetingId ?? ''),
+      input.decision ?? 'allow',
+    ],
+  )
+}
+
+test('keep.extended 是审计里数出来的真实次数，不再是「延长过就报 1」的下界', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1' })
+    // 两次 30 天，而不是一次 60 天——这正是 extended_days 换算不回次数的那个歧义
+    await seedArchive(pool, { meetingId: 'm-1', archivedAt: 1_700_010_000, extendedDays: 60 })
+    await seedExtendAudit(pool, { meetingId: 'm-1', occurredAt: 1_700_020_000 })
+    await seedExtendAudit(pool, { meetingId: 'm-1', occurredAt: 1_700_030_000 })
+
+    const store = createConsoleMeetingsStore(pool)
+    const row = (await store.list({ now: NOW })).rows[0]!
+    expect(row.keep.extended).toBe(2)
+    expect(row.keep.extendedSource).toBe('audit')
+    // 天数那个字段是准确的，界面上「延长了多少天」照旧用它
+    expect(row.keep.extendedDays).toBe(60)
+
+    // get() 走同一条拼装路径，两处不许分叉
+    const one = await store.get('m-1', '', NOW)
+    expect(one!.keep.extended).toBe(2)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('T8 之前延长过的会议：审计里一条都没有，报下界 1 而不是 0', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-old' })
+    await seedArchive(pool, { meetingId: 'm-old', extendedDays: 60 })
+
+    const store = createConsoleMeetingsStore(pool)
+    const keep = (await store.list({ now: NOW })).rows[0]!.keep
+    // 报 0 等于说「从没延长过」，而 extendedDays 明明是 60——两个字段不许打架
+    expect(keep.extended).toBe(1)
+    expect(keep.extendedSource).toBe('floor')
+    expect(keep.extendedDays).toBe(60)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('extended_days 说了算「有没有延长过」：它是 0 时，审计里的孤儿记录不算数', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    // 归档过、但从没延长过
+    await seedMeeting(pool, { meetingId: 'm-fresh' })
+    await seedArchive(pool, { meetingId: 'm-fresh', archivedAt: 1_700_010_000, extendedDays: 0 })
+    // 归档记录被重建过（重复归档会把 archived_at 推后、但一个字都不碰 extended_days），
+    // 于是审计里留着上一轮的记录。extended_days = 0 时它不该让 extended 变成 2
+    await seedExtendAudit(pool, { meetingId: 'm-fresh', occurredAt: 1_700_020_000 })
+    await seedExtendAudit(pool, { meetingId: 'm-fresh', occurredAt: 1_700_030_000 })
+
+    // 压根还没归档：保留窗口还没开始计时，也就没有「延长过」这回事
+    await seedMeeting(pool, { meetingId: 'm-unarchived' })
+    await seedExtendAudit(pool, { meetingId: 'm-unarchived', occurredAt: 1_700_020_000 })
+
+    const store = createConsoleMeetingsStore(pool)
+    const fresh = (await store.get('m-fresh', '', NOW))!.keep
+    expect(fresh.extended).toBe(0)
+    expect(fresh.extendedSource).toBe('none')
+
+    const unarchived = (await store.get('m-unarchived', '', NOW))!.keep
+    expect(unarchived.archivedAt).toBeNull()
+    expect(unarchived.extended).toBe(0)
+    expect(unarchived.extendedSource).toBe('none')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('只有本轮窗口内、而且真的做成了的那些延长才算数', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1' })
+    await seedArchive(pool, { meetingId: 'm-1', archivedAt: 1_700_010_000, extendedDays: 30 })
+    // 上一轮归档窗口里的延长，早于现在这个 archived_at——不属于这一轮
+    await seedExtendAudit(pool, { meetingId: 'm-1', occurredAt: 1_700_000_000 })
+    // 起点那一刻算数（含边界）
+    await seedExtendAudit(pool, { meetingId: 'm-1', occurredAt: 1_700_010_000 })
+    // 别的管理动作不算
+    await seedExtendAudit(pool, { meetingId: 'm-1', occurredAt: 1_700_020_000, action: 'purge_local' })
+    // 被拒绝的尝试不算——那是一次没做成的延长，不是一次延长
+    await seedExtendAudit(pool, { meetingId: 'm-1', occurredAt: 1_700_021_000, decision: 'deny' })
+
+    // 同一页里另有一场归档得早得多的会议。它把**全页那个统一下界**拉到了
+    // 1_699_900_000——如果逐场的 `occurred_at >= archived_at` 被谁省掉、只剩全页
+    // 那一层，m-1 上面那条上一轮的记录就会被数进来，这里会变成 2。
+    // 这条会议本身在这一页里的次数也要对（它自己那条记录在自己的窗口内）。
+    await seedMeeting(pool, { meetingId: 'm-old', startTime: 1_699_000_000 })
+    await seedArchive(pool, { meetingId: 'm-old', archivedAt: 1_699_900_000, extendedDays: 30 })
+    await seedExtendAudit(pool, { meetingId: 'm-old', occurredAt: 1_699_950_000 })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    const byId = new Map(rows.map((r) => [r.meetingId, r.keep]))
+    expect(byId.get('m-1')!.extended).toBe(1)
+    expect(byId.get('m-1')!.extendedSource).toBe('audit')
+    expect(byId.get('m-old')!.extended).toBe(1)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('周期性会议：同一个 meeting_id 下的两个场次各数各的', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', subMeetingId: '' })
+    await seedMeeting(pool, { meetingId: 'm-1', subMeetingId: 's-2' })
+    await seedArchive(pool, { meetingId: 'm-1', subMeetingId: '', extendedDays: 30 })
+    await seedArchive(pool, { meetingId: 'm-1', subMeetingId: 's-2', extendedDays: 90 })
+    await seedExtendAudit(pool, { meetingId: 'm-1', subMeetingId: '', occurredAt: 1_700_020_000 })
+    for (const at of [1_700_020_000, 1_700_021_000, 1_700_022_000]) {
+      await seedExtendAudit(pool, { meetingId: 'm-1', subMeetingId: 's-2', occurredAt: at })
+    }
+
+    const store = createConsoleMeetingsStore(pool)
+    // **必须走 list**：两场会议要落在**同一条**审计聚合查询里，分组分错了才看得出来。
+    // 逐场 get() 的那条查询里只有一个场次，WHERE 就把别的场次滤掉了，分组键少一列
+    // 也照样绿——这正是这条用例差点漏掉的东西。
+    const rows = (await store.list({ now: NOW })).rows
+    const bySub = new Map(rows.map((r) => [r.subMeetingId, r.keep]))
+    // 只按 meeting_id 分组的话两场都会报 4——审计表没有 sub_meeting_id 列，
+    // 场次信息只在 asset_id 里（`sub:<subMeetingId>`）
+    expect(bySub.get('')!.extended).toBe(1)
+    expect(bySub.get('s-2')!.extended).toBe(3)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('数延长次数不是 N+1：30 场都延长过时，查询数与 3 场时完全相同', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    for (let i = 0; i < 30; i++) {
+      const id = `m-${String(i).padStart(2, '0')}`
+      await seedMeeting(pool, { meetingId: id, startTime: 1000 + i })
+      await seedArchive(pool, { meetingId: id, archivedAt: 1_700_010_000, extendedDays: 30 })
+      await seedExtendAudit(pool, { meetingId: id, occurredAt: 1_700_020_000 })
+      await seedExtendAudit(pool, { meetingId: id, occurredAt: 1_700_021_000 })
+    }
+
+    const counted = countingPool(pool)
+    const store = createConsoleMeetingsStore(counted.pool)
+
+    counted.reset()
+    const small = await store.list({ now: NOW, limit: 3 })
+    const smallQueries = counted.queries()
+
+    counted.reset()
+    const big = await store.list({ now: NOW, limit: 30 })
+    const bigQueries = counted.queries()
+
+    expect(small.rows.every((r) => r.keep.extended === 2)).toBe(true)
+    expect(big.rows).toHaveLength(30)
+    expect(big.rows.every((r) => r.keep.extended === 2)).toBe(true)
+    expect(bigQueries).toBe(smallQueries)
+    // 比 T1 那条上界只多一次：整页一条审计聚合查询，不是逐行查
+    expect(smallQueries).toBeLessThanOrEqual(6)
+  } finally {
+    await cleanup()
+  }
+})
+
+/**
+ * `audit_log` 上**没有 `meeting_id` 索引**，只有 `idx_audit_time` 与
+ * `idx_audit_actor`（001 的建表）。所以「按会议数延长次数」这条查询能不能不退化成
+ * 全表扫，全靠 `buildExtendCountSql` 塞进去的那个时间下界。
+ *
+ * 这条断言**打在真正跑的那条语句上**（EXPLAIN 的是 store 拿去执行的同一个字符串），
+ * 沿用 tests/store/audit.test.ts 里那条计划断言的做法：另抄一条等价 SQL 去 EXPLAIN
+ * 是自欺——改了实现忘了改测试，测试照样绿。
+ */
+test('数延长次数的那条查询走 idx_audit_time，不是全表扫', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    // 优化器按成本选计划，几十行的表上它会直接全表扫。灌够行数这条断言才有意义
+    // （与 audit.test.ts 那条同一手法、同一规模）
+    const base = 1_700_000_000
+    const values: unknown[] = []
+    const placeholders: string[] = []
+    for (let i = 0; i < 400; i++) {
+      placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      values.push(base + i * 1000, 'admin', `admin-${i % 40}`, ACTION_EXTEND_RETENTION,
+        `plan-m-${i % 20}`, auditSubMeetingAssetId(''), '延长 30 天', 'allow', null, 'console')
+    }
+    await pool.query(
+      `INSERT INTO audit_log
+         (occurred_at, actor_type, actor_id, action, meeting_id, asset_id, asset_type,
+          decision, matched_rule, client_kind)
+       VALUES ${placeholders.join(', ')}`,
+      values,
+    )
+    await pool.query('ANALYZE TABLE audit_log')
+
+    // 下界取在最后一段：一页会议的 archived_at 通常离现在不远，这正是那个下界
+    // 该起作用的形态
+    const since = base + 380 * 1000
+    const built = buildExtendCountSql([
+      { meetingId: 'plan-m-1', subMeetingId: '', since },
+      { meetingId: 'plan-m-2', subMeetingId: '', since },
+    ])!
+    const [plan] = await pool.query<RowDataPacket[]>(`EXPLAIN ${built.sql}`, built.params)
+    const row = plan[0] as { key: string | null; type: string }
+    expect(row.key).toBe('idx_audit_time')
+    // range 而不是 index：后者是"把整个索引从头扫到尾"，正是没有下界时的样子
+    expect(row.type).toBe('range')
+
+    expect(buildExtendCountSql([])).toBeNull()
+  } finally {
+    await cleanup()
+  }
+})
+
+/**
+ * 写侧与读侧的**同源性**：真的调一次 `extendMeetingRetention` handler（真库、
+ * 真 ArchivesStore、真 AuditStore），再从 store 读回来。
+ *
+ * 这条用例是本文件唯一一处 import HTTP handler 的地方，理由与
+ * tests/http/console-storage.test.ts 里那条 `cleanup_paused` 极性用例相同：
+ * 「延长次数」这件事横跨两个模块——一边往 `audit_log` 写 action/asset_id，
+ * 一边按 action/asset_id 数。两边任何一侧改了列的填法，靠注释叮嘱挡不住，
+ * 靠这条能。它同时也钉住了「两次 30 天」数出来确实是 2、而不是 60 或 1。
+ */
+test('写侧与读侧同源：真的延长两次之后，keep.extended 是 2', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1' })
+    await seedArchive(pool, {
+      meetingId: 'm-1',
+      archivedAt: NOW - 10 * 86400,
+      retentionDays: 30,
+      extendedDays: 0,
+    })
+
+    const ctx = {
+      params: { meetingId: 'm-1' },
+      deps: {
+        now: () => NOW,
+        adminAuth: {
+          async verifySession() {
+            return { adminId: 'admin-1', username: 'alice' }
+          },
+        },
+        storage: { archives: createArchivesStore(pool), audit: createAuditStore(pool) },
+      },
+    } as unknown as Parameters<typeof extendMeetingRetention>[1]
+
+    for (let i = 0; i < 2; i++) {
+      const res = await extendMeetingRetention(
+        new Request('https://gw.example/api/v1/admin/meetings/m-1/extend', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: `${ADMIN_SESSION_COOKIE}=tok` },
+          body: JSON.stringify({}),
+        }),
+        ctx,
+      )
+      expect(res.status).toBe(200)
+    }
+
+    const store = createConsoleMeetingsStore(pool)
+    const keep = (await store.get('m-1', '', NOW))!.keep
+    expect(keep.extendedDays).toBe(60)
+    expect(keep.extended).toBe(2)
+    expect(keep.extendedSource).toBe('audit')
   } finally {
     await cleanup()
   }

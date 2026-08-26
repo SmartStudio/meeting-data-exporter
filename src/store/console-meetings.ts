@@ -13,6 +13,9 @@ import { evaluateAllowStack, normalizeEffect, type StackRule } from '../policy/s
 // 各存一份的话，界面说「还剩 3 天」而清理昨天就把文件删了。
 import { expiresAt as retentionExpiresAt } from '../worker/retention'
 import { archiveStateKey, type MeetingArchiveRecord } from './archives'
+// 「延长保留」在 audit_log 里的 action 与场次编法。**与写侧共用同一份**
+// （`http/handlers/console/storage.ts` 的延长端点），各拼各的会让这里一条都数不着
+import { ACTION_EXTEND_RETENTION, auditSubMeetingAssetId } from './audit'
 import type { Pool } from './db'
 import { createGrantsStore, type MeetingKey } from './grants'
 import { createPolicyStore, type PolicyStore } from './policy'
@@ -44,6 +47,13 @@ import { createPolicyStore, type PolicyStore } from './policy'
  * | `why.archive` | T5，走 `evaluateArchiveStack` | 同上：与 `src/worker/archive.ts` 同源，不在 store 里再判一遍 |
  * | `history` | T3 的 `audit.ts` | `audit_log.meeting_id` 有两种语义（见 001 的注释），那条读法只该有一份实现 |
  *
+ * **本模块确实读一次 `audit_log`，但那不是上面那条读法**（阶段 4 · T17）：
+ * `keep.extended` 要数「延长保留」的条数，见 `loadExtendCounts`。它按
+ * `action = 'extend_retention'` 精确筛，只碰管理员写的那一类记录，因此完全避开了
+ * `meeting_id` 那两种语义的纠缠（record 维度的 ID 只出现在
+ * `action = 'issue_download_url'` 的记录里）。会议操作历史仍然只有
+ * `AuditQueryStore.listForMeeting` 一份实现。
+ *
  * 因此 `fetch` / `archive` 两个阶段状态本模块给的是**库里看得见的那一半**：
  * `'off'`（有人工改写把这一阶段关掉）给得出来，`'blocked'`（规则做的决定）给不出来。
  * 契约对这两个取值的分工是明写的——`off` 是人关的，`blocked` 是规则关的——所以
@@ -55,7 +65,8 @@ import { createPolicyStore, type PolicyStore } from './policy'
  * ## 查询数与行数无关
  *
  * 列一页 50 行发出去的查询数与列 3 行**完全相同**：分页 1 次、计数 1 次、
- * 资产聚合 1 次、授权 1 次、改写 1 次。测试用一个数查询次数的 pool 代理钉住这条。
+ * 资产聚合 1 次、授权 1 次、改写 1 次，外加延长次数 1 次（只在这一页里真有会议
+ * 被延长过时才发，见 `loadExtendCounts`）。测试用一个数查询次数的 pool 代理钉住这条。
  */
 
 // ── 契约形状（与 console/src/api/types.ts 逐字一致）────────────────────────
@@ -110,29 +121,69 @@ export interface Triage {
 export type MeetingNullField = 'title' | 'code' | 'host' | 'startAt' | 'endAt'
 
 /**
- * 保留窗口。比契约的 `KeepWindow` 多两个字段，少一个语义准确的 `extended`。
+ * `keep.extended` 那个数**是哪来的**，因此也说明了它准不准（阶段 4 · T17）。
  *
- * **`extended` 是一处契约与库对不上的地方，记在这里免得下一个人当 bug 修**：
+ * - `'none'`：`extended_days` 是 0，这场会议从没被延长过，`extended` 就是 0；
+ * - `'audit'`：`audit_log` 里数出来的**真实次数**；
+ * - `'floor'`：延长过（`extended_days > 0`）但审计里一条都没有——报的是**下界 1**，
+ *   真实次数无从得知。见 `ConsoleKeepWindow.extended` 的说明。
+ */
+export type ExtendedSource = 'none' | 'audit' | 'floor'
+
+/**
+ * 保留窗口。比契约的 `KeepWindow` 多三个字段（`extendedDays` / `extendedSource` /
+ * `retentionDays`），前端会忽略多的。
+ *
+ * ## `extended`：契约问「几次」，库里只有「几天」（T1 的缺口，T17 补上）
+ *
  * 契约的 `extended` 问的是「被人工延长过**几次**」（前端渲染成「已延长 N 次」），
  * 而 `meeting_archives` 只有 `extended_days`（累加的**天数**，见 003 的建表）。
- * 天数当次数报会渲染出「已延长 30 次」，比不报更糟；报 0 又会让一场确实被延长过的
- * 会议看起来没被动过。所以：
+ * 两者之间**没有可逆的换算**：延长 60 天可能是一次 60 天，也可能是两次 30 天。
+ * 阶段 4 的 T1 因此只能报 `extendedDays > 0 ? 1 : 0` 这个下界。
  *
- * - `extendedDays` 是**真实事实**，新增字段，永远可信；
- * - `extended` 取 `extendedDays > 0 ? 1 : 0`，是个**下界**，只保证「延长过」
- *   这件事不丢；
- * - 真要准确的次数，只能去 `audit_log` 数「延长保留」那个动作（全局约束 6 要求
- *   管理员的每一次写操作都进审计）。那是 T3 的读法 + T8 的写入点，不是 store
- *   能单独答的。
+ * T8 把「延长保留」写进了 `audit_log`（`ACTION_EXTEND_RETENTION`），于是真实次数
+ * 现在数得出来了。**判据分两层，顺序不能反**：
+ *
+ * 1. `extended_days` 说了算「有没有延长过」。它是 `extendRetention` 唯一的累加目标，
+ *    是这件事的账本；
+ * 2. `audit_log` 说了算「延长过几次」——但只在第 1 层说「延长过」时才去数。
+ *
+ * 为什么第 2 层不能单独说了算：重复归档会把 `archived_at` 推后而**一个字都不碰
+ * `extended_days`**（`archives.ts` 的 upsert 注释写明了这条），于是审计里可能留着
+ * 上一轮窗口的记录。让它单独说了算，就会出现「延长了 0 天，却延长过 2 次」——
+ * 两个字段在同一个抽屉里自相矛盾。同一个理由，数审计时**必须以 `archived_at`
+ * 为时间下界**：那是本轮保留窗口的起点，上一轮的记录不属于这一轮。
+ * （下界还有第二个用处，见 `loadExtendCounts`：`audit_log` 上没有 `meeting_id`
+ * 索引，不给时间下界那条查询就是全索引扫。）
+ *
+ * ## 历史数据：审计是从 T8 那天才开始记的
+ *
+ * 在那之前用 `extendRetention` 延长过的会议，`extended_days > 0` 而审计里没有记录。
+ * 这种会议**报 0 是不许的**——那是在说「从没延长过」，与 `extendedDays` 直接打架。
+ * 这里仍取下界 1，并且**在 `extendedSource` 上标明它是下界**（`'floor'`），
+ * 让界面能把「已延长 1 次」与「至少延长过 1 次」说成两句话。
+ *
+ * 已知的残余窄边界，写在这里免得以后当 bug 修：一场会议如果 T8 之前延长过一次、
+ * 之后又延长过一次，审计只数得到后面那次，`extendedSource` 会报 `'audit'` 而
+ * `extended` 是 1（真值 2）。**这个洞不该靠解析补**：延长端点把天数写在展示串
+ * `延长 N 天（累计 M 天）` 里，拿它当载荷去解析，谁改一下措辞次数就静默错掉，
+ * 而且没有任何东西会报错——比这个偏差更危险。真要补，是让写侧把天数结构化地
+ * 记进 008 新加的 `audit_log.detail` 列（那一列至今没有写入方，见 008 的第四节），
+ * 读侧才有个不靠措辞的判据。历史记录仍然补不回来。
  */
 export interface ConsoleKeepWindow {
   /** unix 秒。归档成功的那一刻——保留窗口从这里起算，不是从会议日 */
   archivedAt: number | null
   /** unix 秒。`retention.ts` 的 `expiresAt()` 算出来的，公式只有那一处 */
   expiresAt: number | null
-  /** 延长过的**次数**的下界，见上面的说明。真实天数看 `extendedDays` */
+  /**
+   * 被人工延长过**几次**。`extendedSource === 'floor'` 时它只是下界，
+   * 见上面的说明。「延长了多少天」永远用 `extendedDays`，不要拿这个乘 30。
+   */
   extended: number
-  /** 被人工延长的累计天数（`meeting_archives.extended_days`） */
+  /** `extended` 这个数是哪来的，也就是它准不准 */
+  extendedSource: ExtendedSource
+  /** 被人工延长的累计天数（`meeting_archives.extended_days`）。这个字段永远准确 */
   extendedDays: number
   /** 这场会议的保留天数。没有归档行时为 null（窗口还没开始计时） */
   retentionDays: number | null
@@ -473,6 +524,88 @@ interface CountRow extends RowDataPacket {
   cnt: number | string
 }
 
+/** `loadExtendCounts` 的一行：一场会议（含场次）延长过几次 */
+interface ExtendCountRow extends RowDataPacket {
+  meeting_id: string
+  asset_id: string | null
+  cnt: number | string
+}
+
+/**
+ * `sub:` 前缀的长度。从 `auditSubMeetingAssetId` 现算，**不写死 4**——
+ * 那个函数哪天改了前缀，这里跟着走，而写死的 4 会静默把场次 id 切掉一截，
+ * 结果是周期性会议的次数分组错位，而且不报任何错。
+ */
+const AUDIT_SUB_PREFIX_LEN = auditSubMeetingAssetId('').length
+
+/** `buildExtendCountSql` 的一个查询键：一场会议，加上从哪一刻起算 */
+export interface ExtendCountKey extends MeetingKey {
+  /** unix 秒。这场会议的 `archived_at`——本轮保留窗口的起点，也是这条查询的时间下界 */
+  since: number
+}
+
+/**
+ * 拼出 `keep.extended` 真正执行的那条 SQL（阶段 4 · T17）。空数组返回 `null`
+ * ——没有会议要数，就不该有查询。
+ *
+ * **单独导出是为了让测试能对真正跑的那条语句做 `EXPLAIN`**，沿用 `audit.ts` 的
+ * `buildAuditQuerySql` 那条约定：测试里另抄一条等价 SQL 去 EXPLAIN 是自欺，
+ * 改了实现忘了改测试，测试照样绿。这条查询尤其值得钉住，理由见下面第一节。
+ *
+ * ## 一、为什么每一条 OR 里都带 `occurred_at >= ?`，外面还要再套一个下界
+ *
+ * `audit_log` 上**只有 `idx_audit_time (occurred_at DESC)` 与
+ * `idx_audit_actor (actor_id, occurred_at)` 两个索引，没有 `meeting_id` 索引**
+ * （见 001 的建表）。按会议查而不给时间下界，就是把整张审计表扫一遍——
+ * 控制台每列一页会议都扫一次。
+ *
+ * 每场会议自己的下界是它的 `archived_at`（本轮保留窗口的起点，语义上就该从这里
+ * 数起，见 `ConsoleKeepWindow`），但那是**逐场不同的值**，MySQL 拿它没法开范围扫。
+ * 所以外面再套一条全页统一的 `occurred_at >= min(archived_at)`：它是所有逐场下界
+ * 里最松的那个，因此**不会漏掉任何一条本该数进来的记录**，同时给了 `idx_audit_time`
+ * 一个能开范围扫的常量。逐场那一层负责精确，全页这一层负责走索引，缺一不可。
+ *
+ * ## 二、为什么按 `(meeting_id, asset_id)` 分组
+ *
+ * `audit_log` 没有 `sub_meeting_id` 列，场次编在 `asset_id` 里
+ * （`auditSubMeetingAssetId`，与写侧共用同一个函数）。只按 `meeting_id` 分组的话，
+ * 周期性会议的各场次会共用同一个次数——一场延长了三次，同一个 meeting_id 下
+ * 另一场从没延长过的也会跟着显示三次。
+ *
+ * ## 三、为什么筛 `decision = 'allow'`
+ *
+ * 只数**真的做成了的**那些。写侧目前只在成功之后记一条 allow，但那不是结构保证：
+ * 将来多出一条 deny（比如「文件已清理，延不了」——那个 409 分支现在压根没记审计），
+ * 不加这个条件就会把一次**失败的尝试**数成一次延长。
+ */
+export function buildExtendCountSql(
+  keys: readonly ExtendCountKey[],
+): { sql: string; params: unknown[] } | null {
+  if (keys.length === 0) return null
+
+  // 全页统一的下界：所有逐场下界里最松的那个（见上面第一节）
+  let floor = keys[0]!.since
+  for (const k of keys) if (k.since < floor) floor = k.since
+
+  const params: unknown[] = [floor, ACTION_EXTEND_RETENTION]
+  const ors: string[] = []
+  for (const k of keys) {
+    ors.push('(meeting_id = ? AND asset_id = ? AND occurred_at >= ?)')
+    params.push(k.meetingId, auditSubMeetingAssetId(k.subMeetingId), k.since)
+  }
+
+  return {
+    sql: `SELECT meeting_id, asset_id, COUNT(*) AS cnt
+            FROM audit_log
+           WHERE occurred_at >= ?
+             AND action = ?
+             AND decision = 'allow'
+             AND (${ors.join(' OR ')})
+           GROUP BY meeting_id, asset_id`,
+    params,
+  }
+}
+
 /** `meetings` 里做判定事实用的那几列。`MetaSqlRow` 与「待授权」的候选行都长这样 */
 interface MeetingMetaColumns {
   meeting_id: string
@@ -559,12 +692,33 @@ function isStageOff(kind: 'fetch' | 'archive', override: PolicyOverride | null |
 
 const HAND_ORDER: HandKind[] = ['fetch', 'archive', 'allow']
 
+/**
+ * 「延长过几次」的两层判据，实现见 `ConsoleKeepWindow` 的说明。
+ *
+ * `auditCount` 传 0 有两种来源——审计里真的一条都没有，或者压根没去查（
+ * `extendedDays === 0` 时不查，见 `assemble`）。两者在这里的结论相同，
+ * 所以不必区分：第一层已经把 `extendedDays === 0` 挡在外面了。
+ */
+function extendedCountOf(
+  extendedDays: number,
+  auditCount: number,
+): { extended: number; source: ExtendedSource } {
+  // 第一层：extended_days 说了算「有没有延长过」。审计里的孤儿记录（上一轮
+  // 归档窗口留下的）不许把一场没延长过的会议说成延长过
+  if (extendedDays <= 0) return { extended: 0, source: 'none' }
+  // 第二层：延长过，次数交给审计。数不到就退回下界 1，并标明它是下界——
+  // 报 0 等于说「从没延长过」，与 extendedDays > 0 直接打架
+  if (auditCount > 0) return { extended: auditCount, source: 'audit' }
+  return { extended: 1, source: 'floor' }
+}
+
 function assembleRow(
   r: MeetingSqlRow,
   now: number,
   assetRows: readonly AssetAggRow[],
   grantIds: readonly string[],
   overrides: MeetingOverrideSet,
+  auditExtendCount: number,
 ): ConsoleMeetingRow {
   const missing: MeetingNullField[] = []
   if (r.subject === null) missing.push('title')
@@ -631,7 +785,9 @@ function assembleRow(
       }
     : null
 
+  // 没有归档行 = 保留窗口还没开始计时，也就没有「延长过」这回事
   const extendedDays = archiveRecord === null ? 0 : archiveRecord.extendedDays
+  const { extended, source: extendedSource } = extendedCountOf(extendedDays, auditExtendCount)
 
   return {
     id: consoleMeetingId(r.meeting_id, r.sub_meeting_id),
@@ -653,7 +809,8 @@ function assembleRow(
       archivedAt: archiveRecord === null ? null : archiveRecord.archivedAt,
       // 公式只有一处（retention.ts），这里调它，不重抄
       expiresAt: archiveRecord === null ? null : retentionExpiresAt(archiveRecord),
-      extended: extendedDays > 0 ? 1 : 0,
+      extended,
+      extendedSource,
       extendedDays,
       retentionDays: archiveRecord === null ? null : archiveRecord.retentionDays,
       filesGone: archiveRecord !== null && archiveRecord.localPurgedAt !== null,
@@ -780,18 +937,62 @@ export function createConsoleMeetingsStore(
     return out
   }
 
+  /**
+   * 这一页每场会议**被人工延长过几次**（阶段 4 · T17）。
+   *
+   * SQL 与它的全部推理（时间下界为什么要两层、为什么按 `(meeting_id, asset_id)`
+   * 分组、为什么筛 `decision = 'allow'`）在 `buildExtendCountSql`——那条查询单独
+   * 导出是为了让测试能对它做 `EXPLAIN`。判据的两层结构见 `ConsoleKeepWindow`。
+   *
+   * ## 查询数
+   *
+   * **一条，与行数无关**；而且只在这一页里真有会议延长过时才发（`extended_days > 0`
+   * 是延长过的充要条件——`extendRetention` 是唯一的累加者，且每次至少加 1 天）。
+   * 一页会议里一场都没延长过是常态，那时这条查询不发，`audit_log` 一次都不碰。
+   */
+  async function loadExtendCounts(
+    keys: readonly ExtendCountKey[],
+  ): Promise<Map<string, number>> {
+    const built = buildExtendCountSql(keys)
+    if (built === null) return new Map()
+
+    const [rows] = await pool.query<ExtendCountRow[]>(built.sql, built.params)
+
+    const out = new Map<string, number>()
+    for (const r of rows) {
+      // asset_id 一定是 `sub:<subMeetingId>`（`buildExtendCountSql` 的 WHERE
+      // 就是按它匹配的），这里把前缀剥回去还原成主键的第二段
+      const sub = r.asset_id === null ? '' : r.asset_id.slice(AUDIT_SUB_PREFIX_LEN)
+      out.set(archiveStateKey(r.meeting_id, sub), num(r.cnt))
+    }
+    return out
+  }
+
   async function assemble(rows: readonly MeetingSqlRow[], now: number): Promise<ConsoleMeetingRow[]> {
     if (rows.length === 0) return []
     const keys: MeetingKey[] = rows.map((r) => ({
       meetingId: r.meeting_id,
       subMeetingId: r.sub_meeting_id,
     }))
-    // 三条查询并发发出去，且**每条都是整页一次**——这是「N+1 不许有」那条验收
-    // 的落点。想知道列一页发了几次查询，数这里就够了：分页 1 + 计数 1 + 这里 3。
-    const [assetsByKey, grantsByKey, overrideRows] = await Promise.all([
+    // 只有「归了档、而且延长过」的会议才需要去数审计：`extended_days === 0` 的
+    // 会议结论已经确定（见 extendedCountOf 的第一层），去查一趟纯属白花钱；
+    // 而没有归档行的会议连时间下界都没有，那条查询会退化成全表扫。
+    const extendKeys = rows
+      .filter((r) => r.archived_at !== null && num(r.extended_days) > 0)
+      .map((r) => ({
+        meetingId: r.meeting_id,
+        subMeetingId: r.sub_meeting_id,
+        since: num(r.archived_at),
+      }))
+
+    // 四条查询并发发出去，且**每条都是整页一次**——这是「N+1 不许有」那条验收
+    // 的落点。想知道列一页发了几次查询，数这里就够了：分页 1 + 计数 1 + 这里 3，
+    // 外加这一页真有会议被延长过时的第 4 条（延长次数，见 loadExtendCounts）。
+    const [assetsByKey, grantsByKey, overrideRows, extendCounts] = await Promise.all([
       loadAssets(keys),
       loadGrants(keys),
       grantsStore.listActiveOverridesForMeetings([...keys]),
+      loadExtendCounts(extendKeys),
     ])
 
     const overridesByKey = new Map<string, PolicyOverride[]>()
@@ -812,6 +1013,8 @@ export function createConsoleMeetingsStore(
         // 同一栈上有多条改写时由 indexOverrides 挑最新的那条——库里有唯一键管着，
         // 但读出来的顺序不该决定谁说了算
         indexOverrides(overridesByKey.get(k) ?? []),
+        // 没去数（extended_days === 0）与数出来是 0 在这里同义，见 extendedCountOf
+        extendCounts.get(k) ?? 0,
       )
     })
   }
