@@ -31,12 +31,21 @@
  *
  * ## 三、这里不编任何一句判定理由
  *
- * `audit_log` **没有 reason 列**。spec §4.10 举的例子（「拒绝 · 本地已到期，请去
- * NAS 取」）在现有表结构下只有两类记录给得出出处：命中了规则的（`matched_rule`）
- * 与登录失败的（原因被塞在 `asset_type` 列里，见 `audit/recorder.ts`）。
- * 其余的拒绝一律 `reason: null`，由界面显示成不带原因的「拒绝」。
+ * 拒绝原因**全部来自库里真有的列**，这一层一个字都不加工。出处按优先级：
+ *
+ * 1. `audit_log.detail` 的第一行（migrations/008 加的列，写侧见阶段 4 · T15）。
+ *    写入方放在那里的是判定引擎自己给的原话——`allowsAsset().reason`、
+ *    规则校验的逐条 issues、清理校验的失败原因。这是 spec §4.10 那个例子
+ *    （「拒绝 · 本地已到期，请去 NAS 取」）第一次真的有地方可放。
+ * 2. `matched_rule`：答得出「命中了第几条」，答不出「为什么这条不放行」，
+ *    所以排在 detail 后面。
+ * 3. 两处都没有 → `reason: null`，界面显示成不带原因的「拒绝」。
+ *
  * 编一句「按兜底拒绝」看着更完整，但它对不回任何一条真实跑过的判定
  * （计划 §1 约束 3），而那正是本项目最不能接受的一类假象。
+ *
+ * `detail` 列出现之前，多数拒绝只能报 `reason: null`；**那批既有记录仍然是
+ * `detail IS NULL`**，读侧因此保留了一条回退（见 `detailOf`）。
  */
 import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../../store/db'
@@ -406,24 +415,53 @@ interface AuditRowJson {
   actionLabel: string | null
   object: AuditObjectRef | null
   asset: { id: string; type: string | null } | null
-  /** `asset_type` 列被复用去装的那点东西，见 `assetOf` */
+  /**
+   * 这次操作的明细全文，见 `detailOf`。
+   *
+   * **第一行是一句人话，其余是紧凑 JSON 附文**（`buildAuditDetail` 的约定）。
+   * 原样下发，不在这里拆——前端要能展开看规则快照的全文。
+   */
   detail: string | null
   result: { decision: string; kind: 'allow' | 'deny' | 'unknown'; reason: string | null }
   matchedRuleId: number | null
   clientKind: string | null
 }
 
+/** 这条记录涉及的那份资产。`asset_id` 为空 = 这次动作的对象不是某一份资产 */
+function assetOf(r: AuditRecord): AuditRowJson['asset'] {
+  return r.assetId === null ? null : { id: r.assetId, type: r.assetType }
+}
+
 /**
- * `audit_log.asset_type` 这一列被复用了：`recordLogin` 往里塞失败原因、
- * `recordListing` 往里塞会议条数（见 `audit/recorder.ts`）。
+ * 这条记录的明细。
  *
- * 判据取 `asset_id` 而不是列一张 action 白名单：只有真正涉及某份资产的记录才有
- * `asset_id`，这个性质不随将来新增动作而失效。按 action 白名单判的话，T6–T8 新加的
- * 管理员动作会默认掉进「有资产」那一支，界面上就会出现「资产类型：rule_updated」。
+ * 新记录读 `detail` 列（migrations/008，写侧见阶段 4 · T15）。
+ *
+ * **`detail IS NULL` 时的那条回退不是历史包袱，是必需品**：库里已经有真实数据，
+ * 那些记录写下时 `detail` 列还不存在，明细被塞在 `asset_type` 上
+ * （`recordLogin` 塞失败原因、`recordListing` 塞会议条数、几个管理员 handler
+ * 塞一句话明细）。掉了这条回退，阶段 4 之前的审计明细会在界面上凭空消失。
+ *
+ * 回退的判据仍取 `asset_id` 而不是列一张 action 白名单：只有真正涉及某份资产的
+ * 记录才有 `asset_id`，这个性质不随将来新增动作而失效。老记录里 `asset_id` 非空的
+ * 那些（下载记录），`asset_type` 是真的资产类型，不能当明细读——否则界面上
+ * 「明细：video」。
  */
-function assetOf(r: AuditRecord): { asset: AuditRowJson['asset']; detail: string | null } {
-  if (r.assetId !== null) return { asset: { id: r.assetId, type: r.assetType }, detail: null }
-  return { asset: null, detail: r.assetType }
+function detailOf(r: AuditRecord): string | null {
+  if (r.detail !== null) return r.detail
+  return r.assetId === null ? r.assetType : null
+}
+
+/**
+ * 明细里那句给人看的话：**第一行**（`buildAuditDetail` 保证的形状）。
+ *
+ * 只取第一行，是因为附文那一行是紧凑 JSON——把它当拒绝原因显示给管理员，
+ * 等于在「为什么被拒」这一栏里甩一段代码。
+ */
+function detailText(detail: string | null): string | null {
+  if (detail === null) return null
+  const first = detail.split('\n')[0]?.trim() ?? ''
+  return first === '' ? null : first
 }
 
 function resultOf(r: AuditRecord, detail: string | null): AuditRowJson['result'] {
@@ -438,18 +476,24 @@ function resultOf(r: AuditRecord, detail: string | null): AuditRowJson['result']
       reason: `审计记录里的结果值无法识别：${r.decision}`,
     }
   }
-  // 拒绝原因只有两个真实出处，没有第三个（见文件头第三条）
-  if (r.action === 'login' && detail !== null) {
-    return { decision: r.decision, kind: 'deny', reason: detail }
-  }
+  // 拒绝原因的第一出处是明细的那句人话——写入方把判定引擎给的原话放在那里
+  // （`allowsAsset().reason`、规则校验的逐条 issues、清理校验的失败原因）。
+  // 这里**不做任何加工**：加工过的理由对不回那条真跑过的判定。
+  const reason = detailText(detail)
+  if (reason !== null) return { decision: r.decision, kind: 'deny', reason }
+  // 明细里没有话时退到「命中了第几条」。它答不出「为什么这条不放行」，
+  // 但它是一条真实的线索，比 null 强
   if (r.matchedRuleId !== null) {
     return { decision: r.decision, kind: 'deny', reason: `命中规则 #${r.matchedRuleId}` }
   }
+  // 两处都没有就是没有。编一句「按兜底拒绝」看着更完整，但它对不回任何一条
+  // 真实跑过的判定（计划 §1 约束 3）
   return { decision: r.decision, kind: 'deny', reason: null }
 }
 
 function toRowJson(r: AuditRecord, objects: Map<string, AuditObjectRef>): AuditRowJson {
-  const { asset, detail } = assetOf(r)
+  const asset = assetOf(r)
+  const detail = detailOf(r)
   return {
     id: r.id,
     at: r.occurredAt,

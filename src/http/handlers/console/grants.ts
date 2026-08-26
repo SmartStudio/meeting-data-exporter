@@ -52,6 +52,12 @@
  * 管理员维度的方法。阶段 4 有三个任务并行改控制台的写侧，各自往 recorder 上加一个
  * 方法必然互相冲突，且那三个方法除了 action 常量以外一模一样。审计写侧的语义在
  * `record` 上已经完整，这里直接用它。
+ *
+ * 一句话明细走 `audit_log.detail`（阶段 4 · T15）。这里原先把「对哪个程序、
+ * 哪一场次、什么范围」硬塞进 `meeting_id` / `asset_id` / `asset_type` 三列，
+ * 其中 `asset_type` 只有 64 字符，全八类的范围必然被截——而「授权了什么范围」
+ * 正是这一行审计要回答的问题。现在：`meeting_id` / `asset_id` 各归其位
+ * （会议、对象键），明细整句进 `detail`，`asset_type` 留空。
  */
 
 import type { AssetKey } from '@yaowu/mde-engine'
@@ -60,6 +66,7 @@ import { json, readJson } from '../../respond'
 import { requireAdminAuth } from '../../middleware'
 import type { AdminIdentity } from '../../../auth/admin'
 import { generateServiceSecret, hashServiceSecret } from '../../../auth/service'
+import { buildAuditDetail } from '../../../store/audit'
 import type { MeetingKey } from '../../../store/grants'
 import {
   computeProgramInventory,
@@ -128,18 +135,6 @@ function parseAssetTypes(v: unknown): string[] | null | undefined {
 }
 
 /**
- * 审计的 `asset_type` 列只有 64 字符，而资产范围列全八类要 100 出头。
- *
- * 超长就截断并留一个省略号标记。截断审计字段通常是不可接受的，这里可以接受，
- * 因为**范围的权威副本不在审计里**：`meeting_grants` 的行永不被 UPDATE
- * （范围一变就是撤旧插新，见 `store/grants.ts` 的 `grantOnce`），当时授权了哪几类
- * 那张表永久说得清。审计这一份是给 §4.10 的流水看的，一眼够用即可。
- */
-function fitAuditDetail(s: string): string {
-  return s.length <= 64 ? s : `${s.slice(0, 61)}...`
-}
-
-/**
  * 一次管理员写操作的审计目标，编进 `audit_log.asset_id`（255 字符，够宽）。
  *
  * `@` 后面是周期性会议的场次 id；主场次（空串）不写 `@`，省得每条记录都拖一个
@@ -156,7 +151,13 @@ interface AdminWrite {
   meetingId: string | null
   target: string
   subMeetingId: string
-  /** 一句话明细，进 asset_type 列，会被截到 64 字符 */
+  /**
+   * 一句话明细，进 `audit_log.detail`（TEXT，migrations/008）。
+   *
+   * 从前它被塞进 `asset_type VARCHAR(64)`，于是「授权了哪几类资产」这句话在
+   * 全八类时必然被截断——而那正是这一行审计要回答的问题。detail 之后不再截断，
+   * 上限见 `AUDIT_DETAIL_MAX_CHARS`（8000 码点，这一族明细离它差三个数量级）。
+   */
   detail: string
 }
 
@@ -174,16 +175,26 @@ async function recordAdminWrite(
     action: w.action,
     meetingId: w.meetingId,
     assetId: auditTarget(w.target, w.subMeetingId),
-    assetType: fitAuditDetail(w.detail),
+    // 这一族动作（授权、改写、接入程序）的对象不是某一份资产，这一列没有值可填。
+    // 从前它装着一句话明细，那是 detail 列还不存在时的将就；现在填 null，
+    // 免得读侧把「授权范围 …」显示成「资产类型」
+    assetType: null,
     // 管理员的写操作不是一次「准许/拒绝」的判定。这一列 NOT NULL，取 allow 表示
     // 「这次操作被执行了」——被参数校验挡回去的请求压根走不到这里，不会留记录
     decision: 'allow',
     matchedRuleId: null,
     clientKind: 'console',
+    detail: buildAuditDetail({ text: w.detail }),
   })
 }
 
-/** 资产范围写进审计明细的形式。null 是「不限制」，写 `*` 与规则里的写法一致 */
+/**
+ * 资产范围写进审计明细的形式。null 是「不限制」，写 `*` 与规则里的写法一致。
+ *
+ * **全八类连起来 100 出头，从前会被 `asset_type` 的 64 字符切掉后半段**，
+ * 于是「授权了什么范围」这个问题在最需要它的那几条记录上恰好答不出来。
+ * 明细搬进 `detail` 之后不再截断，这里也就不必再为了省字数缩写类型名。
+ */
 function scopeDetail(assetTypes: string[] | null): string {
   return assetTypes === null ? '*' : assetTypes.length === 0 ? '(空集：什么都不授权)' : assetTypes.join(',')
 }

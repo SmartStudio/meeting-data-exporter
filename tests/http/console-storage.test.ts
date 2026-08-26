@@ -422,7 +422,9 @@ test('改默认保留天数：落 system_settings、记审计、回显新旧值'
   expect(a.actorId).toBe('admin-1')
   expect(a.action).toBe('set_retention_days')
   expect(a.decision).toBe('allow')
-  expect(a.assetType).toContain('45')
+  // 一句话明细在 detail 列（migrations/008），不再塞进 asset_type
+  expect(a.detail).toContain('45')
+  expect(a.assetType).toBeNull()
   expect(a.occurredAt).toBe(NOW)
 })
 
@@ -554,8 +556,13 @@ test('立即清理：confirm=true 时逐场记审计，外加一条汇总', asyn
   const purgeRows = r.audits.filter((a) => a.action === 'purge_local')
   expect(purgeRows.map((a) => a.meetingId).sort()).toEqual(['m-1', 'm-2'])
   // 校验不过 = 拒绝删除，是「被拒绝」的红色记录
-  expect(r.audits.find((a) => a.action === 'purge_blocked')!.decision).toBe('deny')
+  const blocked = r.audits.find((a) => a.action === 'purge_blocked')!
+  expect(blocked.decision).toBe('deny')
+  // spec §4.10：被拒绝的记录写明拒绝原因。校验失败的原因带着 NAS 路径与哈希，
+  // 从前会被 asset_type 的 64 字符切掉后半段——而那半段正是能查下去的部分
+  expect(blocked.detail ?? '').toContain('哈希与归档记录不一致')
   expect(r.audits.every((a) => a.actorType === 'admin')).toBe(true)
+  expect(r.audits.every((a) => a.assetType === null)).toBe(true)
 })
 
 test('立即清理：清理正被暂停时如实报 paused，且审计记成被拒绝', async () => {
@@ -651,8 +658,8 @@ test('延长保留：非法天数 400，且不动库', async () => {
 
 // ── 审计行本身的约束 ────────────────────────────────────────────
 
-test('审计的自由文本不会撑爆 audit_log.asset_type（VARCHAR(64)）', async () => {
-  const longReason = '哈'.repeat(500)
+test('长失败原因完整落进 detail，其余定宽列一个都不许被撑爆', async () => {
+  const longReason = `哈希不一致：/mnt/nas/2026/07/${'很长的路径段/'.repeat(40)}video.mp4`
   const r = rig({
     cleanup: {
       async preview() {
@@ -670,9 +677,14 @@ test('审计的自由文本不会撑爆 audit_log.asset_type（VARCHAR(64)）', 
     },
   })
   await cleanupNow(req('POST', { confirm: true }), r.ctx)
-  expect(r.audits.length).toBeGreaterThan(0)
+  const blocked = r.audits.find((a) => a.action === 'purge_blocked')!
+  // 原因整句都在——从前 64 字符只放得下开头那几个字，NAS 路径整段没了，
+  // 而运维要拿着那条路径去看文件到底怎么了
+  expect(blocked.detail).toBe(longReason)
+  expect(blocked.detail!.length).toBeGreaterThan(64)
   for (const a of r.audits) {
-    expect((a.assetType ?? '').length).toBeLessThanOrEqual(64)
+    // 定宽列一个都不许被自由文本撑爆：明细搬走之后它们本来就装不下自由文本了
+    expect(a.assetType).toBeNull()
     expect((a.actorId ?? '').length).toBeLessThanOrEqual(128)
     expect(a.action.length).toBeLessThanOrEqual(32)
   }

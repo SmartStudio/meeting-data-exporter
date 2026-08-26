@@ -346,7 +346,11 @@ test('手动触发记审计（验收判据 4）', async () => {
   expect(a.clientKind).toBe('console')
   // 记得下是哪个任务：只记一句"手动触发"的话，审计流里四个任务长得一模一样
   expect(a.assetId).toBe('job:cleanup_expired')
-  expect(a.assetType).toContain('清理到期文件')
+  // 一句话明细在 detail 列（migrations/008），asset_type 不再当自由文本用
+  expect(a.assetType).toBeNull()
+  expect(a.detail).toContain('清理到期文件')
+  // runId 另留一份结构化的，好把这条审计与 job_runs 那一行对上
+  expect(JSON.parse(a.detail!.split('\n')[1]!)).toMatchObject({ jobName: 'cleanup_expired' })
 })
 
 test('认不出的任务名 404，不排队也不记审计', async () => {

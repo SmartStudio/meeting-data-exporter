@@ -290,6 +290,10 @@ export async function downloadUrl(req: Request, ctx: RouteCtx): Promise<Response
       decision: 'deny',
       matchedRuleId: null,
       clientKind,
+      // 这一支的拒绝理由与规则无关，是「这个 meetingRecordId 我们根本没见过」。
+      // 对外仍然统一回 403（不泄露资产存不存在），但审计里必须分得开——
+      // 否则事后看到一条没有 matched_rule 的 deny，说不出是被规则挡的还是查无此物。
+      reason: '缓存里没有这个 meetingRecordId：它没被任何人列出过，或是伪造的',
     })
     return json(403, { error: 'forbidden' })
   }
@@ -312,6 +316,10 @@ export async function downloadUrl(req: Request, ctx: RouteCtx): Promise<Response
     // 一律记 null 说得清。没有任何规则参与判定时（兜底、或身份不是采集程序）才是 null。
     matchedRuleId: decision.ruleId,
     clientKind,
+    // 判定引擎自己给的那句话，原样入账（audit_log.detail，阶段 4 · T15）。
+    // 从前它在这里被丢掉：`matched_rule` 答得出「命中了第几条」，答不出
+    // 「为什么这条不放行这一类资产」，而 spec §4.10 要的正是后者。
+    reason: asset.reason,
   })
 
   if (!asset.allowed) return json(403, { error: 'forbidden' })

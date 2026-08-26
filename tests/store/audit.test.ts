@@ -3,7 +3,9 @@ import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../src/store/db'
 import { withTestDb } from '../helpers/testdb'
 import {
+  AUDIT_DETAIL_MAX_CHARS,
   AUDIT_MAX_LIMIT,
+  buildAuditDetail,
   buildAuditQuerySql,
   createAuditStore,
   type AuditEntry,
@@ -64,6 +66,7 @@ function baseEntry(overrides: Partial<AuditEntry>): AuditEntry {
     decision: 'allow',
     matchedRuleId: 1,
     clientKind: 'web',
+    detail: null,
     ...overrides,
   }
 }
@@ -372,4 +375,161 @@ test('筛选查询走得上 idx_audit_time / idx_audit_actor，且不额外 file
   const byActorAndTime = await plan({ actorId: 'plan-actor-3', from: base, to: base + 20_000 })
   expect(byActorAndTime.key).toBe('idx_audit_actor')
   expect(byActorAndTime.Extra ?? '').not.toContain('filesort')
+})
+
+// ── detail（阶段 4 · T15）────────────────────────────────────────────────
+//
+// migrations/008 把 audit_log.detail 加了出来，但它只负责让那一列存在，没有改任何
+// 写入方。这一组用例盯的是「写入方真的用上了它」，以及它的两条硬边界：
+// **有明确上限且超限留痕**、**绝不因为组装明细而丢掉整行审计**。
+
+/** 直接查 detail 列。上面的 findByActor 用的是 detail 出现之前的那份列清单，
+ *  故意不动它——那份查询顺带证明了老读法在加列之后仍然成立 */
+async function detailByActor(actorId: string): Promise<Array<string | null>> {
+  interface DetailRow extends RowDataPacket {
+    detail: string | null
+  }
+  const [rows] = await pool.execute<DetailRow[]>(
+    `SELECT detail FROM audit_log WHERE actor_id = ? ORDER BY id`,
+    [actorId],
+  )
+  return rows.map((r) => r.detail)
+}
+
+test('detail 落库并原样读回：长文不再被 asset_id 的 255 字符逼着截断', async () => {
+  const store = createAuditStore(pool)
+  const actorId = 'actor-detail-1'
+  const long = buildAuditDetail({
+    text: '修改规则 #12：conds',
+    data: { conds: Array.from({ length: 120 }, (_, i) => ({ f: 'title', op: 'has', v: `关键词-${i}` })) },
+  })
+  // 前提：这段明细在旧的 asset_id(255) / asset_type(64) 两列里都装不下
+  expect([...long].length).toBeGreaterThan(255)
+
+  await store.record(baseEntry({ actorId, detail: long }))
+
+  expect(await detailByActor(actorId)).toEqual([long])
+  const page = await store.query({ actorId })
+  expect(page.rows[0]!.detail).toBe(long)
+})
+
+test('detail 为 NULL 的既有记录照样读得出来——库里已经有真实数据', async () => {
+  const store = createAuditStore(pool)
+  const actorId = 'actor-legacy-detail'
+  // 按 detail 列出现之前的列清单插一行，模拟库里那些既有记录
+  await pool.execute(
+    `INSERT INTO audit_log
+       (occurred_at, actor_type, actor_id, action, meeting_id, asset_id, asset_type,
+        decision, matched_rule, client_kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [1000, 'wecom_user', actorId, 'login', null, null, 'wecom_exchange_failed', 'deny', null, null],
+  )
+
+  const page = await store.query({ actorId })
+  expect(page.rows).toHaveLength(1)
+  expect(page.rows[0]!.detail).toBeNull()
+  // 老记录把明细塞在 asset_type 上，那一列必须原样带出来，否则那些记录的明细
+  // 会在界面上凭空消失
+  expect(page.rows[0]!.assetType).toBe('wecom_exchange_failed')
+})
+
+test('listForMeeting 也带出 detail', async () => {
+  const store = createAuditStore(pool)
+  const detail = buildAuditDetail({ text: '延长保留 30 天' })
+  await store.record(
+    baseEntry({ actorId: 'actor-detail-history', meetingId: 'mtg-detail-1', occurredAt: 5000, detail }),
+  )
+  const rows = await store.listForMeeting('mtg-detail-1', { since: 1 })
+  expect(rows.map((r) => r.detail)).toEqual([detail])
+})
+
+test('buildAuditDetail：第一行是人话，结构化附文跟在后面', () => {
+  const data = { was: { enabled: true }, now: { enabled: false } }
+  const d = buildAuditDetail({ text: '停用规则 #9', data })
+  const [first, ...rest] = d.split('\n')
+  expect(first).toBe('停用规则 #9')
+  expect(JSON.parse(rest.join('\n'))).toEqual(data)
+})
+
+test('buildAuditDetail：text 里的换行被压平，「第一行是人话」这条约定不会被内容破坏', () => {
+  const d = buildAuditDetail({ text: '第一句\n第二句\r\n第三句' })
+  expect(d).toBe('第一句 第二句 第三句')
+})
+
+test('buildAuditDetail 超上限时截断并留痕，不把截断从一列偷偷挪到另一列', () => {
+  const d = buildAuditDetail({ text: '删除规则 #1', data: { note: '甲'.repeat(AUDIT_DETAIL_MAX_CHARS) } })
+  expect([...d].length).toBe(AUDIT_DETAIL_MAX_CHARS)
+  // 人话在头部，先被保住；截断这件事本身写在结尾，读的人看得见
+  expect(d.startsWith('删除规则 #1')).toBe(true)
+  expect(d).toContain('已截断')
+  expect(d).toContain(String(AUDIT_DETAIL_MAX_CHARS))
+})
+
+test('buildAuditDetail 撞上序列化不了的附文时不抛，留一句说明', () => {
+  const circular: Record<string, unknown> = { name: '环' }
+  circular.self = circular
+  const d = buildAuditDetail({ text: '新建规则', data: circular })
+  expect(d.split('\n')[0]).toBe('新建规则')
+  expect(d).toContain('附文序列化失败')
+
+  // toJSON 自己抛、BigInt——JSON.stringify 会抛的另外两类
+  expect(() => buildAuditDetail({ text: '改规则', data: { toJSON() { throw new Error('炸') } } })).not.toThrow()
+  expect(() => buildAuditDetail({ text: '改规则', data: { n: 1n } })).not.toThrow()
+})
+
+/** 「第 11 个占位符（detail）满足 fail 时这次 execute 抛错」的假池。
+ *  用假池而不是真灌一段超长文本：真库抛不抛取决于 sql_mode 是否严格，
+ *  而这条用例要验的是「抛了之后我们怎么办」，不该被环境配置左右。 */
+function flakyPool(fail: (detail: unknown) => boolean): { pool: Pool; details: unknown[] } {
+  const details: unknown[] = []
+  const pool = {
+    async execute(_sql: string, params: unknown[]) {
+      const detail = params[10]
+      details.push(detail)
+      if (fail(detail)) throw new Error("Data too long for column 'detail' at row 1")
+      return [[], []]
+    },
+  } as unknown as Pool
+  return { pool, details }
+}
+
+/** console.error 的噪声挡掉，同时把它收下来断言「降级留了声」——不能静默 */
+async function captureErrors(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = []
+  const original = console.error
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(' '))
+  }
+  try {
+    await fn()
+  } finally {
+    console.error = original
+  }
+  return lines
+}
+
+test('record：detail 写不进去时退一步保住整行，并把「明细丢了」留在记录里', async () => {
+  const { pool: flaky, details } = flakyPool((d) => typeof d === 'string' && d.length > 100)
+  const store = createAuditStore(flaky)
+
+  const warnings = await captureErrors(async () => {
+    // 不许抛：audit_log 是数据出境的唯一账本（spec §1.4 / §4.10），
+    // 丢一整行远比丢一段明细严重
+    await store.record(baseEntry({ detail: 'x'.repeat(500) }))
+  })
+
+  expect(details).toHaveLength(2)
+  expect(String(details[1])).toContain('明细未能写入')
+  expect(warnings.join('\n')).toContain('audit')
+})
+
+test('record：与 detail 无关的写入失败照样往上抛，不被降级掩盖', async () => {
+  const { pool: dead } = flakyPool(() => true)
+  const store = createAuditStore(dead)
+
+  await expect(store.record(baseEntry({ detail: null }))).rejects.toThrow('Data too long')
+  await captureErrors(async () => {
+    // 带 detail 时会重试一次；重试也失败就没什么可退的了，如实往上抛
+    await expect(store.record(baseEntry({ detail: '一句话' }))).rejects.toThrow('Data too long')
+  })
 })

@@ -898,12 +898,14 @@ test('身份映射失败时登录被拒，错误码为 account_not_provisioned',
   expect(deviceRows[0]!.status).toBe('pending')
 
   const [auditRows] = await pool.execute<RowDataPacket[]>(
-    "SELECT decision, asset_type FROM audit_log WHERE actor_id = ? AND action = 'login'",
+    "SELECT decision, asset_type, detail FROM audit_log WHERE actor_id = ? AND action = 'login'",
     ['ww-e2e-unmapped-1'],
   )
   expect(auditRows).toHaveLength(1)
   expect(auditRows[0]!.decision).toBe('deny')
-  expect(auditRows[0]!.asset_type).toBe('account_not_provisioned')
+  // 登录失败原因在 detail 列（migrations/008）；从前它被塞在 asset_type 上
+  expect(auditRows[0]!.detail).toBe('account_not_provisioned')
+  expect(auditRows[0]!.asset_type).toBeNull()
 
   // 整条链路确实被卡住：拿这个 device_code 去轮询依旧是 pending，换不到任何令牌
   const tokenRes = await app(deviceTokenRequest(codeBody.device_code))

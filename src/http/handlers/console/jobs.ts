@@ -31,7 +31,7 @@
 import type { RouteCtx } from '../../router'
 import { json } from '../../respond'
 import { requireAdminAuth } from '../../middleware'
-import type { AuditEntry, AuditStore } from '../../../store/audit'
+import { buildAuditDetail, type AuditEntry, type AuditStore } from '../../../store/audit'
 import {
   JOB_CATALOG,
   JOB_RUNS_SPARKLINE_LIMIT,
@@ -66,16 +66,9 @@ export interface JobsDeps {
 /** 失败项表一次最多带回多少行。§4.8 那是一段列表，不分页 */
 const FAILURES_PAGE_LIMIT = 100
 
-/** audit_log.asset_type 是 VARCHAR(64)，自由文本必须先裁到 64 字符（同 storage.ts） */
-const AUDIT_DETAIL_MAX = 64
-
-/** 按 MySQL 的字符数裁剪，末尾切在代理对中间时把那半个也去掉（同 storage.ts） */
-function clipDetail(s: string): string {
-  if (s.length <= AUDIT_DETAIL_MAX) return s
-  const cut = s.slice(0, AUDIT_DETAIL_MAX)
-  const last = cut.charCodeAt(cut.length - 1)
-  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
-}
+// 这里曾有一个 clipDetail（同 storage.ts）：自由文本被裁到 64 字符塞进
+// audit_log.asset_type。migrations/008 的 detail TEXT 之后不再需要它——
+// 明细走 buildAuditDetail，上限与超限留痕收在 src/store/audit.ts 一处。
 
 /** 这个 schedule 一个周期多长（秒）。只给 `health` 判「落后多久算落后」用 */
 function periodSecOf(s: JobSchedule): number {
@@ -257,10 +250,17 @@ export async function runJob(req: Request, ctx: RouteCtx): Promise<Response> {
     // audit_log 没有"对象类型"这一列，asset_id 在管理员这一族里当对象键用。
     // 带上 job: 前缀，免得与会议维度的记录（`sub:` 前缀、或裸 assetId）混在一起
     assetId: `job:${spec.name}`,
-    assetType: clipDetail(`手动触发「${spec.label}」，排队等调度器认领（run #${runId}）`),
+    // 任务不是一份资产，这一列没有值可填（从前它装着下面那句明细）
+    assetType: null,
     decision: 'allow',
     matchedRuleId: null,
     clientKind: 'console',
+    detail: buildAuditDetail({
+      text: `手动触发「${spec.label}」，排队等调度器认领（run #${runId}）`,
+      // runId 另留一份结构化的：事后要把这条审计与 job_runs 里那一行对上，
+      // 靠正则从一句中文里抠 `#123` 是最容易出错的那种做法
+      data: { jobName: spec.name, runId },
+    }),
   }
   await d.audit.record(entry)
 
