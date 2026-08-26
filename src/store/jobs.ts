@@ -56,7 +56,15 @@ export interface JobSpec {
   name: JobName
   /** spec §4.8 那张表第一列，逐字 */
   label: string
-  /** spec §4.8 那张表「干什么」一列 */
+  /**
+   * spec §4.8 那张表「干什么」一列。
+   *
+   * 任务一那一格是**唯一一处与 spec 不逐字**的：spec 写「发现新录制并入队」，
+   * 而 T14 之后它还会把队列下完。裁定的依据是同一张表第一列的名字——那一格叫
+   * 「拉取新录制」，管理员的心智模型跟着名字走，不会把它读成「只是登记一下」。
+   * 既然实现按名字补齐了，描述就得跟着说实话：名字对了而描述还说只入队，等于把
+   * 同一处不一致挪到更靠近用户的地方。**四格仍然是四格**，没有新增任务。
+   */
   what: string
   schedule: JobSchedule
   /**
@@ -87,7 +95,8 @@ export const JOB_CATALOG: readonly JobSpec[] = [
   {
     name: 'fetch_recordings',
     label: '拉取新录制',
-    what: '发现新录制并入队',
+    // 「并下载」是 T14 补上的，理由见上面 `what` 的注释
+    what: '发现新录制、入队并下载',
     schedule: { kind: 'everyMinutes', minutes: 15 },
     maxAttempts: 5,
     impact: '新录制没有入队，上游到期后就再也拉不到了',

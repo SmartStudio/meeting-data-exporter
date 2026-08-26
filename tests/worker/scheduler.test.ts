@@ -9,6 +9,7 @@ import {
   type JobRunner,
   type Scheduler,
 } from '../../src/worker/scheduler'
+import type { FetchRound } from '../../src/worker/index'
 import type { Pool } from '../../src/store/db'
 
 /**
@@ -82,6 +83,21 @@ async function withScheduler(
 
 /** 2026-08-26 00:00:00 UTC，正好是四个任务全部时间片的边界 */
 const T0 = Date.UTC(2026, 7, 26, 0, 0, 0) / 1000
+
+/**
+ * 等到只剩 `keep` 一个任务还在跑。
+ *
+ * 一个 tick 会把**这一刻全部到点的**任务都起起来，而 `tick()` 只等到"起好了"、
+ * 不等任务体跑完（那是刻意的：一轮归档几十分钟）。用例里只想卡住其中一个、
+ * 让别的正常收尾时，就得在推进时钟之前等一下——否则下一个 tick 会把还没写完
+ * `finished_at` 的那些也算成"上一轮没跑完"。`drain()` 在这里用不了：它会连
+ * **被故意卡住的那个**一起等，永远不返回。
+ */
+async function settleExcept(h: Harness, keep: JobName): Promise<void> {
+  while (h.scheduler.runningJobs().some((n) => n !== keep)) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
 
 // ── 到点才跑，一片只跑一次 ────────────────────────────────────
 
@@ -195,6 +211,11 @@ test('上一轮还没跑完时不许再起一轮，且留下一行 skipped', asy
     await h.scheduler.tick()
     expect(entered).toBe(1)
     expect(h.scheduler.runningJobs()).toContain('archive_nas')
+    // 这一刻拉取与清单也到点了（它们是 noop）。**不等它们收尾就推进时钟的话**，
+    // 下一个 tick 会把它们也算成"上一轮还没跑完"，`skipped` 里于是多出别的名字——
+    // 那是本用例自己的竞态（noop 的收尾要两次库往返，整库跑起来时不一定赶得上），
+    // 与重叠保护无关。断言仍然是"恰好只有归档被跳过"，只是把竞态挡在断言之前。
+    await settleExcept(h, 'archive_nas')
 
     // 一轮归档可以跑几十分钟，下一个整点又到了
     h.setNow(T0 + 2 * HOUR)
@@ -476,9 +497,20 @@ test('bootstrap 把上一次残留的 running 标成 interrupted', async () => {
 
 // ── 四个任务体（createJobRunners）────────────────────────────
 
+/** 一轮什么都没发现、什么都没下的拉取轮 */
+const EMPTY_FETCH_ROUND: FetchRound = {
+  meetings: 0,
+  tasks: 0,
+  probes: { resolved: 0, abandoned: 0, newTasks: 0 },
+  completed: 0,
+  failed: 0,
+  skipped: 0,
+  manifests: { written: 0, skipped: 0, failed: 0 },
+}
+
 function bodyDeps(over: Partial<JobBodyDeps>): JobBodyDeps {
   return {
-    discoverRecordings: async () => ({ meetings: 0, tasks: 0 }),
+    fetchRound: async () => EMPTY_FETCH_ROUND,
     archiveRound: async () => ({
       newlyArchived: 0,
       verificationFailed: 0,
@@ -609,16 +641,109 @@ test('任务三被暂停时如实报，不当成"没有可清理的"', async () 
   })
 })
 
-test('任务一把发现数与入队数写进摘要', async () => {
-  const deps = bodyDeps({ discoverRecordings: async () => ({ meetings: 4, tasks: 11 }) })
+/**
+ * T14 之前这条用例只断言 `{ meetings, tasks }`——那时任务一确实只 discover + 入队。
+ * 现在它还要把队列下完，摘要必须给出下了多少：只有发现数的话，一轮全下挂了在运行
+ * 记录里看起来和一轮全下成功一模一样。「真的下下来了」那条端到端的证据在
+ * tests/worker/e2e.test.ts。
+ */
+test('任务一把发现数与下载数一起写进摘要', async () => {
+  const deps = bodyDeps({
+    fetchRound: async () => ({
+      meetings: 4,
+      tasks: 11,
+      probes: { resolved: 2, abandoned: 1, newTasks: 2 },
+      completed: 9,
+      failed: 1,
+      skipped: 1,
+      manifests: { written: 4, skipped: 0, failed: 0 },
+    }),
+  })
   await withScheduler({ fetch_recordings: createJobRunners(deps).fetch_recordings }, T0, async (h) => {
     await h.scheduler.bootstrap()
     h.setNow(T0 + 15 * MIN)
     await h.scheduler.tick()
     await h.drain()
     const run = (await h.jobs.listRuns('fetch_recordings', 1))[0]!
-    expect(run.summary).toEqual({ meetings: 4, tasks: 11 })
+    // 逐个资产下挂了不算整轮失败（与任务二同一条两层容错），整轮仍是 succeeded
+    expect(run.status).toBe('succeeded')
+    expect(run.summary).toEqual({
+      meetings: 4,
+      discovered: 11,
+      completed: 9,
+      failed: 1,
+      skipped: 1,
+      probes: { resolved: 2, abandoned: 1, newTasks: 2 },
+      manifests: { written: 4, skipped: 0, failed: 0 },
+    })
   })
+})
+
+/**
+ * T14 之后任务一里跑着执行体，一轮可以跑几十分钟（一个 2GB 的录制就够了），
+ * 而它每 15 分钟到点一次。这条钉的是重叠保护对它仍然成立——判据 2 的那条用例
+ * 用的是归档，而现在**任务一才是最可能压着下一片的那个**。
+ */
+test('任务一现在可能跑几十分钟：下一片到点时不起新的，留一行 skipped', async () => {
+  const gate: { release: (() => void) | null } = { release: null }
+  let entered = 0
+  const blocking: JobRunner = async () => {
+    entered++
+    if (entered === 1) await new Promise<void>((resolve) => { gate.release = resolve })
+    return {}
+  }
+  await withScheduler({ fetch_recordings: blocking }, T0, async (h) => {
+    await h.scheduler.bootstrap()
+    h.setNow(T0 + 15 * MIN)
+    await h.scheduler.tick()
+    expect(entered).toBe(1)
+
+    // 40 分钟过去了，中间跨了两片，两片都只留 skipped
+    h.setNow(T0 + 30 * MIN)
+    expect((await h.scheduler.tick()).skipped).toContain('fetch_recordings')
+    h.setNow(T0 + 45 * MIN)
+    expect((await h.scheduler.tick()).skipped).toContain('fetch_recordings')
+    expect(entered).toBe(1)
+
+    const runs = await h.jobs.listRuns('fetch_recordings', 10)
+    expect(runs.map((r) => r.status)).toEqual(['skipped', 'skipped', 'running'])
+    // 两行 skipped 都指着挡住它们的那一次运行
+    for (const r of runs.slice(0, 2)) {
+      expect((r.summary as { blockedByRunId: number }).blockedByRunId).toBe(runs[2]!.id)
+    }
+
+    gate.release?.()
+    await h.drain()
+  })
+})
+
+/**
+ * 任务一收**活时钟**，不是冻结在开跑时刻的那个时间戳。
+ *
+ * 这一条不是风格问题：执行体领任务时写的 `lease_expires_at = now() + leaseSec`，
+ * 而租约默认 15 分钟、一轮却可以跑更久。时钟冻结在开跑时刻的话，一轮里后领取的
+ * 任务全都拿到一个**已经过期**的租约，另一个进程（`bun run worker` 手动补跑）
+ * 按自己的活时钟一看就把还在下载中的任务抢走，两个进程同时写同一个 `.part`。
+ */
+test('任务一收到的是活时钟，不是冻结在开跑时刻的时间戳', async () => {
+  const seen: number[] = []
+  const hold: { setNow?: (t: number) => void } = {}
+  const deps = bodyDeps({
+    fetchRound: async (clock) => {
+      seen.push(clock())
+      hold.setNow?.(T0 + 35 * MIN) // 模拟"这一轮下了 20 分钟"
+      seen.push(clock())
+      return EMPTY_FETCH_ROUND
+    },
+  })
+  await withScheduler({ fetch_recordings: createJobRunners(deps).fetch_recordings }, T0, async (h) => {
+    hold.setNow = h.setNow
+    await h.scheduler.bootstrap()
+    h.setNow(T0 + 15 * MIN)
+    await h.scheduler.tick()
+    await h.drain()
+  })
+  expect(seen).toEqual([T0 + 15 * MIN, T0 + 35 * MIN])
 })
 
 test('任务二把归档轮的六个数字原样写进摘要', async () => {

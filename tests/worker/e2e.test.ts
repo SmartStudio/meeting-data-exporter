@@ -29,11 +29,14 @@ import { createGrantsStore } from '../../src/store/grants'
 import { createPolicyStore } from '../../src/store/policy'
 import { createInProcSource } from '../../src/worker/source-inproc'
 import { createMysqlStore } from '../../src/worker/store-mysql'
+import { createJobsStore } from '../../src/store/jobs'
+import { createJobRunners, createScheduler, type JobBodyDeps } from '../../src/worker/scheduler'
 import {
   assertArchiveRootUsable,
   assertConcurrencyFitsPool,
   parseWorkerArgs,
   poolQueueLimitFor,
+  runFetchRound,
   runWorkerOnce,
   type WorkerDeps,
 } from '../../src/worker/index'
@@ -584,6 +587,130 @@ describe('runWorkerOnce', () => {
       expect(await archives.isAssetArchived({ meetingId: 'm-periodic', subMeetingId: 's2', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' })).toBe(true)
       expect(await archives.findMeetingArchive('m-periodic', 's1')).not.toBeNull()
       expect(await archives.findMeetingArchive('m-periodic', 's2')).not.toBeNull()
+    })
+  }, 30_000)
+})
+
+// ---------------------------------------------------------------------------
+// 阶段 4 · T14：定时任务的「拉取新录制」要真的把东西拉下来
+//
+// T11 之后，四个定时任务里的任务一只做 discover + 入队，队列里的资产要等
+// `bun run worker` 才有人取——运行记录全绿而文件一个都没下来。这一组用例钉的就是
+// 「跑完任务一之后，队列里的资产真的在归档区里」，所以它必须跟 runWorkerOnce 那组
+// 一样真到底：真 MySQL + 真 HTTP 下载 + 真本地磁盘，只有腾讯边界是桩。
+// 桩掉执行体的话，这条缺口重新打开时测试照样绿。
+// ---------------------------------------------------------------------------
+
+/** START = 2026-08-20T09:30:00Z，正好落在 15 分钟片的边界上（1787218200 / 900 是整数）——
+ *  下面的「跨到下一片」因此是手算的，不是从实现里试出来的 */
+const FETCH_SLOT = 15 * 60
+
+describe('定时任务的任务一（fetch_recordings）', () => {
+  /** 除任务一之外的三个任务体：这一组只问任务一，别的到点了也不许干活 */
+  function otherJobs(counters: { archive: number; cleanup: number }): Omit<JobBodyDeps, 'fetchRound'> {
+    return {
+      archiveRound: async () => {
+        counters.archive++
+        return { newlyArchived: 0, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0, undecidable: 0 }
+      },
+      cleanup: async () => {
+        counters.cleanup++
+        return { dryRun: false, paused: false, purged: [], verificationFailed: [], failed: [] }
+      },
+      listPrograms: async () => [],
+      inventory: async () => ({ programId: '', now: 0, entries: [], fetchable: [], blocked: [], assetTypes: [] }),
+    }
+  }
+
+  test('一个 tick 之后队列里的资产真的落在归档区，摘要里看得出下了几个', async () => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
+      let clock = START
+      const now = (): number => clock
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+      const jobs = createJobsStore(pool)
+      const counters = { archive: 0, cleanup: 0 }
+      const scheduler = createScheduler({
+        jobs,
+        now,
+        tzOffsetSec: 0,
+        log: () => {},
+        runners: createJobRunners({
+          // 生产里的选择子是「往回看 N 小时」的滚动窗口，由 scheduler 的 main 拼；
+          // 这里给固定窗口，好让断言盯着"下没下下来"而不是窗口算术
+          fetchRound: (clk) => runFetchRound(deps, RANGE_SEL, KEYS, clk),
+          ...otherJobs(counters),
+        }),
+      })
+
+      await scheduler.bootstrap()
+      clock = START + FETCH_SLOT
+      const out = await scheduler.tick()
+      expect(out.started).toContain('fetch_recordings')
+      await scheduler.drain()
+
+      // ① 文件真的在归档区里，路径与 runWorkerOnce 那条路径逐字相同
+      expect(await readFile(join(root, TRANSCRIPT_REL), 'utf8')).toBe(TRANSCRIPT_BODY)
+      expect(await readFile(join(root, VIDEO_REL), 'utf8')).toBe(VIDEO_BODY)
+      expect(await exists(join(root, `${VIDEO_REL}.part`))).toBe(false)
+
+      // ② 队列里的行是 completed，不是"还排着没人取"
+      const rows = await rowsByType(pool)
+      expect(rows.map((r) => r.status)).toEqual(['completed', 'completed'])
+
+      // ③ 运行记录里看得出这一轮下了多少。只有发现数的话，一轮全下挂了也看不出来
+      const run = (await jobs.listRuns('fetch_recordings', 1))[0]!
+      expect(run.status).toBe('succeeded')
+      expect(run.summary).toEqual({
+        meetings: 1,
+        discovered: 2,
+        completed: 2,
+        failed: 0,
+        skipped: 0,
+        probes: { resolved: 0, abandoned: 0, newTasks: 0 },
+        manifests: { written: 1, skipped: 0, failed: 0 },
+      })
+
+      // ④ 任务一**不越界去归档**：归档是任务二自己那一格。两个任务体各起各的归档轮
+      //    意味着两轮同时往同一个 NAS 目录搬同一批文件
+      expect(counters.archive).toBe(0)
+      expect(await readdir(nasRoot)).toEqual([])
+    })
+  }, 30_000)
+
+  test('一轮里下挂了的资产在运行记录里看得出来，但整轮不因此标红', async () => {
+    // 视频那个文件服务上没有 → 404 → 这一条下不下来
+    await withRig({ '/file/f-sum-1': TRANSCRIPT_BODY }, async ({ pool, root, nasRoot, server }) => {
+      let clock = START
+      const now = (): number => clock
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+      const jobs = createJobsStore(pool)
+      const counters = { archive: 0, cleanup: 0 }
+      const scheduler = createScheduler({
+        jobs,
+        now,
+        tzOffsetSec: 0,
+        log: () => {},
+        runners: createJobRunners({
+          fetchRound: (clk) => runFetchRound(deps, RANGE_SEL, KEYS, clk),
+          ...otherJobs(counters),
+        }),
+      })
+
+      await scheduler.bootstrap()
+      clock = START + FETCH_SLOT
+      await scheduler.tick()
+      await scheduler.drain()
+
+      const run = (await jobs.listRuns('fetch_recordings', 1))[0]!
+      // 一个资产下不下来不该把整个任务标红——真正"任务一挂了"的那一次会淹没在里面。
+      // 它留在 meeting_assets 里带着 last_error 与 attempts，下一轮照样被领取重试
+      expect(run.status).toBe('succeeded')
+      expect(run.summary).toMatchObject({ meetings: 1, discovered: 2, completed: 1, failed: 1, skipped: 0 })
+
+      const rows = await rowsByType(pool)
+      const video = rows.find((r) => r.asset_type === 'video')!
+      expect(video.status).toBe('failed')
+      expect(video.last_error).not.toBeNull()
     })
   }, 30_000)
 })

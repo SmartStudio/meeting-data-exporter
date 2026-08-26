@@ -57,7 +57,7 @@
  * 混成一件事的后果是：sparkline 会因为一场会议归不上就把整个归档任务标红，
  * 而真正"归档任务挂了"的那一次淹没在里面——告警一旦天天红，就没人看了。
  */
-import { DEFAULT_ASSET_KEYS, type MeetingSelector } from '@yaowu/mde-engine'
+import { DEFAULT_ASSET_KEYS, createLocalStorage, type MeetingSelector } from '@yaowu/mde-engine'
 import {
   JOB_CATALOG,
   createJobsStore,
@@ -70,7 +70,7 @@ import {
   type JobsStore,
 } from '../store/jobs'
 import { loadConfig } from '../config'
-import { createPool, runMigrations } from '../store/db'
+import { POOL_CONNECTION_LIMIT, createPool, runMigrations } from '../store/db'
 import { createArchivesStore } from '../store/archives'
 import { createPolicyStore } from '../store/policy'
 import { createGrantsStore } from '../store/grants'
@@ -86,12 +86,19 @@ import { createRecordsApi } from '../tencent/records'
 import { createAddressesApi } from '../tencent/addresses'
 import { createCatalog } from '../catalog/index'
 import { archivePendingMeetings, type ArchiveDeps, type ArchiveRoundOutcome } from './archive'
-import { discoverWithFetchPolicy } from './fetch-policy'
 import { executeCleanup, type CleanupExecuted } from './retention'
 import { computeProgramInventory, type ProgramInventory, type VisibilityDeps } from './visibility'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore } from './store-mysql'
-import { assertArchiveRootUsable } from './index'
+import {
+  DEFAULT_LEASE_SEC,
+  assertArchiveRootUsable,
+  assertConcurrencyFitsPool,
+  poolQueueLimitFor,
+  runFetchRound,
+  type FetchRound,
+  type FetchRoundDeps,
+} from './index'
 import type { ServiceProgram } from '../store/programs'
 
 /**
@@ -148,8 +155,16 @@ export type JobRunner = (ctx: JobRunContext) => Promise<unknown>
  * 不该够得着它用不到的表，读代码的人也不必去猜某个任务到底会碰什么。
  */
 export interface JobBodyDeps {
-  /** 任务一：发现新录制并入队。时间窗由装配处定（见 main 里的 lookback） */
-  discoverRecordings: (now: number) => Promise<{ meetings: number; tasks: number }>
+  /**
+   * 任务一：`runFetchRound`——发现 + 入队 + **把队列里的资产下下来**（阶段 4 · T14）。
+   * 时间窗由装配处定（见 main 里的 lookback）。
+   *
+   * **收活时钟**，与任务二同一个理由（见 `JobRunContext.clock`），而且在这里更硬：
+   * 执行体领任务时写的 `lease_expires_at = now() + leaseSec`，租约默认 15 分钟，
+   * 而一轮下载可以跑得比这久得多。冻结的时间戳会让一轮里后领取的任务拿到一个
+   * **开跑那一刻就已经算过期**的租约。
+   */
+  fetchRound: (now: () => number) => Promise<FetchRound>
   /** 任务二：`archivePendingMeetings`。收活时钟，理由见 `JobRunContext.clock` */
   archiveRound: (now: () => number) => Promise<ArchiveRoundOutcome>
   /** 任务三：`retention.ts` 的 `executeCleanup`。`confirm: true` 由装配处写死 */
@@ -177,8 +192,29 @@ function errText(err: unknown): string {
 export function createJobRunners(deps: JobBodyDeps): Record<JobName, JobRunner> {
   return {
     async fetch_recordings(ctx) {
-      const r = await deps.discoverRecordings(ctx.now)
-      return { meetings: r.meetings, tasks: r.tasks }
+      // 阶段 4 · T14：这一格叫「拉取新录制」，所以它真的要把录制拉下来——
+      // 发现 + 入队 + 执行下载队列，一整条。T11 时它只做前两件，队列里的资产
+      // 得等运维手动 `bun run worker` 才有人取，而这一格的运行记录一路绿。
+      const r = await deps.fetchRound(ctx.clock)
+      // 摘要里必须有下载那几个数：只报「发现了 11 个」的话，一轮全下挂了与一轮
+      // 全下成功在运行记录里长得一模一样。`discovered` 这个名字比 `tasks` 说得清
+      // ——它数的是本轮发现的就绪资产条数，含已经 completed 的那些。
+      //
+      // 逐个资产的失败**不**在这里落 `job_failures`：那张表是**会议维度**的
+      // （target 是 `meetingId|subMeetingId`），而下载队列的重试与放弃是它自己的
+      // 机制——`meeting_assets` 里带着 `last_error` / `attempts`，到 MAX_ATTEMPTS
+      // 才转 dead，下一轮照样被领取。硬塞进来只会让同一件事有两套重试计数。
+      return {
+        meetings: r.meetings,
+        discovered: r.tasks,
+        completed: r.completed,
+        failed: r.failed,
+        skipped: r.skipped,
+        probes: r.probes,
+        // 清单没写出来不影响资产已经落盘，但它也不该静默——这里是它唯一的留痕处
+        // （一次性 worker 那边靠 console 打印，调度器没有那条打印）
+        manifests: r.manifests,
+      }
     },
 
     async archive_nas(ctx) {
@@ -489,10 +525,28 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
 //   bun run worker      一次性补跑（`--from/--to` 指定时间窗），运维手动用
 //   bun run scheduler   常驻，spec §4.8 的四个任务
 //
-// **下载执行体（runExecutor）不在这四个任务里**，这是 spec §4.8 本身的形状：
-// 任务一只负责 discover + 入队。真正把队列里的资产下下来仍然是 `bun run worker`
-// 的活。写在这里免得有人以为「跑了 scheduler 就什么都有了」——那会让资产一直排在
-// 队列里没人取，而四个任务的运行记录全是绿的。
+// **下载执行体（runExecutor）在任务一里**（阶段 4 · T14）。任务一 = discover + 入队
+// + 执行下载队列，共用 `./index.ts` 的 `runFetchRound`，与 `bun run worker` 同一条
+// 代码路径。T11 时它只做前两件，于是「跑了 scheduler」= 资产一直排在队列里没人取，
+// 而四个任务的运行记录一路全绿——正是本项目最怕的那种失效形态。
+//
+// 裁定的依据是**这一格的名字**：spec §4.8 那张表里任务一叫「拉取新录制」，
+// 管理员的心智模型跟着名字走，界面上写着「拉取新录制」的那一格他不会读成
+// 「只是登记一下」。所以补的是任务一的内容，**不新开第五个任务格**——
+// 界面上仍然是四格（spec §4.8 逐字）。`JOB_CATALOG` 里那句 `what` 因此跟着改成
+// 「发现新录制、入队并下载」：名字对了而描述还说只入队，等于把同一处不一致留在
+// 更靠近用户的地方。
+//
+// **归档仍然只有任务二一个入口**：`runFetchRound` 刻意不含归档段（`runWorkerOnce`
+// 才是"拉一轮 + 归一轮"）。两个任务体各起各的归档轮意味着两轮同时往同一个 NAS
+// 目录搬同一批文件，与文件头那个方框拦的是同一类事故。
+//
+// 一个后果要记在这里：**任务一的单轮时长从秒级变成了可能几十分钟**（一个 2GB 的
+// 录制就够了），而它每 15 分钟到点一次。重叠保护（内存标志 + 一行 skipped）对此
+// 仍然成立——它拦的就是"上一轮没跑完"，与那一轮跑多久无关，跳过的每一片都在
+// `job_runs` 里留一行指向挡住它的那次运行。真正需要跟着改的是**时钟**：任务体
+// 必须收 `ctx.clock`（活时钟）而不是 `ctx.now`（冻结在开跑时刻），否则一轮里后
+// 领取的任务会拿到一个开跑那刻就已算过期的租约，被手动补跑的 worker 抢走。
 // ---------------------------------------------------------------------------
 
 /**
@@ -523,6 +577,36 @@ function envInt(env: Record<string, string | undefined>, key: string, fallback: 
 /** 归档任务的定义。落失败项时要它的「影响」与阈值，取一次即可 */
 const ARCHIVE_SPEC = JOB_CATALOG.find((j) => j.name === 'archive_nas')!
 
+/**
+ * 任务一同时下几个资产。**比一次性 worker 的默认值（4）低**，理由是池要分给四个任务。
+ *
+ * 一次性 worker 独占那个连接池，10 条连接全归它一轮用；调度器不是——四个任务体在
+ * 同一个进程、同一个池上并发跑，任务一压着 `2 × 并发度` 条（claimNext 的事务连接 +
+ * 同一执行体在途的那条 touchProgress，见 `poolQueueLimitFor`），另外三个任务各自
+ * 还要一条。取 2 时稳态峰值 = 2 × 2 + 3 = 7 ≤ 10，留得下余量；取 4 就是 8 + 3 = 11，
+ * 已经越过池上限，于是归档/清理/清单三个任务会开始排队等连接——而 mysql2 没有取
+ * 连接超时，排上队就是无限期地等。
+ */
+const DEFAULT_SCHEDULER_FETCH_CONCURRENCY = 2
+
+/**
+ * 调度器侧的并发度硬上限：`2 × 并发度 + (任务数 - 1) ≤ 池上限`，即并发度 ≤ 3。
+ *
+ * 与一次性 worker 的 `assertConcurrencyFitsPool`（并发度 ≤ 5）是同一件事的两个场景，
+ * 差在那三条留给其它任务的连接。两道闸门都过：先过 worker 那条（它讲的是 executor
+ * 自己的稳态需求），再过这一条。
+ */
+export function assertSchedulerFetchConcurrencyFitsPool(concurrency: number): void {
+  assertConcurrencyFitsPool(concurrency)
+  const others = JOB_CATALOG.length - 1
+  if (concurrency * 2 + others > POOL_CONNECTION_LIMIT) {
+    throw new Error(
+      `MDE_SCHEDULER_FETCH_CONCURRENCY ${concurrency} needs up to ${concurrency * 2} pooled ` +
+        `connections, and the other ${others} jobs share the same pool of ${POOL_CONNECTION_LIMIT}`,
+    )
+  }
+}
+
 async function main(): Promise<number> {
   // 与网关、一次性 worker 共用同一份 loadConfig 与同一个 .env——三个进程同机部署，
   // 共享腾讯凭据、DATABASE_URL 与 STS_ENC_KEY。
@@ -536,13 +620,26 @@ async function main(): Promise<number> {
   const lookbackSec =
     envInt(process.env, 'MDE_SCHEDULER_FETCH_LOOKBACK_HOURS', DEFAULT_FETCH_LOOKBACK_HOURS) * 3600
   const tzOffsetSec = schedulerTzOffsetSec(process.env)
+  const fetchConcurrency = envInt(
+    process.env,
+    'MDE_SCHEDULER_FETCH_CONCURRENCY',
+    DEFAULT_SCHEDULER_FETCH_CONCURRENCY,
+  )
+  assertSchedulerFetchConcurrencyFitsPool(fetchConcurrency)
 
   const now = (): number => Math.floor(Date.now() / 1000)
 
-  // 池不设 queueLimit（跟随网关的默认）：一次性 worker 那边收紧它是为了兜住
-  // executor 里 fire-and-forget 的 touchProgress 无界堆积，而调度器**不跑 executor**，
-  // 它的每一次库调用都被 await 着，稳态等待者是 0。
-  const pool = createPool(config.databaseUrl)
+  // 池收紧 queueLimit，理由与一次性 worker 完全相同（见 `poolQueueLimitFor` 的注释）：
+  // T14 之后**任务一里跑着 executor**，而 executor 的进度回写是 fire-and-forget，
+  // 在途数量无界（一个 2GB 的录制能排出 ~250 个等待者）。写库一慢它们就一条接一条
+  // 堆进队列，堆到内存里去。
+  //
+  // 比 worker 那边多留 `任务数 - 1` 个名额：另外三个任务体在同一个池上跑，它们的
+  // 库调用都是被 await 的，撞上一次抖动时该让它们排一下队，而不是把「归档轮」
+  // 整轮打成失败。（队列**满了**时 mysql2 对所有调用方一律拒绝，不区分是谁。）
+  const pool = createPool(config.databaseUrl, {
+    queueLimit: poolQueueLimitFor(fetchConcurrency) + (JOB_CATALOG.length - 1),
+  })
   try {
     await runMigrations(pool)
 
@@ -615,6 +712,24 @@ async function main(): Promise<number> {
       getMeetings: consoleMeetings.getMeetings,
     }
 
+    /**
+     * 任务一的一轮。**与 `bun run worker` 同一个 `runFetchRound`**（阶段 4 · T14）——
+     * 发现走拉取规则栈（T12 / A7）、执行体的并发与租约、清单收尾全在那一份里，
+     * 这边不另写一套下载循环。两个宿主的行为分叉过一次就再也对不齐了。
+     *
+     * 注意这里**没有 archiveDeps**：归档是任务二自己那一格，见文件末尾进程入口那段。
+     */
+    const fetchDeps: FetchRoundDeps = {
+      store,
+      source,
+      storage: createLocalStorage(archiveRoot),
+      concurrency: fetchConcurrency,
+      leaseSec: DEFAULT_LEASE_SEC,
+      archives,
+      policy,
+      grants,
+    }
+
     const scheduler = createScheduler({
       jobs,
       now,
@@ -626,20 +741,18 @@ async function main(): Promise<number> {
         // 第二个 discovery 触发源，而且是**生产上真正每 15 分钟跑的那一个**。
         // 只接一次性 worker 那条，等于 A7 在生产环境里依旧没接上，所以两处一起接，
         // 判定逻辑共用 `./fetch-policy.ts` 一份。
-        discoverRecordings: (at) =>
-          discoverWithFetchPolicy(
-            {
-              gw: source,
-              store,
-              archives,
-              listFetchRules: () => policy.listEnabledStackRules('fetch'),
-              listFetchOverrides: (keys) => grants.listActiveOverridesForMeetings([...keys]),
-            },
+        fetchRound: (clock) => {
+          // 窗口在**本轮开跑那一刻**定一次就不再动：`clock` 是活时钟（租约要用），
+          // 拿它现算 from/to 会让"往回看 24 小时"随下载耗时一起漂。
+          const at = clock()
+          return runFetchRound(
+            fetchDeps,
             // 滚动时间窗。**不带 --code / --meeting-id**：那两种选择器是人工补跑用的
             { kind: 'range', from: at - lookbackSec, to: at } satisfies MeetingSelector,
-            DEFAULT_ASSET_KEYS,
-            at,
-          ),
+            [...DEFAULT_ASSET_KEYS],
+            clock,
+          )
+        },
         archiveRound: (clock) => archivePendingMeetings(archiveDeps, clock),
         // confirm 的字面量 true 写死在这里，不由任务体拼——executeCleanup 逼着
         // 每一个调用点写明白「这次是真删」，那道栅栏就该落在装配处这一层
@@ -653,6 +766,7 @@ async function main(): Promise<number> {
     scheduler.start()
     console.log(
       `scheduler started: tick=${tickSec}s tz=${tzOffsetSec}s lookback=${lookbackSec}s ` +
+        `fetchConcurrency=${fetchConcurrency} lease=${DEFAULT_LEASE_SEC}s ` +
         `jobs=${JOB_CATALOG.map((j) => j.name).join(',')}`,
     )
 
