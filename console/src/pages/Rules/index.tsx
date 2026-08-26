@@ -4,7 +4,14 @@ import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
 import { Toast } from '@/ui/Toast'
 import { useResource } from '@/lib/useResource'
-import { listRules, type Rule, type StackKind } from '@/api/admin/rules'
+import {
+  fetchRulesSchema,
+  listRules,
+  type Rule,
+  type RulesSchema,
+  type StackKind,
+} from '@/api/admin/rules'
+import { FRONTEND_TEXT } from './fields'
 import { readonlyTitle, useReadonly } from '@/app/session'
 import { STACK_META, groupByStack } from './order'
 import { RuleStack } from './RuleStack'
@@ -33,6 +40,19 @@ import styles from './Rules.module.css'
  * 前端另算一遍就是第二份真相，而两份不一致的地方恰好是判定边界——最需要准确的
  * 那一处。
  *
+ * ## 这一页取两次数，`/rules/schema` 是第二次
+ *
+ * 「有哪些条件字段、每个字段能用什么运算符、三栈的动作有哪几种」由
+ * `GET /rules/schema` 下发（阶段 5 · A9）。F9 之前这份清单是 `fields.ts` 里
+ * 抄来的一份镜像，后端加一个运算符，下拉框里就是没有它、而界面上一个字都不提。
+ *
+ * **清单读不出来时不回退到任何硬编码的一份**：规则列表照常显示（条件与动作
+ * 退成库里的原值），顶上挂一条横幅说明「字段清单读不出来」，新建 / 编辑全部
+ * 禁用。一份旧快照在后端不可达时冒充真相，正是这次要根治的形态。
+ *
+ * 两条请求刻意分成两个 `useResource`：规则列表读得到而清单读不到时，
+ * 管理员至少还看得见库里有哪些规则——那比一整页错误态有用。
+ *
  * ## 写操作不做乐观更新（计划 G-c）
  *
  * 建 / 改 / 删 / 停用一律「发请求 → 重取列表」。规则之间会互相遮挡，改一条的
@@ -41,6 +61,19 @@ import styles from './Rules.module.css'
  */
 export default function RulesPage() {
   const rules = useResource<Rule[]>(useCallback(() => listRules(), []), [])
+  const schemaRes = useResource<RulesSchema>(useCallback(() => fetchRulesSchema(), []), [])
+  const schema = schemaRes.state === 'ready' ? schemaRes.data : null
+  /**
+   * 编辑器为什么开不了。null = 开得了。
+   *
+   * 载入中也算开不了：那一瞬间点开会得到一个没有取值域的空表单。
+   */
+  const schemaBlocked =
+    schemaRes.state === 'ready'
+      ? null
+      : schemaRes.state === 'loading'
+        ? '条件字段清单还在读取，稍等一下再新建或编辑'
+        : `${FRONTEND_TEXT.schemaMissing}，新建与编辑暂时不可用`
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [matchesFor, setMatchesFor] = useState<Rule | null>(null)
   /** 已经问过的命中数。**没问过就不显示数字**——没问过我们说不出来。 */
@@ -70,6 +103,22 @@ export default function RulesPage() {
         </>
       }
     >
+      {/* 清单读不出来是一件要单独说的事：规则还看得见，但看到的是原值，
+          而且改不了。混进"规则读取失败"那个红框里，两件事就分不开了 */}
+      {schemaRes.state === 'error' && (
+        <div className={styles.error} role="alert" data-testid="rules-schema-error">
+          <p className={styles.errorTitle}>{FRONTEND_TEXT.schemaMissing}</p>
+          <p className={styles.errorDetail}>{schemaRes.error.message}</p>
+          <p className={styles.errorDetail}>
+            条件字段、运算符、动作的可选项全部由后端下发（<code>GET /rules/schema</code>）。
+            读不到就<b>没有</b>可用的清单——前端不留一份旧快照顶上，那份快照会在
+            后端不可达时冒充真相。下面的规则照常列出来，但条件与动作显示的是
+            <b>库里的原值</b>，新建与编辑已停用。
+          </p>
+          <Button onClick={schemaRes.retry}>重试</Button>
+        </div>
+      )}
+
       {rules.state === 'loading' && <LoadingStacks />}
 
       {rules.state === 'error' && (
@@ -85,6 +134,8 @@ export default function RulesPage() {
       {rules.state === 'ready' && (
         <RuleStacks
           rules={rules.data}
+          schema={schema}
+          schemaBlocked={schemaBlocked}
           hitCounts={hitCounts}
           busyRuleId={busyRuleId}
           onCreate={(kind) => setEditor({ mode: 'create', kind })}
@@ -98,19 +149,24 @@ export default function RulesPage() {
         />
       )}
 
-      <RuleEditor
-        state={editor}
-        allRules={rules.state === 'ready' ? rules.data : []}
-        onClose={() => setEditor(null)}
-        onSaved={(text) => {
-          setEditor(null)
-          announce(text)
-          reload()
-        }}
-      />
+      {/* 没有 schema 就没有编辑器：它的每一份取值域都来自那条端点 */}
+      {schema !== null && (
+        <RuleEditor
+          state={editor}
+          schema={schema}
+          allRules={rules.state === 'ready' ? rules.data : []}
+          onClose={() => setEditor(null)}
+          onSaved={(text) => {
+            setEditor(null)
+            announce(text)
+            reload()
+          }}
+        />
+      )}
 
       <MatchesPanel
         rule={matchesFor}
+        schema={schema}
         onClose={() => setMatchesFor(null)}
         onCount={noteHits}
       />
@@ -126,6 +182,8 @@ export type EditorState =
 
 interface StacksProps {
   rules: Rule[]
+  schema: RulesSchema | null
+  schemaBlocked: string | null
   hitCounts: ReadonlyMap<number, number>
   busyRuleId: number | null
   onCreate: (kind: StackKind) => void
@@ -145,6 +203,8 @@ function RuleStacks(props: StacksProps) {
           kind={kind}
           meta={STACK_META[kind]}
           rules={groups[kind]}
+          schema={props.schema}
+          schemaBlocked={props.schemaBlocked}
           hitCounts={props.hitCounts}
           busyRuleId={props.busyRuleId}
           onCreate={props.onCreate}
@@ -156,7 +216,11 @@ function RuleStacks(props: StacksProps) {
       ))}
 
       {groups.unknown.length > 0 && (
-        <UnknownStack rules={groups.unknown} onEdit={props.onEdit} />
+        <UnknownStack
+          rules={groups.unknown}
+          schemaBlocked={props.schemaBlocked}
+          onEdit={props.onEdit}
+        />
       )}
     </div>
   )
@@ -167,7 +231,15 @@ function RuleStacks(props: StacksProps) {
  * 引擎对它的处置是"不参与任何判定"（`describeStackRuleIssues` 会这么说），
  * 而界面上如果一个字都不提，管理员会以为自己建的那条规则丢了。
  */
-function UnknownStack({ rules, onEdit }: { rules: Rule[]; onEdit: (r: Rule) => void }) {
+function UnknownStack({
+  rules,
+  schemaBlocked,
+  onEdit,
+}: {
+  rules: Rule[]
+  schemaBlocked: string | null
+  onEdit: (r: Rule) => void
+}) {
   const readonly = useReadonly()
   return (
     <section className={styles.group} aria-labelledby="stack-unknown">
@@ -187,8 +259,8 @@ function UnknownStack({ rules, onEdit }: { rules: Rule[]; onEdit: (r: Rule) => v
               size="sm"
               variant="quiet"
               onClick={() => onEdit(r)}
-              disabled={readonly}
-              title={readonlyTitle(readonly)}
+              disabled={readonly || schemaBlocked !== null}
+              title={readonly ? readonlyTitle(readonly) : (schemaBlocked ?? undefined)}
             >
               编辑
             </Button>

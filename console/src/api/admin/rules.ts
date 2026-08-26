@@ -1,14 +1,25 @@
 /**
- * 三栈规则 + 影响预览（`src/http/handlers/console/rules.ts` 的 6 条端点）。
+ * 三栈规则 + 影响预览（`src/http/handlers/console/rules.ts` 的 7 条端点）。
  *
  * ```
  * GET    /api/v1/admin/rules              列出三栈（含 disabled）
+ * GET    /api/v1/admin/rules/schema       条件字段 / 运算符 / 三栈 effect 的清单
  * POST   /api/v1/admin/rules              新建
  * PATCH  /api/v1/admin/rules/:id          改（含启用 / 停用）
  * DELETE /api/v1/admin/rules/:id          删
  * POST   /api/v1/admin/rules/preview      影响预览（不落库）
  * GET    /api/v1/admin/rules/:id/matches  这条规则命中哪几场
  * ```
+ *
+ * ## 零、`/schema` 是条件构建器的**唯一**清单来源
+ *
+ * F3 那一轮后端没有这条端点，`pages/Rules/fields.ts` 因此抄了一份
+ * `CONDITION_FIELDS` / `OP_LABEL` / `ASSET_KEYS`。A9 把清单收回后端并加了这条
+ * 端点，F9 接线时把那几份镜像**删掉**了。
+ *
+ * 所以：**这条端点读不到时不许回退到任何硬编码清单**。回退回去的那一份
+ * 恰好在最不该有它的时刻（后端不可达 / 契约变了）冒充成真相，而界面上
+ * 一个字都不会提。读不到就说「字段清单读不出来」并把条件构建器停掉。
  *
  * ## 一、这个文件不实现求值语义
  *
@@ -97,6 +108,94 @@ export interface Rule {
    * 「建完就静默失效」的规则靠它在列表里看得见——**原样显示，不要挑一条当摘要**。
    */
   issues: string[]
+}
+
+/* ── 条件字段与运算符的清单（GET /rules/schema）─────────────── */
+
+/** `{ value, label }`：连接词、兜底、资产类型、闭集字段的可选值都是这个形状。 */
+export interface SchemaChoice {
+  value: string
+  label: string
+}
+
+/**
+ * 一个运算符。
+ *
+ * `label` 为 **null = 后端没有登记中文名**，不是「它就叫这个英文名」。契约明写
+ * 不拿 `op` 原值顶上去：顶上去之后下拉框里会出现一个看着像中文名的英文单词，
+ * 谁都不会去核对。前端要把「没登记」这件事显示出来（见 `pages/Rules/fields.ts`）。
+ *
+ * `unitSuffix` 是跟在**值与单位之后**的那个字：`age within 90` 读作
+ * 「在最近 90 天内」，那个「内」既不属于单位也不属于运算符名。它随清单下发，
+ * 就是为了前端不必再写一条 `op === 'within'` 的特例——那正是镜像的起点。
+ */
+export interface SchemaOp {
+  op: string
+  label: string | null
+  unitSuffix: string | null
+}
+
+export interface SchemaValue {
+  /** 后端 `CondValueKind` 原值，细粒度：keywords / strings / string / number / none。 */
+  kind: string
+  /** 粗粒度类型，决定渲染哪一类控件：string / number / enum / none。 */
+  type: string
+  multiple: boolean
+  /** **`type === 'enum'` 时才非 null，且非空**。空的下拉框比没有下拉框更糟。 */
+  options: SchemaChoice[] | null
+  /** 数字字段的单位（`分钟` / `天`），渲染在输入框右边。 */
+  unit: string | null
+  placeholder: string | null
+  /** **仅 `kind === 'keywords'`** 非 null。`new RegExp(...)` 即可，不必抄一份。 */
+  splitPattern: string | null
+}
+
+export interface SchemaField {
+  /** 标识，就是 `RuleCond.f` 里写的那个。 */
+  f: string
+  label: string
+  available: boolean
+  /**
+   * `available: false` 时的原因，**要直接上屏**。有数据源时是 `null` 而不是
+   * 空串——「有数据源」与「没数据源但没人写原因」在界面上要分得开。
+   */
+  unavailableReason: string | null
+  /** **顺序即下拉框顺序**。 */
+  ops: SchemaOp[]
+  value: SchemaValue
+}
+
+export interface SchemaEffect {
+  value: string
+  label: string
+  hint: string
+  /** 选了它之后「资产类型」那一栏还起不起作用（后端的 `isPositive`）。 */
+  withAssetTypes: boolean
+}
+
+export interface SchemaStack {
+  kind: string
+  label: string
+  /** 闭集取值。**不是闭集的栈（archive）这里只有 `skip`**，见 `freeform`。 */
+  effects: SchemaEffect[]
+  /**
+   * effect 不是闭集时的说明。只有 `archive` 非 null：除 `skip` 外它是一段
+   * 归档目录模板。列一个假的「全部目录」清单比不列更糟。
+   */
+  freeform: string | null
+  /** 一条规则都不匹配时的兜底（spec §5.1 第 4 步）。 */
+  fallback: SchemaChoice
+  /** allow 栈是 `program`，另两栈是系统级行为、必须为 null。 */
+  subjectType: string | null
+}
+
+export interface RulesSchema {
+  fields: SchemaField[]
+  joins: SchemaChoice[]
+  stacks: SchemaStack[]
+  assetTypes: SchemaChoice[]
+  /** `'*'`：「全部资产类型」的写法，后端 `normalizeAssetTypes` 会展开它。 */
+  assetAll: string
 }
 
 /** 新建规则的请求体。`createdBy` 不在内：建立人只能是当前登录管理员。 */
@@ -384,7 +483,93 @@ function readCounts(r: FieldReader, raw: unknown, where: string): PreviewCounts 
   }
 }
 
-/* ── 六条端点 ───────────────────────────────────────────────────── */
+function readChoice(r: FieldReader, raw: Record<string, unknown>, where: string): SchemaChoice {
+  return { value: r.str(raw, 'value', where), label: r.str(raw, 'label', where) }
+}
+
+function readSchemaValue(r: FieldReader, raw: unknown, where: string): SchemaValue {
+  const o = r.object(raw, where)
+  const type = r.str(o, 'type', where)
+  const options =
+    o.options === null
+      ? null
+      : r.objList(o, 'options', where).map((x, i) => readChoice(r, x, `${where}.options[${i}]`))
+
+  // 契约里的一条硬约定：**声明成 enum 就必须带非空的 options**。
+  // 违反它的后果是界面上一个空下拉框——那比一个自由文本框更糟，因为它看起来
+  // 是"这个字段没有可选值"，而真相是"清单取不到"。当场报出来，不静默渲染。
+  if (type === 'enum' && (options === null || options.length === 0)) {
+    r.fail(`${where} 声明成 enum 却没有可选值（options 为 ${options === null ? 'null' : '空数组'}）`, raw)
+  }
+
+  return {
+    kind: r.str(o, 'kind', where),
+    type,
+    multiple: r.bool(o, 'multiple', where),
+    options,
+    unit: r.strOrNull(o, 'unit', where),
+    placeholder: r.strOrNull(o, 'placeholder', where),
+    splitPattern: r.strOrNull(o, 'splitPattern', where),
+  }
+}
+
+function readSchemaField(r: FieldReader, raw: Record<string, unknown>, where: string): SchemaField {
+  return {
+    f: r.str(raw, 'f', where),
+    label: r.str(raw, 'label', where),
+    available: r.bool(raw, 'available', where),
+    unavailableReason: r.strOrNull(raw, 'unavailableReason', where),
+    ops: r.objList(raw, 'ops', where).map((op, i) => ({
+      op: r.str(op, 'op', `${where}.ops[${i}]`),
+      // 漏登记时是 null，**这里绝不 `?? op`**：那样一来"没登记"与"登记成了
+      // 一个英文名"在前端就再也分不开，而后端加的两道门就白加了
+      label: r.strOrNull(op, 'label', `${where}.ops[${i}]`),
+      unitSuffix: r.strOrNull(op, 'unitSuffix', `${where}.ops[${i}]`),
+    })),
+    value: readSchemaValue(r, raw.value, `${where}.value`),
+  }
+}
+
+function readSchemaStack(r: FieldReader, raw: Record<string, unknown>, where: string): SchemaStack {
+  return {
+    kind: r.str(raw, 'kind', where),
+    label: r.str(raw, 'label', where),
+    effects: r.objList(raw, 'effects', where).map((e, i) => ({
+      value: r.str(e, 'value', `${where}.effects[${i}]`),
+      label: r.str(e, 'label', `${where}.effects[${i}]`),
+      hint: r.str(e, 'hint', `${where}.effects[${i}]`),
+      withAssetTypes: r.bool(e, 'withAssetTypes', `${where}.effects[${i}]`),
+    })),
+    freeform: r.strOrNull(raw, 'freeform', where),
+    fallback: readChoice(r, r.object(raw.fallback, `${where}.fallback`), `${where}.fallback`),
+    subjectType: r.strOrNull(raw, 'subjectType', where),
+  }
+}
+
+/* ── 七条端点 ───────────────────────────────────────────────────── */
+
+/**
+ * `GET /api/v1/admin/rules/schema`。条件字段、运算符、三栈 effect 的清单。
+ *
+ * **只读、不碰库**（后端把一份常量序列化出去），所以它便宜到可以每次打开
+ * 规则页都取一次——不做缓存正是刻意的：缓存就要管失效，而"要管失效的第二份
+ * 真相"正是这个仓库反复拒绝的形状。
+ *
+ * 失败一律抛出去。见文件头第零节：**这里没有兜底清单**。
+ */
+export async function fetchRulesSchema(): Promise<RulesSchema> {
+  const endpoint = `GET ${BASE}/rules/schema`
+  const raw = await apiGet<unknown>(`${BASE}/rules/schema`)
+  const r = reader(endpoint)
+  const o = r.object(raw, '')
+  return {
+    fields: r.objList(o, 'fields', '').map((f, i) => readSchemaField(r, f, `fields[${i}]`)),
+    joins: r.objList(o, 'joins', '').map((j, i) => readChoice(r, j, `joins[${i}]`)),
+    stacks: r.objList(o, 'stacks', '').map((s, i) => readSchemaStack(r, s, `stacks[${i}]`)),
+    assetTypes: r.objList(o, 'assetTypes', '').map((a, i) => readChoice(r, a, `assetTypes[${i}]`)),
+    assetAll: r.str(o, 'assetAll', ''),
+  }
+}
 
 /**
  * `GET /api/v1/admin/rules`。不传 `kind` 返回三栈全部，**含停用的规则**——

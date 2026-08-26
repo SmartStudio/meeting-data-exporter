@@ -217,6 +217,8 @@ export default function AuditPage() {
           而屏幕上摆着的是一个错误态——两者放在一起会被读成"这段时间没有记录"。 */}
       {shown !== null && error === null && <WindowLine page={shown} now={now} />}
 
+      {shown !== null && error === null && <UnlabeledNote page={shown} />}
+
       <AuditTable
         page={shown}
         now={now}
@@ -243,6 +245,50 @@ export default function AuditPage() {
         要看更新的操作请按「刷新」。
       </p>
     </PageShell>
+  )
+}
+
+/**
+ * 「这一页有 N 种动作后端还没登记中文名」。
+ *
+ * ## 为什么这一句必须在，而不是前端补一份映射表
+ *
+ * 这一页存在的全部理由是给人读。一个动作没有中文名时，「动作」列里是一行
+ * 英文 snake_case——而它读起来与一个真的叫这个名字的动作一模一样。
+ * F5c 数出库里有 24 种动作而后端那张表只有 3 行，正是因为没有任何东西会
+ * 就此喊一声。
+ *
+ * **前端不补兜底映射表**（哪怕只补一行）：补了之后界面上一切正常，而
+ * 「后端漏登记」这件事被永久掩盖。A9 为防漏登记在后端加了类型收窄与源码
+ * 扫描两道门，前端兜底等于把那两道门的价值抵消掉。所以这里做的相反的事——
+ * 把后端说的那句话原样搬上屏。
+ *
+ * 每一项的 `hint` 今天是同一句常量，所以按内容去重后只显示一次；
+ * 将来后端按动作给不同的话，这里自然会各显示一句。
+ */
+function UnlabeledNote({ page }: { page: AuditPage }) {
+  const items = page.unlabeledActions
+  if (items.length === 0) return null
+  const hints = [...new Set(items.map((u) => u.hint))]
+
+  return (
+    <div className={styles.caveat} data-testid="audit-unlabeled-actions">
+      <p>
+        这一页有 <b>{items.length}</b> 种动作后端还没有登记中文名，
+        「动作」列里显示的是 <code>audit_log</code> 的原值：
+      </p>
+      <ul>
+        {items.map((u) => (
+          <li key={u.action}>
+            <code>{u.action}</code>（{u.count} 次）
+          </li>
+        ))}
+      </ul>
+      {/* 后端那句话原样上屏，前端不改写、不缩写 */}
+      {hints.map((h) => (
+        <p key={h}>{h}</p>
+      ))}
+    </div>
   )
 }
 

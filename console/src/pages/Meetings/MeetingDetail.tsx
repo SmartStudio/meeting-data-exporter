@@ -540,6 +540,17 @@ function HistorySection({
               {history.data.window.text}
             </p>
           )}
+          {/* 这一段历史里有哪几种动作后端还没登记中文名（阶段 5 · A9）。
+              上面每行的 `text` 里已经带着「（未登记标签）」，但那要一行行读；
+              这里汇总一句。**前端不补一份动作名映射表**——补了之后
+              「后端漏登记」就被永久掩盖，见 `api/admin/audit.ts`。 */}
+          {history.data.unlabeledActions.length > 0 && (
+            <p className={styles.note} data-testid="history-unlabeled">
+              这段历史里有 {history.data.unlabeledActions.length} 种动作后端还没有登记中文名
+              （{history.data.unlabeledActions.map((u) => u.action).join('、')}），
+              上面显示的是 audit_log 里的原值。
+            </p>
+          )}
         </>
       )}
     </section>

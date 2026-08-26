@@ -4,7 +4,14 @@ import { buildInventory, CONSUMERS } from './consumers'
 import { buildChapters, buildContent } from './content'
 import { applyTencentDown, buildJobs, makeQueuedRun, withQueued, type QueuedRun } from './jobs'
 import { MEETINGS, MOCK_NOW } from './meetings'
-import { buildMatches, buildPreview, buildRules, byPrecedence, type ProtoRule } from './rules'
+import {
+  buildMatches,
+  buildPreview,
+  buildRules,
+  buildRulesSchema,
+  byPrecedence,
+  type ProtoRule,
+} from './rules'
 import { buildStorage, cleanupItem, expiredNotPurged, initialRetention, type RetentionConfig } from './storage'
 import { applyNasDown } from './system'
 
@@ -282,6 +289,12 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
 
   /* ── 自动规则（三栈 + 影响预览） ─────────────────────────────── */
 
+  // 必须排在下面那条 `/rules/:id` 之前吗？不必——那条只匹配数字 id。但少了
+  // 这一条，规则页在 `?proto=1` 下就只剩一条「字段清单读不出来」的横幅
+  if (path === `${PREFIX}/rules/schema` && method === 'GET') {
+    return json(buildRulesSchema())
+  }
+
   if (path === `${PREFIX}/rules/preview` && method === 'POST') {
     return json(buildPreview(body, snapshot(), rules))
   }
@@ -527,6 +540,9 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
           text: h.text,
         })),
         window: { since: shift(shown.startAt), sinceSource: 'meetings', text: null },
+        // 这一段历史里没登记中文标签的动作。演示世界里每一行都登记过，
+        // 所以是空数组——**空数组不是 null**，前端不必区分「没有」与「没算」
+        unlabeledActions: [],
       })
     }
     if (tail === '/content' && method === 'GET') {

@@ -564,12 +564,15 @@ const SCENES: Scene[] = [
   },
   {
     id: 'audit',
-    why: '操作审计：被拒绝 / 存疑的结果 / 认不出的操作者 / 没有明细的老记录',
+    why: '操作审计：被拒绝 / 存疑的结果 / 认不出的操作者 / 后端还没登记中文名的动作',
     route: '/audit',
     expect: [
       '[data-testid="audit-window"]',
       'tr[data-deny]',
       '[data-testid^="audit-result-"][data-kind="unknown"]',
+      // 「这一页有 N 种动作后端还没登记中文名」那块告示牌（阶段 5 · F9）。
+      // 它用的是 --warn 那组颜色，两种主题都要过对比度
+      '[data-testid="audit-unlabeled-actions"]',
     ],
   },
   {

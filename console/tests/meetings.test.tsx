@@ -148,7 +148,12 @@ const PROGRAMS = [
 ]
 
 function emptyHistory(): unknown {
-  return { meeting: null, rows: [], window: { since: null, sinceSource: null, text: null } }
+  return {
+    meeting: null,
+    rows: [],
+    window: { since: null, sinceSource: null, text: null },
+    unlabeledActions: [],
+  }
 }
 
 /** 默认世界：三场会议、五格计数、两个采集程序，写操作一律成功。 */
@@ -835,6 +840,7 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
                 },
               ],
               window: { since: 1, sinceSource: 'meetings', text: '只列出会议开始之后的记录' },
+              unlabeledActions: [],
             },
           }
         : base(c)
@@ -843,6 +849,39 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
     expect(rows).toHaveTextContent('kb-indexer 取走了 AI 纪要')
     expect(within(rows).getAllByRole('listitem')[1]).toHaveAttribute('data-deny', 'true')
     expect(screen.getByTestId('history-window')).toHaveTextContent('只列出会议开始之后的记录')
+    // 都登记过了就不该出现那句提示
+    expect(screen.queryByTestId('history-unlabeled')).toBeNull()
+  })
+
+  test('后端有动作没登记中文名时，抽屉里汇总一句——不靠一行行读那句 text', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      /\/history$/.test(c.path)
+        ? {
+            status: 200,
+            body: {
+              meeting: { id: 'm1', title: '产品周会', code: '881', startAt: nowSec(), source: 'meetings' },
+              rows: [
+                {
+                  id: 1,
+                  at: nowSec() - HOUR,
+                  // 没登记时后端给 null，**绝不回退成 snake_case 原值**
+                  actionLabel: null,
+                  result: { decision: 'allow' },
+                  clientKind: 'console',
+                  text: 'frobnicate（未登记标签）',
+                },
+              ],
+              window: { since: 1, sinceSource: 'meetings', text: null },
+              unlabeledActions: [
+                { action: 'frobnicate', count: 1, hint: '这个动作在后端没有登记中文标签……' },
+              ],
+            },
+          }
+        : base(c)
+    await openDrawer()
+    expect(await screen.findByTestId('history-unlabeled')).toHaveTextContent(/frobnicate/)
+    expect(screen.getByTestId('history-rows')).toHaveTextContent('未登记标签')
   })
 
   test('详情端点挂了不白屏：仍显示列表那一行，并说明它可能不是最新的', async () => {

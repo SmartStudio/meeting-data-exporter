@@ -4,12 +4,14 @@ import { ApiShapeError } from '../../src/api/validate'
 import {
   createRule,
   deleteRule,
+  fetchRulesSchema,
   listRules,
   patchRule,
   previewRules,
   ruleMatches,
   setRuleEnabled,
 } from '../../src/api/admin/rules'
+import { RULES_SCHEMA_BODY } from '../helpers/rulesSchema'
 
 /**
  * `api/admin/rules.ts` 的六条端点。
@@ -447,5 +449,74 @@ describe('ruleMatches', () => {
     install(200, { rule: RULE, scope: { meetings: 1, meetingsTotal: 1, truncated: false }, matches: [] })
     await ruleMatches(101)
     expect(calls[0]!.url).toBe('/api/v1/admin/rules/101/matches')
+  })
+})
+
+/* ── GET /rules/schema（阶段 5 · A9 新增，F9 接线）───────────── */
+
+describe('fetchRulesSchema', () => {
+  test('六个字段、运算符、值形态原样读出来——前端不再自己存一份清单', async () => {
+    install(200, RULES_SCHEMA_BODY)
+    const s = await fetchRulesSchema()
+
+    expect(calls[0]!.url).toBe('/api/v1/admin/rules/schema')
+    expect(s.fields.map((f) => f.f)).toEqual(['title', 'dept', 'host', 'dur', 'age', 'arch'])
+    expect(s.fields[0]!.ops.map((o) => o.op)).toEqual(['has', 'nothas'])
+    expect(s.fields[0]!.value.splitPattern).toBe('[,\\uFF0C\\s]+')
+    expect(s.fields[3]!.value.unit).toBe('分钟')
+    expect(s.fields[4]!.ops[0]!.unitSuffix).toBe('内')
+    expect(s.stacks.map((k) => k.kind)).toEqual(['fetch', 'archive', 'allow'])
+    expect(s.stacks[1]!.freeform).toMatch(/归档目录模板/)
+    expect(s.assetTypes).toHaveLength(8)
+    expect(s.assetAll).toBe('*')
+  })
+
+  test('dept 的「为什么不可用」原样带上来，不是空串也不是前端改写过的另一句', async () => {
+    install(200, RULES_SCHEMA_BODY)
+    const s = await fetchRulesSchema()
+    const dept = s.fields.find((f) => f.f === 'dept')!
+    expect(dept.available).toBe(false)
+    expect(dept.unavailableReason).toBe(
+      '需要企业微信通讯录，尚未接入（企微自建应用没有真建，R0 已定为不做，见 spec §5.3）',
+    )
+    // 有数据源的字段是 null 而不是空串——「有数据源」与「没写原因」要分得开
+    expect(s.fields.find((f) => f.f === 'title')!.unavailableReason).toBeNull()
+  })
+
+  test('运算符没登记中文名时读成 null，绝不拿 op 原值顶上', async () => {
+    const body = structuredClone(RULES_SCHEMA_BODY)
+    body.fields[0]!.ops[0]!.label = null as unknown as string
+    install(200, body)
+    const s = await fetchRulesSchema()
+    expect(s.fields[0]!.ops[0]!.label).toBeNull()
+  })
+
+  test('声明成 enum 却给不出可选值 → 当场报形状错，不渲染一个空下拉框', async () => {
+    const body = structuredClone(RULES_SCHEMA_BODY)
+    body.fields[0]!.value.type = 'enum'
+    install(200, body)
+    await expect(fetchRulesSchema()).rejects.toBeInstanceOf(ApiShapeError)
+  })
+
+  test('enum 带上非空 options 时正常读出来', async () => {
+    const body = structuredClone(RULES_SCHEMA_BODY)
+    body.fields[1]!.value.type = 'enum'
+    body.fields[1]!.value.options = [{ value: 'fin', label: '财务部' }] as never
+    install(200, body)
+    const s = await fetchRulesSchema()
+    expect(s.fields[1]!.value.options).toEqual([{ value: 'fin', label: '财务部' }])
+  })
+
+  test('少一个必填字段就报形状错，带字段路径——不静默当成空清单', async () => {
+    const body = structuredClone(RULES_SCHEMA_BODY) as unknown as Record<string, unknown>
+    const fields = body.fields as Array<Record<string, unknown>>
+    delete fields[0]!.label
+    install(200, body)
+    await expect(fetchRulesSchema()).rejects.toThrow(/fields\[0\]\.label/)
+  })
+
+  test('后端不可达时把错误抛出去，不回退到一份硬编码清单', async () => {
+    install(500, { error: 'db_down' })
+    await expect(fetchRulesSchema()).rejects.toBeInstanceOf(ApiError)
   })
 })

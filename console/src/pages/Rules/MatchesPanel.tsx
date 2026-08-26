@@ -3,7 +3,12 @@ import { Drawer } from '@/ui/Drawer'
 import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
 import { useResource } from '@/lib/useResource'
-import { ruleMatches, type Rule, type RuleMatchesResult } from '@/api/admin/rules'
+import {
+  ruleMatches,
+  type Rule,
+  type RuleMatchesResult,
+  type RulesSchema,
+} from '@/api/admin/rules'
 import { fmtDateTime } from '@/lib/format'
 import { describeEffect, missingFactLabel, titleDisplay } from './fields'
 import styles from './Rules.module.css'
@@ -27,24 +32,36 @@ import styles from './Rules.module.css'
 export interface MatchesPanelProps {
   /** null = 关着。 */
   rule: Rule | null
+  /** 只用来把 effect 读成人话。**读不出来时照直显示原值**，不猜。 */
+  schema: RulesSchema | null
   onClose: () => void
   /** 拿到场次数之后回传，好让规则行显示那个数——**问过之后才显示**。 */
   onCount: (ruleId: number, n: number) => void
 }
 
-export function MatchesPanel({ rule, onClose, onCount }: MatchesPanelProps) {
+export function MatchesPanel({ rule, schema, onClose, onCount }: MatchesPanelProps) {
   return (
     <Drawer
       open={rule !== null}
       onClose={onClose}
       title={rule === null ? '命中的会议' : `命中的会议 · 规则 #${rule.id}`}
     >
-      {rule !== null && <MatchesBody key={rule.id} rule={rule} onCount={onCount} />}
+      {rule !== null && (
+        <MatchesBody key={rule.id} rule={rule} schema={schema} onCount={onCount} />
+      )}
     </Drawer>
   )
 }
 
-function MatchesBody({ rule, onCount }: { rule: Rule; onCount: (id: number, n: number) => void }) {
+function MatchesBody({
+  rule,
+  schema,
+  onCount,
+}: {
+  rule: Rule
+  schema: RulesSchema | null
+  onCount: (id: number, n: number) => void
+}) {
   const res = useResource<RuleMatchesResult>(
     useCallback(() => ruleMatches(rule.id), [rule.id]),
     [rule.id],
@@ -63,7 +80,7 @@ function MatchesBody({ rule, onCount }: { rule: Rule; onCount: (id: number, n: n
         {rule.enabled ? null : '这条规则当前是停用的，下面是把它开回来会命中的场次。'}
       </p>
       <p className={styles.matchesRule}>
-        {rule.priority} · {describeEffect(rule.kind, rule.effect, rule.assetTypes)}
+        {rule.priority} · {describeEffect(schema, rule.kind, rule.effect, rule.assetTypes)}
       </p>
 
       {res.state === 'loading' && (

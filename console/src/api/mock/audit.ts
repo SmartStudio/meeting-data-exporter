@@ -274,9 +274,10 @@ export function buildAudit(q: AuditQuery, nowSec: number): Record<string, unknow
   })
 
   const isDefault = q.from === undefined
+  const shown = rows.slice(q.offset, q.offset + q.limit)
   return {
     // occurred_at DESC：种子本来就是倒序写的，这里原样保留，不折叠不去重
-    rows: rows.slice(q.offset, q.offset + q.limit).map(({ agoSec: _ago, ...row }) => row),
+    rows: shown.map(({ agoSec: _ago, ...row }) => row),
     total: rows.length,
     limit: q.limit,
     offset: q.offset,
@@ -289,5 +290,24 @@ export function buildAudit(q: AuditQuery, nowSec: number): Record<string, unknow
         ? '没有指定时间范围，这里显示的是最近 7 天。更早的操作在窗口之外，不是没有发生过。'
         : null,
     },
+    // **这一页里**有哪几种动作后端没有登记中文名（阶段 5 · A9）。种子里那条
+    // `actionLabel: null` 的记录就是为了让这句提示在演示与 a11y 门槛里真的出现
+    unlabeledActions: unlabeledOf(shown),
   }
+}
+
+/** 按首次出现顺序汇总，带出现次数。全部登记过时是空数组，不是 null。 */
+function unlabeledOf(rows: ReadonlyArray<{ action: string; actionLabel: string | null }>) {
+  const counts = new Map<string, number>()
+  for (const r of rows) {
+    if (r.actionLabel !== null) continue
+    counts.set(r.action, (counts.get(r.action) ?? 0) + 1)
+  }
+  return [...counts].map(([action, count]) => ({
+    action,
+    count,
+    hint:
+      '这个动作在后端没有登记中文标签（src/audit/actions.ts 的 AUDIT_ACTION_LABELS 里没有这一行），' +
+      '界面上显示的是 audit_log 里的原值。',
+  }))
 }

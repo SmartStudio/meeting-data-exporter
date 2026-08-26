@@ -81,8 +81,21 @@ const WINDOW = {
 }
 
 function page(rows: unknown[], extra: Record<string, unknown> = {}): unknown {
-  return { rows, total: rows.length, limit: 50, offset: 0, window: WINDOW, ...extra }
+  return {
+    rows,
+    total: rows.length,
+    limit: 50,
+    offset: 0,
+    window: WINDOW,
+    // 全部登记过时是 `[]`，不是 null（阶段 5 · A9）
+    unlabeledActions: [],
+    ...extra,
+  }
 }
+
+const UNLABELED_HINT =
+  '这个动作在后端没有登记中文标签（src/audit/actions.ts 的 AUDIT_ACTION_LABELS 里没有这一行），' +
+  '界面上显示的是 audit_log 里的原值。'
 
 describe('listAudit —— 请求的拼法', () => {
   test('端点是全路径；什么都不传时一个查询参数都不带', async () => {
@@ -271,6 +284,43 @@ describe('listAudit —— 对不上契约时报得出是哪一个字段', () =>
   test('object 少一个字段（不是整块为 null）', async () => {
     const e = await shapeError(page([{ ...FULL_ROW, object: { id: 'm-1', idKind: 'meeting' } }]))
     expect(e.message).toContain('rows[0].object.meetingId')
+  })
+})
+
+describe('listAudit —— unlabeledActions（阶段 5 · A9）', () => {
+  test('这一页里没登记中文名的动作逐条读出来，带次数与那句人话', async () => {
+    install(
+      200,
+      page([OLD_ROW], {
+        unlabeledActions: [{ action: 'purge_expired', count: 2, hint: UNLABELED_HINT }],
+      }),
+    )
+    const res = await listAudit()
+    expect(res.unlabeledActions).toEqual([
+      { action: 'purge_expired', count: 2, hint: UNLABELED_HINT },
+    ])
+    // 行里的 actionLabel 仍然是 null——后端绝不回退成 snake_case 原值
+    expect(res.rows[0]!.actionLabel).toBeNull()
+    expect(res.rows[0]!.action).toBe('purge_expired')
+  })
+
+  test('全部登记过时是空数组', async () => {
+    install(200, page([FULL_ROW]))
+    expect((await listAudit()).unlabeledActions).toEqual([])
+  })
+
+  test('缺这个键就报形状错——「都登记过了」与「根本没算」不能长得一样', async () => {
+    const { unlabeledActions: _u, ...body } = page([FULL_ROW]) as Record<string, unknown>
+    install(200, body)
+    const err = await listAudit().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiShapeError)
+    expect((err as ApiShapeError).message).toContain('unlabeledActions')
+  })
+
+  test('少一项 count 也报得出是第几项', async () => {
+    install(200, page([OLD_ROW], { unlabeledActions: [{ action: 'x', hint: 'y' }] }))
+    const err = await listAudit().catch((e: unknown) => e)
+    expect((err as ApiShapeError).message).toContain('unlabeledActions[0].count')
   })
 })
 

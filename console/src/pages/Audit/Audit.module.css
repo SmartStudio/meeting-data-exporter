@@ -104,6 +104,21 @@
   font-size: var(--t-xs);
 }
 
+/* 「这一页有 N 种动作后端还没登记中文名」用的是同一块告示牌，
+   但它里面有段落和一张清单，所以把默认外边距收一下 */
+.caveat p {
+  margin: 0;
+}
+
+.caveat p + p {
+  margin-top: var(--s-2);
+}
+
+.caveat ul {
+  margin: var(--s-2) 0;
+  padding-left: var(--s-5);
+}
+
 /* ── 本次结果的时间窗口 ────────────────────────────────────────── */
 
 .window {

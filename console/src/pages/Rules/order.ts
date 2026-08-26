@@ -22,8 +22,8 @@
  * 其余情况一律不说。说一句"可能被挡住"看起来体贴，实际是在教管理员不相信这一栏。
  */
 
-import type { Rule, StackKind } from '../../api/admin/rules'
-import { fieldSpec } from './fields'
+import type { Rule, RulesSchema, StackKind } from '../../api/admin/rules'
+import { fieldOf } from './fields'
 
 export interface StackMeta {
   /** 逐字对应 spec §4.6 的组名。 */
@@ -151,14 +151,19 @@ export function blockedByUnconditional(sorted: readonly Rule[]): Map<number, num
  * `and` 连的时候仍然是"永不命中"，但那已经是求值的事，交给后端的 issues 说。
  * 有 `null` 条件（写坏了）时同样不下断言——写坏的那条命中什么谁也不知道。
  *
- * 判据读的是 `fields.ts` 那份**镜像**清单（后端没有下发清单的端点，见那个
- * 文件的头部注释）。所以这条提示的方向是安全的：它多提醒一句，不替谁放行。
+ * 判据读的是 `GET /rules/schema` 下发的 `available`（阶段 5 · F9 之前这里读的
+ * 是一份抄来的镜像清单）。**清单读不出来时一句都不说**：这时"这个字段有没有
+ * 数据源"根本无从判断，而这条提示的分量是"这条规则是死的"。
  */
-export function neverMatchesForLackOfDataSource(rule: Rule): boolean {
+export function neverMatchesForLackOfDataSource(
+  schema: RulesSchema | null,
+  rule: Rule,
+): boolean {
+  if (schema === null) return false
   if (rule.condsMalformed || rule.conds.length === 0) return false
   return rule.conds.every((c) => {
     if (c === null) return false
-    const spec = fieldSpec(c.f)
-    return spec !== null && !spec.available
+    const field = fieldOf(schema, c.f)
+    return field !== null && !field.available
   })
 }

@@ -1,15 +1,16 @@
 import { describe, expect, test } from 'vitest'
 import type { Rule } from '../../src/api/admin/rules'
 import {
-  ASSET_KEYS,
-  CONDITION_FIELDS,
-  OP_LABEL,
   describeCondition,
   describeEffect,
-  fieldSpec,
+  effectUsesAssetTypes,
+  fieldOf,
+  opOf,
+  splitKeywords,
   missingFactLabel,
   titleDisplay,
 } from '../../src/pages/Rules/fields'
+import { RULES_SCHEMA } from '../helpers/rulesSchema'
 import {
   STACK_META,
   blockedByUnconditional,
@@ -40,84 +41,127 @@ function rule(over: Partial<Rule>): Rule {
   }
 }
 
-/* ── 字段与运算符清单 ─────────────────────────────────────────── */
+/* ── 字段与运算符清单：全部来自 GET /rules/schema ──────────────── */
 
-describe('条件字段清单（spec §5.3）', () => {
-  test('六个字段一个不少，运算符逐字对齐后端 CONDITION_FIELDS', () => {
-    expect(Object.keys(CONDITION_FIELDS)).toEqual(['title', 'dept', 'host', 'dur', 'age', 'arch'])
-    expect(CONDITION_FIELDS.title!.ops).toEqual(['has', 'nothas'])
-    expect(CONDITION_FIELDS.dept!.ops).toEqual(['in', 'notin'])
-    expect(CONDITION_FIELDS.host!.ops).toEqual(['is', 'isnot'])
-    expect(CONDITION_FIELDS.dur!.ops).toEqual(['gt', 'lt'])
-    expect(CONDITION_FIELDS.age!.ops).toEqual(['within', 'before'])
-    expect(CONDITION_FIELDS.arch!.ops).toEqual(['isarch', 'notarch'])
-  })
-
-  test('每个运算符都有中文名——清单里出现的字一个都不能落到 undefined', () => {
-    for (const spec of Object.values(CONDITION_FIELDS)) {
-      for (const op of spec.ops) expect(OP_LABEL[op]).toBeTypeOf('string')
-    }
-  })
-
-  test('dept 可见但禁用，且带得出原因（R0 已定为不做，这是最终形态）', () => {
-    expect(CONDITION_FIELDS.dept!.available).toBe(false)
-    expect(CONDITION_FIELDS.dept!.unavailableReason).toMatch(/企业微信通讯录/)
-    // 其余五个都有数据源
-    for (const [key, spec] of Object.entries(CONDITION_FIELDS)) {
-      if (key !== 'dept') expect(spec.available).toBe(true)
-    }
+describe('条件字段清单（后端下发，前端不存一份）', () => {
+  test('查表读的就是 schema 里那几项，前端没有第二份清单', () => {
+    expect(RULES_SCHEMA.fields.map((f) => f.f)).toEqual([
+      'title',
+      'dept',
+      'host',
+      'dur',
+      'age',
+      'arch',
+    ])
+    expect(fieldOf(RULES_SCHEMA, 'title')!.label).toBe('会议标题')
+    expect(opOf(fieldOf(RULES_SCHEMA, 'age'), 'within')!.label).toBe('在最近')
   })
 
   test('未知字段返回 null，不当成某个已知字段——静默认错比报错危险', () => {
-    expect(fieldSpec('titel')).toBeNull()
-    expect(fieldSpec('title')).not.toBeNull()
+    expect(fieldOf(RULES_SCHEMA, 'titel')).toBeNull()
+    expect(fieldOf(RULES_SCHEMA, 'title')).not.toBeNull()
+  })
+
+  test('字段认得但不支持这个运算符时返回 null，不折成它的第一个运算符', () => {
+    expect(opOf(fieldOf(RULES_SCHEMA, 'title'), 'hasnt')).toBeNull()
+  })
+
+  test('清单读不出来（schema 为 null）时查不到任何东西，也不会凭空变出一份', () => {
+    expect(fieldOf(null, 'title')).toBeNull()
+    expect(effectUsesAssetTypes(null, 'fetch', 'all')).toBe(false)
+  })
+
+  test('关键词的切法用后端下发的那一个（英文逗号 / 中文逗号 / 空白都认）', () => {
+    expect(splitKeywords(fieldOf(RULES_SCHEMA, 'title'), '财务，市场 复盘')).toEqual([
+      '财务',
+      '市场',
+      '复盘',
+    ])
+  })
+
+  test('拿不到切法时整串当一个词，不随手补一个正则顶上', () => {
+    expect(splitKeywords(fieldOf(RULES_SCHEMA, 'host'), '财务，市场')).toEqual(['财务，市场'])
+    expect(splitKeywords(null, '财务，市场')).toEqual(['财务，市场'])
+  })
+
+  test('资产类型选了之后算不算数，也是后端说的', () => {
+    expect(effectUsesAssetTypes(RULES_SCHEMA, 'fetch', 'all')).toBe(true)
+    expect(effectUsesAssetTypes(RULES_SCHEMA, 'fetch', 'skip')).toBe(false)
+    expect(effectUsesAssetTypes(RULES_SCHEMA, 'allow', 'allow')).toBe(true)
+    // 取值域之外的一律 false：说不准的时候不显示资产选择器
+    expect(effectUsesAssetTypes(RULES_SCHEMA, 'fetch', 'garbage')).toBe(false)
   })
 })
 
 describe('describeCondition', () => {
-  test('照后端的分隔口径切关键词（英文逗号 / 中文逗号 / 空白都认）', () => {
-    expect(describeCondition({ f: 'title', op: 'has', v: '财务，市场 复盘' })).toBe(
+  const desc = (cond: { f: string; op: string; v?: unknown } | null) =>
+    describeCondition(RULES_SCHEMA, cond)
+
+  test('照后端下发的分隔口径切关键词（英文逗号 / 中文逗号 / 空白都认）', () => {
+    expect(desc({ f: 'title', op: 'has', v: '财务，市场 复盘' })).toBe(
       '会议标题 包含任一「财务 / 市场 / 复盘」',
     )
   })
 
   test('无值运算符不拼一个空的值', () => {
-    expect(describeCondition({ f: 'arch', op: 'isarch' })).toBe('归档状态 已写入 NAS')
+    expect(desc({ f: 'arch', op: 'isarch' })).toBe('归档状态 已写入 NAS')
   })
 
-  test('数字字段带单位', () => {
-    expect(describeCondition({ f: 'dur', op: 'gt', v: 30 })).toBe('会议时长 大于 30 分钟')
-    expect(describeCondition({ f: 'age', op: 'within', v: 90 })).toBe('录制结束 在最近 90 天内')
+  test('数字字段带单位，「内」也是后端给的，不是前端为 within 写的特例', () => {
+    expect(desc({ f: 'dur', op: 'gt', v: 30 })).toBe('会议时长 大于 30 分钟')
+    expect(desc({ f: 'age', op: 'within', v: 90 })).toBe('录制结束 在最近 90 天内')
   })
 
   test('未知字段 / 未知运算符照原样显示并标出来，不假装读得懂', () => {
-    expect(describeCondition({ f: 'titel', op: 'has', v: 'x' })).toBe('未知字段「titel」 has「x」')
-    expect(describeCondition({ f: 'title', op: 'hasnt', v: 'x' })).toBe(
-      '会议标题 不支持的运算符「hasnt」「x」',
+    expect(desc({ f: 'titel', op: 'has', v: 'x' })).toBe('未知字段「titel」 has「x」')
+    expect(desc({ f: 'title', op: 'hasnt', v: 'x' })).toBe('会议标题 不支持的运算符「hasnt」「x」')
+  })
+
+  test('后端漏登记运算符中文名时说出来，不拿 op 原值冒充中文名', () => {
+    const holey = structuredClone(RULES_SCHEMA)
+    holey.fields[0]!.ops[0]!.label = null
+    expect(describeCondition(holey, { f: 'title', op: 'has', v: 'x' })).toBe(
+      '会议标题 运算符「has」（后端没有登记中文名）「x」',
     )
   })
 
+  test('清单读不出来时只报库里的原值，一个字都不猜', () => {
+    expect(describeCondition(null, { f: 'title', op: 'has', v: '财务' })).toBe('title has「财务」')
+  })
+
   test('写坏的条件项（null）说得出它写坏了，不渲染成空', () => {
-    expect(describeCondition(null)).toBe('这个条件写坏了（不是 { f, op, v } 形式的对象）')
+    expect(desc(null)).toBe('这个条件写坏了（不是 { f, op, v } 形式的对象）')
+    expect(describeCondition(null, null)).toBe('这个条件写坏了（不是 { f, op, v } 形式的对象）')
   })
 })
 
-describe('describeEffect —— 与后端 describeStackEffect 同一套说法', () => {
+describe('describeEffect —— 取值域来自 schema，句子的拼法留在前端', () => {
+  const eff = (kind: string, effect: string, assets: string[] = []) =>
+    describeEffect(RULES_SCHEMA, kind, effect, assets)
+
   test('三栈各自的正反两面', () => {
-    expect(describeEffect('fetch', 'all', ['ai_minutes'])).toBe('拉取（ai_minutes）')
-    expect(describeEffect('fetch', 'skip', [])).toBe('不拉取')
-    expect(describeEffect('archive', 'skip', [])).toBe('不归档')
-    expect(describeEffect('archive', '/nas/finance/{年}/', [])).toBe('归档到 /nas/finance/{年}/')
-    expect(describeEffect('allow', 'allow', ['*'])).toBe('准许采集（*）')
-    expect(describeEffect('allow', 'deny', [])).toBe('禁止采集')
+    expect(eff('fetch', 'all', ['ai_minutes'])).toBe('拉取（ai_minutes）')
+    expect(eff('fetch', 'skip')).toBe('不拉取')
+    expect(eff('archive', 'skip')).toBe('不归档')
+    expect(eff('archive', '/nas/finance/{年}/')).toBe('归档到 /nas/finance/{年}/')
+    expect(eff('allow', 'allow', ['*'])).toBe('准许采集（*）')
+    expect(eff('allow', 'deny')).toBe('禁止采集')
   })
 
-  test('正面判定却一类资产都没列——后端的说法是"未列出任何资产类型"，照抄', () => {
-    expect(describeEffect('allow', 'allow', [])).toBe('准许采集（未列出任何资产类型）')
+  test('正面判定却一类资产都没列，说出来', () => {
+    expect(eff('allow', 'allow', [])).toBe('准许采集（未列出任何资产类型）')
   })
 
   test('认不出的 effect 原样显示并标出来，不替它落一个兜底', () => {
-    expect(describeEffect('fetch', 'text', [])).toBe('认不出的 effect「text」')
+    // 这条兜底比后端严：后端的 describeStackEffect 只在归一化之后才被调用，
+    // 而前端拿到的 `rule.effect` 是库里那一列的原值
+    expect(eff('fetch', 'text')).toBe('认不出的 effect「text」')
+    expect(eff('archive', '   ')).toBe('认不出的 effect「   」')
+    expect(eff('sideways', 'all')).toBe('认不出的 effect「all」')
+  })
+
+  test('清单读不出来时只报 effect 原值，不说它认不认得', () => {
+    expect(describeEffect(null, 'fetch', 'all', ['*'])).toBe('all')
   })
 })
 
@@ -156,9 +200,9 @@ describe('titleDisplay —— "标题缺失"与"标题为空"必须分得开', (
   })
 })
 
-describe('八类资产', () => {
+describe('八类资产（同样来自 schema，前端不再抄一份键名）', () => {
   test('用网关的键名，不许出现 summary / aitr / digest 那套短名', () => {
-    expect(ASSET_KEYS.map((a) => a.key)).toEqual([
+    expect(RULES_SCHEMA.assetTypes.map((a) => a.value)).toEqual([
       'video',
       'audio',
       'transcript',
@@ -168,7 +212,7 @@ describe('八类资产', () => {
       'ai_speaker_minutes',
       'ai_ds_minutes',
     ])
-    for (const a of ASSET_KEYS) expect(a.label).toBeTypeOf('string')
+    for (const a of RULES_SCHEMA.assetTypes) expect(a.label).toBeTypeOf('string')
   })
 })
 
@@ -273,40 +317,42 @@ describe('blockedByUnconditional —— 只说得准的那一种"被上面挡住
 })
 
 describe('neverMatchesForLackOfDataSource —— 只有 dept 条件的规则永远不会命中', () => {
+  const never = (over: Partial<Rule>) => neverMatchesForLackOfDataSource(RULES_SCHEMA, rule(over))
+
   test('全是 dept 条件时报得出来（and / or 都一样）', () => {
-    expect(neverMatchesForLackOfDataSource(rule({ conds: [{ f: 'dept', op: 'in', v: ['财务部'] }] }))).toBe(
-      true,
-    )
+    expect(never({ conds: [{ f: 'dept', op: 'in', v: ['财务部'] }] })).toBe(true)
     expect(
-      neverMatchesForLackOfDataSource(
-        rule({
-          join: 'or',
-          conds: [
-            { f: 'dept', op: 'in', v: ['财务部'] },
-            { f: 'dept', op: 'notin', v: ['市场部'] },
-          ],
-        }),
-      ),
+      never({
+        join: 'or',
+        conds: [
+          { f: 'dept', op: 'in', v: ['财务部'] },
+          { f: 'dept', op: 'notin', v: ['市场部'] },
+        ],
+      }),
     ).toBe(true)
   })
 
   test('掺了一个有数据源的字段时，用「或」连就可能命中——不许下断言', () => {
     expect(
-      neverMatchesForLackOfDataSource(
-        rule({
-          join: 'or',
-          conds: [
-            { f: 'dept', op: 'in', v: ['财务部'] },
-            { f: 'title', op: 'has', v: '财务' },
-          ],
-        }),
-      ),
+      never({
+        join: 'or',
+        conds: [
+          { f: 'dept', op: 'in', v: ['财务部'] },
+          { f: 'title', op: 'has', v: '财务' },
+        ],
+      }),
     ).toBe(false)
   })
 
   test('空条件 / conds 写坏 / 有 null 条件时都不下断言', () => {
-    expect(neverMatchesForLackOfDataSource(rule({ conds: [] }))).toBe(false)
-    expect(neverMatchesForLackOfDataSource(rule({ conds: [], condsMalformed: true }))).toBe(false)
-    expect(neverMatchesForLackOfDataSource(rule({ conds: [null] }))).toBe(false)
+    expect(never({ conds: [] })).toBe(false)
+    expect(never({ conds: [], condsMalformed: true })).toBe(false)
+    expect(never({ conds: [null] })).toBe(false)
+  })
+
+  test('清单读不出来时一句都不说——「这条规则是死的」不是能猜的结论', () => {
+    expect(
+      neverMatchesForLackOfDataSource(null, rule({ conds: [{ f: 'dept', op: 'in', v: ['财务部'] }] })),
+    ).toBe(false)
   })
 })
