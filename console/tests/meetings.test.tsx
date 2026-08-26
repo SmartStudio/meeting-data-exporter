@@ -1,37 +1,236 @@
-import { Profiler, type ProfilerOnRenderCallback } from 'react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, test, vi } from 'vitest'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
-import type { Meeting, SystemState } from '../src/api/types'
-import { mockApi } from '../src/api/mock'
-import { CONSUMERS } from '../src/api/mock/consumers'
-import { MEETINGS, MOCK_NOW } from '../src/api/mock/meetings'
-import { SYSTEM_STATES, SystemStateProvider } from '../src/app/SystemStatus'
+import { SystemStateProvider } from '../src/app/SystemStatus'
 import MeetingsPage from '../src/pages/Meetings'
-import { MeetingTable } from '../src/pages/Meetings/MeetingTable'
 import { emptyKind } from '../src/pages/Meetings/MeetingTable'
-import {
-  allowWhyKind,
-  applyWrite,
-  archiveWhyKind,
-  grantCellKind,
-  type MeetingWrite,
-} from '../src/pages/Meetings/write'
 import { TRIAGE_DEFS } from '../src/pages/Meetings/TriageBar'
+import {
+  allowView,
+  dotState,
+  extendedText,
+  grantCellKind,
+  whyLabel,
+  whyTone,
+  WHY_MISSING_LABEL,
+} from '../src/pages/Meetings/display'
+import { batchSummary, failureOf, tally } from '../src/pages/Meetings/writes'
 import { isActivationTarget, isTypingTarget, resolveMeetingKey } from '../src/lib/keys'
 
-/** mock 的"今天"。测试里任何时间基准都从它派生，手抄的话 mock 一改就静默错位。 */
-const NOW = new Date(MOCK_NOW * 1000)
+/* ══════════════════════════════════════════════════════════════════
+   一台答 admin 端点的假网关
+   ══════════════════════════════════════════════════════════════════ */
+
+interface Call {
+  method: string
+  path: string
+  query: URLSearchParams
+  body: unknown
+}
+
+let calls: Call[] = []
+/** 端点 → 响应。键是 `METHOD /path`（路径里的 :id 用真值），值可以是函数。 */
+type Reply = { status: number; body: unknown }
+let handler: (call: Call) => Reply | undefined
+
+function lastQuery(path: string): URLSearchParams | undefined {
+  return [...calls].reverse().find((c) => c.path === path)?.query
+}
+
+function callsTo(method: string, path: string): Call[] {
+  return calls.filter((c) => c.method === method && c.path === path)
+}
+
+function installFetch(): void {
+  calls = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
+      const url = new URL(String(input), 'http://console.test')
+      const method = (init.method ?? 'GET').toUpperCase()
+      const call: Call = {
+        method,
+        path: url.pathname,
+        query: url.searchParams,
+        body: typeof init.body === 'string' && init.body !== '' ? JSON.parse(init.body) : undefined,
+      }
+      calls.push(call)
+      const reply = handler(call) ?? { status: 501, body: { error: 'no_stub', path: call.path } }
+      return new Response(JSON.stringify(reply.body), {
+        status: reply.status,
+        headers: { 'content-type': 'application/json' },
+      })
+    }),
+  )
+}
+
+/* ── 种子 ─────────────────────────────────────────────────────── */
+
+const HOUR = 3600
+const DAY = 86400
+/** 「现在」用真实时钟——页面已经不再有钉死的 MOCK_NOW，测试跟着它走。 */
+const nowSec = (): number => Math.floor(Date.now() / 1000)
+
+function meeting(over: Record<string, unknown> = {}): Record<string, unknown> {
+  const archivedAt = nowSec() - 2 * DAY
+  return {
+    id: 'm1',
+    meetingId: 'm1',
+    subMeetingId: '',
+    title: '产品周会',
+    code: '881-123-40',
+    startAt: nowSec() - 2 * DAY - HOUR,
+    durationSec: 6720,
+    host: 'zouyanjian',
+    missing: [],
+    assets: { video: { got: 1, total: 1 }, ai_minutes: { got: 2, total: 3 } },
+    unknownAssetTypes: [],
+    fetch: 'done',
+    archive: 'done',
+    grants: ['kb-indexer'],
+    hand: [],
+    keep: {
+      archivedAt,
+      expiresAt: archivedAt + 30 * DAY,
+      extended: 0,
+      extendedSource: 'none',
+      extendedDays: 0,
+      retentionDays: 30,
+      filesGone: false,
+    },
+    nasPath: '/nas/meetings/2026/08/88112340-产品周会/',
+    sizeBytes: 23907140,
+    allow: 'allow',
+    why: {
+      fetch: { by: 'rule', text: '拉取规则 #100 判定全拉' },
+      archive: { by: 'rule', text: '归档规则 #100，已写入 NAS' },
+      allow: { by: 'rule', text: '权限规则 #100 准许采集' },
+    },
+    history: [],
+    ...over,
+  }
+}
+
+const M2 = meeting({ id: 'm2', meetingId: 'm2', title: '技术评审', code: '881-130-05', grants: [] })
+const M3 = meeting({
+  id: 'm3',
+  meetingId: 'm3',
+  title: '客户访谈',
+  code: '881-140-11',
+  archive: 'failed',
+  grants: [],
+  nasPath: null,
+  keep: {
+    archivedAt: null,
+    expiresAt: null,
+    extended: 0,
+    extendedSource: 'none',
+    extendedDays: 0,
+    retentionDays: null,
+    filesGone: false,
+  },
+  why: {
+    fetch: { by: 'rule', text: '拉取规则 #100 判定全拉' },
+    archive: { by: 'fail', text: '归档失败：NAS 写入被拒' },
+    allow: { by: 'wait', text: '尚未归档成功，没有可授权的资产' },
+  },
+})
+
+const TRIAGE = { archiveFailed: 7, expiringIn7d: 3, awaitingGrant: 4, inProgress: 1, nasOnly: 5 }
+
+const PROGRAMS = [
+  { id: 'kb-indexer', name: '知识库索引器', tmUserId: 'tm-1', enabled: true, expiresAt: null, createdAt: 1 },
+  { id: 'daily-digest', name: '简报机器人', tmUserId: 'tm-2', enabled: true, expiresAt: null, createdAt: 1 },
+]
+
+function emptyHistory(): unknown {
+  return { meeting: null, rows: [], window: { since: null, sinceSource: null, text: null } }
+}
+
+/** 默认世界：三场会议、五格计数、两个采集程序，写操作一律成功。 */
+function defaultHandler(rows: unknown[] = [meeting(), M2, M3]): (c: Call) => Reply | undefined {
+  return (c) => {
+    if (c.method === 'GET' && c.path === '/api/v1/admin/meetings') {
+      const limit = Number(c.query.get('limit') ?? '50')
+      const offset = Number(c.query.get('offset') ?? '0')
+      return { status: 200, body: { rows: rows.slice(offset, offset + limit), total: rows.length, limit, offset } }
+    }
+    if (c.method === 'GET' && c.path === '/api/v1/admin/meetings/triage') {
+      return { status: 200, body: TRIAGE }
+    }
+    if (c.method === 'GET' && c.path === '/api/v1/admin/programs') return { status: 200, body: PROGRAMS }
+    if (c.method === 'GET' && /\/history$/.test(c.path)) return { status: 200, body: emptyHistory() }
+    if (c.method === 'GET' && /\/meetings\/[^/]+$/.test(c.path)) {
+      const id = decodeURIComponent(c.path.split('/').pop() ?? '')
+      const row = rows.find((r) => (r as { id: string }).id === id)
+      return row ? { status: 200, body: row } : { status: 404, body: { error: 'meeting_not_found' } }
+    }
+    if (c.method === 'POST' && /\/extend$/.test(c.path)) {
+      return {
+        status: 200,
+        body: {
+          meetingId: 'm1',
+          subMeetingId: '',
+          addedDays: 30,
+          extendedDays: 30,
+          archivedAt: nowSec() - 2 * DAY,
+          expiresAt: nowSec() + 58 * DAY,
+        },
+      }
+    }
+    if (c.method === 'POST' && /\/grants$/.test(c.path)) {
+      return {
+        status: 200,
+        body: {
+          id: 1,
+          meetingId: 'm1',
+          subMeetingId: '',
+          programId: String((c.body as { programId: string }).programId),
+          assetTypes: null,
+          grantedAt: nowSec(),
+          revokedAt: null,
+        },
+      }
+    }
+    if (c.method === 'DELETE' && /\/grants\//.test(c.path)) return { status: 200, body: { revoked: true } }
+    if (c.method === 'PUT' && /\/override$/.test(c.path)) {
+      const b = c.body as { kind: string; effect: string; reason: string }
+      return {
+        status: 200,
+        body: {
+          id: 9,
+          meetingId: 'm1',
+          subMeetingId: '',
+          kind: b.kind,
+          effect: b.effect,
+          assetTypes: null,
+          reason: b.reason,
+          createdAt: nowSec(),
+          revokedAt: null,
+        },
+      }
+    }
+    if (c.method === 'DELETE' && /\/override\//.test(c.path)) return { status: 200, body: { revoked: true } }
+    return undefined
+  }
+}
+
+beforeEach(() => {
+  installFetch()
+  handler = defaultHandler()
+})
+afterEach(() => vi.unstubAllGlobals())
+
+/* ── 渲染 ─────────────────────────────────────────────────────── */
 
 /**
- * 只挂会议记录页本体（不套 AppShell）——外壳的行为由 `shell.test.tsx` 负责，
- * 这里要测的是这一页自己的交互。`/preview/:id` 与 `/rules` 给了真实的目标路由，
- * 好断言"点标题真的跳走了"，而不只是"点了一下没报错"。
+ * 只挂会议记录页本体（不套 AppShell）——外壳的行为由 `shell.test.tsx` 负责。
+ * `/preview/:id` 与 `/rules` 给了真实的目标路由，好断言"点标题真的跳走了"。
  */
-function renderPage(initialState: SystemState = 'ok') {
+function renderPage() {
   const router = createMemoryRouter(
     [
       { path: '/meetings', element: <MeetingsPage /> },
@@ -42,13 +241,12 @@ function renderPage(initialState: SystemState = 'ok') {
     { initialEntries: ['/meetings'] },
   )
   return render(
-    <SystemStateProvider initialState={initialState}>
+    <SystemStateProvider initialState="ok">
       <RouterProvider router={router} />
     </SystemStateProvider>,
   )
 }
 
-/** 等第一批会议行落地。 */
 async function ready() {
   await waitFor(() => expect(screen.getByTestId('row-m1')).toBeInTheDocument())
 }
@@ -62,786 +260,742 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
-function rowIds(): string[] {
-  return Array.from(document.querySelectorAll<HTMLElement>('tbody tr[data-id]')).map(
-    (tr) => tr.dataset.id ?? '',
-  )
+/** TS 源码去注释。注释里提到 applyWrite（说明它为什么被删）不算它回来了。 */
+function stripTs(source: string): string {
+  return stripComments(source).replace(/^\s*\/\/.*$/gm, '')
 }
 
-/** `loading` 的 promise 永不 resolve、`load-failed` 直接抛——用它做哨兵把两者滤掉。 */
-const NO_DATA = Symbol('no-data')
-
-/**
- * 某个系统状态下的种子数据；这一态压根不给数据时返回 `null`。
- *
- * 用「宏任务哨兵 + race」判"给不给数据"，而不是手写一张"哪几种有数据"的名单：
- * 名单会漏，race 不会。有数据的那几态在**微任务**里就 resolve（`listMeetings`
- * 是 async 函数直接 return），稳定跑赢 `setTimeout(…, 0)` 这个宏任务。
- */
-async function seedsOf(state: SystemState): Promise<Meeting[] | null> {
-  const noData = new Promise<typeof NO_DATA>((r) => setTimeout(() => r(NO_DATA), 0))
-  try {
-    const got = await Promise.race([mockApi(state).listMeetings(), noData])
-    return got === NO_DATA ? null : got
-  } catch {
-    return null // load-failed：抛错，同样没有种子可查
-  }
+/** 浮层是不是真的开着。Overlay 始终挂载，只用 data-state 切——
+ *  按文本查得到不等于它开着，这个区别在 jsdom 里必须显式断言。 */
+function panel(name: string | RegExp): HTMLElement {
+  return screen.getByRole('dialog', { name })
+}
+function isOpen(el: HTMLElement): boolean {
+  return el.getAttribute('data-state') === 'open'
 }
 
-/**
- * **对 `SystemState` 全枚举**取种子数据。
- *
- * 原来这里硬编码 `MEETINGS` 与 `applyNasDown(MEETINGS)` 两份。再加一个会改会议
- * 数据的系统状态变形，它不会自动进这个循环——而 `applyNasDown` 正是本计划抓出的
- * 第四处同类 bug（改状态不改理由），数据层确实会出这种事。
- * `SYSTEM_STATES` 由 `Record<SystemState, …>` 派生，少一种编译就不过，
- * 于是这张网不用谁记得去手维护。
- */
-async function allSeeds(): Promise<{ seeds: Array<[SystemState, Meeting]>; states: SystemState[] }> {
-  const seeds: Array<[SystemState, Meeting]> = []
-  const states: SystemState[] = []
-  for (const state of SYSTEM_STATES) {
-    const rows = await seedsOf(state)
-    if (rows === null) continue
-    states.push(state)
-    for (const m of rows) seeds.push([state, m])
-  }
-  return { seeds, states }
-}
+/* ══════════════════════════════════════════════════════════════════
+   数据来源：真 API
+   ══════════════════════════════════════════════════════════════════ */
 
-describe('会议记录页 · 分诊条', () => {
-  test('分诊条五格都在，点某格即筛选', async () => {
+describe('会议记录页 · 数据全部来自真实端点', () => {
+  test('首屏打三条真实请求：列表、分诊、采集程序', async () => {
+    renderPage()
+    await ready()
+    expect(callsTo('GET', '/api/v1/admin/meetings')).toHaveLength(1)
+    expect(callsTo('GET', '/api/v1/admin/meetings/triage')).toHaveLength(1)
+    expect(callsTo('GET', '/api/v1/admin/programs')).toHaveLength(1)
+  })
+
+  test('页面源码里一行 mock 都不 import —— 这一页是 F0 那道门槛关上的地方', () => {
+    const files = [
+      'src/pages/Meetings/index.tsx',
+      'src/pages/Meetings/useMeetings.ts',
+      'src/pages/Meetings/MeetingDetail.tsx',
+      'src/pages/Meetings/MeetingRow.tsx',
+      'src/pages/Meetings/MeetingTable.tsx',
+      'src/pages/Meetings/display.ts',
+      'src/pages/Meetings/writes.ts',
+    ]
+    for (const f of files) {
+      expect(css(f), `${f} 还在 import mock`).not.toMatch(/from '[^']*api\/mock/)
+    }
+  })
+
+  test('「今天」是真实时钟，不是钉死的 MOCK_NOW', async () => {
+    renderPage()
+    await ready()
+    // 种子里 m1 归档于 2 天前、窗口 30 天 → 还剩 28 天。这条只有在
+    // now = new Date() 时才成立；钉在 2026-08-23 的话它会随真实日期漂移。
+    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 28 天')
+  })
+})
+
+describe('分诊条 · 计数走自己的端点（回归）', () => {
+  test('五格显示的是 /meetings/triage 的数，不是当页那几行数出来的', async () => {
+    renderPage()
+    await ready()
+    // 当页只有 3 行、其中 1 行归档失败；端点说 7。显示必须是 7。
+    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('7')
+    expect(screen.getByTestId('triage-count-nasonly')).toHaveTextContent('5')
+    expect(screen.getByTestId('triage-count-ungranted')).toHaveTextContent('4')
+  })
+
+  test('翻页之后五格不变 —— 它统计的是全部会议', async () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      meeting({ id: `x${i}`, meetingId: `x${i}`, title: `会议 ${i}` }),
+    )
+    handler = defaultHandler(many)
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('row-x0')).toBeInTheDocument())
+    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('7')
+
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    await waitFor(() => expect(screen.getByTestId('row-x10')).toBeInTheDocument())
+    // 翻页只重取列表，五格照旧是端点给的那一份
+    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('7')
+    expect(lastQuery('/api/v1/admin/meetings')?.get('offset')).toBe('10')
+  })
+
+  test('计数端点挂了时显示「？」而不是 0 —— 0 会被读成"没有需要处理的"', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      c.path === '/api/v1/admin/meetings/triage' ? { status: 500, body: { error: 'boom' } } : base(c)
+    renderPage()
+    await ready()
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('？'))
+    expect(screen.getByTestId('triage-count-archfail')).not.toHaveTextContent('0')
+    expect(screen.getByTestId('triage-archfail')).toBeDisabled()
+  })
+
+  test('点一格把 ?triage= 发给服务端，再点取消；一次只能筛一格', async () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
 
-    // 五格顺序就是紧急程度：最紧急的是"到期会永久丢失"。
-    const labels = ['归档失败', '7 天内到期', '待授权', '处理中', '仅存 NAS']
-    const cards = within(screen.getByTestId('triage-bar')).getAllByRole('button')
-    expect(cards).toHaveLength(5)
-    labels.forEach((label, i) => expect(cards[i]).toHaveTextContent(label))
-
-    // 计数来自真实 mock 数据，不是写死的
-    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1')
-    expect(rowIds()).toHaveLength(9)
-
     await user.click(screen.getByTestId('triage-archfail'))
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('triage')).toBe('archiveFailed'))
 
-    expect(screen.getByTestId('triage-archfail')).toHaveAttribute('aria-pressed', 'true')
-    // 只剩归档失败的那一场（m3 客户沟通 · 华东区）
-    expect(rowIds()).toEqual(['m3'])
+    // 点另一格是"换一格"，不是"求交"——后端的 ?triage= 只收一个取值
+    await user.click(screen.getByTestId('triage-nasonly'))
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('triage')).toBe('nasOnly'))
+    expect(screen.getByTestId('triage-archfail')).toHaveAttribute('aria-pressed', 'false')
 
-    // 再点一次取消筛选
-    await user.click(screen.getByTestId('triage-archfail'))
-    expect(rowIds()).toHaveLength(9)
+    await user.click(screen.getByTestId('triage-nasonly'))
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.has('triage')).toBe(false))
   })
 
-  test('加载中时分诊条用骨架卡而不是隐藏——隐藏会让布局跳', async () => {
-    renderPage('loading')
-
-    const bar = await screen.findByTestId('triage-bar')
-    // 关键断言：这一排**在**（占着位置），只是内容换成了骨架
-    expect(bar).toBeInTheDocument()
-    expect(bar).toHaveAttribute('data-loading', 'true')
-    expect(bar.querySelectorAll('[data-skeleton="true"]')).toHaveLength(5)
-    // 骨架期间不该冒出可点的筛选按钮（点了会筛一份还不存在的数据）
-    expect(within(bar).queryAllByRole('button')).toHaveLength(0)
-
-    // 表格也是骨架行，且分页器说明正在读取——不是一片空白
-    expect(document.querySelectorAll('tbody tr[data-skeleton="true"]')).toHaveLength(6)
-    expect(screen.getByTestId('meetings-loading')).toHaveTextContent('正在读取')
-
-    // 工具条同样保留（禁用态），否则数据到了整页还是要往下跳一次
-    expect(screen.getByRole('searchbox', { name: '搜索会议' })).toBeDisabled()
-  })
-
-  test('归档失败的行是红的，且分诊条第一格计数与之相符', async () => {
-    renderPage()
-    await ready()
-
-    // 「红」在 jsdom 里读不出来（不解析 var()），所以断言两件能真实反映的事：
-    // 1) 这一处声明的是 fail 语义档，2) CSS 把 fail 档接到了 --fail 上。
-
-    // **先断言行**：这条测试的名字说的就是"行"。之前它只查了分诊格和
-    // TriageBar 的 CSS——需求（表格里那一支的着色）压根没做，测试名字却写着
-    // 做了，比没有测试更危险。
-    const keep = screen.getByTestId('keep-m3')
-    // 归档失败 ⇒ 保留期根本没开始计时，这句必须说出来，不能画一根空进度条
-    expect(keep).toHaveTextContent('归档失败，未开始计时')
-    expect(keep.querySelector('[data-fail="true"]')).not.toBeNull()
-    const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
-    expect(rowCss).toMatch(/\.keepNone\[data-fail='true'\]\s*\{\s*color:\s*var\(--fail\)/)
-
-    // 对照组：**没归档**和**归档失败**不能是同一个灰。m4 只是还没归档。
-    const notArchived = screen.getByTestId('keep-m4')
-    expect(notArchived).toHaveTextContent('未归档')
-    expect(notArchived.querySelector('[data-fail="true"]')).toBeNull()
-
-    // 分诊格与表格里真的处在归档失败状态的行数一致
-    expect(screen.getByTestId('triage-archfail')).toHaveAttribute('data-tone', 'fail')
-    const triageCss = css('src/pages/Meetings/TriageBar.module.css')
-    expect(triageCss).toMatch(/\[data-tone='fail'\]\s*\.count\s*\{\s*color:\s*var\(--fail\)/)
-    const failed = screen.getAllByRole('button', { name: /归档到 NAS：失败/ })
-    expect(failed).toHaveLength(1)
-    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1')
-    expect(failed[0]!.closest('tr')).toHaveAttribute('data-id', 'm3')
+  test('分诊格的定义里没有前端的判据 —— 计数与筛选都在服务端', () => {
+    for (const def of TRIAGE_DEFS) {
+      expect(def).not.toHaveProperty('test')
+      expect(typeof def.bucket).toBe('string')
+    }
   })
 })
 
-describe('会议记录页 · 三态与三种空态', () => {
-  test('加载失败给出错误详情与重试，不是「暂无数据」', async () => {
-    renderPage('load-failed')
+describe('筛选与分页 · 全在服务端，前端不偷偷补内存版本', () => {
+  test('搜索防抖后进查询串', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.type(screen.getByLabelText('搜索会议'), '周会')
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('search')).toBe('周会'))
+  })
 
-    // 加载中 / 加载失败 / 两种空态各有各的 testid——它们的出口完全不同，
-    // 共用一个 testid 只会让测试抓到另一个状态然后对着它断言。
+  test('三态筛选发的是 true / false，不筛时这个键根本不出现', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    expect(lastQuery('/api/v1/admin/meetings')?.has('hasGrant')).toBe(false)
+
+    await user.click(screen.getByRole('button', { name: '筛选 ▾' }))
+    await user.click(screen.getByRole('menuitemradio', { name: '只看已授权给程序的' }))
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('hasGrant')).toBe('true'))
+
+    // 菜单选完不自动收起（三组条件常常要连着改），所以这里不用再点一次触发按钮
+    await user.click(screen.getByRole('menuitemradio', { name: '只看还没授权的' }))
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('hasGrant')).toBe('false'))
+  })
+
+  test('时间范围筛选没有了 —— 后端没有这个参数，前端不补一个只在第一页成立的', async () => {
+    renderPage()
+    await ready()
+    expect(screen.queryByRole('button', { name: /近 90 天/ })).toBeNull()
+    expect(screen.queryByRole('menuitemradio', { name: '全部时间' })).toBeNull()
+    const src = css('src/pages/Meetings/index.tsx')
+    // 内存筛选的痕迹：把当前页的行按时间/关键词再筛一遍
+    expect(src).not.toMatch(/rows\.filter/)
+  })
+
+  test('每页条数改变时回到第 1 页并带上新的 limit', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.selectOptions(screen.getByLabelText('每页条数'), '20')
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('limit')).toBe('20'))
+    expect(lastQuery('/api/v1/admin/meetings')?.get('offset')).toBe('0')
+  })
+
+  test('总数来自后端的 total，不是当页行数', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => meeting({ id: `x${i}`, meetingId: `x${i}` }))
+    handler = defaultHandler(many)
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('row-x0')).toBeInTheDocument())
+    expect(screen.getByText(/共 12/)).toBeInTheDocument()
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════════
+   三态与不许静默放行
+   ══════════════════════════════════════════════════════════════════ */
+
+describe('三态 · 加载 / 失败 / 空 各有各的出口', () => {
+  test('加载失败给出错误详情与重试，不是「暂无数据」', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      c.path === '/api/v1/admin/meetings' && c.method === 'GET'
+        ? { status: 503, body: { error: 'upstream_down' } }
+        : base(c)
+    renderPage()
     const box = await screen.findByTestId('meetings-error')
     expect(box).toHaveTextContent('读不到会议列表')
-    expect(screen.queryByTestId('meetings-loading')).not.toBeInTheDocument()
-    // 文件到底还在不在，是看到这一屏的人第一个想知道的事
     expect(box).toHaveTextContent('已经归档到 NAS 的文件不受影响')
-    // 真实的错误详情，不是一句"出错了"
-    expect(box).toHaveTextContent('503')
+    // 端点名与错误码要在界面上，否则运维只能去开 devtools
+    expect(box).toHaveTextContent('GET /api/v1/admin/meetings')
+    expect(box).toHaveTextContent('upstream_down')
     expect(within(box).getByRole('button', { name: '重试' })).toBeInTheDocument()
-    // 绝不能退化成空态文案
-    expect(box).not.toHaveTextContent('暂无数据')
-    expect(box).not.toHaveTextContent('还没有拉取过任何会议')
-
-    // 读不到的时候分诊条必须整个收起来：它算的是 rows 的长度，rows 是空的，
-    // 留着就会画出"0 归档失败"——而真相是"不知道有几场"。在一个
-    // "归档失败＝一个月后永久丢失"的系统里，这两句话差得很远。
-    expect(screen.queryByTestId('triage-bar')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('triage-count-archfail')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('meetings-empty')).toBeNull()
   })
 
-  test('空态分三种，出口各不相同', async () => {
+  test('后端少下发一个字段 → 错误态而不是白屏，且报得出是哪个字段', async () => {
+    const broken = meeting()
+    delete (broken as Record<string, unknown>).nasPath
+    handler = defaultHandler([broken])
+    renderPage()
+    const box = await screen.findByTestId('meetings-error')
+    expect(box).toHaveTextContent('rows[0].nasPath')
+    expect(box).toHaveTextContent('GET /api/v1/admin/meetings')
+  })
+
+  test('一场都没有 / 被筛没了，是两句不同的话与两个不同的出口', async () => {
+    handler = defaultHandler([])
     const user = userEvent.setup()
+    renderPage()
+    const box = await screen.findByTestId('meetings-empty')
+    expect(box).toHaveAttribute('data-kind', 'none-at-all')
+    expect(box).toHaveTextContent('还没有拉取过任何会议')
 
-    // ① 筛选筛没了 → 清除筛选
-    const filtered = renderPage()
-    await ready()
-    await user.type(screen.getByRole('searchbox', { name: '搜索会议' }), '不存在的会议')
-    const empty1 = await screen.findByTestId('meetings-empty')
-    expect(empty1).toHaveAttribute('data-kind', 'filtered-out')
-    expect(empty1).toHaveTextContent('没有符合条件的会议')
-    const clear = within(empty1).getByRole('button', { name: '清除筛选' })
-    await user.click(clear)
-    expect(rowIds()).toHaveLength(9)
-    filtered.unmount()
-
-    // ② 系统里一场都没有 → 去看拉取规则
-    const none = renderPage('empty')
-    const empty2 = await screen.findByTestId('meetings-empty')
-    expect(empty2).toHaveTextContent('还没有拉取过任何会议')
-    expect(within(empty2).getByRole('button', { name: '去看拉取规则' })).toBeInTheDocument()
-    expect(within(empty2).getByRole('button', { name: '去看定时任务' })).toBeInTheDocument()
-    // 一场都没有的时候，搜索框和筛选片没有可筛的东西，收起来
-    expect(screen.queryByRole('searchbox', { name: '搜索会议' })).not.toBeInTheDocument()
-    none.unmount()
-
-    // ③ 这段时间没有 → 换时间范围。
-    //    F1 的 mock 里有当天的会议，任何"近 N 天"都筛不空，页面级触发不到这一支；
-    //    所以直接把表格组件放到这个状态下渲染，断言它给的是**另一个**出口。
-    const onClearRange = vi.fn()
-    render(
-      <MeetingTable
-        rows={[]}
-        consumers={[]}
-        now={new Date()}
-        selected={new Set()}
-        cursorId={null}
-        onSelect={() => {}}
-        onSelectPage={() => {}}
-        onSelectAllMatching={() => {}}
-        onSelectPageOnly={() => {}}
-        allMatchingSelected={false}
-        selectedCount={0}
-        totalMatching={0}
-        page={1}
-        pageSize={10}
-        onPage={() => {}}
-        onPageSize={() => {}}
-        loading={false}
-        error={null}
-        onRetry={() => {}}
-        empty="out-of-range"
-        rangeDays={7}
-        onClearFilters={() => {}}
-        onClearRange={onClearRange}
-        onGoRules={() => {}}
-        onGoJobs={() => {}}
-        onOpenTitle={() => {}}
-        onOpenDetail={() => {}}
-        onToggleStage={() => {}}
-        onExtend={() => {}}
-        onOpenGrant={() => {}}
-        onRevoke={() => {}}
-      />,
+    // 有筛选条件时同样的 0 行是另一件事
+    await user.click(screen.getByTestId('triage-archfail'))
+    await waitFor(() =>
+      expect(screen.getByTestId('meetings-empty')).toHaveAttribute('data-kind', 'filtered-out'),
     )
-    const empty3 = screen.getByTestId('meetings-empty')
-    expect(empty3).toHaveTextContent('近 7 天内没有符合条件的会议记录')
-    await user.click(within(empty3).getByRole('button', { name: '改为全部时间' }))
-    expect(onClearRange).toHaveBeenCalled()
   })
 
-  test('三种空态的成因判定：粗的那层先答，不然给出的出口解决不了问题', () => {
-    // 系统里一场都没有的时候，给"清除筛选"是没用的
-    expect(emptyKind({ totalAll: 0, totalMatchingIgnoringRange: 0, totalMatching: 0, rangeDays: 90 })).toBe('none-at-all')
-    // 有数据、但都落在时间范围之外 → 出口是换范围，不是清筛选
-    expect(emptyKind({ totalAll: 9, totalMatchingIgnoringRange: 9, totalMatching: 0, rangeDays: 7 })).toBe('out-of-range')
-    // **去掉范围就找得到**，同样是范围的锅——哪怕范围内其实有别的会议。
-    // 旧判据（"范围内一场都没有"）会把这一支算成"被筛选筛没了"，给出的
-    // "清除筛选"点完范围没变，那一场还是找不到。
-    expect(emptyKind({ totalAll: 9, totalMatchingIgnoringRange: 1, totalMatching: 0, rangeDays: 7 })).toBe('out-of-range')
-    // 去掉范围也找不到，才是筛选把它筛没的
-    expect(emptyKind({ totalAll: 9, totalMatchingIgnoringRange: 0, totalMatching: 0, rangeDays: 7 })).toBe('filtered-out')
-    // "全部时间"下不存在"这段时间没有"
-    expect(emptyKind({ totalAll: 9, totalMatchingIgnoringRange: 9, totalMatching: 0, rangeDays: 0 })).toBe('filtered-out')
-    // 有结果就不是空态
-    expect(emptyKind({ totalAll: 9, totalMatchingIgnoringRange: 9, totalMatching: 1, rangeDays: 90 })).toBeNull()
+  test('emptyKind 的两支', () => {
+    expect(emptyKind({ total: 3, narrowed: false })).toBeNull()
+    expect(emptyKind({ total: 0, narrowed: false })).toBe('none-at-all')
+    expect(emptyKind({ total: 0, narrowed: true })).toBe('filtered-out')
   })
 })
 
-describe('会议记录页 · 选择与批量', () => {
-  test('勾表头只选本页；要选全部得再点一次，且明说总数', async () => {
-    const user = userEvent.setup()
+describe('不许静默放行', () => {
+  test('认不出的阶段状态显示「未知」，不画成任何一种圆点', async () => {
+    handler = defaultHandler([meeting({ fetch: 'teleported' })])
     renderPage()
     await ready()
-
-    // 把每页压到 5，让"本页"和"全部"真的不是一回事
-    await user.selectOptions(screen.getByLabelText('每页条数'), '5')
-    expect(rowIds()).toHaveLength(5)
-
-    await user.click(screen.getByRole('checkbox', { name: '全选本页' }))
-
-    // 关键：只选中了本页 5 场，不是全部 9 场
-    expect(screen.getByTestId('batch-count')).toHaveTextContent('5')
-
-    const hint = screen.getByTestId('select-all-hint')
-    // 说的是**实际选中的场数**，不是"本页有几行"——跨页选过之后再收窄筛选，
-    // 这两个数不一样，而底部批量条报的是前者。
-    expect(hint).toHaveTextContent('已选中 5 场')
-    // 逃生门必须明说总数——扩到全部是第二次、看得见数字的点击
-    const expand = within(hint).getByRole('button', { name: '改为选择符合筛选的全部 9 场' })
-
-    await user.click(expand)
-
-    expect(screen.getByTestId('batch-count')).toHaveTextContent('9')
-    expect(screen.getByTestId('select-all-hint')).toHaveTextContent('已选中符合当前筛选的全部 9 场')
-    expect(screen.getByTestId('batch-bar')).toHaveTextContent('含未显示的页')
-
-    // 还能收回来，只保留本页
-    await user.click(screen.getByRole('button', { name: '只保留本页' }))
-    expect(screen.getByTestId('batch-count')).toHaveTextContent('5')
+    expect(within(screen.getByTestId('row-m1')).getByText('拉取未知')).toBeInTheDocument()
+    expect(within(screen.getByTestId('row-m1')).queryByRole('button', { name: /^拉取：/ })).toBeNull()
   })
 
-  test('本页就是全部时不出逃生门——没有"更多"可扩，那句提示只会制造疑虑', async () => {
-    const user = userEvent.setup()
+  test('认不出的采集权限不画「＋ 授权给…」—— 闸门读不懂状态时必须是关着的', async () => {
+    handler = defaultHandler([meeting({ allow: 'maybe', grants: [] })])
     renderPage()
     await ready()
-
-    await user.click(screen.getByRole('checkbox', { name: '全选本页' }))
-    expect(screen.getByTestId('batch-count')).toHaveTextContent('9')
-    expect(screen.queryByTestId('select-all-hint')).not.toBeInTheDocument()
+    expect(within(screen.getByTestId('grant-m1')).getByText('权限未知')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '＋ 授权给…' })).toBeNull()
   })
 
-  test('批量条：选中才浮出，批量延长真的改到了保留期', async () => {
+  test('判定理由缺失时显示「理由缺失」并说清那是读不到，不是留空', async () => {
+    const noWhy = meeting()
+    delete (noWhy as Record<string, unknown>).why
+    handler = defaultHandler([noWhy])
     const user = userEvent.setup()
     renderPage()
     await ready()
+    await user.click(screen.getByRole('button', { name: '产品周会 的详情' }))
+    const lines = await screen.findAllByTestId('why-line')
+    expect(lines.length).toBeGreaterThanOrEqual(3)
+    for (const line of lines) {
+      expect(line).toHaveTextContent(WHY_MISSING_LABEL)
+      expect(line).toHaveTextContent('只代表这里读不到')
+    }
+  })
 
-    const bar = screen.getByTestId('batch-bar')
-    expect(bar).toHaveAttribute('data-show', 'false')
+  test('展示映射：未知一律落到 unknown，不落到 done / allow', () => {
+    expect(dotState('fetch', 'done')).toBe('done')
+    expect(dotState('fetch', 'failed')).toBe('unknown') // failed 不是拉取的取值
+    expect(dotState('archive', 'failed')).toBe('failed')
+    expect(dotState('archive', '')).toBe('unknown')
+    expect(allowView('allow')).toBe('allow')
+    expect(allowView('ALLOW')).toBe('unknown')
+    expect(whyLabel('')).toBe(WHY_MISSING_LABEL)
+    expect(whyLabel('rule')).toBe('来自规则')
+    expect(whyLabel('brand-new')).toMatch(/未知理由类型/)
+  })
 
-    // m1 保留期剩 28 天
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 28 天')
+  test('琥珀只给人工改写；失败给红；生命周期原因与理由缺失都中性', () => {
+    expect(whyTone('hand')).toBe('warn')
+    expect(whyTone('fail')).toBe('fail')
+    for (const by of ['rule', 'deny', 'expired', 'wait', 'na', '']) {
+      expect(whyTone(by)).toBe('neutral')
+    }
+  })
 
-    await user.click(screen.getByRole('checkbox', { name: '选择 产品周会' }))
-    expect(bar).toHaveAttribute('data-show', 'true')
-    expect(screen.getByTestId('batch-count')).toHaveTextContent('1')
+  test('grantCellKind：allow 认不出时是 unknown，不是 grantable', () => {
+    const base = meeting() as unknown as Parameters<typeof grantCellKind>[0]
+    expect(grantCellKind(base).kind).toBe('grantable')
+    expect(grantCellKind({ ...base, allow: 'wat' }).kind).toBe('unknown')
+    expect(grantCellKind({ ...base, allow: 'deny' }).kind).toBe('denied')
+    expect(grantCellKind({ ...base, archive: 'running' }).kind).toBe('wait')
+  })
 
-    await user.click(within(bar).getByRole('button', { name: '延长 30 天' }))
-
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 58 天')
-    // 执行完自动清空选择，避免同一批被重复执行
-    expect(screen.getByTestId('batch-bar')).toHaveAttribute('data-show', 'false')
+  test('「已延长 N 次」与「至少延长过 N 次」是两句话', () => {
+    expect(extendedText({ extended: 0, extendedSource: 'none', extendedDays: 0 } as never)).toBeNull()
+    expect(extendedText({ extended: 2, extendedSource: 'audit', extendedDays: 45 } as never)).toBe(
+      '已延长 2 次，共 45 天',
+    )
+    expect(extendedText({ extended: 1, extendedSource: 'floor', extendedDays: 30 } as never)).toBe(
+      '至少延长过 1 次，共 30 天',
+    )
   })
 })
 
-describe('会议记录页 · 保留期与人工改写', () => {
-  test('保留进度条 hover 出现「+30 天」', async () => {
+/* ══════════════════════════════════════════════════════════════════
+   写操作：发请求 + 重取，不做乐观更新
+   ══════════════════════════════════════════════════════════════════ */
+
+describe('写操作 · pending → 重取 → 界面更新', () => {
+  test('页面里没有任何"推导下一个状态"的代码（G-c 回归）', () => {
+    // write.ts 的 applyWrite 是这条裁定要删掉的东西。它不该以任何形式回来。
+    const dir = 'src/pages/Meetings/'
+    for (const f of ['index.tsx', 'display.ts', 'writes.ts', 'MeetingDetail.tsx']) {
+      const src = stripTs(css(dir + f))
+      expect(src, `${f} 里出现了 applyWrite`).not.toMatch(/applyWrite/)
+    }
+    expect(() => css('src/pages/Meetings/write.ts')).toThrow()
+  })
+
+  test('延长保留期：按钮先变 pending，成功后重取三条数据并弹提示', async () => {
+    let release: (() => void) | null = null
+    const base = defaultHandler()
+    handler = (c) => base(c)
     const user = userEvent.setup()
     renderPage()
     await ready()
 
-    const keep = screen.getByTestId('keep-m1')
-    // 进度条的可读文本里带着"还剩几天"，读屏用户没有视觉宽度可看
-    expect(within(keep).getByRole('progressbar')).toHaveAccessibleName(/还剩 28 天/)
-
-    // 按钮始终在 DOM 里（键盘 `e` 和读屏都要够得到），靠 CSS 在 hover / 光标行时才浮出来。
-    // jsdom 不做真实渲染也不跑 :hover，所以这里断言样式规则本身存在——
-    // 真实的"平时看不见"留给 T7 的浏览器检查。
-    const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
-    expect(rowCss).toMatch(/\.extendBtn\s*\{[^}]*opacity:\s*0/)
-    expect(rowCss).toMatch(/tr:hover \.extendBtn[^{]*\{\s*opacity:\s*1/)
-
-    const btn = within(keep).getByRole('button', { name: /延长 30 天/ })
-    await user.click(btn)
-
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 58 天')
-  })
-
-  test('人工改写过的行有标记', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    // m4 董事会闭门会：拉取被人工设为"永不拉取"
-    expect(screen.getByRole('button', { name: '拉取：规则不执行 · 人工改写' })).toBeInTheDocument()
-    // m1 还没被改写过
-    const m1 = screen.getByTestId('row-m1')
-    expect(within(m1).getByRole('button', { name: '拉取：已完成' })).toBeInTheDocument()
-
-    // 点一下圆点即改写这个阶段——它是开关，不是纯展示
-    await user.click(within(m1).getByRole('button', { name: '拉取：已完成' }))
-
-    expect(within(screen.getByTestId('row-m1')).getByRole('button', { name: '拉取：未执行 · 人工改写' })).toBeInTheDocument()
-    // 关掉拉取，后面的阶段跟着失效：授权撤下、保留期清零
-    expect(screen.getByTestId('grant-m1')).toHaveTextContent('未归档')
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('未归档')
-  })
-
-  test('归档圆点在拉取未完成时不可点——顺序关系是这一栏要传达的第二件事', async () => {
-    renderPage()
-    await ready()
-
-    const m4 = screen.getByTestId('row-m4')
-    expect(within(m4).getByRole('button', { name: /^归档到 NAS：/ })).toBeDisabled()
-    const m1 = screen.getByTestId('row-m1')
-    expect(within(m1).getByRole('button', { name: /^归档到 NAS：/ })).toBeEnabled()
-  })
-})
-
-describe('会议记录页 · 授权栏的状态与理由必须自洽', () => {
-  test('生命周期原因优先于权限原因——没有规则拒绝的会议不能画成「规则禁止采集」', () => {
-    const byId = (id: string) => MEETINGS.find((m) => m.id === id)!
-
-    // m6 招聘面试：确实有一条规则明确拒绝（why.allow.by === 'deny'）
-    expect(byId('m6').why.allow.by).toBe('deny')
-    expect(grantCellKind(byId('m6')).kind).toBe('denied')
-
-    // m4 董事会闭门会：allow 是 'deny'，但理由是"未拉取"（wait）——
-    // 没有任何规则拒绝过它，画成"规则禁止采集"是把状态和理由说拧了。
-    expect(byId('m4').allow).toBe('deny')
-    expect(byId('m4').why.allow.by).toBe('wait')
-    expect(grantCellKind(byId('m4')).kind).toBe('wait')
-
-    // m5 销售晨会：压根没有录制（na）
-    expect(grantCellKind(byId('m5')).kind).toBe('na')
-
-    // m8 财务复盘：本地已到期（expired），授权自动失效
-    expect(grantCellKind(byId('m8')).kind).toBe('expired')
-
-    // m2 技术评审：准许采集、已归档、还没给任何程序 → 可以授权
-    expect(grantCellKind(byId('m2')).kind).toBe('grantable')
-  })
-
-  test('deny 是中性的，不是琥珀——一直响的警报等于没有警报', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    // m6 招聘面试命中权限规则 #200，是真的被一条规则拒绝了（by === 'deny'）。
-    // 但那是规则系统在正确地干活，而且是故意且永久的——琥珀留给"这需要你
-    // 看一眼"（有人绕过了规则、保留期快到了）。一个配了隐私规则的组织会有
-    // 一整列永久琥珀，真正该被看见的琥珀就淹死在里面。
-    const cell = screen.getByTestId('grant-m6')
-    expect(cell).toHaveTextContent('规则禁止采集')
-    expect(cell.querySelector('[class*="warn"]')).toBeNull()
-
-    // 详情抽屉里那条判定理由同样是中性的
-    await user.click(within(screen.getByTestId('row-m6')).getByRole('button', { name: /详情/ }))
-    const drawer = await screen.findByRole('dialog', { name: '招聘面试 · 后端 P7' })
-    const why = drawer.querySelector('[data-by="deny"]')!
-    expect(why).not.toBeNull()
-    expect(why).toHaveAttribute('data-tone', 'neutral')
-
-    // 对照组：人工改写**必须**是琥珀——有人绕过了规则系统，那才需要人看一眼。
-    // 没有这一半，上面那半会在"所有理由都中性"时照样通过。
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(drawer).toHaveAttribute('data-state', 'closed'))
-    await user.click(within(screen.getByTestId('row-m4')).getByRole('button', { name: /详情/ }))
-    const m4Drawer = await screen.findByRole('dialog', { name: '董事会闭门会' })
-    const handWhy = m4Drawer.querySelector('[data-by="hand"]')!
-    expect(handWhy).not.toBeNull()
-    expect(handWhy).toHaveAttribute('data-tone', 'warn')
-  })
-
-  test('已授权给：pill 可加可删，＋ 授权给… 打开程序选择浮层', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    // m2 还没授权给任何程序
-    const m2Grant = screen.getByTestId('grant-m2')
-    await user.click(within(m2Grant).getByRole('button', { name: '＋ 授权给…' }))
-
-    const sheet = await screen.findByRole('dialog', { name: '授权给采集程序' })
-    expect(sheet).toHaveAttribute('data-state', 'open')
-    // 逐条核对：这场会议会不会被真的改到
-    expect(within(sheet).getByTestId('grant-picker-meetings')).toHaveTextContent('技术评审 · 网关升级')
-
-    await user.click(within(sheet).getByRole('checkbox', { name: /知识库索引器/ }))
-    await user.click(within(sheet).getByRole('button', { name: '保存授权' }))
-
-    await waitFor(() => expect(screen.getByTestId('grant-m2')).toHaveTextContent('知识库索引器'))
-
-    // pill 可删
-    await user.click(
-      within(screen.getByTestId('grant-m2')).getByRole('button', {
-        name: /收回 知识库索引器/,
+    // 把 extend 卡住，好断言 pending 真的显示出来了
+    const realFetch = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        if (String(input).endsWith('/extend')) {
+          await new Promise<void>((r) => {
+            release = r
+          })
+        }
+        return realFetch(input, init)
       }),
     )
-    expect(screen.getByTestId('grant-m2')).toHaveTextContent('＋ 授权给…')
+
+    const before = callsTo('GET', '/api/v1/admin/meetings').length
+    await user.click(screen.getByRole('button', { name: /把「产品周会」的本地保留期延长 30 天/ }))
+    await waitFor(() => expect(screen.getByText('延长中…')).toBeInTheDocument())
+
+    release!()
+    await waitFor(() =>
+      expect(callsTo('GET', '/api/v1/admin/meetings').length).toBeGreaterThan(before),
+    )
+    // 重取的是三条，不只是列表——一次延长会改变"7 天内到期"那一格
+    await waitFor(() => expect(callsTo('GET', '/api/v1/admin/meetings/triage').length).toBe(2))
+    expect(await screen.findByText(/本地保留期延长 30 天/)).toBeInTheDocument()
   })
 
-  test('批量授权逐条列出会被跳过的会议，不给一键全授权', async () => {
+  test('写失败留下一条按得掉的错误条，带端点名、错误码和一句能照着做的话', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      /\/extend$/.test(c.path)
+        ? { status: 409, body: { error: 'already_purged', purgedAt: 1, message: 'x' } }
+        : base(c)
     const user = userEvent.setup()
     renderPage()
     await ready()
 
-    // 选中一场可授权的（m2）和一场规则禁止的（m6）
-    await user.click(screen.getByRole('checkbox', { name: '选择 技术评审 · 网关升级' }))
-    await user.click(screen.getByRole('checkbox', { name: '选择 招聘面试 · 后端 P7' }))
-    await user.click(within(screen.getByTestId('batch-bar')).getByRole('button', { name: '授权给…' }))
+    await user.click(screen.getByRole('button', { name: /把「产品周会」的本地保留期延长 30 天/ }))
+    const box = await screen.findByTestId('write-error')
+    expect(box).toHaveTextContent('延长本地保留期没有成功')
+    expect(box).toHaveTextContent('already_purged')
+    // 端点名带的是**真实路径**（含这一场的 id），不是模板——运维照着它就能去翻网关日志
+    expect(box).toHaveTextContent('POST /api/v1/admin/meetings/m1/extend')
+    expect(box).toHaveTextContent('本地文件已被到期清理')
 
-    const sheet = await screen.findByRole('dialog', { name: '批量授权 2 场会议' })
-    const list = within(sheet).getByTestId('grant-picker-meetings')
-    expect(list).toHaveTextContent('规则禁止，将跳过')
-    expect(within(sheet).getByRole('button', { name: '确认授权 1 场' })).toBeInTheDocument()
+    await user.click(within(box).getByRole('button', { name: '知道了' }))
+    expect(screen.queryByTestId('write-error')).toBeNull()
+  })
 
-    await user.click(within(sheet).getByRole('checkbox', { name: /简报机器人/ }))
-    await user.click(within(sheet).getByRole('button', { name: '确认授权 1 场' }))
+  test('圆点：没有改写时打开人工改写面板（后端要求理由），有改写时一键撤销', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
 
-    await waitFor(() => expect(screen.getByTestId('grant-m2')).toHaveTextContent('简报机器人'))
-    // 被跳过的那场原样不动
-    expect(screen.getByTestId('grant-m6')).toHaveTextContent('规则禁止采集')
+    await user.click(within(screen.getByTestId('row-m1')).getByRole('button', { name: '拉取：已完成' }))
+    await waitFor(() => expect(isOpen(panel('人工改写：拉取'))).toBe(true))
+    // 理由没写之前不能提交——后端缺 reason 直接 400，前端不该把这一趟白发出去
+    expect(screen.getByRole('button', { name: '保存改写' })).toBeDisabled()
+
+    await user.type(screen.getByRole('textbox'), '这场涉密')
+    await user.click(screen.getByRole('button', { name: '保存改写' }))
+
+    await waitFor(() => expect(callsTo('PUT', '/api/v1/admin/meetings/m1/override')).toHaveLength(1))
+    const sent = callsTo('PUT', '/api/v1/admin/meetings/m1/override')[0]!.body as Record<string, unknown>
+    expect(sent).toEqual({ kind: 'fetch', effect: 'skip', assetTypes: null, reason: '这场涉密' })
+  })
+
+  test('已有改写的阶段：点圆点直接撤销，不再问理由（DELETE 不需要理由）', async () => {
+    handler = defaultHandler([meeting({ fetch: 'off', hand: ['fetch'] })])
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(
+      within(screen.getByTestId('row-m1')).getByRole('button', { name: '拉取：未执行 · 人工改写' }),
+    )
+    await waitFor(() =>
+      expect(callsTo('DELETE', '/api/v1/admin/meetings/m1/override/fetch')).toHaveLength(1),
+    )
+    // 没有问理由，也就没有发过 PUT
+    expect(callsTo('PUT', '/api/v1/admin/meetings/m1/override')).toHaveLength(0)
+    expect(isOpen(panel('人工改写：拉取'))).toBe(false)
+  })
+
+  test('收回单条授权走 DELETE，程序 id 在路径里', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(screen.getByRole('button', { name: /收回 知识库索引器 对「产品周会」的授权/ }))
+    await waitFor(() =>
+      expect(callsTo('DELETE', '/api/v1/admin/meetings/m1/grants/kb-indexer')).toHaveLength(1),
+    )
+  })
+
+  test('授权面板：单场是"改成这些"，去掉的那个真的会被撤销', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    // m1 已经授权给 kb-indexer；打开面板、取消它、勾上 daily-digest
+    await user.click(screen.getByRole('button', { name: /再给「产品周会」授权一个采集程序/ }))
+    await user.click(await screen.findByRole('checkbox', { name: /知识库索引器/ }))
+    await user.click(screen.getByRole('checkbox', { name: /简报机器人/ }))
+    await user.click(screen.getByRole('button', { name: '保存授权' }))
+
+    await waitFor(() => expect(callsTo('POST', '/api/v1/admin/meetings/m1/grants')).toHaveLength(1))
+    expect(callsTo('POST', '/api/v1/admin/meetings/m1/grants')[0]!.body).toEqual({
+      programId: 'daily-digest',
+      // assetTypes 必须显式给出，缺这个键后端 400
+      assetTypes: null,
+    })
+    expect(callsTo('DELETE', '/api/v1/admin/meetings/m1/grants/kb-indexer')).toHaveLength(1)
+  })
+
+  test('点不动的时候说人话，而不是发一条注定失败的请求', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    // m3 归档失败，保留窗口没开始计时
+    await user.click(within(screen.getByTestId('row-m3')).getByRole('button', { name: '客户访谈 的详情' }))
+    await screen.findByTestId('section-keep')
+    expect(screen.getByTestId('keep-none')).toHaveTextContent('归档失败')
+    expect(
+      within(screen.getByTestId('section-keep')).getByRole('button', { name: '延长 30 天' }),
+    ).toBeDisabled()
+    expect(callsTo('POST', '/api/v1/admin/meetings/m3/extend')).toHaveLength(0)
+  })
+
+  test('批量结果把成功与失败分开说', () => {
+    expect(batchSummary('延长 30 天保留', 3, 0)).toBe('已对 3 场会议延长 30 天保留')
+    expect(batchSummary('延长', 2, 1)).toBe('2 场延长成功，1 场失败')
+    expect(batchSummary('延长', 0, 3)).toMatch(/3 场都没能/)
+    const t = tally([
+      { status: 'fulfilled', value: 1 },
+      { status: 'rejected', reason: new Error('x') },
+    ] as PromiseSettledResult<unknown>[])
+    expect(t).toMatchObject({ ok: 1, failed: 1 })
+  })
+
+  test('failureOf 认得出的错误码给一句能照着做的话', () => {
+    const e = Object.assign(new Error('POST … 返回 400：missing_reason'), {})
+    expect(failureOf('人工改写', e).hint).toBeNull()
   })
 })
 
-describe('会议记录页 · 键盘操作', () => {
-  test('j/k 上下移动，空格选中，回车打开详情', async () => {
+/* ══════════════════════════════════════════════════════════════════
+   详情抽屉（spec §4.3）
+   ══════════════════════════════════════════════════════════════════ */
+
+describe('详情抽屉 · 四段 + 操作历史', () => {
+  async function openDrawer() {
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(screen.getByRole('button', { name: '产品周会 的详情' }))
+    await screen.findByTestId('section-fetch')
+    return user
+  }
+
+  test('抽屉自己再取一次单场详情与操作历史', async () => {
+    await openDrawer()
+    await waitFor(() => expect(callsTo('GET', '/api/v1/admin/meetings/m1')).toHaveLength(1))
+    expect(callsTo('GET', '/api/v1/admin/meetings/m1/history')).toHaveLength(1)
+  })
+
+  test('四段齐了，每段带自己的判定理由', async () => {
+    await openDrawer()
+    for (const id of ['section-fetch', 'section-archive', 'section-keep', 'section-allow']) {
+      expect(screen.getByTestId(id)).toBeInTheDocument()
+    }
+    expect(screen.getByTestId('section-fetch')).toHaveTextContent('拉取规则 #100 判定全拉')
+    expect(screen.getByTestId('section-archive')).toHaveTextContent('归档规则 #100')
+    expect(screen.getByTestId('section-allow')).toHaveTextContent('权限规则 #100 准许采集')
+  })
+
+  test('拉取段列出八类资产各自的格式数，部分失败的那一类标出来', async () => {
+    await openDrawer()
+    const table = screen.getByTestId('asset-table')
+    expect(within(table).getByText('录像')).toBeInTheDocument()
+    expect(within(table).getByText('AI 纪要')).toBeInTheDocument()
+    expect(within(table).getByText('2/3')).toHaveAttribute('data-partial', 'true')
+    expect(within(table).getByText('1/1')).toHaveAttribute('data-partial', 'false')
+  })
+
+  test('归档段给 NAS 路径（可复制）、归档时间、体积', async () => {
+    await openDrawer()
+    const section = screen.getByTestId('section-archive')
+    expect(within(section).getByTestId('nas-path')).toHaveTextContent(
+      '/nas/meetings/2026/08/88112340-产品周会/',
+    )
+    expect(within(section).getByRole('button', { name: '复制' })).toBeInTheDocument()
+    expect(section).toHaveTextContent('22.8 MB')
+  })
+
+  test('「撤销归档」没有按钮，但它的语义与缺口写在归档段里（2026-08-25 定案）', async () => {
+    await openDrawer()
+    const gap = screen.getByTestId('undo-archive-gap')
+    // 逐字：只撤记录、NAS 副本保留、可逆、不需要二次确认
+    expect(gap).toHaveTextContent('只撤归档记录、NAS 上的副本保留')
+    expect(gap).toHaveTextContent('可逆动作、不需要二次确认')
+    // 不许出现一个名叫「撤销归档」的按钮去干别的事
+    expect(screen.queryByRole('button', { name: '撤销归档' })).toBeNull()
+  })
+
+  test('本地保留段：大号剩余天数 + 归档日/到期日 + 延长 30 天', async () => {
+    await openDrawer()
+    expect(screen.getByTestId('keep-days')).toHaveTextContent('28')
+    const section = screen.getByTestId('section-keep')
+    expect(section).toHaveTextContent('归档日')
+    expect(section).toHaveTextContent('到期日')
+    expect(within(section).getByRole('button', { name: '延长 30 天' })).toBeEnabled()
+  })
+
+  test('采集授权段：已授权程序 + 放行/禁止的理由 + 人工改写入口', async () => {
+    const user = await openDrawer()
+    const section = screen.getByTestId('section-allow')
+    expect(within(section).getByTestId('detail-grants')).toHaveTextContent('知识库索引器')
+    expect(section).toHaveTextContent('单场会议的人工改写优先于所有规则。')
+
+    await user.click(within(section).getByRole('button', { name: '人工改写采集权限…' }))
+    await waitFor(() => expect(isOpen(panel('人工改写：采集授权'))).toBe(true))
+    expect(screen.getByRole('radio', { name: /禁止采集/ })).toBeInTheDocument()
+  })
+
+  test('操作历史来自 /history；读不到时说清"这不代表没有人取过"', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      /\/history$/.test(c.path) ? { status: 500, body: { error: 'boom' } } : base(c)
+    await openDrawer()
+    const box = await screen.findByTestId('history-error')
+    expect(box).toHaveTextContent('这不代表没有人取过')
+    expect(box).toHaveTextContent('GET /api/v1/admin/meetings/m1/history')
+  })
+
+  test('操作历史逐条渲染后端拼好的那句话，被拒的那条要看得出来', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      /\/history$/.test(c.path)
+        ? {
+            status: 200,
+            body: {
+              meeting: { id: 'm1', title: '产品周会', code: '881', startAt: nowSec(), source: 'meetings' },
+              rows: [
+                {
+                  id: 1,
+                  at: nowSec() - HOUR,
+                  actionLabel: '签发下载链接',
+                  result: { decision: 'allow' },
+                  clientKind: 'program',
+                  text: 'kb-indexer 取走了 AI 纪要',
+                },
+                {
+                  id: 2,
+                  at: nowSec() - 2 * HOUR,
+                  actionLabel: '签发下载链接',
+                  result: { decision: 'deny' },
+                  clientKind: 'program',
+                  text: 'daily-digest 想取完整转写，被拒绝',
+                },
+              ],
+              window: { since: 1, sinceSource: 'meetings', text: '只列出会议开始之后的记录' },
+            },
+          }
+        : base(c)
+    await openDrawer()
+    const rows = await screen.findByTestId('history-rows')
+    expect(rows).toHaveTextContent('kb-indexer 取走了 AI 纪要')
+    expect(within(rows).getAllByRole('listitem')[1]).toHaveAttribute('data-deny', 'true')
+    expect(screen.getByTestId('history-window')).toHaveTextContent('只列出会议开始之后的记录')
+  })
+
+  test('详情端点挂了不白屏：仍显示列表那一行，并说明它可能不是最新的', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      c.method === 'GET' && /\/meetings\/m1$/.test(c.path)
+        ? { status: 500, body: { error: 'boom' } }
+        : base(c)
+    await openDrawer()
+    const box = await screen.findByTestId('detail-error')
+    expect(box).toHaveTextContent('可能不是最新的')
+    // 内容还在
+    expect(screen.getByTestId('section-fetch')).toHaveTextContent('拉取规则 #100 判定全拉')
+  })
+})
+
+describe('详情抽屉 · 键盘可达性', () => {
+  test('打开时焦点进入抽屉，Esc 关闭，焦点归还触发它的那个按钮', async () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
 
-    expect(screen.getByTestId('row-m1')).toHaveAttribute('data-cursor', 'true')
+    const trigger = screen.getByRole('button', { name: '产品周会 的详情' })
+    trigger.focus()
+    await user.click(trigger)
+    const dialog = panel('产品周会')
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
 
-    await user.keyboard('j')
-    expect(screen.getByTestId('row-m2')).toHaveAttribute('data-cursor', 'true')
-    expect(screen.getByTestId('row-m1')).toHaveAttribute('data-cursor', 'false')
-
-    await user.keyboard('j')
-    await user.keyboard('k')
-    expect(screen.getByTestId('row-m2')).toHaveAttribute('data-cursor', 'true')
-
-    await user.keyboard(' ')
-    expect(screen.getByTestId('row-m2')).toHaveAttribute('data-selected', 'true')
-    expect(screen.getByTestId('batch-count')).toHaveTextContent('1')
-
-    await user.keyboard('{Enter}')
-    const drawer = await screen.findByRole('dialog', { name: '技术评审 · 网关升级' })
-    expect(drawer).toHaveAttribute('data-state', 'open')
-    // 详情里给的是逐阶段的判定理由——这一页存在的理由
-    expect(drawer).toHaveTextContent('权限规则允许采集，但还没有授权给任何程序')
-
-    // Esc 关掉。注意抓的是元素本身：抽屉始终挂载，关掉后标题退回兜底的
-    // "会议详情"，再按原来的名字去查就查不到了。
     await user.keyboard('{Escape}')
-    await waitFor(() => expect(drawer).toHaveAttribute('data-state', 'closed'))
+    await waitFor(() => expect(isOpen(panel('会议详情'))).toBe(false))
+    expect(document.activeElement).toBe(trigger)
   })
 
-  test('1/2/3 与 e / p：圆点是开关，e 延长，p 进内容预览', async () => {
+  test('Tab 在抽屉内循环，不会跑到底层表格上', async () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
+    await user.click(screen.getByRole('button', { name: '产品周会 的详情' }))
+    const dialog = panel('产品周会')
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
 
-    // 光标停在 m1（产品周会）上。`e` = 延长保留
-    await user.keyboard('e')
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 58 天')
-
-    // `3` = 授权
-    await user.keyboard('3')
-    const sheet = await screen.findByRole('dialog', { name: '授权给采集程序' })
-    expect(sheet).toHaveAttribute('data-state', 'open')
-    await user.keyboard('{Escape}')
-    await waitFor(() => expect(sheet).toHaveAttribute('data-state', 'closed'))
-
-    // `1` = 拉取，圆点即开关
-    await user.keyboard('1')
-    expect(within(screen.getByTestId('row-m1')).getByRole('button', { name: '拉取：未执行 · 人工改写' })).toBeInTheDocument()
-    // 关掉拉取，后面的阶段跟着失效——保留期不会因为"曾经归档过"就留着
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('未归档')
-    await user.keyboard('1')
-    expect(within(screen.getByTestId('row-m1')).getByRole('button', { name: '拉取：已完成 · 人工改写' })).toBeInTheDocument()
-    // 重新拉取不等于重新归档：保留期得等归档成功才重新起算
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('未归档')
-
-    // `p` = 预览内容
-    await user.keyboard('p')
-    expect(await screen.findByRole('heading', { name: '内容预览占位' })).toBeInTheDocument()
+    for (let i = 0; i < 25; i++) {
+      await user.tab()
+      expect(dialog.contains(document.activeElement)).toBe(true)
+    }
   })
 
-  test('输入框获得焦点时不拦截——在搜索框里打 j 是打字，不是跳行', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    // `/` 把焦点送进搜索框
-    await user.keyboard('/')
-    const search = screen.getByRole('searchbox', { name: '搜索会议' })
-    expect(search).toHaveFocus()
-
-    // j / k 落进输入框，成了搜索词——列表被它筛空就是"键真的进了输入框"的证据
-    await user.keyboard('jk')
-    expect(search).toHaveValue('jk')
-    expect(screen.getByTestId('meetings-empty')).toHaveTextContent('没有符合条件的会议')
-
-    // 回车在输入框里同样不该打开详情抽屉
-    await user.keyboard('{Enter}')
-    expect(document.querySelector('[role="dialog"][data-state="open"]')).toBeNull()
-
-    // 清掉搜索词，表格回来，光标还在第一行——中间一步都没跳
-    await user.click(screen.getAllByRole('button', { name: '清除筛选' })[0]!)
-    expect(screen.getByTestId('row-m1')).toHaveAttribute('data-cursor', 'true')
-  })
-
-  test('键位解析是一张能逐条对的表', () => {
-    expect(resolveMeetingKey({ key: 'j' })).toEqual({ type: 'move', delta: 1 })
-    expect(resolveMeetingKey({ key: 'ArrowUp' })).toEqual({ type: 'move', delta: -1 })
-    expect(resolveMeetingKey({ key: ' ' })).toEqual({ type: 'toggle-select' })
+  test('Enter 打开抽屉、Esc 关掉——键位表按 spec §9', () => {
     expect(resolveMeetingKey({ key: 'Enter' })).toEqual({ type: 'open-detail' })
-    expect(resolveMeetingKey({ key: '2' })).toEqual({ type: 'stage', stage: 'archive' })
-    expect(resolveMeetingKey({ key: '3' })).toEqual({ type: 'open-grant' })
-    expect(resolveMeetingKey({ key: 'e' })).toEqual({ type: 'extend' })
-    expect(resolveMeetingKey({ key: 'p' })).toEqual({ type: 'preview' })
-    expect(resolveMeetingKey({ key: '/' })).toEqual({ type: 'focus-search' })
     expect(resolveMeetingKey({ key: 'Escape' })).toEqual({ type: 'close-overlay' })
-    // 带修饰键的一概不接管：⌘K 是全局搜索，⌘F 是浏览器查找
-    expect(resolveMeetingKey({ key: 'k', metaKey: true })).toBeNull()
-    expect(resolveMeetingKey({ key: 'f', ctrlKey: true })).toBeNull()
-    expect(resolveMeetingKey({ key: 'x' })).toBeNull()
+    expect(resolveMeetingKey({ key: '1' })).toEqual({ type: 'stage', stage: 'fetch' })
+    expect(resolveMeetingKey({ key: 'e' })).toEqual({ type: 'extend' })
+    expect(resolveMeetingKey({ key: 'j', metaKey: true })).toBeNull()
+  })
 
-    // 正在打字时只放行 Esc
+  test('输入框里打字不被键位表接管，Esc 除外', () => {
     const input = document.createElement('input')
     expect(isTypingTarget(input)).toBe(true)
     expect(resolveMeetingKey({ key: 'j', target: input })).toBeNull()
     expect(resolveMeetingKey({ key: 'Escape', target: input })).toEqual({ type: 'close-overlay' })
-
-    // 焦点在按钮 / 链接上时，Enter 与空格是**它们自己的激活键**，页面不许接管
     const button = document.createElement('button')
     expect(isActivationTarget(button)).toBe(true)
     expect(resolveMeetingKey({ key: 'Enter', target: button })).toBeNull()
-    expect(resolveMeetingKey({ key: ' ', target: button })).toBeNull()
-    const link = document.createElement('a')
-    link.href = '#x'
-    expect(resolveMeetingKey({ key: 'Enter', target: link })).toBeNull()
-    const fake = document.createElement('span')
-    fake.setAttribute('role', 'button')
-    expect(resolveMeetingKey({ key: ' ', target: fake })).toBeNull()
-
-    // 但字母/数字键不是任何原生控件的激活键，焦点在按钮上照旧接管——
-    // 少了这一半，"什么都不接管"也能让上面几行通过。
-    expect(resolveMeetingKey({ key: 'j', target: button })).toEqual({ type: 'move', delta: 1 })
-    expect(resolveMeetingKey({ key: '3', target: button })).toEqual({ type: 'open-grant' })
-    // 焦点不在控件上时，Enter 仍然是"打开详情"
-    const plain = document.createElement('div')
-    expect(resolveMeetingKey({ key: 'Enter', target: plain })).toEqual({ type: 'open-detail' })
-
-    // **勾选框不是输入框。** 按 tagName 一刀切会把它算成"正在打字"，于是鼠标点过
-    // 一次行首的勾选框之后，j/k/1/e 全部静默失效——用户看不到任何反馈。
-    // 它该走的是"控件拥有自己那批键"这一关，而且只拥有空格。
-    const box = document.createElement('input')
-    box.type = 'checkbox'
-    expect(isTypingTarget(box), '勾选框被当成了输入框').toBe(false)
-    expect(resolveMeetingKey({ key: ' ', target: box })).toBeNull() // 空格归勾选框自己
-    expect(resolveMeetingKey({ key: 'j', target: box })).toEqual({ type: 'move', delta: 1 })
-    expect(resolveMeetingKey({ key: 'k', target: box })).toEqual({ type: 'move', delta: -1 })
-    expect(resolveMeetingKey({ key: '1', target: box })).toEqual({ type: 'stage', stage: 'fetch' })
-    expect(resolveMeetingKey({ key: 'e', target: box })).toEqual({ type: 'extend' })
-    // 原生 checkbox 不响应 Enter，把 Enter 也闸掉就成了死键
-    expect(resolveMeetingKey({ key: 'Enter', target: box })).toEqual({ type: 'open-detail' })
-
-    // 单选钮同样不是输入框，但它比勾选框多拥有方向键（同组内换选项）。
-    const radio = document.createElement('input')
-    radio.type = 'radio'
-    expect(isTypingTarget(radio)).toBe(false)
-    expect(resolveMeetingKey({ key: ' ', target: radio })).toBeNull()
-    expect(resolveMeetingKey({ key: 'ArrowDown', target: radio })).toBeNull()
-    expect(resolveMeetingKey({ key: 'j', target: radio })).toEqual({ type: 'move', delta: 1 })
-
-    // 对照组：真的会吃字符的 input 一个都不许放行，否则上面几行等于把守卫拆了
-    const text = document.createElement('input')
-    text.type = 'search'
-    expect(isTypingTarget(text)).toBe(true)
-    expect(resolveMeetingKey({ key: 'j', target: text })).toBeNull()
-    expect(resolveMeetingKey({ key: 'ArrowDown', target: text })).toBeNull()
-    const area = document.createElement('textarea')
-    expect(isTypingTarget(area)).toBe(true)
-    expect(resolveMeetingKey({ key: 'e', target: area })).toBeNull()
   })
+})
 
-  test('点过一行的勾选框之后，j/k 照旧跳行——焦点留在勾选框上不该让键位静默失效', async () => {
+/* ══════════════════════════════════════════════════════════════════
+   批量与选择
+   ══════════════════════════════════════════════════════════════════ */
+
+describe('批量 · 只能改到手里真的有的那些行', () => {
+  test('批量条只剩真实存在的动作，「重跑拉取 / 重跑归档」删掉了', async () => {
     const user = userEvent.setup()
     renderPage()
     await ready()
-
-    const box = screen.getByRole('checkbox', { name: '选择 产品周会' })
-    await user.click(box)
-    // 点完之后焦点就留在勾选框上，这是鼠标用户的常态
-    expect(document.activeElement).toBe(box)
-
-    const cursorId = () =>
-      document.querySelector<HTMLElement>("tbody tr[data-cursor='true']")?.dataset.id ?? null
-    const before = cursorId()
-
-    const press = (key: string) => {
-      const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
-      act(() => {
-        box.dispatchEvent(ev)
-      })
-      return ev.defaultPrevented
-    }
-
-    expect(press('j'), 'j 没被接管——页面以为你在打字').toBe(true)
-    expect(cursorId()).not.toBe(before)
-    expect(press('k')).toBe(true)
-    expect(cursorId()).toBe(before)
-
-    // 对照组：空格仍然归勾选框自己，页面不许抢（抢走会连勾选都点不动）
-    expect(press(' '), '空格被页面抢走了').toBe(false)
+    await user.click(screen.getByRole('checkbox', { name: '选择 产品周会' }))
+    const bar = screen.getByTestId('batch-bar')
+    expect(within(bar).getByRole('button', { name: '延长 30 天' })).toBeInTheDocument()
+    expect(within(bar).getByRole('button', { name: '授权给…' })).toBeInTheDocument()
+    expect(within(bar).queryByRole('button', { name: '重跑拉取' })).toBeNull()
+    expect(within(bar).queryByRole('button', { name: '重跑归档' })).toBeNull()
   })
 
-  test('页面级监听不抢按钮的 Enter / 空格——抢走了整页的按钮就都按不动', async () => {
+  test('批量延长：逐场发请求，成功之后清空选择并重取', async () => {
+    const user = userEvent.setup()
     renderPage()
     await ready()
+    await user.click(screen.getByRole('checkbox', { name: '选择 产品周会' }))
+    await user.click(screen.getByRole('checkbox', { name: '选择 技术评审' }))
+    expect(screen.getByTestId('batch-count')).toHaveTextContent('2')
 
-    const press = (el: Element, key: string) => {
-      const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
-      act(() => {
-        el.dispatchEvent(ev)
-      })
-      return ev.defaultPrevented
-    }
-
-    // 分诊格是个 <button>：Enter / 空格必须留给它自己
-    const card = screen.getByTestId('triage-archfail')
-    expect(press(card, 'Enter'), 'Enter 被页面抢走了').toBe(false)
-    expect(press(card, ' '), '空格被页面抢走了').toBe(false)
-    // 对照组：j 照旧接管，否则这条测试恒真
-    expect(press(card, 'j')).toBe(true)
-
-    // 表格里的按钮同样（焦点在 A、动作落在 B 是这条 bug 最刺眼的样子）
-    const grantAdd = within(screen.getByTestId('grant-m2')).getByRole('button', { name: '＋ 授权给…' })
-    expect(press(grantAdd, 'Enter')).toBe(false)
-    expect(document.querySelector('[role="dialog"][data-state="open"]')).toBeNull()
-
-    // 焦点不在任何控件上时，Enter 仍然打开光标行的详情
-    expect(press(document.body, 'Enter')).toBe(true)
+    await user.click(within(screen.getByTestId('batch-bar')).getByRole('button', { name: '延长 30 天' }))
+    await waitFor(() => expect(callsTo('POST', '/api/v1/admin/meetings/m1/extend')).toHaveLength(1))
+    expect(callsTo('POST', '/api/v1/admin/meetings/m2/extend')).toHaveLength(1)
+    await waitFor(() => expect(screen.getByTestId('batch-count')).toHaveTextContent('0'))
   })
 
-  test('加载失败态里，键盘用户按得动「重试」——那是错误态里唯一的出路', async () => {
-    renderPage('load-failed')
-    const box = await screen.findByTestId('meetings-error')
-    const retry = within(box).getByRole('button', { name: '重试' })
-
-    const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-    act(() => {
-      retry.dispatchEvent(ev)
-    })
-    // 页面这时候一行都没有，onKey 会提前 return——但**preventDefault 早就执行了**，
-    // 于是浏览器不再激活这颗按钮。这一条是那个 bug 的直接后果。
-    expect(ev.defaultPrevented).toBe(false)
-  })
-})
-
-describe('会议记录页 · 系统状态在数据里可见', () => {
-  test('nas-down 时保留窗口清零、授权 pill 消失', async () => {
-    renderPage('nas-down')
+  test('改筛选就把选择清空 —— 选中的行可能已经不在结果里了', async () => {
+    const user = userEvent.setup()
+    renderPage()
     await ready()
-
-    // spec.md §7.2：归档失败从 1 变 5
-    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('5')
-
-    // 受影响的会议：保留窗口清零（不是"还剩 N 天"），授权撤下（没有任何 pill）
-    for (const id of ['m1', 'm2', 'm7', 'm9']) {
-      const keep = screen.getByTestId(`keep-${id}`)
-      expect(keep).toHaveTextContent('归档失败，未开始计时')
-      expect(keep).not.toHaveTextContent('剩')
-
-      const grant = screen.getByTestId(`grant-${id}`)
-      expect(grant).toHaveTextContent('未归档')
-      expect(within(grant).queryByRole('button', { name: /收回/ })).not.toBeInTheDocument()
-    }
-
-    // 保留窗口都没了，"7 天内到期"自然归零——横幅之外的连锁反应
-    expect(screen.getByTestId('triage-count-soon')).toHaveTextContent('0')
-
-    // 没被 NAS 影响的会议照旧（m6 已归档、规则禁止采集）
-    expect(screen.getByTestId('keep-m6')).toHaveTextContent('剩 29 天')
+    await user.click(screen.getByRole('checkbox', { name: '选择 产品周会' }))
+    expect(screen.getByTestId('batch-count')).toHaveTextContent('1')
+    await user.click(screen.getByTestId('triage-archfail'))
+    await waitFor(() => expect(screen.getByTestId('batch-count')).toHaveTextContent('0'))
   })
 
-  test('分诊条五格的判定逐条对得上 mock 数据', () => {
-    const counts = Object.fromEntries(
-      TRIAGE_DEFS.map((d) => [d.id, MEETINGS.filter((m) => d.test(m, NOW)).length]),
+  test('跨页选中的行会被算进来，并且说清有几场不在本页', async () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      meeting({ id: `x${i}`, meetingId: `x${i}`, title: `会议 ${i}` }),
     )
-    expect(counts).toEqual({
-      archfail: 1, // m3 客户沟通（NAS 写入超时）
-      soon: 1, //     m7 全员大会（剩 7 天）
-      ungranted: 1, // m2 技术评审（准许采集但没给程序）
-      running: 1, //  m3 拉取进行中
-      nasonly: 1, //  m8 财务复盘（本地已清理）
-    })
+    handler = defaultHandler(many)
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('row-x0')).toBeInTheDocument())
+    await user.click(screen.getByRole('checkbox', { name: '选择 会议 0' }))
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    await waitFor(() => expect(screen.getByTestId('row-x10')).toBeInTheDocument())
+    expect(screen.getByTestId('batch-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('batch-bar')).toHaveTextContent('其中 1 场不在本页')
   })
 })
 
-describe('会议记录页 · 版式', () => {
-  test('375px 下页面不横滚（表格自己滚）', async () => {
+/* ══════════════════════════════════════════════════════════════════
+   页面骨架与样式纪律
+   ══════════════════════════════════════════════════════════════════ */
+
+describe('页面骨架与令牌', () => {
+  test('用 ui/PageShell，标题是 h1（七页层级一致）', async () => {
     renderPage()
     await ready()
+    expect(screen.getByRole('heading', { name: '会议记录', level: 1 })).toBeInTheDocument()
+  })
 
-    // jsdom 不跑布局，量不出真实溢出。能真实反映的是"溢出被裹在哪一层"：
-    // 1) 表格的最小宽度落在 <table> 上，不落在页面容器上
+  test('表格横向滚动收在自己的容器里，页面本身不横滚', () => {
     const tableCss = css('src/pages/Meetings/MeetingTable.module.css')
     expect(tableCss).toMatch(/\.table\s*\{\s*min-width:\s*var\(--meetings-table-w\)/)
-    // 组件里不许出现裸像素——1020 只存在于令牌文件里（注释里可以提它，声明里不行）
     expect(stripComments(tableCss)).not.toMatch(/\d+px/)
-    expect(css('src/styles/tokens.css')).toMatch(/--meetings-table-w:\s*\d+px/)
-
-    // 2) 横向滚动发生在 ui/Table 自己的 .scroll 容器里
     expect(css('src/ui/Table.module.css')).toMatch(/\.scroll\s*\{\s*overflow-x:\s*auto/)
-    // 3) 页面 body 用 clip 兜底（hidden 会让 sticky 失效）
     expect(css('src/styles/base.css')).toMatch(/overflow-x:\s*clip/)
-
-    // 4) 真实 DOM 结构：<table> 的直接祖先就是那个滚动容器
-    const table = document.querySelector('table')!
-    const scroll = table.parentElement!
-    expect(scroll.className).toMatch(/scroll/)
-
-    // 窄屏下分诊条折行而不是横向挤出去
-    expect(css('src/pages/Meetings/TriageBar.module.css')).toMatch(/flex-wrap:\s*wrap/)
   })
 
   test('页面 CSS 里没有裸的 px / hex / rgba（缺值就去 tokens.css 加令牌）', () => {
     const files = [
       'src/pages/Meetings/Meetings.module.css',
-      'src/pages/Meetings/TriageBar.module.css',
       'src/pages/Meetings/MeetingTable.module.css',
       'src/pages/Meetings/MeetingRow.module.css',
+      'src/pages/Meetings/TriageBar.module.css',
       'src/pages/Meetings/BatchBar.module.css',
       'src/pages/Meetings/GrantPicker.module.css',
+      'src/pages/Meetings/MeetingDetail.module.css',
+      'src/pages/Meetings/OverrideSheet.module.css',
     ]
     for (const f of files) {
-      // 注释里可以出现数字（说明取舍），只查声明行
       const decls = stripComments(css(f))
         .split('\n')
         .filter((l) => /:/.test(l))
@@ -851,455 +1005,20 @@ describe('会议记录页 · 版式', () => {
       expect(decls, `${f} 出现了裸 rgba`).not.toMatch(/rgba?\(/)
     }
   })
-})
 
-describe('会议记录页 · 分诊条与表格不许互相矛盾', () => {
-  /**
-   * **不变量：点任何一个计数格，都必须真能到达它数出来的那些行。**
-   *
-   * 分诊条的计数算在**全量** `rows` 上——它的产品职责就是"告诉你全系统有什么
-   * 需要处理"，把它裁进当前时间窗等于让归档失败（本系统最严重的状态）可以被
-   * 一个筛选器悄悄藏起来。既然它报的是全系统，点进去也必须到得了：否则
-   * "仅存 NAS 1"配一张空表、出口还是点了也不解决问题的"清除筛选"。
-   */
-  const EXPECTED: Record<string, string[]> = {
-    archfail: ['m3'],
-    soon: ['m7'],
-    ungranted: ['m2'],
-    running: ['m3'],
-    nasonly: ['m8'],
-  }
-
-  for (const def of TRIAGE_DEFS) {
-    test(`点「${def.label}」到得了它数出来的行——哪怕时间范围本来把它们挡在外面`, async () => {
-      const user = userEvent.setup()
-      renderPage()
-      await ready()
-
-      // 先收到"近 7 天"：m7（23 天前）、m8（40 天前）、m9 都被挡在范围外
-      await user.click(screen.getByRole('button', { name: /近 90 天/ }))
-      await user.click(screen.getByRole('menuitemradio', { name: /近 7 天/ }))
-      expect(rowIds()).toEqual(['m1', 'm2', 'm6', 'm3', 'm4', 'm5'])
-
-      // 计数报的仍然是全系统的问题，不是当前时间窗里的
-      const expected = EXPECTED[def.id]!
-      expect(screen.getByTestId(`triage-count-${def.id}`)).toHaveTextContent(String(expected.length))
-
-      await user.click(screen.getByTestId(`triage-${def.id}`))
-
-      // 到得了：表格里就是它数出来的那些行，一场不多一场不少
-      expect(rowIds()).toEqual(expected)
-      // 而且时间范围被一并置成了"全部时间"，不是把行藏起来还留着计数
-      expect(screen.getByRole('button', { name: /全部时间/ })).toBeInTheDocument()
-    })
-  }
-
-  test('搜索命中的会议落在时间范围外时，出口是「改为全部时间」而不是点了没用的「清除筛选」', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    await user.click(screen.getByRole('button', { name: /近 90 天/ }))
-    await user.click(screen.getByRole('menuitemradio', { name: /近 7 天/ }))
-    // 财务复盘在 40 天前，被范围挡住了——但范围内明明还有 6 场会议，
-    // 旧判据会把这一支算成"被筛选筛没了"。
-    await user.type(screen.getByRole('searchbox', { name: '搜索会议' }), '财务复盘')
-
-    const empty = await screen.findByTestId('meetings-empty')
-    expect(empty).toHaveAttribute('data-kind', 'out-of-range')
-    await user.click(within(empty).getByRole('button', { name: '改为全部时间' }))
-
-    // 出口真的解决了问题：那一场找到了
-    expect(rowIds()).toEqual(['m8'])
-  })
-
-  test('分诊计数说的是全系统口径——「计数 5、表里 3 行」当场有解释', async () => {
-    const user = userEvent.setup()
-    renderPage('nas-down')
-    await ready()
-
-    // NAS 断连下归档失败是 5 场；点它会把时间范围一并放到"全部时间"，5 场全在表里
-    await user.click(screen.getByTestId('triage-archfail'))
-    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('5')
-    expect(rowIds()).toHaveLength(5)
-
-    // 再手动把范围收到近 7 天：5 场里只有 3 场落在窗口内
-    await user.click(screen.getByRole('button', { name: /全部时间/ }))
-    await user.click(screen.getByRole('menuitemradio', { name: /近 7 天/ }))
-    expect(rowIds()).toHaveLength(3)
-    // 计数一点没变——它数的是全部会议，不是当前窗口
-    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('5')
-    // 表格非空，所以空态不会出来解释这件事（空态那一支有「改为全部时间」兜着）。
-    // 屏幕上两个数字打架，解释只能由分诊条自己给。
-    expect(screen.queryByTestId('meetings-empty')).not.toBeInTheDocument()
-
-    const scope = screen.getByTestId('triage-scope')
-    expect(scope).toHaveTextContent('全部会议')
-    expect(scope).toHaveTextContent('时间范围')
-    // 分诊格自己也说得出口径，鼠标停在数字上就问得到
-    expect(screen.getByTestId('triage-archfail').getAttribute('title')).toContain('全部会议里有 5 场归档失败')
-  })
-
-  test('口径副标是常驻的——加载中也占着位，不是打架那一刻才冒出来', async () => {
-    renderPage('loading')
-    const scope = await screen.findByTestId('triage-scope')
-    expect(scope).toHaveTextContent('全部会议')
-    // 骨架态：五格还在，说明副标不是靠"有数据"才渲染的
-    expect(screen.getByTestId('triage-bar')).toHaveAttribute('data-loading', 'true')
-  })
-})
-
-describe('会议记录页 · 跨页选择不许留下两个数字', () => {
-  test('跨页全选之后收窄搜索：提示条与批量条说的是同一个数', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    await user.selectOptions(screen.getByLabelText('每页条数'), '5')
-    await user.click(screen.getByRole('checkbox', { name: '全选本页' }))
-    await user.click(
-      within(screen.getByTestId('select-all-hint')).getByRole('button', { name: /全部 9 场/ }),
-    )
-    expect(screen.getByTestId('batch-count')).toHaveTextContent(/^9$/)
-
-    // 搜索收窄到 7 场（会议号 881-1 开头的那些）
-    await user.type(screen.getByRole('searchbox', { name: '搜索会议' }), '881-1')
-
-    // 关键：两处说的是同一个数。之前提示条用 totalMatching 说"全部 7 场"、
-    // 底部批量条同时说"9 场已选"——同一屏上两个数字打架。
-    expect(screen.getByTestId('batch-count')).toHaveTextContent(/^7$/)
-    expect(screen.getByTestId('select-all-hint')).toHaveTextContent('全部 7 场')
-  })
-
-  test('筛到只剩 1 行时，批量按钮改的就是那 1 场，不是屏幕上看不见的 9 场', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    await user.click(screen.getByRole('checkbox', { name: '全选本页' }))
-    expect(screen.getByTestId('batch-count')).toHaveTextContent(/^9$/)
-
-    await user.type(screen.getByRole('searchbox', { name: '搜索会议' }), '全员')
-    expect(rowIds()).toEqual(['m7'])
-    // 屏幕上只有 1 行，批量条就得说 1。说 9 的话，按下「收回授权」会改掉
-    // 9 场里所有有授权的——而这四个批量按钮没有确认面板。
-    expect(screen.getByTestId('batch-count')).toHaveTextContent(/^1$/)
-
-    await user.click(within(screen.getByTestId('batch-bar')).getByRole('button', { name: '收回授权' }))
-    await user.click(screen.getAllByRole('button', { name: '清除筛选' })[0]!)
-
-    // 那 1 场被改了，看不见的 8 场一个都没被改到
-    expect(screen.getByTestId('grant-m7')).toHaveTextContent('＋ 授权给…')
-    expect(screen.getByTestId('grant-m1')).toHaveTextContent('知识库索引器')
-    expect(screen.getByTestId('grant-m1')).toHaveTextContent('简报机器人')
-    expect(screen.getByTestId('grant-m9')).toHaveTextContent('数据仓库同步')
-  })
-
-  test('本页只选了一部分时，表头勾选框是半选，不是未选', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    const head = screen.getByRole('checkbox', { name: '全选本页' })
-    expect(head).not.toBePartiallyChecked()
-
-    await user.click(screen.getByRole('checkbox', { name: '选择 产品周会' }))
-    // 未勾的表头在说"这一页一个都没选"，而屏幕上明明有一行是选中的
-    expect(head).toBePartiallyChecked()
-
-    await user.click(head)
-    expect(head).toBeChecked()
-    expect(head).not.toBePartiallyChecked()
-  })
-})
-
-describe('会议记录页 · 状态与理由的不变量', () => {
-  const CTX = { nowSec: MOCK_NOW, consumers: CONSUMERS }
-
-  /** 页面上真实存在的每一种写操作。新增写操作时这张表要跟着长。 */
-  const WRITES: MeetingWrite[] = [
-    { op: 'stage', stage: 'fetch', next: 'done' },
-    { op: 'stage', stage: 'fetch', next: 'off' },
-    { op: 'stage', stage: 'archive', next: 'done' },
-    { op: 'stage', stage: 'archive', next: 'off' },
-    { op: 'grants', next: ['kb-indexer'] },
-    { op: 'grants', next: [] },
-    { op: 'extend' },
-  ]
-
-  /**
-   * 「状态与理由不许自相矛盾」——一条不变量，不是一组场景。
-   *
-   * 这个 bug 类在本计划里已经出现四次（T2 的种子数据、`FetchState` 缺 `'off'`、
-   * 批量写操作一处也不更新 `why`、关掉拉取连带改 `archive` 却不记 `hand`），
-   * 每次都是"某条写路径只维护它直接改的字段"。逐个场景断言挡不住第五次，
-   * 所以这里断言的是不变量本身。
-   */
-  function contradictions(m: Meeting): string[] {
-    const bad: string[] = []
-    const say = (t: string) => bad.push(`${m.id}: ${t}`)
-
-    // 人工改写环与理由必须互相印证。少任何一半，抽屉里就会出现
-    // "状态说没执行过、理由说已成功写入 NAS 并校验了哈希"。
-    //
-    // **三个环都要遍历，不只 fetch / archive**：`hand` 的类型里有 'allow'
-    // （types.ts），漏掉它，"角标写着人工改写、理由却是规则口径"这一支就查不出来。
-    // 反过来若哪天有写路径让 allow 的理由不再是 hand，**hand 环也要跟着清**，
-    // 不是把这条放宽——那正是这张网存在的理由。
-    for (const stage of ['fetch', 'archive', 'allow'] as const) {
-      if (m.hand.includes(stage) !== (m.why[stage].by === 'hand'))
-        say(`${stage}: hand=${m.hand.includes(stage)} 但 why.by=${m.why[stage].by}`)
-    }
-    // `'off'` 这个取值存在的**全部理由**就是"人工关掉了"（方案 §2.1）：规则系统
-    // 关不掉拉取——它要么判成 `blocked`，要么压根没有录制。archive 那边有
-    // `archiveWhyKind` 兜着，fetch 这边没有，今天只靠 `setStage` 构造性保证。
-    if (m.fetch === 'off' && m.why.fetch.by !== 'hand')
-      say(`fetch=off 但 why.by=${m.why.fetch.by}（off 只可能是人工关掉的）`)
-    // 没有录制 ⇔ 理由是"不适用"
-    if ((m.fetch === 'none') !== (m.why.fetch.by === 'na'))
-      say(`fetch=${m.fetch} 却说 ${m.why.fetch.by}`)
-    if ((m.archive === 'none') !== (m.why.archive.by === 'na'))
-      say(`archive=${m.archive} 却说 ${m.why.archive.by}`)
-    // 失败 ⇔ 理由是"失败"。绿点「已完成」紧挨一块红框写「归档失败」就是这条漏了。
-    if ((m.archive === 'failed') !== (m.why.archive.by === 'fail'))
-      say(`archive=${m.archive} 却说 ${m.why.archive.by}`)
-    const ak = archiveWhyKind(m)
-    // 人工改写优先于所有规则（spec.md §5），是这条唯一的豁免
-    if (ak !== null && m.why.archive.by !== ak && m.why.archive.by !== 'hand')
-      say(`archive=${m.archive} 的理由应是 ${ak}，实际 ${m.why.archive.by}`)
-    // 授权理由完全由状态定死。豁免必须和生产规则**一样窄**：`nextAllowWhy`
-    // （write.ts）只在分类是 `deny` 时才保留人工改写的原文，其余分类一律改写。
-    // 少了 `alk === 'deny' &&` 这一段，豁免会连"本地文件已清理、理由本该是
-    // expired"这类情形一起放过去——网比它要守的规则还宽，就挡不住第六次。
-    const alk = allowWhyKind(m)
-    const handKeptByRule = alk === 'deny' && m.why.allow.by === 'hand' && m.hand.includes('allow')
-    if (m.why.allow.by !== alk && !handKeptByRule)
-      say(`allow 理由应是 ${alk}，实际 ${m.why.allow.by}`)
-    // 判定为 deny 的会议不许落到"可授权"（画成「＋ 授权给…」还真能授权出去）
-    if (m.allow === 'deny' && grantCellKind(m).kind === 'grantable') say('allow=deny 却算可授权')
-    // 保留期自归档成功起算
-    if (m.keep.expiresAt !== null && !m.keep.filesGone && m.archive !== 'done')
-      say(`archive=${m.archive} 却有保留期`)
-    // 已经不可授权的会议不该还留着授权
-    if (m.grants.length > 0 && grantCellKind(m).kind !== 'grantable') say('不可授权却还留着授权')
-    return bad
-  }
-
-  /**
-   * 每个反例都**只钉一条规则**：断言落在那条规则自己的措辞上，不是 `.length > 0`。
-   *
-   * 差别很实在——`.length > 0` 之下，把被钉的那条整条删掉，反例还是会因为别的
-   * 规则转红，于是"我测过这条规则"是假的。下面每一条都验过：**只删它自己那一条，
-   * 对应的断言就转绿**（红/绿演练见报告）。
-   */
-  test('这条不变量真的会红：只改状态、不改理由就会被抓出来', () => {
-    const m3 = MEETINGS.find((m) => m.id === 'm3')!
-    const m6 = MEETINGS.find((m) => m.id === 'm6')!
-
-    // ① 状态 ⇔ 理由：批量"重跑归档"之前干的正是这件事——把 archive 置成 done、
-    //    keep 重新起算，why 一个字不动（原文还写着"归档失败：NAS 写入超时"）。
-    const naive: Meeting = {
-      ...m3,
-      archive: 'done',
-      keep: { archivedAt: MOCK_NOW, expiresAt: MOCK_NOW + 86400, extended: 0, filesGone: false },
-    }
-    expect(contradictions(naive).join('\n')).toMatch(/archive=done 却说 fail/)
-
-    // ② hand ⟺ hand：关掉拉取连带把归档也关了、理由也换成了人工口径，
-    //    **却只记了 fetch 一个人工改写环**。这一支只有 hand ⟺ hand 那条查得出来。
-    const halfHand: Meeting = {
-      ...m3,
-      fetch: 'off',
-      archive: 'off',
-      hand: ['fetch'],
-      why: {
-        ...m3.why,
-        fetch: { by: 'hand', text: '陈运维 刚刚手动关闭了拉取，覆盖了规则。' },
-        archive: { by: 'hand', text: '陈运维 关闭了拉取，归档随之失效。' },
-      },
-    }
-    expect(contradictions(halfHand).join('\n')).toMatch(/archive: hand=false 但 why\.by=hand/)
-
-    // ③ hand 环的第三个取值：角标写着"人工改写"，理由却是规则口径的 deny。
-    //    循环只遍历 fetch/archive 时，这一支静悄悄地过。
-    const handAllow: Meeting = { ...m6, hand: [...m6.hand, 'allow'] }
-    expect(contradictions(handAllow).join('\n')).toMatch(/allow: hand=true 但 why\.by=deny/)
-
-    // ④ fetch='off' 只可能是人工关掉的。配成规则口径今天不可达（`setStage`
-    //    构造性地挡着），但网必须查得出来。
-    const offByRule: Meeting = {
-      ...m3,
-      fetch: 'off',
-      why: { ...m3.why, fetch: { by: 'rule', text: '拉取规则 #100 关掉了它。' } },
-    }
-    expect(contradictions(offByRule).join('\n')).toMatch(/fetch=off 但 why\.by=rule/)
-
-    // ⑤ 人工改写的豁免只在分类是 deny 时成立（write.ts 的 `nextAllowWhy`）。
-    //    本地文件已到期清理，理由**必须**翻成 expired；放宽的豁免会把它放过去。
-    const goneButHand: Meeting = {
-      ...m6,
-      keep: { ...m6.keep, filesGone: true },
-      hand: [...m6.hand, 'allow'],
-      why: { ...m6.why, allow: { by: 'hand', text: '陈运维 手动设为禁止。' } },
-    }
-    expect(contradictions(goneButHand).join('\n')).toMatch(/allow 理由应是 expired，实际 hand/)
-  })
-
-  test('种子数据本身不矛盾——对 SystemState 全枚举，不手维护这张名单', async () => {
-    const { seeds, states } = await allSeeds()
-    for (const [state, m] of seeds) {
-      expect(contradictions(m), `${state} 的种子 ${m.id}`).toEqual([])
-    }
-    // 不是空转：真的查过行；而且 NAS 断连那一态在里面——本计划第四处同类 bug
-    // （`applyNasDown` 改状态不改理由）正是从它身上抓出来的。
-    expect(seeds.length).toBeGreaterThan(0)
-    expect(states).toContain('nas-down')
-  })
-
-  test('任何写操作之后（含两步组合）状态与理由都不矛盾', async () => {
-    const seeds = (await allSeeds()).seeds.map(([, m]) => m)
-    for (const seed of seeds) {
-      for (const a of WRITES) {
-        const one = applyWrite(seed, a, CTX)
-        expect(contradictions(one), `${seed.id} ← ${JSON.stringify(a)}`).toEqual([])
-        for (const b of WRITES) {
-          const two = applyWrite(one, b, CTX)
-          expect(contradictions(two), `${seed.id} ← ${JSON.stringify(a)} → ${JSON.stringify(b)}`).toEqual([])
-        }
-      }
-    }
-  })
-
-  test('allow 为 deny 的会议一律不可授权，by 只决定文案', () => {
-    const m6 = MEETINGS.find((m) => m.id === 'm6')!
-    // 只按 why.allow.by 判会开一个反向的洞：allow 仍是 deny、理由却是
-    // rule / hand 的行会落到"可授权"，画成「＋ 授权给…」而且真能授权出去。
-    expect(grantCellKind({ ...m6, why: { ...m6.why, allow: { by: 'rule', text: 'x' } } })).toEqual({
-      kind: 'denied',
-      hand: false,
-    })
-    const handed: Meeting = {
-      ...m6,
-      hand: [...m6.hand, 'allow'],
-      why: { ...m6.why, allow: { by: 'hand', text: '陈运维 手动设为禁止' } },
-    }
-    expect(grantCellKind(handed)).toEqual({ kind: 'denied', hand: true })
-    // 写操作这一层也拦得住：授权发不出去
-    expect(applyWrite(handed, { op: 'grants', next: ['kb-indexer'] }, CTX).grants).toEqual([])
-
-    // 对照组：allow 为 allow 的确实授权得出去，否则上面几行恒真
-    const m2 = MEETINGS.find((m) => m.id === 'm2')!
-    expect(grantCellKind(m2).kind).toBe('grantable')
-    expect(applyWrite(m2, { op: 'grants', next: ['kb-indexer'] }, CTX).grants).toEqual(['kb-indexer'])
-  })
-
-  test('批量重跑归档之后，同一行的四处说法一致', async () => {
-    const user = userEvent.setup()
-    renderPage('nas-down')
-    await ready()
-
-    // NAS 断连，m1 归档失败、保留期清零、授权撤下
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('归档失败，未开始计时')
-    expect(screen.getByTestId('triage-count-ungranted')).toHaveTextContent('0')
-
-    await user.click(screen.getByRole('checkbox', { name: '选择 产品周会' }))
-    await user.click(within(screen.getByTestId('batch-bar')).getByRole('button', { name: '重跑归档' }))
-
-    // ① 本地保留：重新起算　② 已授权给：可以授权了，不是"未归档"
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 30 天')
-    expect(screen.getByTestId('grant-m1')).toHaveTextContent('＋ 授权给…')
-    // ③ 分诊条把它算进"待授权"，而点「＋ 授权给…」确实打得开（不再被挡回
-    //    "需要先归档成功"）
-    expect(screen.getByTestId('triage-count-ungranted')).toHaveTextContent('1')
-    await user.click(within(screen.getByTestId('grant-m1')).getByRole('button', { name: '＋ 授权给…' }))
-    expect(await screen.findByRole('dialog', { name: '授权给采集程序' })).toHaveAttribute('data-state', 'open')
-    await user.keyboard('{Escape}')
-
-    // ④ 抽屉里的归档理由：不再是"失败 归档失败：NAS 断连"
-    await user.click(within(screen.getByTestId('row-m1')).getByRole('button', { name: /详情/ }))
-    const drawer = await screen.findByRole('dialog', { name: '产品周会' })
-    expect(drawer.querySelector('[data-by="fail"]')).toBeNull()
-    expect(drawer).not.toHaveTextContent('NAS 断连，写入被拒')
-    expect(within(drawer).getByRole('img', { name: '归档到 NAS：已完成 · 人工改写' })).toBeInTheDocument()
-  })
-
-  test('关掉拉取，归档那一段也跟着换理由——不是状态说没执行、理由说已校验哈希', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await ready()
-
-    // 光标停在 m1，按 `1` 关掉拉取
-    await user.keyboard('1')
-
-    const m1 = screen.getByTestId('row-m1')
-    // 归档圆点跟着变"未执行"，而且带上人工改写环
-    expect(within(m1).getByRole('button', { name: '归档到 NAS：未执行 · 人工改写' })).toBeInTheDocument()
-
-    await user.click(within(m1).getByRole('button', { name: /详情/ }))
-    const drawer = await screen.findByRole('dialog', { name: '产品周会' })
-    // 抽屉里归档那一段不能还写着"已成功写入 NAS 并校验哈希"
-    expect(drawer).not.toHaveTextContent('已成功写入 NAS 并校验哈希')
-    expect(drawer).toHaveTextContent('归档随之失效')
-  })
-})
-
-describe('会议记录页 · 数据到达时不许闪一帧空态', () => {
-  test('首屏没有任何一帧画出「还没有拉取过任何会议」', async () => {
-    // 用 effect 镜像服务端数据时，数据到达的那次 commit 里 loading 已经是
-    // false 而 rows 还是空的——分诊条与工具条整排卸载、表格画出大空态，
-    // 下一帧才换回真实数据。测试全 `await waitFor` 抓不到这一帧，所以这里
-    // 用 Profiler 在**每一次提交**上取一张快照（onRender 跑在提交阶段，
-    // DOM 已经更新完了）。
-    const commits: string[] = []
-    const onRender: ProfilerOnRenderCallback = () => {
-      commits.push(document.body.textContent ?? '')
-    }
-    const router = createMemoryRouter(
-      [
-        { path: '/meetings', element: <MeetingsPage /> },
-        { path: '/preview/:id', element: <h1>内容预览占位</h1> },
-      ],
-      { initialEntries: ['/meetings'] },
-    )
-    render(
-      <SystemStateProvider initialState="ok">
-        <Profiler id="meetings" onRender={onRender}>
-          <RouterProvider router={router} />
-        </Profiler>
-      </SystemStateProvider>,
-    )
-    await ready()
-
-    // 至少经历了"加载中 → 有数据"两次提交，否则下面的过滤是空转
-    expect(commits.length).toBeGreaterThan(1)
-    expect(commits.filter((t) => t.includes('还没有拉取过任何会议'))).toEqual([])
-    // 分诊条也不许中途整排消失又长回来——那正是"整页往下跳"
-    expect(commits.filter((t) => t.includes('产品周会') && !t.includes('待授权'))).toEqual([])
-  })
-})
-
-describe('会议记录页 · 语义色只在该出现的地方出现', () => {
-  test('资产列的「部分未拿到」是中性的，不是琥珀——琥珀只有两个含义', () => {
+  test('归档失败是红的；未归档不是（两件事，不能同一个灰也不能同一个红）', async () => {
     const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
-    const partial = /\.assets\[data-state='partial'\]\s*\{([^}]*)\}/.exec(stripComments(rowCss))
-    expect(partial, '找不到 partial 这一支的规则').not.toBeNull()
-    expect(partial![1]).not.toMatch(/--warn|--fail/)
-
-    // 对照组：琥珀在这个文件里仍然有它唯一合法的用处——保留期快到了
-    expect(stripComments(rowCss)).toMatch(/\.keepLeft\[data-soon='true'\]\s*\{[^}]*var\(--warn\)/)
+    expect(rowCss).toMatch(/\.keepNone\[data-fail='true'\]\s*\{\s*color:\s*var\(--fail\)/)
+    handler = defaultHandler([M3, M2])
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('row-m3')).toBeInTheDocument())
+    expect(screen.getByTestId('keep-m3').querySelector('[data-fail="true"]')).not.toBeNull()
+    expect(screen.getByTestId('keep-m2').querySelector('[data-fail="true"]')).toBeNull()
   })
 
-  test('「延长」按钮的 hover 不是琥珀——hover 只是鼠标停在这儿，不是一条语义', () => {
-    const rowCss = stripComments(css('src/pages/Meetings/MeetingRow.module.css'))
-    const hover = /\.extendBtn:hover\s*\{([^}]*)\}/.exec(rowCss)
-    expect(hover, '找不到 .extendBtn:hover 这一支').not.toBeNull()
-    // 琥珀在 design-system.md §2.2 里只有两个含义（人工改写 / 保留期快到了），
-    // hover 强调不是其中之一；红同理。
-    expect(hover![1]).not.toMatch(/--warn|--fail/)
-    // 而且真的还在强调，不是把整条删了充数
-    expect(hover![1]).toMatch(/border-color|color/)
-
-    // 对照组：同一栏里"还剩 N 天"的琥珀是合法的，不许误伤
-    expect(rowCss).toMatch(/\.keepLeft\[data-soon='true'\]\s*\{[^}]*var\(--warn\)/)
+  test('「＋30 天」平时不占位，hover / 键盘光标才浮出来', () => {
+    const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
+    expect(rowCss).toMatch(/\.extendBtn\s*\{[^}]*opacity:\s*0/)
+    expect(rowCss).toMatch(/tr:hover \.extendBtn[^{]*\{\s*opacity:\s*1/)
   })
 })

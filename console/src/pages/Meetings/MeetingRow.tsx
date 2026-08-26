@@ -1,44 +1,46 @@
-import type { Consumer, Meeting } from '@/api/types'
+import type { ServiceProgram } from '@/api/admin/grants'
+import type { AdminMeeting } from '@/api/admin/meetings'
 import { daysLeft, fmtDateTime, fmtDay } from '@/lib/format'
 import { Pill } from '@/ui/Pill'
 import { ProgressBar } from '@/ui/ProgressBar'
 import { StatusDot } from '@/ui/StatusDot'
-import { consumerName, grantCellKind } from './write'
+import {
+  assetTotals,
+  dotState,
+  grantCellKind,
+  meetingTitle,
+  programName,
+  STAGE_NAME,
+  type Stage,
+} from './display'
+import { wkey } from './writes'
 import styles from './MeetingRow.module.css'
 
-/** 八类资产的"已拿到 / 应有"合计。某个键不出现＝该类不适用，不参与计数。 */
-export function assetTotals(m: Meeting): { got: number; total: number } {
-  let got = 0
-  let total = 0
-  for (const v of Object.values(m.assets)) {
-    got += v.got
-    total += v.total
-  }
-  return { got, total }
-}
-
 export interface MeetingRowProps {
-  meeting: Meeting
-  consumers: Consumer[]
+  meeting: AdminMeeting
+  programs: readonly ServiceProgram[]
   now: Date
   selected: boolean
   cursor: boolean
+  /** 这一行上有没有正在跑的写操作。键由 `wkey(id, op)` 拼 */
+  isPending: (key: string) => boolean
   onSelect: (id: string, next: boolean) => void
   onOpenTitle: (id: string) => void
   onOpenDetail: (id: string) => void
-  onToggleStage: (id: string, stage: 'fetch' | 'archive') => void
+  onToggleStage: (id: string, stage: Stage) => void
   onExtend: (id: string) => void
   onOpenGrant: (id: string) => void
-  onRevoke: (id: string, consumerId: string) => void
+  onRevoke: (id: string, programId: string) => void
 }
 
 export function MeetingRow(props: MeetingRowProps) {
   const {
     meeting: m,
-    consumers,
+    programs,
     now,
     selected,
     cursor,
+    isPending,
     onSelect,
     onOpenTitle,
     onOpenDetail,
@@ -50,6 +52,7 @@ export function MeetingRow(props: MeetingRowProps) {
 
   const { got, total } = assetTotals(m)
   const dim = m.keep.filesGone
+  const title = meetingTitle(m)
 
   return (
     <tr
@@ -65,60 +68,57 @@ export function MeetingRow(props: MeetingRowProps) {
           className={styles.checkbox}
           checked={selected}
           onChange={(e) => onSelect(m.id, e.target.checked)}
-          aria-label={`选择 ${m.title}`}
+          aria-label={`选择 ${title}`}
         />
       </td>
 
       <td>
         {/* 标题是按钮，点进内容预览——不是纯文本（spec.md §4.2）。 */}
         <button type="button" className={styles.title} onClick={() => onOpenTitle(m.id)}>
-          {m.title}
+          {title}
         </button>
         <div className={styles.meta}>
-          <span className={styles.code}>{m.code}</span>
+          <span className={styles.code}>{m.missing.includes('code') ? '会议号未取到' : m.code}</span>
           <span aria-hidden="true"> · </span>
           {/* fmtDateTime 的月/日不补零（与原型一致），"9-1" 比 "12-31" 少两个字符。
               等宽数字解决不了字符数不同，所以这里额外给一个 ch 下限撑住列宽。 */}
-          <span className={styles.when}>{fmtDateTime(m.startAt, now)}</span>
+          <span className={styles.when}>
+            {m.missing.includes('startAt') ? '时间未取到' : fmtDateTime(m.startAt, now)}
+          </span>
         </div>
       </td>
 
-      <td className={styles.host}>{m.host}</td>
+      <td className={styles.host}>{m.missing.includes('host') ? '—' : m.host}</td>
 
       <td
         className={styles.assets}
         data-state={total === 0 ? 'na' : got < total ? 'partial' : 'full'}
+        title={
+          m.unknownAssetTypes.length > 0
+            ? `另有认不出的资产类型：${m.unknownAssetTypes.join('、')}`
+            : undefined
+        }
       >
         {total === 0 ? '—' : got < total ? `${got}/${total}` : String(total)}
+        {m.unknownAssetTypes.length > 0 && <sup aria-hidden="true">?</sup>}
       </td>
 
       <td className={styles.stage}>
         <div className={styles.stageRow}>
-          <StatusDot
-            state={m.fetch}
-            label="拉取"
-            overridden={m.hand.includes('fetch')}
-            onClick={() => onToggleStage(m.id, 'fetch')}
-          />
+          <StageDot m={m} stage="fetch" isPending={isPending} onToggle={onToggleStage} />
           {/* 两阶段之间的连线：拉取完成才是实线，否则虚线——顺序关系是这一栏
               要传达的第二件事（"归档要等拉取"）。 */}
           <span className={styles.link} data-done={m.fetch === 'done'} aria-hidden="true" />
-          <StatusDot
-            state={m.archive}
-            label="归档到 NAS"
-            overridden={m.hand.includes('archive')}
-            onClick={() => onToggleStage(m.id, 'archive')}
-            disabled={m.fetch !== 'done'}
-          />
+          <StageDot m={m} stage="archive" isPending={isPending} onToggle={onToggleStage} />
         </div>
       </td>
 
       <td className={styles.keep} data-testid={`keep-${m.id}`}>
-        <KeepCell m={m} now={now} onExtend={onExtend} />
+        <KeepCell m={m} now={now} isPending={isPending} onExtend={onExtend} />
       </td>
 
       <td className={styles.grant} data-testid={`grant-${m.id}`}>
-        <GrantCell m={m} consumers={consumers} onOpenGrant={onOpenGrant} onRevoke={onRevoke} />
+        <GrantCell m={m} programs={programs} isPending={isPending} onOpenGrant={onOpenGrant} onRevoke={onRevoke} />
       </td>
 
       <td className={styles.act}>
@@ -126,7 +126,7 @@ export function MeetingRow(props: MeetingRowProps) {
           type="button"
           className={styles.detailBtn}
           onClick={() => onOpenDetail(m.id)}
-          aria-label={`${m.title} 的详情`}
+          aria-label={`${title} 的详情`}
         >
           <span aria-hidden="true">›</span>
         </button>
@@ -135,7 +135,58 @@ export function MeetingRow(props: MeetingRowProps) {
   )
 }
 
-function KeepCell({ m, now, onExtend }: { m: Meeting; now: Date; onExtend: (id: string) => void }) {
+/**
+ * 一个阶段的圆点。
+ *
+ * **认不出的状态不画圆点**：六种圆点各自有确定的含义，随便挑一个画等于替后端
+ * 下了一个我们没有的结论。改画一个「未知」标签，并把原始取值放进 title 里
+ * ——那是排查这件事唯一的线索。
+ */
+function StageDot({
+  m,
+  stage,
+  isPending,
+  onToggle,
+}: {
+  m: AdminMeeting
+  stage: Stage
+  isPending: (key: string) => boolean
+  onToggle: (id: string, stage: Stage) => void
+}) {
+  const raw = stage === 'fetch' ? m.fetch : m.archive
+  const state = dotState(stage, raw)
+  if (state === 'unknown') {
+    return (
+      <Pill tone="warn" className={styles.unknownDot}>
+        <span title={`${STAGE_NAME[stage]}：后端下发了认不出的取值「${raw}」`}>
+          {STAGE_NAME[stage]}未知
+        </span>
+      </Pill>
+    )
+  }
+  const pending = isPending(wkey(m.id, stage))
+  return (
+    <StatusDot
+      state={state}
+      label={STAGE_NAME[stage]}
+      overridden={m.hand.includes(stage)}
+      onClick={() => onToggle(m.id, stage)}
+      disabled={pending}
+    />
+  )
+}
+
+function KeepCell({
+  m,
+  now,
+  isPending,
+  onExtend,
+}: {
+  m: AdminMeeting
+  now: Date
+  isPending: (key: string) => boolean
+  onExtend: (id: string) => void
+}) {
   if (m.keep.filesGone) {
     return (
       <div className={styles.keepRow}>
@@ -152,8 +203,7 @@ function KeepCell({ m, now, onExtend }: { m: Meeting; now: Date; onExtend: (id: 
     // 这里说清楚是哪一种没归档，而不是含糊地画一根空进度条。
     //
     // 「归档失败」和「未归档」不是同一件事，不能同一个灰：红＝失败＝一个月后
-    // 永久丢失，是本系统最严重的状态（design-system.md §2.2），原型这一支也
-    // 确实上了 `is-fail`（gate-console.html:2447）。
+    // 永久丢失，是本系统最严重的状态（design-system.md §2.2）。
     const failed = m.archive === 'failed'
     return (
       <span className={styles.keepNone} data-fail={failed}>
@@ -167,6 +217,7 @@ function KeepCell({ m, now, onExtend }: { m: Meeting; now: Date; onExtend: (id: 
   const windowSec = m.keep.expiresAt - m.keep.archivedAt
   const usedSec = Math.floor(now.getTime() / 1000) - m.keep.archivedAt
   const usedPct = windowSec > 0 ? (usedSec / windowSec) * 100 : 0
+  const pending = isPending(wkey(m.id, 'extend'))
 
   return (
     <div className={styles.keepRow}>
@@ -186,9 +237,10 @@ function KeepCell({ m, now, onExtend }: { m: Meeting; now: Date; onExtend: (id: 
         type="button"
         className={styles.extendBtn}
         onClick={() => onExtend(m.id)}
-        aria-label={`把「${m.title}」的本地保留期延长 30 天`}
+        disabled={pending}
+        aria-label={`把「${meetingTitle(m)}」的本地保留期延长 30 天`}
       >
-        ＋30 天
+        {pending ? '延长中…' : '＋30 天'}
       </button>
     </div>
   )
@@ -196,33 +248,34 @@ function KeepCell({ m, now, onExtend }: { m: Meeting; now: Date; onExtend: (id: 
 
 function GrantCell({
   m,
-  consumers,
+  programs,
+  isPending,
   onOpenGrant,
   onRevoke,
 }: {
-  m: Meeting
-  consumers: Consumer[]
+  m: AdminMeeting
+  programs: readonly ServiceProgram[]
+  isPending: (key: string) => boolean
   onOpenGrant: (id: string) => void
-  onRevoke: (id: string, consumerId: string) => void
+  onRevoke: (id: string, programId: string) => void
 }) {
   const cell = grantCellKind(m)
 
-  if (cell.kind === 'expired') {
-    return <span className={styles.grantNone}>授权已失效</span>
-  }
-  if (cell.kind === 'na') {
-    return <span className={styles.grantNone}>无资产</span>
-  }
-  if (cell.kind === 'wait') {
-    return <span className={styles.grantNone}>未归档</span>
+  if (cell.kind === 'expired') return <span className={styles.grantNone}>授权已失效</span>
+  if (cell.kind === 'na') return <span className={styles.grantNone}>无资产</span>
+  if (cell.kind === 'wait') return <span className={styles.grantNone}>未归档</span>
+  if (cell.kind === 'unknown') {
+    // 读不懂 `allow` 就不画「＋ 授权给…」。授权是数据出企业边界的闸门，
+    // 闸门在读不懂状态时必须是关着的，而且要说出来自己关着。
+    return (
+      <Pill tone="warn">
+        <span title={`后端下发了认不出的采集权限取值「${m.allow}」`}>权限未知</span>
+      </Pill>
+    )
   }
   if (cell.kind === 'denied') {
     // 中性，不是琥珀——琥珀的唯一含义是"这需要你看一眼"，而一条 deny 规则
     // 命中是规则系统在正确地干活，绝大多数被拒的会议是故意且永久被拒的。
-    // 一个配了隐私规则的组织会有一整列永久琥珀，真正该被看见的琥珀就淹没了。
-    // （design-system.md §2.2，控制器 f81a88d 的裁决；原型这处着色作废）
-    //
-    // 是规则拒的还是人工设的，只影响这一句文案——能不能授权由 allow 定死。
     return <Pill>{cell.hand ? '已人工设为禁止' : '规则禁止采集'}</Pill>
   }
 
@@ -234,23 +287,28 @@ function GrantCell({
     )
   }
 
+  const title = meetingTitle(m)
   return (
     <div className={styles.grantRow}>
-      {m.grants.map((id) => (
-        <Pill
-          key={id}
-          tone="brand"
-          onRemove={() => onRevoke(m.id, id)}
-          removeLabel={`收回 ${consumerName(consumers, id)} 对「${m.title}」的授权`}
-        >
-          {consumerName(consumers, id)}
-        </Pill>
-      ))}
+      {m.grants.map((id) => {
+        const pending = isPending(wkey(m.id, `revoke:${id}`))
+        return (
+          <Pill
+            key={id}
+            tone="brand"
+            onRemove={pending ? () => undefined : () => onRevoke(m.id, id)}
+            removeLabel={`收回 ${programName(programs, id)} 对「${title}」的授权`}
+          >
+            {programName(programs, id)}
+            {pending && <span className={styles.pendingMark}>（收回中…）</span>}
+          </Pill>
+        )
+      })}
       <button
         type="button"
         className={styles.grantAdd}
         onClick={() => onOpenGrant(m.id)}
-        aria-label={`再给「${m.title}」授权一个采集程序`}
+        aria-label={`再给「${title}」授权一个采集程序`}
       >
         ＋
       </button>

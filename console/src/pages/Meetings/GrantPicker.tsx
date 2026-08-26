@@ -1,32 +1,24 @@
 import { useEffect, useState } from 'react'
-import type { Consumer, Meeting } from '@/api/types'
+import type { ServiceProgram } from '@/api/admin/grants'
+import type { AdminMeeting } from '@/api/admin/meetings'
 import { daysLeft, fmtDateTime } from '@/lib/format'
 import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
 import { Sheet } from '@/ui/Sheet'
-import { assetTotals } from './MeetingRow'
-import { grantCellKind } from './write'
+import { assetTotals, grantSkipReason, meetingTitle } from './display'
 import styles from './GrantPicker.module.css'
 
 export interface GrantPickerProps {
   open: boolean
   onClose: () => void
   /** 单场授权就是一场；批量授权是选中的那一批。 */
-  meetings: Meeting[]
-  consumers: Consumer[]
+  meetings: readonly AdminMeeting[]
+  programs: readonly ServiceProgram[]
   now: Date
+  /** 有写操作在跑——确认按钮要禁用并说出自己在忙 */
+  busy: boolean
   /** 确认后要把这批会议的授权改成 / 加上这些程序。 */
-  onConfirm: (consumerIds: string[]) => void
-}
-
-/** 这场会议这次会不会被真的改到？不会的话，为什么。 */
-function skipReason(m: Meeting): string | null {
-  const kind = grantCellKind(m).kind
-  if (kind === 'denied') return '规则禁止，将跳过'
-  if (kind === 'expired') return '已到期，将跳过'
-  if (kind === 'na') return '无资产，将跳过'
-  if (kind === 'wait') return '未归档，将跳过'
-  return null
+  onConfirm: (programIds: string[]) => void
 }
 
 /**
@@ -34,15 +26,25 @@ function skipReason(m: Meeting): string | null {
  * 跳过**，不给"一键全授权"：授权是数据出企业边界的闸门，闸门不该有一键。
  *
  * 用 `Sheet`（底部面板）而不是 `Popover`：`ui/Table` 的外框是
- * `overflow: hidden`，绝对定位的 Popover 贴在行里会被裁掉（详见 task-6 报告
- * 对 T4 的反馈）。Sheet 是固定定位的，不受表格裁剪影响，窄屏下也更好按。
+ * `overflow: hidden`，绝对定位的 Popover 贴在行里会被裁掉。Sheet 是固定定位的，
+ * 不受表格裁剪影响，窄屏下也更好按。
+ *
+ * ## 「这个程序能取到什么」这一句为什么不在这里
+ *
+ * F1 的 mock 给每个程序挂了一个 `scope` 串（「AI 纪要 + 完整转写」）。真实的
+ * `GET /api/v1/admin/programs` **不下发这个字段**（阶段 4 · T7 裁定）：那句话
+ * 必须是「规则栈 ∩ 授权范围 ∩ 实际存在的资产」三者求交之后的**实际结果**，
+ * 而求交要逐程序打一次 `GET /programs/:id/inventory`。把一个未经求交的配置串
+ * 摆在这里，等于把它伪装成一次实际结果。所以这里只显示程序**身份**
+ * （id 与操作者），能取到什么去采集授权页看。
  */
 export function GrantPicker({
   open,
   onClose,
   meetings,
-  consumers,
+  programs,
   now,
+  busy,
   onConfirm,
 }: GrantPickerProps) {
   const single = meetings.length === 1 ? meetings[0] : undefined
@@ -55,7 +57,7 @@ export function GrantPicker({
     setChecked(single ? [...single.grants] : [])
   }, [open, single])
 
-  const eligible = meetings.filter((m) => skipReason(m) === null)
+  const eligible = meetings.filter((m) => grantSkipReason(m) === null)
   const title = single ? '授权给采集程序' : `批量授权 ${meetings.length} 场会议`
 
   return (
@@ -67,13 +69,13 @@ export function GrantPicker({
 
       <ul className={styles.meetings} data-testid="grant-picker-meetings">
         {meetings.map((m) => {
-          const skip = skipReason(m)
+          const skip = grantSkipReason(m)
           const left = m.keep.expiresAt !== null ? daysLeft(m.keep.expiresAt, now) : null
           const { got } = assetTotals(m)
           return (
             <li key={m.id} className={styles.meeting} data-skip={skip !== null}>
               <div className={styles.meetingMain}>
-                <div className={styles.meetingTitle}>{m.title}</div>
+                <div className={styles.meetingTitle}>{meetingTitle(m)}</div>
                 <div className={styles.meetingMeta}>
                   {m.host} · {fmtDateTime(m.startAt, now)} · {got} 项资产
                 </div>
@@ -91,25 +93,32 @@ export function GrantPicker({
 
       <fieldset className={styles.consumers}>
         <legend className={styles.legend}>选择采集程序</legend>
-        {consumers.map((c) => (
-          <label key={c.id} className={styles.option}>
+        {programs.length === 0 && (
+          <p className={styles.empty}>
+            还没有接入任何采集程序。去<b>采集授权</b>页接入一个之后，这里才有可选项。
+          </p>
+        )}
+        {programs.map((p) => (
+          <label key={p.id} className={styles.option} data-off={!p.enabled}>
             <input
               type="checkbox"
               className={styles.checkbox}
-              checked={checked.includes(c.id)}
+              checked={checked.includes(p.id)}
+              disabled={busy}
               onChange={(e) =>
                 setChecked((prev) =>
-                  e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id),
+                  e.target.checked ? [...prev, p.id] : prev.filter((x) => x !== p.id),
                 )
               }
             />
             <span>
-              <span className={styles.optionName}>{c.name}</span>
-              {/* 这里原来还跟着一个 `c.scope`（'AI 纪要 + 完整转写' 一类）。
-                  那是个配置串，不是这个程序实际能取到的东西，阶段 5 · F4 连同
-                  `Consumer.scope` 一起删了——要看实际结果去采集授权页，那一页
-                  的每个数字都来自 `GET /admin/programs/:id/inventory`。 */}
-              <span className={styles.optionMeta}>{c.id}</span>
+              <span className={styles.optionName}>
+                {p.name}
+                {!p.enabled && <Pill tone="warn">已停用</Pill>}
+              </span>
+              <span className={styles.optionMeta}>
+                {p.id} · 操作者 {p.tmUserId}
+              </span>
             </span>
           </label>
         ))}
@@ -125,8 +134,12 @@ export function GrantPicker({
         <Button variant="quiet" onClick={onClose}>
           取消
         </Button>
-        <Button variant="primary" disabled={eligible.length === 0} onClick={() => onConfirm(checked)}>
-          {single ? '保存授权' : `确认授权 ${eligible.length} 场`}
+        <Button
+          variant="primary"
+          disabled={eligible.length === 0 || busy}
+          onClick={() => onConfirm(checked)}
+        >
+          {busy ? '提交中…' : single ? '保存授权' : `确认授权 ${eligible.length} 场`}
         </Button>
       </div>
     </Sheet>

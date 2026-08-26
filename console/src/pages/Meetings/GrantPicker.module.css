@@ -113,3 +113,17 @@
   justify-content: flex-end;
   gap: var(--s-2);
 }
+
+/* 一个采集程序都没接入时的那句话。空的勾选框组比一句解释更让人困惑。 */
+.empty {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+/* 已停用的程序仍然列出来（授权给一个停用的程序是合法操作，停用是另一层闸门），
+   但要看得出来。 */
+.option[data-off='true'] .optionName {
+  color: var(--ink-3);
+}

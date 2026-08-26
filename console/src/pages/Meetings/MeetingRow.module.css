@@ -233,3 +233,16 @@ tr[data-cursor='true'] .detailBtn,
   border-color: var(--line);
   color: var(--ink);
 }
+
+/* 后端下发了认不出的阶段状态时顶替圆点的标签。琥珀＝"这需要你看一眼"，
+   而"我们读不懂后端给的状态"正是需要人看一眼的事。 */
+.unknownDot {
+  white-space: nowrap;
+}
+
+/* 授权 pill 正在被收回。不把 pill 直接抽走——请求可能失败，
+   抽走再放回来会让人以为自己看错了。 */
+.pendingMark {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}

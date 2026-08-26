@@ -1,63 +1,50 @@
 import { useEffect, useRef } from 'react'
-import type { Consumer, Meeting } from '@/api/types'
+import type { ServiceProgram } from '@/api/admin/grants'
+import type { AdminMeeting } from '@/api/admin/meetings'
 import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
 import { Table } from '@/ui/Table'
 import { MeetingRow, type MeetingRowProps } from './MeetingRow'
 import styles from './MeetingTable.module.css'
 
-/** 空态的三种成因。出口各不相同，不能糊成同一句"暂无数据"（spec.md §8）。 */
-export type EmptyKind = 'none-at-all' | 'out-of-range' | 'filtered-out' | null
+/** 空态的两种成因。出口不同，不能糊成同一句"暂无数据"（spec.md §8）。 */
+export type EmptyKind = 'none-at-all' | 'filtered-out' | null
 
 /**
- * 表格空了是因为什么？**顺序就是因果的粗细**：系统里一场都没有 > 时间范围之外 >
- * 被筛选条件筛没了。粗的那层先答，不然会给出"清除筛选"这种解决不了问题的出口。
+ * 表格空了是因为什么？
  *
- * 「时间范围之外」的判据是 `totalMatchingIgnoringRange > 0`——**去掉范围就找得到**，
- * 而不是"范围内一场会议都没有"。差别是具体的：近 7 天里有 6 场会议、但搜索词
- * 只命中 40 天前的那一场时，旧判据会算成"被筛选筛没了"，给出的出口是"清除筛选"
- * ——点完范围没变，那一场还是找不到。
+ * F1 时代有三种成因，第三种是「时间范围之外」。**接真 API 之后那一种没有了**：
+ * `GET /api/v1/admin/meetings` 没有时间范围参数，那个筛选器因此被删掉了
+ * （不支持的筛选不在前端偷偷补一个内存版本——翻到第二页就失效）。
+ *
+ * 判据从「全量行数」换成了「有没有在筛」：分页之后前端手里只有当前这一页，
+ * 「系统里一共有几场」是问不出来的。所以：`total === 0` 且没有任何筛选条件
+ * ＝ 一场都没有；`total === 0` 但正在筛 ＝ 被筛没了。
  */
-export function emptyKind(args: {
-  totalAll: number
-  /** 只按筛选与搜索算、不套时间范围的命中数。 */
-  totalMatchingIgnoringRange: number
-  totalMatching: number
-  rangeDays: number
-}): EmptyKind {
-  if (args.totalMatching > 0) return null
-  if (args.totalAll === 0) return 'none-at-all'
-  if (args.rangeDays > 0 && args.totalMatchingIgnoringRange > 0) return 'out-of-range'
-  return 'filtered-out'
+export function emptyKind(args: { total: number; narrowed: boolean }): EmptyKind {
+  if (args.total > 0) return null
+  return args.narrowed ? 'filtered-out' : 'none-at-all'
 }
 
-type RowHandlers = Omit<MeetingRowProps, 'meeting' | 'consumers' | 'now' | 'selected' | 'cursor'>
+type RowHandlers = Omit<
+  MeetingRowProps,
+  'meeting' | 'programs' | 'now' | 'selected' | 'cursor' | 'isPending'
+>
 
 export interface MeetingTableProps extends RowHandlers {
-  /** 当前页要渲染的行。 */
-  rows: Meeting[]
-  consumers: Consumer[]
+  /** 当前页要渲染的行。**已经是服务端切好的一页** */
+  rows: readonly AdminMeeting[]
+  programs: readonly ServiceProgram[]
   now: Date
   selected: ReadonlySet<string>
   cursorId: string | null
+  isPending: (key: string) => boolean
 
-  /** 表头勾选：只作用于**本页**。 */
+  /** 表头勾选：只作用于**本页**（也只可能作用于本页——别的页不在手里） */
   onSelectPage: (next: boolean) => void
-  /** 跨页全选的逃生门——点了才扩到"符合筛选的全部"。 */
-  onSelectAllMatching: () => void
-  /** 从"全部"收回到"只保留本页"。 */
-  onSelectPageOnly: () => void
-  /**
-   * 符合当前筛选的行**是不是已经一场不落地被选中了**。
-   * 这是从选择集与当前筛选**推出来**的，不是一个"点过跨页全选"的记忆标志位——
-   * 标志位要靠"记得在每个改筛选的地方清一次"，那种约定迟早会漏。
-   */
-  allMatchingSelected: boolean
-  /** 当前筛选下**真正**被选中的场数（＝批量操作会改到的场数）。 */
-  selectedCount: number
 
-  /** 符合当前筛选的总数（可能横跨多页）。 */
-  totalMatching: number
+  /** 符合当前筛选的总数，由后端下发 */
+  total: number
   page: number
   pageSize: number
   onPage: (page: number) => void
@@ -67,9 +54,7 @@ export interface MeetingTableProps extends RowHandlers {
   error: Error | null
   onRetry: () => void
   empty: EmptyKind
-  rangeDays: number
   onClearFilters: () => void
-  onClearRange: () => void
   onGoRules: () => void
   onGoJobs: () => void
 }
@@ -77,20 +62,19 @@ export interface MeetingTableProps extends RowHandlers {
 const PAGE_SIZES = [5, 10, 20, 50]
 /** 表头 + 8 列，空态/骨架行要横跨整张表。 */
 const COL_COUNT = 8
+/** 页码按钮最多画这么多个。总页数上千时全画出来会把分页条撑成一屏。 */
+const MAX_PAGE_BUTTONS = 9
 
 export function MeetingTable(props: MeetingTableProps) {
   const {
     rows,
-    consumers,
+    programs,
     now,
     selected,
     cursorId,
+    isPending,
     onSelectPage,
-    onSelectAllMatching,
-    onSelectPageOnly,
-    allMatchingSelected,
-    selectedCount,
-    totalMatching,
+    total,
     page,
     pageSize,
     onPage,
@@ -99,9 +83,7 @@ export function MeetingTable(props: MeetingTableProps) {
     error,
     onRetry,
     empty,
-    rangeDays,
     onClearFilters,
-    onClearRange,
     onGoRules,
     onGoJobs,
     ...rowHandlers
@@ -110,8 +92,6 @@ export function MeetingTable(props: MeetingTableProps) {
   const pageIds = rows.map((m) => m.id)
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
   const somePageSelected = pageIds.some((id) => selected.has(id))
-  // 逃生门只在"本页全选了、且外面还有更多"时才有意义。
-  const showSelectAllHint = allPageSelected && totalMatching > pageIds.length
 
   // 本页只选了一部分时表头必须是"半选"，不是"未选"——未选的勾选框在说
   // "这一页一个都没选"，而屏幕上明明有几行是选中的。
@@ -122,35 +102,6 @@ export function MeetingTable(props: MeetingTableProps) {
 
   return (
     <div className={styles.wrap}>
-      {showSelectAllHint && (
-        <div className={styles.selectAllHint} data-testid="select-all-hint">
-          {allMatchingSelected ? (
-            <>
-              <span>
-                已选中符合当前筛选的全部 <b className={styles.num}>{selectedCount}</b> 场会议。
-              </span>
-              <button type="button" className={styles.hintBtn} onClick={onSelectPageOnly}>
-                只保留本页
-              </button>
-            </>
-          ) : (
-            <>
-              {/* 说的是**实际选中的场数**，不是本页有几行：跨页选过之后再收窄
-                  筛选，这两个数不一样，而底部批量条报的是前者。同一屏上两个
-                  数字打架，用户没有办法判断按下去会改掉几场。 */}
-              <span>
-                已选中 <b className={styles.num}>{selectedCount}</b> 场。
-              </span>
-              {/* 明说总数：「一次点击选中 300 场并批量改授权」是这个产品里最贵的
-                  误操作，所以扩到全部必须是第二次、看得见数字的点击。 */}
-              <button type="button" className={styles.hintBtn} onClick={onSelectAllMatching}>
-                改为选择符合筛选的全部 {totalMatching} 场
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
       <Table className={styles.table}>
         <thead>
           <tr>
@@ -182,9 +133,7 @@ export function MeetingTable(props: MeetingTableProps) {
           ) : empty ? (
             <EmptyRow
               kind={empty}
-              rangeDays={rangeDays}
               onClearFilters={onClearFilters}
-              onClearRange={onClearRange}
               onGoRules={onGoRules}
               onGoJobs={onGoJobs}
             />
@@ -193,10 +142,11 @@ export function MeetingTable(props: MeetingTableProps) {
               <MeetingRow
                 key={m.id}
                 meeting={m}
-                consumers={consumers}
+                programs={programs}
                 now={now}
                 selected={selected.has(m.id)}
                 cursor={cursorId === m.id}
+                isPending={isPending}
                 {...rowHandlers}
               />
             ))
@@ -207,7 +157,7 @@ export function MeetingTable(props: MeetingTableProps) {
       <Pager
         loading={loading}
         hidden={!!error || !!empty}
-        total={totalMatching}
+        total={total}
         page={page}
         pageSize={pageSize}
         onPage={onPage}
@@ -279,16 +229,12 @@ function ErrorRow({ error, onRetry }: { error: Error; onRetry: () => void }) {
 
 function EmptyRow({
   kind,
-  rangeDays,
   onClearFilters,
-  onClearRange,
   onGoRules,
   onGoJobs,
 }: {
   kind: Exclude<EmptyKind, null>
-  rangeDays: number
   onClearFilters: () => void
-  onClearRange: () => void
   onGoRules: () => void
   onGoJobs: () => void
 }) {
@@ -314,21 +260,6 @@ function EmptyRow({
     )
   }
 
-  if (kind === 'out-of-range') {
-    return (
-      <tr>
-        <td colSpan={COL_COUNT}>
-          <div className={styles.small} data-testid="meetings-empty" data-kind="out-of-range">
-            <span>近 {rangeDays} 天内没有符合条件的会议记录。</span>
-            <Button variant="quiet" size="sm" onClick={onClearRange}>
-              改为全部时间
-            </Button>
-          </div>
-        </td>
-      </tr>
-    )
-  }
-
   return (
     <tr>
       <td colSpan={COL_COUNT}>
@@ -341,6 +272,17 @@ function EmptyRow({
       </td>
     </tr>
   )
+}
+
+/**
+ * 页码按钮。总页数超过 `MAX_PAGE_BUTTONS` 时以当前页为中心开一个窗口——
+ * 全画出来在一个有几千场会议的部署里会把分页条撑成一整屏。
+ */
+function pageWindow(page: number, maxPage: number): number[] {
+  if (maxPage <= MAX_PAGE_BUTTONS) return Array.from({ length: maxPage }, (_, i) => i + 1)
+  const half = Math.floor(MAX_PAGE_BUTTONS / 2)
+  const start = Math.max(1, Math.min(page - half, maxPage - MAX_PAGE_BUTTONS + 1))
+  return Array.from({ length: MAX_PAGE_BUTTONS }, (_, i) => start + i)
 }
 
 function Pager({
@@ -374,6 +316,7 @@ function Pager({
   const maxPage = Math.max(1, Math.ceil(total / pageSize))
   const from = total === 0 ? 0 : (page - 1) * pageSize + 1
   const to = Math.min(page * pageSize, total)
+  const window = pageWindow(page, maxPage)
 
   return (
     <div className={styles.pager}>
@@ -405,7 +348,8 @@ function Pager({
         >
           ‹
         </button>
-        {Array.from({ length: maxPage }, (_, i) => i + 1).map((n) => (
+        {window[0] !== 1 && <span className={styles.pagerGap}>…</span>}
+        {window.map((n) => (
           <button
             key={n}
             type="button"
@@ -416,6 +360,7 @@ function Pager({
             {n}
           </button>
         ))}
+        {window[window.length - 1] !== maxPage && <span className={styles.pagerGap}>…</span>}
         <button
           type="button"
           className={styles.pageBtn}
