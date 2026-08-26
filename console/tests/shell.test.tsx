@@ -103,9 +103,18 @@ beforeEach(() => {
       }
       if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
       if (url.endsWith('/api/v1/admin/jobs')) return json(healthyJobs())
-      // 采集授权页（F4）接线之后会自己去读程序列表。答一个空列表就够——
-      // 这个文件测的是外壳的导航与系统状态，不是那一页的内容。
+      // 接完线的页面挂载时会真的去读自己那条端点。这个文件测的是外壳的
+      // 导航与系统状态、不是各页的内容，所以一律答一个空结果就够。
       if (url.endsWith('/api/v1/admin/programs')) return json([])
+      if (url.includes('/api/v1/admin/audit')) {
+        return json({
+          rows: [],
+          total: 0,
+          limit: 50,
+          offset: 0,
+          window: { from: 1699395200, to: null, isDefault: false, days: 7, text: null },
+        })
+      }
       throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
     }),
   )
@@ -184,14 +193,13 @@ describe('AppShell · 左栏与路由', () => {
     // `pages/<自己>/`，路由表不再有人回来改。空壳仍然不许是白页——
     // 演示时白页看起来像坏了。
     //
-    // **这份名单只减不增**：一页接完线，它就不再是空壳，那一行要从这里删掉，
-    // 页面上也不该再留着「本页的数据接线在 Fx」那句话。接完线的页面各自被自己
-    // 那份测试盯着（`/jobs` 是 `tests/pages/Jobs.test.tsx`，`/consumers` 是
-    // `tests/pages/consumers.test.tsx`）。六行全没了的时候，这条测试也该跟着删。
+    // **这份名单只能变短**：一页接完线之后它就不再是空壳，把自己那一行删掉
+    // 是那个任务的活，页面上也不该再留着「本页的数据接线在 Fx」那句话。留着
+    // 不删的话这条测试会红——那正是它该做的事。接完线的页面各自被自己那份
+    // 测试盯着（`tests/pages/` 下一页一份）。名单空了的时候，这条测试也该跟着删。
     const cases: Array<[string, string, string]> = [
       ['/rules', '自动规则', 'F3'],
       ['/storage', '归档存储', 'F5b'],
-      ['/audit', '操作审计', 'F5c'],
       ['/preview/m1', '内容预览', 'F6'],
     ]
     for (const [path, title, phase] of cases) {
