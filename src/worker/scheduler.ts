@@ -57,7 +57,7 @@
  * 混成一件事的后果是：sparkline 会因为一场会议归不上就把整个归档任务标红，
  * 而真正"归档任务挂了"的那一次淹没在里面——告警一旦天天红，就没人看了。
  */
-import { DEFAULT_ASSET_KEYS, discover, type MeetingSelector } from '@yaowu/mde-engine'
+import { DEFAULT_ASSET_KEYS, type MeetingSelector } from '@yaowu/mde-engine'
 import {
   JOB_CATALOG,
   createJobsStore,
@@ -86,6 +86,7 @@ import { createRecordsApi } from '../tencent/records'
 import { createAddressesApi } from '../tencent/addresses'
 import { createCatalog } from '../catalog/index'
 import { archivePendingMeetings, type ArchiveDeps, type ArchiveRoundOutcome } from './archive'
+import { discoverWithFetchPolicy } from './fetch-policy'
 import { executeCleanup, type CleanupExecuted } from './retention'
 import { computeProgramInventory, type ProgramInventory, type VisibilityDeps } from './visibility'
 import { createInProcSource } from './source-inproc'
@@ -620,9 +621,20 @@ async function main(): Promise<number> {
       tzOffsetSec,
       tickIntervalMs: tickSec * 1000,
       runners: createJobRunners({
+        // 发现走**拉取规则栈**（阶段 4 · T12 / A7）。计划把 T12 的落点只写成
+        // `src/worker/index.ts`，那是写计划时的现实——本文件是 T11 之后才有的
+        // 第二个 discovery 触发源，而且是**生产上真正每 15 分钟跑的那一个**。
+        // 只接一次性 worker 那条，等于 A7 在生产环境里依旧没接上，所以两处一起接，
+        // 判定逻辑共用 `./fetch-policy.ts` 一份。
         discoverRecordings: (at) =>
-          discover(
-            { gw: source, store },
+          discoverWithFetchPolicy(
+            {
+              gw: source,
+              store,
+              archives,
+              listFetchRules: () => policy.listEnabledStackRules('fetch'),
+              listFetchOverrides: (keys) => grants.listActiveOverridesForMeetings([...keys]),
+            },
             // 滚动时间窗。**不带 --code / --meeting-id**：那两种选择器是人工补跑用的
             { kind: 'range', from: at - lookbackSec, to: at } satisfies MeetingSelector,
             DEFAULT_ASSET_KEYS,

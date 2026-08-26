@@ -17,7 +17,7 @@
  * | 契约字段 | 本文件怎么给 |
  * | --- | --- |
  * | `allow` / `why.allow` | 采集权限栈的判定，走 `explainMeetingAccess` / `evaluateInventory`（见下） |
- * | `why.fetch` | **如实报 `na`**（计划 §0 E-c）。拉取规则栈至今零调用点 |
+ * | `why.fetch` | `evaluateFetchStack` + `applyOverride`，与 `src/worker/fetch-policy.ts` 同源 |
  * | `why.archive` | `evaluateArchiveStack` + `applyOverride`，与 `src/worker/archive.ts` 同源 |
  * | `history` | `AuditQueryStore.listForMeeting`，**只在详情端点**（见 `getMeeting`） |
  *
@@ -25,16 +25,22 @@
  * 给得出来，`'blocked'`（规则做的决定）永远不会从 store 返回。本文件用同一套
  * `evaluate*Stack` 把 `'blocked'` 叠上去——但**只叠归档那一栈**，理由见 `overlayArchive`。
  *
- * ## 为什么 `why.fetch` 宁可说「不知道」
+ * ## `why.fetch` 从「说不出」变成一次真判定（A7 / T12 的收尾）
  *
- * 计划 §0 E-c 实测：`evaluateFetchStack` 全仓库只有一个引用点（影响预览），
- * worker 的 discovery 走的仍是「按时间窗发现全部录制」。**没有任何一条拉取规则
- * 参与过真实的拉取决策**。所以这里不给 `{ by: 'rule', ruleId: N }`——让管理员读到
- * 「由规则 #3 决定」而 #3 从没跑过，比不说更糟：它把一个缺口伪装成一次判定。
- * 接线单列为 A7（T12）。
+ * 本文件最初按计划 §0 E-c 对拉取阶段一律报 `na`，理由是当时
+ * `evaluateFetchStack` 全仓库只有一个引用点（影响预览），worker 的 discovery 走的
+ * 仍是「按时间窗发现全部录制」——**没有任何一条拉取规则参与过真实的拉取决策**，
+ * 报「由规则 #3 决定」而 #3 从没跑过，比不说更糟。
  *
- * 唯一的例外是**人工改写**：改写不是规则，它是一次真发生过的人的决定，
- * 库里记着、求值器也认，所以拉取被人工关掉时 `why.fetch` 如实报 `hand`。
+ * T12 把那条线接上了（`src/worker/fetch-policy.ts`），所以这里改成真判定：
+ * 与 worker 读同一批规则、调同一个 `evaluateFetchStack` + `applyOverride`，
+ * 连"规则集为空时顶上兼容兜底"这一步也走同一个 `fetchRulesInEffect`。
+ * **两处各判一遍必然分叉**，分叉的表现是界面说"这场被规则拦下了"而 worker 其实拉了它。
+ *
+ * 仍然报 `na` 的只剩两种情况，且两种都不是"某条规则做的决定"：
+ * 会议元数据查不到（规则根本没跑过），以及**库里一条启用的拉取规则都没有**
+ * ——后者 worker 走兼容模式全拉，那句解释是共用的
+ * `FETCH_STACK_UNCONFIGURED_REASON`，不在本文件里另写一份。
  *
  * ## 「准许采集」在没有采集程序的前提下是什么意思
  *
@@ -57,7 +63,7 @@
  * 「gather（4–5 条查询）+ `evaluateInventory`」。一页 50 行 × 候选程序数 P，
  * 就是 50P 次调用、几百条查询——而 T1 刚把「列一页的查询数与行数无关」做成了
  * 它的验收判据。所以列表走的是**同一个纯函数** `evaluateInventory`，原料由本文件
- * 整页批量取一次（规则 1 次、归档 1 次、改写 1 次、会议元数据 1 次）。
+ * 整页批量取一次（规则 3 次、归档 1 次、改写 1 次、会议元数据 1 次）。
  *
  * 这不是「再判一遍」：`explainMeetingAccess` 本身就是
  * `gather` + `evaluateInventory`，两条路径落到的是同一段判定代码、同一批原料，
@@ -77,8 +83,10 @@ import {
 } from '../../../policy/override'
 import {
   evaluateArchiveStack,
+  evaluateFetchStack,
   type AllowEffect,
   type ArchiveEffect,
+  type FetchEffect,
   type StackRule,
 } from '../../../policy/stacks'
 import { archiveStateKey } from '../../../store/archives'
@@ -88,10 +96,15 @@ import {
   parseConsoleMeetingId,
   type ArchiveState,
   type ConsoleMeetingRow,
+  type FetchState,
   type MeetingQuery,
   type TriageBucket,
 } from '../../../store/console-meetings'
 import type { MeetingKey } from '../../../store/grants'
+import {
+  FETCH_STACK_UNCONFIGURED_REASON,
+  fetchRulesInEffect,
+} from '../../../worker/fetch-policy'
 import { evaluateInventory, explainMeetingAccess } from '../../../worker/visibility'
 import { requireAdminAuth } from '../../middleware'
 import { json } from '../../respond'
@@ -172,19 +185,6 @@ const ASSET_LABEL: Record<AssetKey, string> = {
   ai_topic_minutes: '话题纪要',
   ai_speaker_minutes: '发言人纪要',
   ai_ds_minutes: '会议摘要',
-}
-
-/**
- * 拉取阶段的固定理由（计划 §0 E-c 的原话）。
- *
- * **不要把它改成一条 `by: 'rule'` 的判定**，除非 A7（T12）真的把拉取规则栈接进了
- * discovery——在那之前，任何「由规则 #N 决定」都是编的。
- */
-const FETCH_WHY_UNWIRED: Why = {
-  by: 'na',
-  text:
-    '拉取阶段目前不由规则决定：discovery 按时间窗发现全部录制，拉取规则栈尚未接线（A7）。' +
-    '规则页上的拉取规则配了也不生效，所以这里不报「由某条规则决定」——那会把一个缺口伪装成一次判定。',
 }
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
@@ -293,6 +293,8 @@ function withProgram(programId: string, reason: string): string {
 /** 叠加需要的原料。列表整页取一次，详情取一场 */
 interface StageMaterial {
   now: number
+  /** **库里**启用的拉取规则。为空 = 兼容模式，见 `fetchWhy` 与 `fetchRulesInEffect` */
+  fetchRules: readonly StackRule[]
   archiveRules: readonly StackRule[]
   /**
    * 会议元数据。查不到时 undefined——**不造空壳顶上**，见 `VisibilityDeps.getMeetings`。
@@ -328,16 +330,75 @@ function overlayArchive(
   return state
 }
 
-/** 拉取阶段的理由。规则栈没接线，所以只有两种：人关的，和「说不出」 */
-function fetchWhy(row: ConsoleMeetingRow, overrides: MeetingOverrideSet): Why {
-  if (row.fetch !== 'off') return FETCH_WHY_UNWIRED
-  const reason = overrides.fetch?.reason
-  return {
-    by: 'hand',
-    text:
-      `这场会议的拉取被人工关掉了${reason ? `：${reason}` : '（没有填改写说明）'}。` +
-      `人工改写优先于所有规则（spec §5.4）。`,
+/**
+ * 拉取阶段的 `'blocked'`（阶段 4 · T12 接上之后才有意义）。
+ *
+ * **只在 `'none'` 上叠**，与 `overlayArchive` 恰好相反，理由也恰好相反：
+ * 拉取规则是在 discovery 里**先判后拉**的（`src/worker/fetch-policy.ts`），
+ * 被判 skip 的会议一条 `meeting_assets` 行都不会有，store 因此给出 `'none'`
+ * ——那正是"被规则拦下"的样子。不叠这一层，管理员看到的是一个"无录制"的灰点，
+ * 而真相是"有录制，规则不让拉"，这两件事要做的处置完全不同。
+ *
+ * 其余状态一律不叠：`'done'` / `'running'` 说明资产已经拉了（可能是规则改之前拉的，
+ * 规则后来改成 skip 也不能追认成"被拦下"），`'off'` 是人关的——契约里 `off` 与
+ * `blocked` 的分工就是"人关的"与"规则关的"。
+ *
+ * 已知代价，写在这里免得以后当 bug 修：一场**真的没有录制**的会议，若同时被拉取
+ * 规则判 skip，也会显示成 `'blocked'`。这是诚实的——规则判 skip 的会议我们压根
+ * 没去问过它有没有录制（`fetch-policy.ts` 的枚举那一趟不调 `listAssets`）。
+ */
+function overlayFetch(
+  state: FetchState,
+  decision: OverriddenDecision<FetchEffect> | null,
+): FetchState {
+  if (state !== 'none') return state
+  if (decision !== null && decision.effect === 'skip') return 'blocked'
+  return state
+}
+
+/**
+ * 拉取阶段的理由。走 `evaluateFetchStack` + `applyOverride`，
+ * 与 `src/worker/fetch-policy.ts` 同源——那边怎么判这场会议拉不拉，这边就怎么显示。
+ */
+function fetchWhy(
+  row: ConsoleMeetingRow,
+  stage: StageMaterial,
+  decision: OverriddenDecision<FetchEffect> | null,
+): Why {
+  if (row.fetch === 'off') {
+    const reason = stage.overrides.fetch?.reason
+    return {
+      by: 'hand',
+      text:
+        `这场会议的拉取被人工关掉了${reason ? `：${reason}` : '（没有填改写说明）'}。` +
+        `人工改写优先于所有规则（spec §5.4）。`,
+    }
   }
+
+  if (decision === null) {
+    return {
+      by: 'na',
+      text:
+        '这场会议在 meetings 表里查不到元数据，拉取规则求值所需的事实取不到，无从判定。' +
+        'discovery 遇到同一件事时的处理是不拉（见 src/worker/fetch-policy.ts），不是照拉不误。',
+    }
+  }
+
+  // 改写不是规则，是一次真发生过的人的决定。它优先于所有规则，也优先于下面
+  // 「一条规则都没配」那一支——兼容模式同样认改写（fetch-policy.ts 的文件头）
+  if (wasOverridden(decision)) return { by: 'hand', text: decision.reason }
+
+  if (stage.fetchRules.length === 0) {
+    // 兼容模式：判定确实发生了，但做决定的是一条**合成的**兜底规则，不在库里。
+    // 报 `by:'rule'` 会把管理员送去规则页找一条并不存在的规则，那正是 E-c 骂过的事
+    return { by: 'na', text: FETCH_STACK_UNCONFIGURED_REASON }
+  }
+
+  // 元数据不全、规则判不出来（阶段 4 · T13）：不是某条规则做出的决定，
+  // 管理员去改规则改不动它，要去补的是这场会议的元数据
+  if (decision.source === 'undecidable') return { by: 'na', text: decision.reason }
+
+  return { by: 'rule', text: decision.reason }
 }
 
 /** 归档阶段的理由。走 `evaluateArchiveStack` + `applyOverride`，与 `src/worker/archive.ts` 同源 */
@@ -534,9 +595,11 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
   if (row === null) return json(404, { error: 'meeting_not_found' })
 
   const vis = ctx.deps.meetingVisibility
-  const [allowRules, archiveRules, metas, overrideRows] = await Promise.all([
+  const [allowRules, archiveRules, fetchRules, metas, overrideRows] = await Promise.all([
     vis.policy.listEnabledStackRules('allow'),
     vis.policy.listEnabledStackRules('archive'),
+    // A7（T12）接线之后 `why.fetch` 是一次真判定，所以这一栈也要取
+    vis.policy.listEnabledStackRules('fetch'),
     vis.getMeetings([key]),
     vis.grants.listActiveOverridesForMeetings([key]),
   ])
@@ -569,6 +632,7 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
 
   const stage: StageMaterial = {
     now,
+    fetchRules,
     archiveRules,
     meta: metas.find((m) => keyOf(m) === keyOf(key)),
     overrides: indexOverrides(overrideRows as readonly PolicyOverride[]),
@@ -579,8 +643,8 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
 // ── 整页叠加 ──────────────────────────────────────────────────────────────
 
 /**
- * 一页会议的叠加。**发出去的查询数与行数无关**：规则 2 次（allow / archive）、
- * 归档 1 次、改写 1 次、会议元数据 1 次，共 5 次，列 50 行和列 3 行完全相同。
+ * 一页会议的叠加。**发出去的查询数与行数无关**：规则 3 次（allow / archive / fetch）、
+ * 归档 1 次、改写 1 次、会议元数据 1 次，共 6 次，列 50 行和列 3 行完全相同。
  *
  * 逐行调 `explainMeetingAccess` 会是 50 × 候选程序数 次调用、每次 4–5 条查询，
  * 那正是 T1 花了力气避开的 N+1（见文件头）。
@@ -597,9 +661,11 @@ async function renderPage(
     subMeetingId: r.subMeetingId,
   }))
 
-  const [allowRules, archiveRules, archives, overrideRows, metas] = await Promise.all([
+  const [allowRules, archiveRules, fetchRules, archives, overrideRows, metas] = await Promise.all([
     vis.policy.listEnabledStackRules('allow'),
     vis.policy.listEnabledStackRules('archive'),
+    // 第三栈。整页取一次，与行数无关——列表的查询数不许随行数长（T1 的验收判据）
+    vis.policy.listEnabledStackRules('fetch'),
     // 规则的 `arch` 条件（isarch / notarch）要它：`evaluateInventory` 的入参形状
     // 就是一批 `MeetingArchiveRecord`，`gather` 也是这么取的。它与下面 `render` 里
     // 用来判 `archived` 的 `row.keep.archivedAt` 是**同一列**（`meeting_archives.archived_at`，
@@ -650,6 +716,7 @@ async function renderPage(
     }))
     const stage: StageMaterial = {
       now,
+      fetchRules,
       archiveRules,
       meta: metaByKey.get(k),
       overrides: indexOverrides(overridesByKey.get(k) ?? []),
@@ -667,29 +734,43 @@ function render(
   verdicts: readonly AllowVerdict[],
   history: readonly AuditRecord[],
 ): ApiMeeting {
+  // 事实只构造一次，两栈共用：同一场会议在拉取与归档两栈上读到的必须是同一批事实，
+  // 各算一遍迟早会在"结束时间回落"这类边界上分叉（见 meetingFacts 的注释）
+  const facts =
+    stage.meta === undefined ? null : meetingFacts(stage.meta, row.keep.archivedAt !== null)
+
   // 人工改写优先于**所有**规则（spec §5.4）。套在求值外面而不是混进
-  // evaluateArchiveStack——与 `src/worker/archive.ts` 逐字同一条路径，
-  // 那边怎么算这场会议归不归档，这边就怎么显示。
+  // evaluate*Stack——与 `src/worker/archive.ts` / `src/worker/fetch-policy.ts`
+  // 逐字同一条路径，那边怎么算这场会议拉不拉、归不归档，这边就怎么显示。
   const archiveDecision =
-    stage.meta === undefined
+    facts === null
       ? null
       : applyOverride(
-          evaluateArchiveStack(stage.archiveRules, {
-            facts: meetingFacts(stage.meta, row.keep.archivedAt !== null),
-            now: stage.now,
-          }),
+          evaluateArchiveStack(stage.archiveRules, { facts, now: stage.now }),
           stage.overrides.archive,
         )
 
+  // `fetchRulesInEffect` 与 worker 共用：库里一条规则都没有时它顶上兼容兜底，
+  // 所以这里算出来的就是 worker 真会做的那件事，不是"按 spec 字面应该是什么"
+  const fetchDecision =
+    facts === null
+      ? null
+      : applyOverride(
+          evaluateFetchStack(fetchRulesInEffect(stage.fetchRules), { facts, now: stage.now }),
+          stage.overrides.fetch,
+        )
+
   const archive = overlayArchive(row.archive, archiveDecision)
+  const fetch = overlayFetch(row.fetch, fetchDecision)
   const { allow, why } = summarizeAllow(verdicts)
 
   return {
     ...row,
+    fetch,
     archive,
     allow,
     why: {
-      fetch: fetchWhy(row, stage.overrides),
+      fetch: fetchWhy(row, stage, fetchDecision),
       archive: archiveWhy(row, archive, archiveDecision, stage.overrides),
       allow: why,
     },
