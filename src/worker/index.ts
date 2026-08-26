@@ -2,7 +2,6 @@ import {
   DEFAULT_ASSET_KEYS,
   FsTimeoutError,
   createLocalStorage,
-  discover,
   downloadAsset,
   parseAssetKeys,
   runExecutor,
@@ -33,6 +32,7 @@ import { createArchivesStore, type ArchivesStore } from '../store/archives'
 import { createGrantsStore, type GrantsStore } from '../store/grants'
 import { createPolicyStore, type PolicyStore } from '../store/policy'
 import { archivePendingMeetings, type ArchiveDeps } from './archive'
+import { discoverWithFetchPolicy } from './fetch-policy'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore } from './store-mysql'
 
@@ -46,10 +46,11 @@ export interface WorkerDeps {
   leaseSec: number
   /** 归档流水线（P2）依赖：归档记录存取 */
   archives: ArchivesStore
-  /** 规则存取。worker 只用它的 archive 一栈（**往 NAS 的哪个目录归档**，spec §4.6）：
-   *  fetch 栈的接线是另一件事，allow 栈是网关的活（见 src/policy/access.ts 的文件头）。
-   *  这里持有整个读接口、只在下面把 archive 那一栈收成一个函数递给 archiveDeps，
-   *  是刻意的分层：WorkerDeps 是宿主、本来就握着各个 store，ArchiveDeps 才是那个
+  /** 规则存取。worker 用它的**两栈**：fetch（**拉哪些会议、拉哪几类资产**，阶段 4 · T12
+   *  接上，见 ./fetch-policy.ts）与 archive（**往 NAS 的哪个目录归档**，spec §4.6）。
+   *  allow 栈是网关的活，worker 不碰（见 src/policy/access.ts 的文件头）。
+   *  这里持有整个读接口、只在下面把各自那一栈收成一个函数递给 fetchPolicy / archiveDeps，
+   *  是刻意的分层：WorkerDeps 是宿主、本来就握着各个 store，那两个 Deps 才是
    *  要对依赖吝啬的地方。 */
   policy: Pick<PolicyStore, 'listEnabledStackRules'>
   /**
@@ -122,9 +123,26 @@ export async function runWorkerOnce(
   keys: AssetKey[],
   now: () => number,
 ): Promise<WorkerRound> {
-  const found = await discover({ gw: deps.source, store: deps.store }, sel, keys, now())
+  // 发现走**拉取规则栈**（阶段 4 · T12 / A7，计划 §0 E-c）：discovery 发现一场会议
+  // 之后，先按 fetch 栈判「拉不拉、拉哪几类资产」，再决定给它建哪些下载任务。
+  // 接线之前这里是裸的 `discover`，也就是"时间窗内全拉"——规则页上的拉取规则
+  // 配了也不生效。规则集为空时的行为与接线前逐字相同（兼容模式），
+  // 那条裁定与它的部署含义写在 `src/worker/fetch-policy.ts` 的文件头。
+  const found = await discoverWithFetchPolicy(
+    {
+      gw: deps.source,
+      store: deps.store,
+      archives: deps.archives,
+      listFetchRules: () => deps.policy.listEnabledStackRules('fetch'),
+      // 人工改写整批取一次，与归档那条路径同一个 store 方法、同一个理由
+      listFetchOverrides: (mkeys) => deps.grants.listActiveOverridesForMeetings([...mkeys]),
+    },
+    sel,
+    keys,
+    now(),
+  )
 
-  // 必须在 discover 之后才建：拼落盘路径要用刚写进 meetings 表的会议元数据。
+  // 必须在发现之后才建：拼落盘路径要用刚写进 meetings 表的会议元数据。
   // 走 Store.meetingsForPaths() 而不是自己拿 pool 查一遍——CLI 那边正是因为绕过
   // Store 直连 db，才长出过三份逐字重复的 loadMeetings（T3 已删）。
   const meetingsById = await deps.store.meetingsForPaths()
@@ -203,7 +221,10 @@ export async function runWorkerOnce(
   }
   const archived = await archivePendingMeetings(archiveDeps, now)
 
-  return { ...found, probes, ...ran, manifests, archived }
+  // 逐字段挑，不 `...found`：`discoverWithFetchPolicy` 还带回一份 `fetchPolicy` 摘要
+  // （本轮拉了几场 / 拦下几场 / 判不出来几场），那是**日志与 job_runs.summary** 的料，
+  // 不属于 `WorkerRound` 的形状——退出码与 e2e 的断言都盯着这个形状。
+  return { meetings: found.meetings, tasks: found.tasks, probes, ...ran, manifests, archived }
 }
 
 // ---------------------------------------------------------------------------
