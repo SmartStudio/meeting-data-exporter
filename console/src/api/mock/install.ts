@@ -1,6 +1,11 @@
 import type { Meeting } from '../types'
-import { CONSUMERS } from './consumers'
+import { buildAudit, type AuditQuery } from './audit'
+import { buildInventory, CONSUMERS } from './consumers'
+import { buildChapters, buildContent } from './content'
+import { applyTencentDown, buildJobs, makeQueuedRun, withQueued, type QueuedRun } from './jobs'
 import { MEETINGS, MOCK_NOW } from './meetings'
+import { buildMatches, buildPreview, buildRules, byPrecedence, type ProtoRule } from './rules'
+import { buildStorage, cleanupItem, expiredNotPurged, initialRetention, type RetentionConfig } from './storage'
 import { applyNasDown } from './system'
 
 /**
@@ -24,6 +29,20 @@ import { applyNasDown } from './system'
  * 状态，而这里扮演的正是那个本该做推导的后端。它的产出只在 `?proto=1` 下出现，
  * 顶栏同时挂着「原型 · 全部数字为示例」的标记。
  *
+ * ## 它答的是**全部读端点**，不是会议记录页那四条
+ *
+ * F2 建这一层时只答了 `auth/me` · `programs` · `meetings/triage` · `meetings`——
+ * 那时只有会议记录页接了线。等六个页面陆续接上，`?proto=1` 下它们全都拿 501，
+ * 屏幕上是六屏"读取失败"。这件事的代价不止是演示不好看：
+ * **`scripts/a11y-check.ts` 扫的就是原型模式下的页面**，扫到错误态就等于那一页
+ * 的无障碍与对比度根本没进门槛（F8 之前六个页面全是这个状态）。
+ *
+ * 所以这一层现在覆盖全部读端点，种子分散在同目录的几个域文件里
+ * （`rules` / `jobs` / `storage` / `audit` / `content` / `consumers`），
+ * 这个文件只管路由。**各页的数字互相对得上**：归档失败的那几场会议、任务页的
+ * 失败项、存储页的 `failedMeetings` 是同一件事的三个视角，都从会议世界推出来——
+ * 三处对不上，演示就在自己打自己。
+ *
  * ## 时间会跟着今天走
  *
  * 种子数据的「今天」钉在 `MOCK_NOW`（2026-08-23）。原样用会让演示在几天后
@@ -37,12 +56,51 @@ let shiftSec = 0
 /** 可变的世界。写操作真的改它，这样演示里点一下有反应。 */
 let world: Meeting[] = []
 
-/** 顶栏那个手动系统状态。`nas-down` 会改数据形态（spec §7.2），别的不改。 */
+/** 顶栏那个手动系统状态。`nas-down` / `tencent-down` 会改数据形态（spec §7.2），别的不改。 */
 let systemState = 'ok'
 
 export function setProtoSystemState(state: string): void {
   systemState = state
 }
+
+/**
+ * 演示世界的**部署形态**，用 `?world=` 调（默认 `ok`，另有 `degraded`）。
+ *
+ * 它与顶栏那个系统状态是**两件正交的事**，所以是两个旋钮：系统状态说的是
+ * "此刻外部依赖通不通"（NAS 断了、拉不通腾讯），部署形态说的是"这台机器上
+ * 长期就是这样"（保留天数被写成了非法值、网关还是没接 `job_failures` 的老版本）。
+ * 把后者塞进 `nas-down` 里一起演，等于宣称配置写错是 NAS 断连造成的——
+ * 这个仓库里"改状态就要一起改理由"的规矩，反过来也成立：**没有因果关系的两件事
+ * 不能绑在一个开关上**。
+ *
+ * 目前只有归档存储页读得到它：那一页的三种形态（正常 / NAS 不可达 / 配置非法）
+ * 各是一组不同的颜色，a11y 门槛三种都要扫到。
+ */
+let worldVariant = 'ok'
+
+export function setProtoWorldVariant(name: string): void {
+  worldVariant = name
+  retention = initialRetention(name)
+}
+
+function variantFromUrl(): string {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('world') ?? 'ok'
+  } catch {
+    return 'ok'
+  }
+}
+
+/* ── 可变的世界（会议之外的那几份） ───────────────────────────── */
+
+/** 三栈规则。写端点真的改它，删掉一条之后列表里就没有了。 */
+let rules: ProtoRule[] = []
+/** 新建规则的自增 id，与库里的自增主键同一个意思。 */
+let nextRuleId = 900
+/** 保留窗口的配置。`POST /storage/retention-days` 改的就是它。 */
+let retention: RetentionConfig = initialRetention('ok')
+/** 手动触发排进队里的运行。**它们不会开跑**——调度器在另一个进程里。 */
+let queuedRuns: QueuedRun[] = []
 
 function shift(sec: number | null): number | null {
   return sec === null ? null : sec + shiftSec
@@ -219,6 +277,180 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
     return json({ adminId: 'proto', username: '原型模式' })
   }
 
+  /* ── 自动规则（三栈 + 影响预览） ─────────────────────────────── */
+
+  if (path === `${PREFIX}/rules/preview` && method === 'POST') {
+    return json(buildPreview(body, snapshot(), rules))
+  }
+
+  if (path === `${PREFIX}/rules` && method === 'GET') {
+    const kind = url.searchParams.get('kind')
+    const hits = kind === null || kind === '' ? rules : rules.filter((r) => r.kind === kind)
+    // 含停用的规则：停用一条之后它必须还在界面上，否则再也开不回来
+    return json({ rules: [...hits].sort(byPrecedence) })
+  }
+
+  if (path === `${PREFIX}/rules` && method === 'POST') {
+    const created: ProtoRule = {
+      id: (nextRuleId += 1),
+      kind: String(body.kind ?? 'fetch'),
+      priority: typeof body.priority === 'number' ? body.priority : 0,
+      enabled: true,
+      join: String(body.join ?? 'and'),
+      conds: body.conds ?? [],
+      subjectType: (body.subjectType as string | null) ?? null,
+      subjectValue: (body.subjectValue as string | null) ?? null,
+      assetTypes: Array.isArray(body.assetTypes) ? (body.assetTypes as string[]) : ['*'],
+      effect: String(body.effect ?? ''),
+      note: (body.note as string | null) ?? null,
+      createdBy: '原型模式',
+      createdAt: nowSec,
+      updatedAt: nowSec,
+      issues: [],
+    }
+    rules = [...rules, created]
+    return json({ rule: created }, 201)
+  }
+
+  const ruleMatch = /^\/api\/v1\/admin\/rules\/(\d+)(\/.*)?$/.exec(path)
+  if (ruleMatch) {
+    const id = Number(ruleMatch[1])
+    const tail = ruleMatch[2] ?? ''
+    const rule = rules.find((r) => r.id === id)
+    if (rule === undefined) return json({ error: 'rule_not_found' }, 404)
+
+    if (tail === '/matches' && method === 'GET') {
+      return json(buildMatches(rule, snapshot(), shiftSec))
+    }
+    if (tail === '' && method === 'PATCH') {
+      // 只有 enabled 一个键的 patch 走不做内容校验的分支：出事时"把这条规则关掉"
+      // 必须永远能成功，否则最该关掉的那条坏规则会变成关不掉的
+      for (const key of ['kind', 'priority', 'enabled', 'join', 'conds', 'subjectType', 'subjectValue', 'assetTypes', 'effect', 'note'] as const) {
+        if (key in body) (rule as unknown as Record<string, unknown>)[key] = body[key]
+      }
+      rule.updatedAt = nowSec
+      return json({ rule })
+    }
+    if (tail === '' && method === 'DELETE') {
+      rules = rules.filter((r) => r.id !== id)
+      // 200 而不是 204：回的是被删那条的完整内容，删完再查也查不回来
+      return json({ rule })
+    }
+  }
+
+  /* ── 定时任务 ─────────────────────────────────────────────────── */
+
+  if (path === `${PREFIX}/jobs` && method === 'GET') {
+    const base = withQueued(buildJobs(nowSec, snapshot()), queuedRuns)
+    return json(systemState === 'tencent-down' ? applyTencentDown(base, nowSec) : base)
+  }
+
+  const jobRun = /^\/api\/v1\/admin\/jobs\/([^/]+)\/run$/.exec(path)
+  if (jobRun && method === 'POST') {
+    const name = decodeURIComponent(jobRun[1] ?? '')
+    const job = buildJobs(nowSec, snapshot()).jobs.find((j) => j.name === name)
+    if (job === undefined) return json({ error: 'job_not_found' }, 404)
+    const queued = makeQueuedRun(name, (nextRuleId += 1), nowSec)
+    queuedRuns = [...queuedRuns, queued]
+    return json(
+      {
+        runId: queued.run.id,
+        jobName: name,
+        label: job.label,
+        // 恒为 queued——这一刻任务还没跑，界面上不许说成"已完成"
+        status: 'queued',
+        message: '已排进队列。调度器在 worker 进程里，下一个 tick 才会认领它。',
+      },
+      202,
+    )
+  }
+
+  /* ── 归档存储 ─────────────────────────────────────────────────── */
+
+  if (path === `${PREFIX}/storage` && method === 'GET') {
+    return json(
+      buildStorage(snapshot(), retention, {
+        nasUp: systemState !== 'nas-down',
+        legacyGateway: worldVariant === 'degraded',
+        nowSec,
+      }),
+    )
+  }
+
+  if (path === `${PREFIX}/storage/retention-days` && method === 'POST') {
+    const days = typeof body.days === 'number' ? body.days : Number.NaN
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      // 越界是 400 且带上区间，界面照它说话，不在前端另写一份
+      return json({ error: 'invalid_days', min: 1, max: 365 }, 400)
+    }
+    const previous = retention.source === 'setting' ? retention.defaultDays : null
+    retention = { defaultDays: days, source: 'setting', raw: String(days), cleanupPaused: retention.cleanupPaused }
+    return json({ defaultDays: days, previousDefaultDays: previous })
+  }
+
+  if (path === `${PREFIX}/storage/cleanup-pause` && method === 'POST') {
+    retention = { ...retention, cleanupPaused: body.paused === true }
+    // 写后重读：回的是库里此刻的真值，不是把请求里那个值抄回来
+    return json({ cleanupPaused: retention.cleanupPaused })
+  }
+
+  if (path === `${PREFIX}/storage/cleanup-now` && method === 'POST') {
+    const items = snapshot().filter((m) => expiredNotPurged(m)).map(cleanupItem)
+    if (body.confirm !== true) {
+      return json({
+        dryRun: true,
+        cleanupPaused: retention.cleanupPaused,
+        items,
+        totalBytes: items.reduce((n, it) => n + (it.localBytes as number), 0),
+      })
+    }
+    const paused = retention.cleanupPaused
+    return json({
+      dryRun: false,
+      paused,
+      // 被暂停就一个都不删；**已经删掉的不会因为随后按下暂停而收回**，所以这两个桶分开
+      purged: paused ? [] : items,
+      verificationFailed: [],
+      failed: [],
+    })
+  }
+
+  /* ── 操作审计 ─────────────────────────────────────────────────── */
+
+  if (path === `${PREFIX}/audit` && method === 'GET') {
+    const p = url.searchParams
+    const numOr = (key: string): number | undefined => {
+      const raw = p.get(key)
+      return raw === null || raw === '' ? undefined : Number(raw)
+    }
+    const listOr = (key: string): string[] | undefined => {
+      const all = p.getAll(key).filter((s) => s !== '')
+      return all.length === 0 ? undefined : all
+    }
+    const q: AuditQuery = {
+      from: numOr('from'),
+      to: numOr('to'),
+      actorId: p.get('actorId') ?? undefined,
+      actorKind: listOr('actorKind'),
+      action: listOr('action'),
+      decision: p.get('decision') ?? undefined,
+      limit: numOr('limit') ?? 50,
+      offset: numOr('offset') ?? 0,
+    }
+    if (q.limit > 200) return json({ error: 'invalid_limit', max: 200 }, 400)
+    return json(buildAudit(q, nowSec))
+  }
+
+  /* ── 采集清单 ─────────────────────────────────────────────────── */
+
+  const inventory = /^\/api\/v1\/admin\/programs\/([^/]+)\/inventory$/.exec(path)
+  if (inventory && method === 'GET') {
+    const id = decodeURIComponent(inventory[1] ?? '')
+    // 404 = 程序不存在，与"一场都没授权"的 200 空清单分得开
+    if (!CONSUMERS.some((c) => c.id === id)) return json({ error: 'program_not_found' }, 404)
+    return json(buildInventory(id, snapshot(), { nowSec, shiftSec }))
+  }
+
   if (path === `${PREFIX}/programs` && method === 'GET') {
     return json(
       CONSUMERS.map((c) => ({
@@ -294,6 +526,21 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
         window: { since: shift(shown.startAt), sinceSource: 'meetings', text: null },
       })
     }
+    if (tail === '/content' && method === 'GET') {
+      const type = url.searchParams.get('type')
+      const format = url.searchParams.get('format')
+      return json(
+        buildContent(shown, {
+          shiftSec,
+          // 空串是一次真实取值（"筛一个空的格式"），不是"不筛"——两者要分开
+          type: type === null || type === '' ? undefined : type,
+          format: format === null || format === '' ? undefined : format,
+        }),
+      )
+    }
+    if (tail === '/content/chapters' && method === 'GET') {
+      return json(buildChapters(shown, shiftSec))
+    }
     if (tail === '/extend' && method === 'POST') {
       if (live.keep.expiresAt === null) return json({ error: 'archive_not_found' }, 404)
       if (live.keep.filesGone) return json({ error: 'already_purged', purgedAt: nowSec }, 409)
@@ -360,8 +607,7 @@ let installed = false
 export function installProtoApi(): () => void {
   if (installed) return () => undefined
   installed = true
-  shiftSec = Math.floor(Date.now() / 1000) - MOCK_NOW
-  world = structuredClone(MEETINGS)
+  resetProtoWorld()
 
   const real = globalThis.fetch.bind(globalThis)
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -399,9 +645,19 @@ export function installProtoApi(): () => void {
   }
 }
 
-/** 测试用：把世界恢复成种子，并重置系统状态。 */
+/**
+ * 把世界恢复成种子，并重置两个旋钮。装载时与每条测试之前各跑一次。
+ *
+ * 会议之外那几份（规则 / 保留窗口配置 / 手动排的队）也在这里重置——它们同样
+ * 是可写的，少重置一份，上一条用例删掉的那条规则就会漏进下一条。
+ */
 export function resetProtoWorld(): void {
   shiftSec = Math.floor(Date.now() / 1000) - MOCK_NOW
   world = structuredClone(MEETINGS)
   systemState = 'ok'
+  worldVariant = variantFromUrl()
+  rules = buildRules(Math.floor(Date.now() / 1000))
+  nextRuleId = 900
+  retention = initialRetention(worldVariant)
+  queuedRuns = []
 }

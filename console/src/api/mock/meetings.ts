@@ -93,8 +93,8 @@ export const MEETINGS: Meeting[] = [
     sizeBytes: 23907140, // 22.8 MB
     why: {
       fetch: { by: 'rule', text: '拉取规则 #100「录制结束在近 90 天内 → 拉取全部八类资产」' },
-      archive: { by: 'rule', text: '归档规则 #100，已成功写入 NAS 并校验哈希' },
-      allow: { by: 'rule', text: '权限规则 #100「标题含「周会」且已归档 → 准许采集」' },
+      archive: { by: 'rule', text: '归档规则 #210，已成功写入 NAS 并校验哈希' },
+      allow: { by: 'rule', text: '权限规则 #300「标题含「周会」且已归档 → 准许采集」' },
     },
     history: [
       { at: ts(2026, 8, 23, 14, 2), text: '知识库索引器 取用了 AI 纪要' },
@@ -120,7 +120,7 @@ export const MEETINGS: Meeting[] = [
     sizeBytes: 11953766, // 11.4 MB
     why: {
       fetch: { by: 'rule', text: '拉取规则 #100' },
-      archive: { by: 'rule', text: '归档规则 #100，已成功写入 NAS' },
+      archive: { by: 'rule', text: '归档规则 #210，已成功写入 NAS' },
       allow: { by: 'rule', text: '权限规则允许采集，但还没有授权给任何程序——外部现在取不到。' },
     },
     history: [
@@ -146,8 +146,8 @@ export const MEETINGS: Meeting[] = [
     sizeBytes: 32715571, // 31.2 MB
     why: {
       fetch: { by: 'rule', text: '拉取规则 #100' },
-      archive: { by: 'rule', text: '归档规则 #100，已成功写入 NAS' },
-      allow: { by: 'rule', text: '权限规则 #100「标题含「大会」且已归档 → 准许采集」' },
+      archive: { by: 'rule', text: '归档规则 #210，已成功写入 NAS' },
+      allow: { by: 'rule', text: '权限规则 #310「标题含「大会」且已归档 → 准许采集」' },
     },
     history: [
       { at: ts(2026, 8, 23, 13, 44), text: '简报机器人 取用了 AI 纪要' },
@@ -173,8 +173,8 @@ export const MEETINGS: Meeting[] = [
     sizeBytes: 42677043, // 40.7 MB
     why: {
       fetch: { by: 'rule', text: '拉取规则 #100' },
-      archive: { by: 'rule', text: '归档规则 #100，已成功写入 NAS' },
-      allow: { by: 'rule', text: '权限规则 #100 准许采集' },
+      archive: { by: 'rule', text: '归档规则 #210，已成功写入 NAS' },
+      allow: { by: 'rule', text: '权限规则 #320 准许采集' },
     },
     history: [
       { at: ts(2026, 8, 23, 11, 20), text: '陈运维 延长保留 30 天，到期日改为 9 月 18 日' },
@@ -200,16 +200,16 @@ export const MEETINGS: Meeting[] = [
     sizeBytes: 16043213, // 15.3 MB
     why: {
       fetch: { by: 'rule', text: '拉取规则 #100' },
-      archive: { by: 'rule', text: '归档规则 #100，已成功写入 NAS（人事目录）' },
+      archive: { by: 'rule', text: '归档规则 #205，已成功写入 NAS（人事目录）' },
       allow: {
         by: 'deny',
-        text: '权限规则 #200「标题含「面试」「薪酬」「绩效」→ 禁止采集」。已归档进 NAS，但任何程序都取不到。',
+        text: '权限规则 #350「标题含「面试」「薪酬」「绩效」→ 禁止采集」。已归档进 NAS，但任何程序都取不到。',
       },
     },
     history: [
       { at: ts(2026, 8, 22, 15, 10), text: '归档成功，15.3 MB' },
       { at: ts(2026, 8, 22, 15, 2), text: '拉取完成，19/19' },
-      { at: ts(2026, 8, 22, 15, 2), text: '权限规则 #200 判定：禁止采集' },
+      { at: ts(2026, 8, 22, 15, 2), text: '权限规则 #350 判定：禁止采集' },
     ],
   },
   {
@@ -262,7 +262,9 @@ export const MEETINGS: Meeting[] = [
     fetch: 'done',
     archive: 'done',
     allow: 'allow',
-    grants: [],
+    // 授权行还在（它的历史里那次「被拒绝：本地已到期」正是这条授权发起的），
+    // 只是本地文件没了所以取不到——采集清单页那条「已授权但现在取不到」就是它。
+    grants: ['dw-sync'],
     hand: [],
     // 已过期：archivedAt/expiresAt 仍保留（历史事实不清零），filesGone 为真。
     keep: { archivedAt: m8ArchivedAt, expiresAt: expiresAfter(m8ArchivedAt, 0), extended: 0, filesGone: true },
@@ -305,7 +307,7 @@ export const MEETINGS: Meeting[] = [
     },
     history: [
       { at: ts(2026, 8, 19, 16, 40), text: '陈运维 手动设为「永不拉取」' },
-      { at: ts(2026, 8, 19, 16, 38), text: '拉取规则 #200 拦下，未进入队列' },
+      { at: ts(2026, 8, 19, 16, 38), text: '人工改写「永不拉取」生效，未进入队列' },
     ],
   },
   {

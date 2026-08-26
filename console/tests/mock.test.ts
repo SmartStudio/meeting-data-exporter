@@ -148,7 +148,9 @@ describe('原型模式的假后端', () => {
   })
 
   test('没实现的端点回 501 并说清是原型模式少了一条，不是一个像空数据的 200', async () => {
-    const res = await fetch('/api/v1/admin/rules')
+    // F8 之后 `/rules` 已经答得上了（见 tests/mock-pages.test.ts），所以这里换一条
+    // 控制台还没有消费者、这一层也就没实现的端点：签发下载直链。
+    const res = await fetch('/api/v1/admin/meetings/m1/download-url', { method: 'POST' })
     expect(res.status).toBe(501)
     const body = (await res.json()) as { error: string; detail: string }
     expect(body.error).toBe('proto_not_implemented')
