@@ -175,6 +175,26 @@ A3 的规则页要 CRUD，写侧要新建（T2）。
 | **T10** | A6 | 内容读取 API | `src/http/handlers/console/content.ts`（新） |
 | **T11** | A4 | 定时任务调度器 + 运行记录 + 失败项 | `migrations/008` · `src/worker/scheduler.ts`（新）· `src/worker/archive.ts` |
 | **T12** | A7 | 拉取规则栈接线（E-c） | `src/worker/index.ts` · discovery 的触发源 |
+| **T13** | 新增 | 元数据不全的会议必须落到拒绝侧（见下） | `src/policy/{conds,stacks,access}.ts` · `src/worker/visibility.ts` |
+
+> **T13 是执行途中发现的安全缺口（2026-08-26，合并 T7 时）**，不在开工前的七条里。
+>
+> `meetings` 表的列全部 nullable，`getMeetings` 把 `subject IS NULL` 折成空串。
+> 于是 allow 栈上：`title has 财务 → allow` 对空标题判不匹配（**安全侧**，没问题），
+> 但 `title has 财务 → deny` 同样判不匹配（**放行侧**），随后被一条低优先级的
+> `→ allow` 接手——这场会议就这样被放出去了。
+>
+> 直接违反全局约束 2。当前没有实际暴露（生产库 `policy_rules` 阶段 3 实测只有 1 行，
+> allow 栈兜底 deny），但管理员一开始配规则就会有。
+>
+> 判定必须区分「事实为空」与「没有这个事实」：一场标题真的是空串的会议，和一场
+> 标题查不到的会议，在规则求值上不是同一件事。
+
+> **另一件顺手做的事：`audit_log` 加一列 `detail TEXT`（归 T11 的 `migrations/008`）。**
+> T6 与 T9 各自独立撞上同一堵墙——那张表能用的最宽一列是 `asset_id VARCHAR(255)`，
+> 装不下一条完整规则（T6 只能记「变了的字段」+ 截断留 `…`），也装不下拒绝原因
+> （T9 只能对多数记录报 `reason: null`）。T11 只负责让那一列存在，
+> 把 T6 / T9 改成用它是后续任务。
 
 ---
 
