@@ -1119,4 +1119,47 @@ describe('只读账号', () => {
     await readonlyReady()
     expect(screen.getByTestId('readonly-banner')).toBeInTheDocument()
   })
+
+  /**
+   * **键盘绕得过按钮**：spec §9 的 `e` / `1` / `2` / `3` 不看按钮的 disabled。
+   * 只禁按钮不管键位，只读账号敲一下就会发出一条注定 403 的请求。
+   * 这几条盯的就是那个洞。
+   */
+  test('键位 e（延长保留）不发请求，并且说清为什么', async () => {
+    await readonlyReady()
+    const before = calls.filter((c) => c.method !== 'GET').length
+    await userEvent.keyboard('e')
+    expect(await screen.findByRole('status')).toHaveTextContent('只读角色')
+    expect(calls.filter((c) => c.method !== 'GET').length).toBe(before)
+  })
+
+  test('键位 1 / 2（改阶段）与 3（授权）同样不发请求', async () => {
+    await readonlyReady()
+    const before = calls.filter((c) => c.method !== 'GET').length
+    await userEvent.keyboard('1')
+    await userEvent.keyboard('2')
+    await userEvent.keyboard('3')
+    expect(calls.filter((c) => c.method !== 'GET').length).toBe(before)
+    // 授权面板也不该被打开——一个点不动的面板比不打开更糟。
+    // 浮层始终挂载（进出场要播动画），所以看的是 data-state 而不是有没有这个节点。
+    for (const d of screen.queryAllByRole('dialog')) {
+      expect(d).toHaveAttribute('data-state', 'closed')
+    }
+  })
+
+  test('只读的拒绝是"说一句"，不是静默——点了没反应比慢一点更糟', async () => {
+    await readonlyReady()
+    await userEvent.keyboard('e')
+    const said = await screen.findByRole('status')
+    expect(said).toHaveTextContent('管理员')
+  })
+
+  test('管理员敲同一个键照常发请求（回归：别把所有人都挡住）', async () => {
+    renderPage()
+    await ready()
+    await userEvent.keyboard('e')
+    await waitFor(() => {
+      expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/extend'))).toBe(true)
+    })
+  })
 })

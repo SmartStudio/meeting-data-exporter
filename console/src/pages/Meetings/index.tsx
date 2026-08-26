@@ -4,6 +4,7 @@ import type { OverrideKind, ServiceProgram } from '@/api/admin/grants'
 import { grantMeeting, putOverride, revokeGrant, revokeOverride } from '@/api/admin/grants'
 import type { AdminMeeting } from '@/api/admin/meetings'
 import { EXTEND_DEFAULT_DAYS, extendRetention } from '@/api/admin/meetings'
+import { READONLY_WHY, useReadonly } from '@/app/session'
 import { fmtDay } from '@/lib/format'
 import { useMeetingKeys, type MeetingKeyAction } from '@/lib/keys'
 import { Button } from '@/ui/Button'
@@ -157,6 +158,21 @@ export default function MeetingsPage() {
     return () => clearTimeout(t)
   }, [toast])
 
+  /**
+   * **键盘绕得过按钮。** 这一页的写操作除了按钮之外还有键位（spec §9：
+   * `1`/`2` 改阶段、`3` 授权、`e` 延长），而键位不看按钮的 `disabled`。
+   * 只把按钮禁掉、不管这一条，只读账号敲一下 `e` 就会发出一条注定 403 的请求。
+   *
+   * 所以每个写操作的入口先过这一关。**不是静默 return**——点了没反应比慢一点
+   * 更糟：这里弹一句和按钮 title 同源的话，说清为什么什么都没发生。
+   */
+  const readonly = useReadonly()
+  const denyReadonly = useCallback((): boolean => {
+    if (!readonly) return false
+    notify(READONLY_WHY)
+    return true
+  }, [readonly, notify])
+
   const refetch = useCallback(() => setNonce((n) => n + 1), [])
   const writes = useWrites(refetch, notify)
   const { run, isPending, busy } = writes
@@ -170,6 +186,7 @@ export default function MeetingsPage() {
 
   const extend = useCallback(
     (id: string) => {
+      if (denyReadonly()) return
       const m = rowOf(id)
       if (!m) return
       // 前置条件说人话。**这不是在推导状态**，是在避免发一条注定 404/409 的请求，
@@ -187,7 +204,7 @@ export default function MeetingsPage() {
         return `「${meetingTitle(m)}」本地保留期延长 ${res.addedDays} 天，${fmtDay(res.expiresAt)}到期`
       })
     },
-    [rowOf, notify, run],
+    [rowOf, notify, run, denyReadonly],
   )
 
   /**
@@ -203,6 +220,7 @@ export default function MeetingsPage() {
    */
   const toggleStage = useCallback(
     (id: string, stage: Stage) => {
+      if (denyReadonly()) return
       const m = rowOf(id)
       if (!m) return
       if (m.hand.includes(stage)) {
@@ -214,11 +232,12 @@ export default function MeetingsPage() {
       }
       setOverrideAt({ id, kind: stage })
     },
-    [rowOf, run],
+    [rowOf, run, denyReadonly],
   )
 
   const openGrant = useCallback(
     (id: string) => {
+      if (denyReadonly()) return
       const m = rowOf(id)
       if (!m) return
       const kind = grantCellKind(m).kind
@@ -236,11 +255,12 @@ export default function MeetingsPage() {
       }
       setGrantIds([id])
     },
-    [rowOf, notify],
+    [rowOf, notify, denyReadonly],
   )
 
   const revoke = useCallback(
     (id: string, programId: string) => {
+      if (denyReadonly()) return
       const m = rowOf(id)
       if (!m) return
       void run(wkey(id, `revoke:${programId}`), '收回授权', async () => {
@@ -250,11 +270,12 @@ export default function MeetingsPage() {
           : `${programId} 当时就没有生效的授权，没有改动`
       })
     },
-    [rowOf, run],
+    [rowOf, run, denyReadonly],
   )
 
   const saveOverride = useCallback(
     (input: { effect: string; reason: string }) => {
+      if (denyReadonly()) return
       if (overrideAt === null) return
       const m = rowOf(overrideAt.id)
       if (!m) return
@@ -272,7 +293,7 @@ export default function MeetingsPage() {
         return `已改写「${meetingTitle(m)}」的${kind === 'fetch' ? '拉取' : kind === 'archive' ? '归档' : '采集授权'}`
       })
     },
-    [overrideAt, rowOf, run],
+    [overrideAt, rowOf, run, denyReadonly],
   )
 
   const grantMeetings = useMemo(
@@ -282,6 +303,7 @@ export default function MeetingsPage() {
 
   const confirmGrant = useCallback(
     (programIds: string[]) => {
+      if (denyReadonly()) return
       const targets = grantMeetings.filter((m) => grantCellKind(m).kind === 'grantable')
       const single = grantMeetings.length === 1
       setGrantIds(null)
@@ -308,13 +330,14 @@ export default function MeetingsPage() {
       })
       if (!single) setSelected(new Map())
     },
-    [grantMeetings, notify, run],
+    [grantMeetings, notify, run, denyReadonly],
   )
 
   /* ── 批量 ────────────────────────────────────────────────── */
 
   const runBatch = useCallback(
     (action: BatchAction) => {
+      if (denyReadonly()) return
       const picked = [...selected.values()]
       if (picked.length === 0) return
       if (action === 'extend') {
@@ -347,7 +370,7 @@ export default function MeetingsPage() {
         return batchSummary(`收回授权（共 ${jobs.length} 条）`, ok, failed)
       })
     },
-    [selected, notify, run],
+    [selected, notify, run, denyReadonly],
   )
 
   /* ── 选择的操作 ──────────────────────────────────────────── */
