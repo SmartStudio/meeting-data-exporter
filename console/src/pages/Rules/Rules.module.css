@@ -1,0 +1,346 @@
+/* 自动规则页。色值与尺寸一律走 tokens.css —— 组件里不出现裸值。 */
+
+.stacks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-9);
+}
+
+.group {
+  min-width: 0;
+}
+
+.groupTitle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+.lede {
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.7;
+  margin: var(--s-2) 0 0;
+  max-width: 68ch;
+}
+
+.fallback {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  margin: var(--s-2) 0 0;
+}
+.fallback code {
+  font-family: var(--mono);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 0 var(--s-1);
+}
+
+/* 拉取栈的兼容兜底告示。琥珀而不是红：它不是故障，是一个必须说清的现状。 */
+.compat {
+  margin: var(--s-4) 0 0;
+  padding: var(--s-4) var(--s-5);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-soft);
+  color: var(--ink-2);
+  font-size: var(--t-sm);
+  line-height: 1.75;
+  max-width: 74ch;
+}
+.compat b {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.emptyStack {
+  margin: var(--s-4) 0;
+  padding: var(--s-5);
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  color: var(--ink-3);
+  font-size: var(--t-sm);
+  line-height: 1.75;
+  max-width: 70ch;
+}
+
+.rules {
+  list-style: none;
+  margin: var(--s-4) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+/* 四段横排：优先级 · 规则本体 · 命中数 · 动作。
+   刻意**不用断点**——规则本体的 flex-basis 给一个 ch 下限，窄到装不下时
+   命中数与动作自己换行。写死一个 720px 的断点既是一个裸像素（令牌只在
+   声明里生效，媒体查询读不到 var()），也会在别的宽度上把按钮推出视口，
+   而推出视口的按钮既看不见也够不着。 */
+.rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.rule[data-off='true'] {
+  background: var(--surface-2);
+  border-style: dashed;
+}
+
+.priority {
+  flex: none;
+  font-family: var(--mono);
+  font-size: var(--t-lg);
+  font-weight: 500;
+  color: var(--ink-3);
+  min-width: 3ch;
+  text-align: right;
+  padding-top: var(--s-0);
+}
+
+.ruleBody {
+  flex: 1 1 22ch;
+  min-width: 0;
+}
+
+.cond {
+  margin: 0;
+  font-size: var(--t-md);
+  color: var(--ink);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.join {
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.arrow {
+  color: var(--ink-3);
+}
+
+.condAll {
+  color: var(--ink-3);
+}
+
+.condBad {
+  color: var(--fail);
+}
+
+.meta {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.off {
+  color: var(--warn);
+}
+
+.issues {
+  margin: var(--s-3) 0 0;
+  padding-left: var(--s-5);
+  font-size: var(--t-xs);
+  color: var(--warn);
+  line-height: 1.7;
+}
+
+.warnLine {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--warn);
+  line-height: 1.7;
+}
+
+.rowError {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--fail);
+}
+
+/* 命中数：它同时是一个按钮（点开看是哪几场）。 */
+.hits {
+  flex: none;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  padding: var(--s-1) var(--s-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-0);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+.hits:hover {
+  background: var(--brand-soft);
+  border-color: var(--brand-line);
+}
+.hits b {
+  font-family: var(--mono);
+  font-size: var(--t-lg);
+  font-weight: 500;
+  color: var(--brand-text);
+}
+.hits span {
+  font-size: var(--t-2xs);
+  /* --ink-2 而不是 --ink-3：hover 时底色换成 --brand-soft，--ink-3 在它上面
+     只有 4.37:1。hover 态不在门槛的扫描范围里，正因如此更要在这里定死。 */
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.ruleActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* 认不出 kind 的那一组。底色留 --surface 而不是 --fail-soft：这一行里有一颗
+   quiet 按钮（--ink-3 的字），压在 --fail-soft 上只有 4.32:1，不达 AA。
+   「这里有问题」由虚线红边框和红色的 kind 标签说，不靠一整块底色。 */
+.unknownRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5);
+  border: 1px dashed var(--fail-line);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-size: var(--t-sm);
+}
+.unknownKind {
+  font-family: var(--mono);
+  color: var(--fail);
+}
+.unknownNote {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-2);
+}
+
+.skeletonRow {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+/* 错误态：端点名与后端错误码原样显示，好让人直接定位。 */
+.error {
+  padding: var(--s-6);
+  border: 1px solid var(--fail-line);
+  border-radius: var(--r);
+  background: var(--fail-soft);
+  max-width: 74ch;
+}
+.errorTitle {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--fail);
+}
+.errorDetail {
+  margin: var(--s-2) 0 var(--s-4);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+/* ── 命中的会议（抽屉里）──────────────────────────────────── */
+
+.matches {
+  min-width: 0;
+}
+
+.matchesLede {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.75;
+}
+
+.matchesRule {
+  margin: var(--s-3) 0 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.matchesScope {
+  margin: var(--s-5) 0 var(--s-3);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.matchList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.match {
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.matchTitle {
+  margin: 0;
+  font-size: var(--t-md);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+/* 「事实缺失」与「事实为空」用两种视觉，不只是两句话：
+   前者是数据没拉回来（要去修元数据），后者是一场标题真的空着的会议。 */
+.matchTitle[data-kind='missing'] {
+  color: var(--fail);
+  font-weight: 600;
+}
+.matchTitle[data-kind='empty'] {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.matchMeta {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  font-family: var(--mono);
+}
+
+.matchHint {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--warn);
+  line-height: 1.7;
+}
