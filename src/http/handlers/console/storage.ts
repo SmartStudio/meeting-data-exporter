@@ -32,6 +32,7 @@ import {
   type AuditEntry,
   type AuditStore,
 } from '../../../store/audit'
+import { AUDIT_ACTION, type AuditAction } from '../../../audit/actions'
 import type { ArchivesStore } from '../../../store/archives'
 import type { ConsoleStorageStore } from '../../../store/console-storage'
 import type { NasProbeResult } from '../../../worker/nas-probe'
@@ -171,7 +172,8 @@ function isValidDays(v: unknown): v is number {
 
 interface AdminAuditInput {
   adminId: string
-  action: string
+  // 收窄成 AuditAction：写一个没在登记表里的动作会在这里编译不过（阶段 5 · A9）
+  action: AuditAction
   /**
    * 一句话明细，进 `audit_log.detail`（TEXT，migrations/008）。
    *
@@ -331,7 +333,7 @@ export async function setRetentionDays(req: Request, ctx: RouteCtx): Promise<Res
 
   await recordAdminWrite(ctx, {
     adminId: auth.identity.adminId,
-    action: 'set_retention_days',
+    action: AUDIT_ACTION.setRetentionDays,
     // 旧值一并记下：光看"改成了 45"回答不了"从多少改的"，而改小会让一批会议
     // 立刻到期（下一轮清理就删本地文件），事后追责需要那个差值。
     detail: `${previous.days ?? previous.raw ?? 'unset'} -> ${days}`,
@@ -375,7 +377,7 @@ export async function setCleanupPause(req: Request, ctx: RouteCtx): Promise<Resp
 
   await recordAdminWrite(ctx, {
     adminId: auth.identity.adminId,
-    action: 'set_cleanup_paused',
+    action: AUDIT_ACTION.setCleanupPaused,
     detail: paused ? '暂停到期清理' : '恢复到期清理',
     decision: 'allow',
   })
@@ -441,7 +443,7 @@ export async function cleanupNow(req: Request, ctx: RouteCtx): Promise<Response>
   for (const item of result.purged) {
     await recordAdminWrite(ctx, {
       adminId: auth.identity.adminId,
-      action: 'purge_local',
+      action: AUDIT_ACTION.purgeLocal,
       meetingId: item.meetingId,
       subMeetingId: item.subMeetingId,
       detail: `删本地文件 ${item.assetCount} 个，${item.localBytes} 字节`,
@@ -453,7 +455,7 @@ export async function cleanupNow(req: Request, ctx: RouteCtx): Promise<Response>
   for (const f of result.verificationFailed) {
     await recordAdminWrite(ctx, {
       adminId: auth.identity.adminId,
-      action: 'purge_blocked',
+      action: AUDIT_ACTION.purgeBlocked,
       meetingId: f.meetingId,
       subMeetingId: f.subMeetingId,
       detail: f.reason,
@@ -463,7 +465,7 @@ export async function cleanupNow(req: Request, ctx: RouteCtx): Promise<Response>
   for (const f of result.failed) {
     await recordAdminWrite(ctx, {
       adminId: auth.identity.adminId,
-      action: 'purge_failed',
+      action: AUDIT_ACTION.purgeFailed,
       meetingId: f.meetingId,
       subMeetingId: f.subMeetingId,
       detail: f.reason,
@@ -472,7 +474,7 @@ export async function cleanupNow(req: Request, ctx: RouteCtx): Promise<Response>
   }
   await recordAdminWrite(ctx, {
     adminId: auth.identity.adminId,
-    action: 'cleanup_now',
+    action: AUDIT_ACTION.cleanupNow,
     detail:
       `清理 ${result.purged.length} 场 / 拒删 ${result.verificationFailed.length} 场 / ` +
       `出错 ${result.failed.length} 场${result.paused ? '（清理已暂停）' : ''}`,

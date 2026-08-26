@@ -17,6 +17,7 @@
  */
 import type { ActorIdentity, AssetType } from '../domain/types'
 import { buildAuditDetail, type AuditStore } from '../store/audit'
+import { AUDIT_ACTION } from './actions'
 
 export interface DownloadUrlAudit {
   actor: ActorIdentity
@@ -61,7 +62,7 @@ export function createAuditRecorder(store: AuditStore, now: () => number): Audit
         occurredAt: now(),
         actorType: i.actor.kind,
         actorId: i.actor.tmUserId,
-        action: 'issue_download_url',
+        action: AUDIT_ACTION.issueDownloadUrl,
         meetingId: i.meetingId,
         assetId: i.assetId,
         assetType: i.assetType,
@@ -77,7 +78,7 @@ export function createAuditRecorder(store: AuditStore, now: () => number): Audit
         occurredAt: now(),
         actorType: actor.kind,
         actorId: actor.tmUserId,
-        action: 'login',
+        action: AUDIT_ACTION.login,
         meetingId: null,
         assetId: null,
         // 登录与任何一份资产都无关，这一列本来就该是空的
@@ -94,7 +95,7 @@ export function createAuditRecorder(store: AuditStore, now: () => number): Audit
         occurredAt: now(),
         actorType: actor.kind,
         actorId: actor.tmUserId,
-        action: 'list_meetings',
+        action: AUDIT_ACTION.listMeetings,
         meetingId: null,
         assetId: null,
         assetType: null,

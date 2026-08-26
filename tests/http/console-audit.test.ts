@@ -590,3 +590,86 @@ test('两个端点在 router 里挂上了（未登录时是 401，不是 404）'
     expect(res.status).toBe(401)
   }
 })
+
+// ---------------------------------------------------- 动作标签（阶段 5 · A9）
+
+/**
+ * 这一族用例钉的是 A9 那条缺口：库里会出现 28 种动作，而读侧从前只登记了 3 种，
+ * 于是「动作」那一列有 25 种记录显示成英文 snake_case。补齐之后要保证的是
+ * **两件事同时成立**：登记过的有中文名；没登记过的**被点名**而不是被伪装。
+ */
+
+test('管理侧的动作也有中文名（不只是网关那三个）', async () => {
+  const rows = [
+    record({ id: 1, action: 'rule_toggle', actorType: 'admin', actorId: 'admin-1' }),
+    record({ id: 2, action: 'view_restricted_content', actorType: 'admin', actorId: 'admin-1' }),
+    record({ id: 3, action: 'extend_retention', actorType: 'admin', actorId: 'admin-1' }),
+    record({ id: 4, action: 'create_admin_account', actorType: 'admin', actorId: 'admin-1' }),
+  ]
+  const { ctx } = fakeCtx({ rows })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = await res.json() as {
+    rows: Array<{ action: string; actionLabel: string | null }>
+    unlabeledActions: unknown[]
+  }
+  // 一行都不许是 null——这四个动作都在登记表里
+  expect(body.rows.map((r) => r.actionLabel).filter((l) => l === null)).toEqual([])
+  expect(body.rows[1]?.actionLabel).toContain('禁止采集')
+  // 全都登记过时点名清单是空数组，不是 null（前端不必区分「没有」与「没算」）
+  expect(body.unlabeledActions).toEqual([])
+})
+
+test('没登记标签的动作：actionLabel 是 null，并且在响应里被点名', async () => {
+  const rows = [
+    record({ id: 1, action: 'frobnicate' }),
+    record({ id: 2, action: 'frobnicate' }),
+    record({ id: 3, action: 'login' }),
+  ]
+  const { ctx } = fakeCtx({ rows })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = await res.json() as {
+    rows: Array<{ action: string; actionLabel: string | null }>
+    unlabeledActions: Array<{ action: string; count: number; hint: string }>
+  }
+  // **不回退成 snake_case 原值**：回退等于假装登记过，漏登记就永远发现不了
+  expect(body.rows[0]?.actionLabel).toBeNull()
+  expect(body.rows[0]?.action).toBe('frobnicate')
+  expect(body.unlabeledActions).toEqual([
+    { action: 'frobnicate', count: 2, hint: expect.stringContaining('没有登记') },
+  ])
+})
+
+test('会议历史那句现成的话在动作没登记时说出来，而不是原样塞进去', async () => {
+  const { ctx } = fakeCtx({
+    meeting: { id: 'm-1', title: '周会', code: '1', startAt: NOW - DAY, source: 'meetings' },
+    historyRows: [record({ action: 'frobnicate', occurredAt: NOW - 100 })],
+    objects: new Map([['m-1', objectRef()]]),
+  })
+  ctx.params = { meetingId: 'm-1' }
+  const res = await meetingHistory(req('/api/v1/admin/meetings/m-1/history'), ctx)
+  const body = await res.json() as {
+    rows: Array<{ text: string; actionLabel: string | null }>
+    unlabeledActions: Array<{ action: string; count: number; hint: string }>
+  }
+  expect(body.rows[0]?.actionLabel).toBeNull()
+  // 原值仍要出现（它是唯一一条真线索），但旁边必须写着这是没登记的
+  expect(body.rows[0]?.text).toContain('frobnicate')
+  expect(body.rows[0]?.text).toContain('未登记')
+  expect(body.unlabeledActions).toEqual([
+    { action: 'frobnicate', count: 1, hint: expect.any(String) },
+  ])
+})
+
+test('登记过的动作在会议历史里就是那句中文，不带「未登记」', async () => {
+  const { ctx } = fakeCtx({
+    meeting: { id: 'm-1', title: '周会', code: '1', startAt: NOW - DAY, source: 'meetings' },
+    historyRows: [record({ action: 'extend_retention', occurredAt: NOW - 100 })],
+    objects: new Map([['m-1', objectRef()]]),
+  })
+  ctx.params = { meetingId: 'm-1' }
+  const res = await meetingHistory(req('/api/v1/admin/meetings/m-1/history'), ctx)
+  const body = await res.json() as { rows: Array<{ text: string }>; unlabeledActions: unknown[] }
+  expect(body.rows[0]?.text).toContain('延长')
+  expect(body.rows[0]?.text).not.toContain('未登记')
+  expect(body.unlabeledActions).toEqual([])
+})

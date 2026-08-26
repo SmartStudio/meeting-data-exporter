@@ -59,6 +59,7 @@ import {
   type AuditQuery,
   type AuditRecord,
 } from '../../../store/audit'
+import { auditActionLabel, unlabeledActions } from '../../../audit/actions'
 
 // ---------------------------------------------------------------------------
 // 映射表：全项目唯一一份
@@ -107,18 +108,18 @@ export function actorTypesForKinds(kinds: readonly AuditActorKind[]): string[] {
     .map(([type]) => type)
 }
 
-/**
- * `audit_log.action` 的原值 → 界面上的「动作」。
+/*
+ * `audit_log.action` → 界面上的「动作」的映射表**已挪到 `src/audit/actions.ts`**
+ * （阶段 5 · A9）。
  *
- * 认不出的动作**不报错也不隐藏**，`actionLabel` 给 null、`action` 原样带出，
- * 前端显示原值即可。新增动作时在这里补一行——漏补的后果只是界面上显示英文原值，
- * 不会丢记录。
+ * 挪的理由：它从前长在读侧这里，而动作名是写侧各个 handler 各写各的字面量，
+ * 两侧之间没有任何东西把它们钉在一起——到阶段 5 为止库里会出现 28 种动作，
+ * 而这张表只有 3 行，于是「动作」那一列有 25 种记录显示成英文 snake_case。
+ * 现在写侧从登记表取常量、读侧从登记表取标签，加动作时漏掉标签会编译不过。
+ *
+ * 读侧对没登记的动作**仍然不回退成原值**：`actionLabel` 是 null，
+ * 另由响应顶层的 `unlabeledActions` 点名（见 `listAudit`）。
  */
-const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
-  issue_download_url: '签发下载链接',
-  login: '登录',
-  list_meetings: '列出会议',
-}
 
 /** 不指定时间范围时默认只看最近这么多天。见文件头第二条 */
 export const AUDIT_DEFAULT_WINDOW_DAYS = 7
@@ -499,7 +500,7 @@ function toRowJson(r: AuditRecord, objects: Map<string, AuditObjectRef>): AuditR
     at: r.occurredAt,
     actor: { kind: actorKindOf(r.actorType), type: r.actorType, id: r.actorId },
     action: r.action,
-    actionLabel: AUDIT_ACTION_LABELS[r.action] ?? null,
+    actionLabel: auditActionLabel(r.action),
     object:
       r.meetingId === null
         ? null
@@ -530,7 +531,10 @@ function toRowJson(r: AuditRecord, objects: Map<string, AuditObjectRef>): AuditR
  * 用同一份映射表拼，不会与列表页说的话不一致。
  */
 function describeRow(row: AuditRowJson): string {
-  const what = row.actionLabel ?? row.action
+  // 没登记标签时**不回退成裸原值**：那句话读起来与一个真的叫这个名字的动作
+  // 一模一样，于是漏登记永远不会被人发现（阶段 5 · A9）。带上「未登记标签」
+  // 四个字，代价是一句话长了一点，换来的是它自己会喊。
+  const what = row.actionLabel ?? `${row.action}（未登记标签）`
   const asset = row.asset?.type != null ? `（${row.asset.type}）` : ''
   const result =
     row.result.kind === 'allow'
@@ -596,6 +600,11 @@ export async function listAudit(req: Request, ctx: RouteCtx): Promise<Response> 
     limit: query.limit,
     offset: query.offset,
     window,
+    // 这一页里有哪几种动作后端没有登记中文名（阶段 5 · A9）。
+    // 逐行的 `actionLabel` 是 null 已经把这件事说了一半，但那一半只有在有人
+    // 盯着某一行发呆时才看得见；这里按动作汇总一次，界面上可以显示成一句
+    // 「这一页有 N 种动作后端还没登记名字」。全部登记过时是空数组。
+    unlabeledActions: unlabeledActions(page.rows.map((r) => r.action)),
   })
 }
 
@@ -646,5 +655,9 @@ export async function meetingHistory(req: Request, ctx: RouteCtx): Promise<Respo
           ? '查不到这场会议的开始时间，本次没有设时间下界（会扫描全部审计记录）。'
           : null,
     },
+    // 与列表端点同一个口径：这段历史里有哪几种动作后端没有登记中文名。
+    // 详情抽屉直接渲染 `text` 时，那句话里已经带着「未登记标签」四个字
+    // （见 `describeRow`），这里另给结构化的一份，好让界面汇总成一句提示
+    unlabeledActions: unlabeledActions(rows.map((r) => r.action)),
   })
 }

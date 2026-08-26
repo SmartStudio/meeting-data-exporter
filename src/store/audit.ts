@@ -219,13 +219,14 @@ export interface AuditQueryStore {
 /**
  * 「延长保留窗口」这个动作在 `audit_log.action` 里的取值（阶段 4 · T17）。
  *
- * **常量放在这里，是因为它有两个消费方，而它们分属读写两侧**：
- * 写在 `src/http/handlers/console/storage.ts` 的延长端点，
- * 数在 `src/store/console-meetings.ts` 的 `keep.extended`。
- * 各写一个字符串字面量的话，哪天有人把动作名改成 `retention_extend`，
- * 写侧照常记账、读侧照常返回 0 —— 界面上会显示「从没延长过」，没有任何东西会报错。
+ * **值已挪到 `src/audit/actions.ts` 的动作登记表旁边**（阶段 5 · A9）：
+ * 那张表是全项目唯一一份「动作原值 → 中文标签」的映射，动作名再分成两处放，
+ * 就会重演「写侧写了 28 种、读侧只登记了 3 种」那件事。这里保留一条 re-export，
+ * 是为了不动 `store/console-meetings.ts` 与既有测试里的 import 路径——
+ * 它原本放在这里的理由（读写两侧共用一个常量）仍然成立，只是那个「共用」现在
+ * 由登记表承担。
  */
-export const ACTION_EXTEND_RETENTION = 'extend_retention'
+export { ACTION_EXTEND_RETENTION } from '../audit/actions'
 
 /**
  * 周期性会议的场次编进 `audit_log.asset_id` 的方式（阶段 4 · T8 起）。
