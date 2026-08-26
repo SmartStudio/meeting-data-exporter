@@ -18,6 +18,8 @@ import * as deviceHandlers from './handlers/device'
 import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
 import * as consoleAuthHandlers from './handlers/console/auth'
+import * as consoleStorageHandlers from './handlers/console/storage'
+import type { StorageDeps } from './handlers/console/storage'
 import type { RateLimiter } from './ratelimit'
 
 /**
@@ -52,6 +54,10 @@ export interface AppDeps {
   adminStore: AdminStore
   /** 生产环境必须为 true（cookie 的 Secure 属性依据它）；本地 http 开发环境为 false */
   cookieSecure: boolean
+  /** 归档存储页与保留窗口动作（阶段 4 · T8，A3）。形状与理由见
+   *  handlers/console/storage.ts 的文件头——NAS 探测、到期清理、审计写侧都在里面，
+   *  刻意不复用上面那个收窄成 listArchivedMeetingKeys 的 `archives` 字段 */
+  storage: StorageDeps
 }
 
 export interface RouteCtx {
@@ -113,6 +119,13 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
   compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
   compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
+
+  // 归档存储与保留窗口（阶段 4 · T8，A3）——spec §4.9 两块 + §4.3 的「延长 30 天」
+  compile('GET', '/api/v1/admin/storage', consoleStorageHandlers.getStorage),
+  compile('POST', '/api/v1/admin/storage/retention-days', consoleStorageHandlers.setRetentionDays),
+  compile('POST', '/api/v1/admin/storage/cleanup-pause', consoleStorageHandlers.setCleanupPause),
+  compile('POST', '/api/v1/admin/storage/cleanup-now', consoleStorageHandlers.cleanupNow),
+  compile('POST', '/api/v1/admin/meetings/:meetingId/extend', consoleStorageHandlers.extendMeetingRetention),
 ]
 
 /**

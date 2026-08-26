@@ -50,6 +50,7 @@ import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+import { createConsoleStorageStore } from '../../src/store/console-storage'
 import {
   startFakeTencentServer,
   createFakeTencentState,
@@ -194,6 +195,24 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // 归档存储页（阶段 4 · T8）。e2e 这条流程不覆盖它，这里只需满足 AppDeps 契约：
+    // 没有真实 NAS 挂载点，因此探测固定回"不可达"、清理注入 null——两者都是
+    // handler 的显式降级分支，不是会让别的用例静默出错的假实现。
+    storage: {
+      nasRoot: null,
+      probeNas: async () => ({
+        reachable: false,
+        checkedAt: now(),
+        latencyMs: 0,
+        totalBytes: null,
+        availableBytes: null,
+        error: 'e2e 环境未挂载 NAS',
+      }),
+      stats: createConsoleStorageStore(dbPool),
+      archives: archivesStore,
+      audit: auditStore,
+      cleanup: null,
+    },
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

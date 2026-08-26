@@ -31,6 +31,8 @@ import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+import { createConsoleStorageStore } from '../../src/store/console-storage'
+import type { StorageDeps } from '../../src/http/handlers/console/storage'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -153,6 +155,25 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // 归档存储页（阶段 4 · T8）。这一层的端到端测试里没有真实 NAS 挂载点，
+    // 所以探测固定回"不可达"、清理注入 null——两者都是 handler 显式处理的降级
+    // 分支（页面显示 NAS 不可达 / 清理端点 503），不是能让别的用例静默出错的假实现。
+    // 需要真跑这两条路径的用例在 tests/http/console-storage.test.ts 里注入自己的假件。
+    storage: {
+      nasRoot: null,
+      probeNas: async () => ({
+        reachable: false,
+        checkedAt: now(),
+        latencyMs: 0,
+        totalBytes: null,
+        availableBytes: null,
+        error: '测试环境未挂载 NAS（tests/http/testApp.ts）',
+      }),
+      stats: createConsoleStorageStore(pool),
+      archives: archivesStore,
+      audit: auditStore,
+      cleanup: null,
+    } satisfies StorageDeps,
   }
 
   return { app: createApp(deps), deps, pool }

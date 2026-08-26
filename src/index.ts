@@ -24,6 +24,10 @@ import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
 import { createLoginRateLimiter } from './http/ratelimit'
+import { createConsoleStorageStore } from './store/console-storage'
+import { probeNas } from './worker/nas-probe'
+import { previewCleanup, executeCleanup } from './worker/retention'
+import type { StorageDeps } from './http/handlers/console/storage'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -100,6 +104,44 @@ async function main(): Promise<void> {
   // （见 http/handlers/console/auth.ts 的 cookieAttrs 注释）。
   const cookieSecure = new URL(config.gatewayBaseUrl).protocol === 'https:'
 
+  // 归档存储页（阶段 4 · T8，A3）。两个根目录走 process.env 而不是 loadConfig，
+  // 与 worker 那边同一口径（它们是由 systemd / 容器挂载决定的进程编排参数）。
+  //
+  // 与 worker 不同的是**这里不做启动期强校验**：网关的其余功能（取数、授权、审计）
+  // 与 NAS 挂载无关，为一个只服务于一张页面的路径把整个网关拒绝启动是过度反应。
+  // 代价被显式挡在两处，都不会静默：
+  //   - 没配 MDE_NAS_ROOT：probeNas 收到空串直接返回 reachable=false + 一句原因，
+  //     页面上就是"NAS 不可达"，而不是一片空白或"正常"
+  //   - 没配 MDE_ARCHIVE_ROOT：cleanup 注入成 null，清理端点返回 503 并说清是
+  //     挂载/配置问题，而不是"没有可清理的文件"
+  const nasRoot = process.env.MDE_NAS_ROOT ?? ''
+  const localArchiveRoot = process.env.MDE_ARCHIVE_ROOT ?? ''
+  if (nasRoot === '' || localArchiveRoot === '') {
+    console.warn(
+      '[startup] MDE_NAS_ROOT / MDE_ARCHIVE_ROOT 未全部配置：控制台「归档存储」页的' +
+        '连通探测与「立即清理已到期」会相应降级（详见 http/handlers/console/storage.ts）',
+    )
+  }
+  const storage: StorageDeps = {
+    nasRoot: nasRoot === '' ? null : nasRoot,
+    // 容量与连通只有这一个来源。handler 里绝不另跑 statfs，否则控制台看到的数字
+    // 会与 worker 归档时看到的不是同一份
+    probeNas: () => probeNas(nasRoot, now),
+    stats: createConsoleStorageStore(pool),
+    archives: archivesStore,
+    audit: auditStore,
+    cleanup:
+      localArchiveRoot === ''
+        ? null
+        : {
+            preview: (t) => previewCleanup({ archives: archivesStore, localRoot: localArchiveRoot }, t),
+            // `confirm: true` 这个字面量只出现在装配处这一行：retention.ts 要求
+            // 每一个调用点都写明"这次是真删"，handler 那边用"调不调 execute"表达
+            // 确认，不去伪造这个常量
+            execute: (t) => executeCleanup({ archives: archivesStore, localRoot: localArchiveRoot }, t, true),
+          },
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret: config.jwtSecret,
@@ -121,6 +163,7 @@ async function main(): Promise<void> {
     adminAuth,
     adminStore,
     cookieSecure,
+    storage,
   }
 
   const app = createApp(deps)
