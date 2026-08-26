@@ -367,6 +367,23 @@ describe('暂停到期清理（系统状态横幅链到这一页的那个动作�
     expect(screen.getByTestId('cleanup-state')).toHaveTextContent('正常运行')
   })
 
+  test('写成功但重取失败：说"改动发出去了、数字可能是旧的"，不报成一次失败', async () => {
+    // 两件事分开报。报成"操作失败"会让人再点一次（对不可逆的动作尤其危险），
+    // 咽下去又会让人对着一份旧数字下判断。
+    answer('/api/v1/admin/storage', ok(storagePayload()), { status: 503, body: { error: 'db_down' } })
+    answer('/api/v1/admin/storage/cleanup-pause', ok({ cleanupPaused: true }))
+    const user = userEvent.setup()
+    await renderReady()
+
+    await user.click(screen.getByRole('button', { name: '暂停到期清理' }))
+    await waitFor(() => expect(screen.getByTestId('storage-toast')).toHaveTextContent('已暂停'))
+    expect(screen.getByTestId('storage-toast')).toHaveTextContent(/重新取数失败/)
+    expect(screen.getByTestId('storage-toast')).toHaveTextContent('db_down')
+    // 页面没有因此变成错误态：旧数据还在，只是标明可能是旧的
+    expect(screen.queryByTestId('storage-error')).toBeNull()
+    expect(stat('archived')).toHaveTextContent('71')
+  })
+
   test('请求失败时说出错误，且状态不擅自翻面', async () => {
     answer('/api/v1/admin/storage', ok(storagePayload()))
     answer('/api/v1/admin/storage/cleanup-pause', { status: 500, body: { error: 'db_down' } })

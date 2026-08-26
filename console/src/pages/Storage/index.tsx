@@ -61,6 +61,21 @@ export default function StoragePage() {
     return () => clearTimeout(t)
   }, [toast])
 
+  /**
+   * 写完之后的重取。**重取失败与写失败是两件事**：写已经生效了，只是界面上
+   * 这一份数字可能是旧的。把它报成"操作失败"会让人再点一次（对不可逆的动作
+   * 尤其危险），咽下去又会让人对着旧数字下判断。所以单独返回一句附言，
+   * 拼在动作自己的提示后面。
+   */
+  const refreshOrWarn = useCallback(async (): Promise<string> => {
+    try {
+      await refresh()
+      return ''
+    } catch (e) {
+      return `（改动已经发出去了，但重新取数失败：${msgOf(e)}——上面的数字可能还是旧的，刷新页面再看一眼。）`
+    }
+  }, [refresh])
+
   /* ── 暂停 / 恢复到期清理 ──────────────────────────────────── */
 
   const togglePause = useCallback(async () => {
@@ -69,16 +84,18 @@ export default function StoragePage() {
     setBusy('pause')
     try {
       const effective = await setCleanupPaused(want)
-      await refresh()
+      const stale = await refreshOrWarn()
       if (effective === want) {
-        notify(want ? '到期清理已暂停，恢复之前不会再删除任何本地文件。' : '到期清理已恢复。')
+        notify(
+          (want ? '到期清理已暂停，恢复之前不会再删除任何本地文件。' : '到期清理已恢复。') + stale,
+        )
       } else {
         // 写后重读回来的值与请求不一致：可能有人同时改过，也可能写没生效。
         // 这时**照库里的真值说话**，不能报一句"已暂停"了事。
         notify(
-          want
+          (want
             ? '暂停没有生效：库里此刻仍然是「清理正常运行」。请刷新确认，必要时再点一次。'
-            : '恢复没有生效：库里此刻仍然是「清理已暂停」。',
+            : '恢复没有生效：库里此刻仍然是「清理已暂停」。') + stale,
         )
       }
     } catch (e) {
@@ -86,7 +103,7 @@ export default function StoragePage() {
     } finally {
       setBusy(null)
     }
-  }, [data, refresh, notify])
+  }, [data, refreshOrWarn, notify])
 
   /* ── 修改默认保留天数 ─────────────────────────────────────── */
 
@@ -96,12 +113,13 @@ export default function StoragePage() {
       setDaysError(null)
       try {
         const r = await setRetentionDays(days)
-        await refresh()
+        const stale = await refreshOrWarn()
         setDaysOpen(false)
         notify(
           `默认保留天数已改为 ${r.defaultDays} 天` +
             `（原先是 ${r.previousDefaultDays === null ? '一个非法值' : `${r.previousDefaultDays} 天`}）。` +
-            '只影响此后新归档的会议。',
+            '只影响此后新归档的会议。' +
+            stale,
         )
       } catch (e) {
         // 表单不关：关掉的话，刚填的那个数和被拒绝的原因一起消失了。
@@ -110,7 +128,7 @@ export default function StoragePage() {
         setBusy(null)
       }
     },
-    [refresh, notify],
+    [refreshOrWarn, notify],
   )
 
   /* ── 导出可采集清单 ───────────────────────────────────────── */
@@ -157,11 +175,14 @@ export default function StoragePage() {
     try {
       const result = await runCleanup()
       setCleanup({ kind: 'done', result })
-      await refresh()
+      // 结果已经摆在浮层里了，重取只是为了让下面那几个数跟上；它失败不该
+      // 把"删完了"这件事报成一次失败。
+      const stale = await refreshOrWarn()
+      if (stale !== '') notify(stale)
     } catch (e) {
       setCleanup({ kind: 'error', message: describeCleanupError(e) })
     }
-  }, [refresh])
+  }, [refreshOrWarn, notify])
 
   /* ── 渲染 ─────────────────────────────────────────────────── */
 
