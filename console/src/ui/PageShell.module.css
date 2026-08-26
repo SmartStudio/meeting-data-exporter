@@ -1,0 +1,43 @@
+/* 每一页共同的头部骨架。间距/字号全部走令牌——七页各写一份就会有七种页头。 */
+.page {
+  min-width: 0;
+}
+
+/* 窄屏（375px 下内容列只剩 179px）时标题与动作区改成上下排：
+   横排会把动作区推出视口，而推出视口的按钮既看不见也够不着。 */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin: 0 0 var(--s-6);
+}
+
+.headText {
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--t-2xl);
+  font-weight: 600;
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.desc {
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.7;
+  margin: var(--s-2) 0 0;
+  max-width: 62ch;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}

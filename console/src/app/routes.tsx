@@ -1,7 +1,12 @@
 import { createBrowserRouter, Navigate, type RouteObject } from 'react-router-dom'
 import LoginPage from '@/pages/Login'
 import MeetingsPage from '@/pages/Meetings'
-import Placeholder from '@/pages/_Placeholder'
+import ConsumersPage from '@/pages/Consumers'
+import RulesPage from '@/pages/Rules'
+import JobsPage from '@/pages/Jobs'
+import StoragePage from '@/pages/Storage'
+import AuditPage from '@/pages/Audit'
+import PreviewPage from '@/pages/Preview'
 import AppShell from './AppShell'
 
 /**
@@ -14,6 +19,11 @@ import AppShell from './AppShell'
  * 导出 `routes`（数据）而不只是导出建好的 router 实例，是因为测试要用
  * `createMemoryRouter(routes, {...})` 重新装一个内存路由——`shell.test.tsx`
  * 用得到。
+ *
+ * **这张表在地基阶段（F0）一次性指到真实页面组件，此后不再改。** 原来的
+ * `_Placeholder` 已经删掉：七个页面任务并行开工，如果它们各自回来改这一行，
+ * 这个文件就是必然的冲突点（阶段 4 在 `src/http/router.ts` 上已经栽过一次，
+ * 手工合并两次吃掉花括号）。现在每个任务只碰 `pages/<自己>/`。
  */
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
@@ -23,12 +33,13 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, element: <Navigate to="/meetings" replace /> },
       { path: 'meetings', element: <MeetingsPage /> },
-      { path: 'consumers', element: <Placeholder title="采集授权" phase="F4" /> },
-      { path: 'rules', element: <Placeholder title="自动规则" phase="F3" /> },
-      { path: 'jobs', element: <Placeholder title="定时任务" phase="F5" /> },
-      { path: 'storage', element: <Placeholder title="归档存储" phase="F5" /> },
-      { path: 'audit', element: <Placeholder title="操作审计" phase="F5" /> },
-      { path: 'preview/:id', element: <Placeholder title="内容预览" phase="F6" /> },
+      { path: 'consumers', element: <ConsumersPage /> },
+      { path: 'rules', element: <RulesPage /> },
+      { path: 'jobs', element: <JobsPage /> },
+      { path: 'storage', element: <StoragePage /> },
+      { path: 'audit', element: <AuditPage /> },
+      // 内容预览不占左栏导航（spec.md §3），入口是会议记录页上的会议标题
+      { path: 'preview/:id', element: <PreviewPage /> },
     ],
   },
 ]

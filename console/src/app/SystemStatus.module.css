@@ -56,12 +56,18 @@
   flex: none;
 }
 
+/* 动作既可能是 <button>（重试）也可能是 <a>（去归档存储页暂停到期清理）——
+   后者是真的能走到那个动作的链接，不是一个点了只改本地 state 的假按钮。
+   两者长一个样，所以这条规则要同时兜住 a：display/text-decoration 是 a 才需要的。 */
 .btn {
   font: inherit;
   font-size: var(--t-sm);
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
   background: var(--surface);
   color: inherit;
+  text-decoration: none;
   border: var(--s-px) solid currentColor;
   padding: var(--s-2) var(--s-4);
   border-radius: var(--r);
@@ -75,33 +81,4 @@
 
 .btn:active {
   transform: translateY(var(--s-px));
-}
-
-.btnQuiet {
-  font: inherit;
-  font-size: var(--t-sm);
-  color: inherit;
-  background: none;
-  border: 0;
-  padding: var(--s-2) var(--s-1);
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-.confirm {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  flex-wrap: wrap;
-}
-
-.confirmText {
-  font-size: var(--t-xs);
-  white-space: nowrap;
-}
-
-.pausedTag {
-  font-size: var(--t-xs);
-  font-weight: 600;
-  white-space: nowrap;
 }

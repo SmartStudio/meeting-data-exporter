@@ -5,27 +5,104 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { routes } from '../src/app/routes'
-import { PROTO_STORAGE_KEY } from '../src/app/GlobalBar'
-import { SystemStateProvider, useMeetings, useSystemState } from '../src/app/SystemStatus'
+import { PROTO_STORAGE_KEY } from '../src/app/proto'
+import { SystemStateProvider, useSystemState } from '../src/app/SystemStatus'
+import { useMeetings } from '../src/pages/Meetings/useMeetings'
 
 /**
  * `AppShell`（Task 6）挂载时会探一次管理员登录态（`fetchAdminIdentity()`，
- * 真的 `fetch('/api/v1/admin/auth/me')`）。这个文件测的是外壳本身的导航/
- * 系统状态行为，不是登录态守卫本身（守卫的 loading/redirect/error 三态见
- * `tests/pages/Login.test.tsx`），所以这里统一把它 stub 成"已登录"、直接
- * 放行——不这样做，下面每一条测试都要各自处理一遍登录探测的异步时序。
+ * 真的 `fetch('/api/v1/admin/auth/me')`）。F0 之后它还会挂
+ * `SystemHealthProvider`，再去读 `GET /admin/storage` 与 `GET /admin/jobs`
+ * 两条真实端点（计划 G-d）——`?proto=1` 下不发（那时状态来自顶栏下拉），
+ * 但这个文件里有一半的测试跑在默认路径上，所以两条都要答。
+ *
+ * 这个文件测的是外壳本身的导航/系统状态行为，不是登录态守卫本身（守卫的
+ * loading/redirect/error 三态见 `tests/pages/Login.test.tsx`），所以这里统一
+ * 把登录探测 stub 成"已登录"、直接放行——不这样做，下面每一条测试都要各自
+ * 处理一遍登录探测的异步时序。
  */
+export function healthyStorage(): unknown {
+  return {
+    nas: {
+      root: '/mnt/nas',
+      reachable: true,
+      checkedAt: 1700000000,
+      latencyMs: 12,
+      error: null,
+      totalBytes: 4000000000000,
+      availableBytes: 1400000000000,
+      usedByUsBytes: 842000000000,
+      usedByOthersBytes: 1758000000000,
+      archivedMeetings: 71,
+      pendingMeetings: 0,
+      failedMeetings: null,
+      failedMeetingsNote: '归档失败项尚未落库…',
+    },
+    retention: {
+      defaultDays: 30,
+      defaultDaysSource: 'setting',
+      defaultDaysRaw: '30',
+      cleanupPaused: false,
+      liveMeetings: 10,
+      grantedMeetings: 8,
+      expiringIn7dMeetings: 1,
+      expiredMeetings: 0,
+      localBytes: 900000000,
+    },
+  }
+}
+
+export function healthyJobs(): unknown {
+  return {
+    now: 1700000000,
+    timezoneOffsetSec: 28800,
+    jobs: [
+      {
+        name: 'fetch_recordings',
+        label: '拉取新录制',
+        what: '从腾讯会议拉新录制',
+        schedule: '每 10 分钟',
+        nextDueAt: 1700000600,
+        impact: '拉不到就没有原始文件',
+        maxAttempts: 5,
+        openFailures: 0,
+        health: 'ok',
+        lastRun: null,
+        recentRuns: [
+          {
+            id: 1,
+            status: 'succeeded',
+            trigger: 'scheduler',
+            requestedBy: null,
+            startedAt: 1699999800,
+            finishedAt: 1699999900,
+            durationSec: 100,
+            summary: null,
+            error: null,
+          },
+        ],
+      },
+    ],
+    failuresTotal: 0,
+    failures: [],
+  }
+}
+
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
       const url = String(input)
-      if (url.endsWith('/api/v1/admin/auth/me')) {
-        return new Response(JSON.stringify({ adminId: 'admin-1', username: 'chen.yw' }), {
+      const json = (body: unknown): Response =>
+        new Response(JSON.stringify(body), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })
+      if (url.endsWith('/api/v1/admin/auth/me')) {
+        return json({ adminId: 'admin-1', username: 'chen.yw' })
       }
+      if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
+      if (url.endsWith('/api/v1/admin/jobs')) return json(healthyJobs())
       throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
     }),
   )
@@ -99,21 +176,30 @@ describe('AppShell · 左栏与路由', () => {
     expect(screen.getByRole('link', { name: '采集授权' })).toHaveAttribute('aria-current', 'page')
   })
 
-  test('六个非会议记录的路由都渲染占位页，写明各自的实现阶段，不留空白', async () => {
+  test('六个空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
+    // `_Placeholder` 在 F0 删掉了：七个页面任务并行开工，每人只碰
+    // `pages/<自己>/`，路由表不再有人回来改。空壳仍然不许是白页——
+    // 演示时白页看起来像坏了。
     const cases: Array<[string, string, string]> = [
       ['/consumers', '采集授权', 'F4'],
       ['/rules', '自动规则', 'F3'],
-      ['/jobs', '定时任务', 'F5'],
-      ['/storage', '归档存储', 'F5'],
-      ['/audit', '操作审计', 'F5'],
+      ['/jobs', '定时任务', 'F5a'],
+      ['/storage', '归档存储', 'F5b'],
+      ['/audit', '操作审计', 'F5c'],
       ['/preview/m1', '内容预览', 'F6'],
     ]
     for (const [path, title, phase] of cases) {
       const { unmount } = renderApp(path)
-      expect(await screen.findByRole('heading', { name: title })).toBeInTheDocument()
+      expect(await screen.findByRole('heading', { name: title, level: 1 })).toBeInTheDocument()
       expect(screen.getByText(new RegExp(phase))).toBeInTheDocument()
       unmount()
     }
+  })
+
+  test('内容区是唯一的 <main>——空壳页自己不再套一个', async () => {
+    renderApp('/consumers')
+    expect(await screen.findByRole('heading', { name: '采集授权', level: 1 })).toBeInTheDocument()
+    expect(screen.getAllByRole('main')).toHaveLength(1)
   })
 })
 
@@ -166,19 +252,22 @@ describe('AppShell · 顶栏', () => {
     await user.selectOptions(picker, 'empty')
     expect(await screen.findByTestId('meetings-empty')).toHaveTextContent('还没有拉取过任何会议')
 
-    // nas-down：告警条 sev=fail，且有「暂停到期清理」
+    // nas-down：告警条 sev=fail，且给得出「去暂停到期清理」的去处
     await user.selectOptions(picker, 'nas-down')
     await waitFor(() => expect(systemBanner()).not.toBeNull())
     const nasBar = systemBanner()!
     expect(nasBar).toHaveAttribute('data-sev', 'fail')
-    expect(within(nasBar).getByRole('button', { name: '暂停到期清理' })).toBeInTheDocument()
+    expect(within(nasBar).getByRole('link', { name: '暂停到期清理' })).toBeInTheDocument()
 
-    // tencent-down：告警条 sev=warn，没有暂停按钮（那是 NAS 专属的动作）
+    // tencent-down：告警条 sev=warn，没有暂停入口（那是 NAS 专属的动作）
     await user.selectOptions(picker, 'tencent-down')
     await waitFor(() => expect(systemBanner()).toHaveAttribute('data-sev', 'warn'))
     const tencentBar = systemBanner()!
     expect(tencentBar).toHaveAttribute('data-sev', 'warn')
-    expect(within(tencentBar).queryByRole('button', { name: '暂停到期清理' })).not.toBeInTheDocument()
+    expect(within(tencentBar).queryByRole('link', { name: '暂停到期清理' })).not.toBeInTheDocument()
+    // 措辞是观察到的事实，不是一句我们探测不到的结论
+    expect(tencentBar.textContent).toContain('轮拉取连续失败')
+    expect(tencentBar.textContent).not.toContain('腾讯会议接口不可达')
 
     // 切回正常，告警条消失
     await user.selectOptions(picker, 'ok')
@@ -261,22 +350,20 @@ describe('SystemStatus · nas-down 必须体现在数据里', () => {
     expect(screen.getByTestId('m1-grants')).toHaveTextContent('0')
   })
 
-  test('nas-down：确认「暂停到期清理」前不生效，确认后横幅文案更新', async () => {
+  test('nas-down：「暂停到期清理」是一个真的去得到那个动作的链接，不是假按钮', async () => {
+    // F1 的那个按钮点一下只改本地 state，什么都没暂停。这个动作有真实端点
+    // （`POST /admin/storage/cleanup-pause`），但它归归档存储页（F5b 独占
+    // `api/admin/storage.ts`），地基不越界去写。所以横幅给的是去处，
+    // 不是一个点了没反应的按钮——后者比多点一次糟得多。
     const user = userEvent.setup()
     renderApp('/meetings', 'nas-down')
 
     await waitFor(() => expect(systemBanner()).not.toBeNull())
     const bar = systemBanner()!
-    const pauseBtn = within(bar).getByRole('button', { name: '暂停到期清理' })
-    await user.click(pauseBtn)
+    const link = within(bar).getByRole('link', { name: '暂停到期清理' })
+    expect(link).toHaveAttribute('href', '/storage')
 
-    // F1 只画确认弹层，不接后端：点一下不直接生效，要走确认
-    expect(within(bar).getByRole('alertdialog', { name: '确认暂停到期清理' })).toBeInTheDocument()
-    expect(within(bar).queryByText('已暂停到期清理')).not.toBeInTheDocument()
-
-    await user.click(within(bar).getByRole('button', { name: '确认暂停' }))
-
-    expect(within(bar).getByText('已暂停到期清理')).toBeInTheDocument()
-    expect(within(bar).queryByRole('button', { name: '暂停到期清理' })).not.toBeInTheDocument()
+    await user.click(link)
+    expect(await screen.findByRole('heading', { name: '归档存储', level: 1 })).toBeInTheDocument()
   })
 })
