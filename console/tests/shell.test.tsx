@@ -195,11 +195,11 @@ describe('AppShell · 左栏与路由', () => {
     //
     // **这份名单只能变短**：一页接完线之后它就不再是空壳，把自己那一行删掉
     // 是那个任务的活，页面上也不该再留着「本页的数据接线在 Fx」那句话——
-    // 真页面的说明写的是这一页在回答什么问题。留着不删的话这条测试会红，
-    // 那正是它该做的事。接完线的页面各自被自己那份测试盯着（`tests/pages/`
-    // 下一页一份）。名单空了的时候，这条测试也该跟着删。
+    // 真页面的说明写的是这一页在回答什么问题。留着不删的话这条测试会去它上面
+    // 找那个本该消失的占位说明、然后变红，那正是它该做的事。接完线的页面各自
+    // 被自己那份测试盯着（`tests/pages/` 下一页一份）。名单空了的时候，
+    // 这条测试也该跟着删。
     const cases: Array<[string, string, string]> = [
-      ['/storage', '归档存储', 'F5b'],
       ['/preview/m1', '内容预览', 'F6'],
     ]
     for (const [path, title, phase] of cases) {
@@ -208,6 +208,15 @@ describe('AppShell · 左栏与路由', () => {
       expect(screen.getByText(new RegExp(phase))).toBeInTheDocument()
       unmount()
     }
+  })
+
+  test('归档存储页已经接上真 API（F5b），不再是空壳', async () => {
+    // 系统状态横幅上的「暂停到期清理」链到这一页，所以这里顺带盯着那条链的落点：
+    // 页面得真的渲染出那个开关，而不是一句"由 F5b 接线"。
+    renderApp('/storage')
+    expect(await screen.findByRole('heading', { name: 'NAS 归档', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '暂停到期清理' })).toBeInTheDocument()
+    expect(screen.queryByText(/F5b/)).toBeNull()
   })
 
   test('内容区是唯一的 <main>——空壳页自己不再套一个', async () => {
