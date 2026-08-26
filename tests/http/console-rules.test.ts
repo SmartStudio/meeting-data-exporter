@@ -157,6 +157,7 @@ function specRow(s: MeetingSpec): ConsoleMeetingRow {
       archivedAt: s.archived === true ? start + 3600 : null,
       expiresAt: s.archived === true ? start + 3600 + 30 * 86_400 : null,
       extended: 0,
+      extendedSource: 'none',
       extendedDays: 0,
       retentionDays: s.archived === true ? 30 : null,
       filesGone: false,

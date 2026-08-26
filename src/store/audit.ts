@@ -216,6 +216,32 @@ export interface AuditQueryStore {
   listForMeeting(meetingId: string, opts?: MeetingHistoryOptions): Promise<AuditRecord[]>
 }
 
+/**
+ * 「延长保留窗口」这个动作在 `audit_log.action` 里的取值（阶段 4 · T17）。
+ *
+ * **常量放在这里，是因为它有两个消费方，而它们分属读写两侧**：
+ * 写在 `src/http/handlers/console/storage.ts` 的延长端点，
+ * 数在 `src/store/console-meetings.ts` 的 `keep.extended`。
+ * 各写一个字符串字面量的话，哪天有人把动作名改成 `retention_extend`，
+ * 写侧照常记账、读侧照常返回 0 —— 界面上会显示「从没延长过」，没有任何东西会报错。
+ */
+export const ACTION_EXTEND_RETENTION = 'extend_retention'
+
+/**
+ * 周期性会议的场次编进 `audit_log.asset_id` 的方式（阶段 4 · T8 起）。
+ *
+ * `audit_log` **没有 `sub_meeting_id` 列**，而保留窗口的键是两段的
+ * `(meeting_id, sub_meeting_id)`——同一个 meeting_id 下的几场各有各的归档时间与
+ * 延长历史。只写 meeting_id 会把它们混成一条流：一场延长了三次，另一场也跟着
+ * 显示三次。前缀 `sub:` 是为了与 record 维度那类真的 asset_id 区分开
+ * （见本表 `meeting_id` 列的两种语义）。
+ *
+ * 与 `ACTION_EXTEND_RETENTION` 同理，读写两侧共用这一个函数，不各拼各的。
+ */
+export function auditSubMeetingAssetId(subMeetingId: string): string {
+  return `sub:${subMeetingId}`
+}
+
 /** 不给 limit 时的页大小 */
 export const AUDIT_DEFAULT_LIMIT = 50
 /** 单页硬上限。导出是为了让 HTTP 层能校验并回一句说得清的错，而不是等这里默默钳制 */

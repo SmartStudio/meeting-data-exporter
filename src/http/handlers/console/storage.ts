@@ -25,7 +25,13 @@
 import type { RouteCtx } from '../../router'
 import { json, readJson } from '../../respond'
 import { requireAdminAuth } from '../../middleware'
-import { buildAuditDetail, type AuditEntry, type AuditStore } from '../../../store/audit'
+import {
+  ACTION_EXTEND_RETENTION,
+  auditSubMeetingAssetId,
+  buildAuditDetail,
+  type AuditEntry,
+  type AuditStore,
+} from '../../../store/audit'
 import type { ArchivesStore } from '../../../store/archives'
 import type { ConsoleStorageStore } from '../../../store/console-storage'
 import type { NasProbeResult } from '../../../worker/nas-probe'
@@ -176,9 +182,14 @@ async function recordAdminWrite(ctx: RouteCtx, i: AdminAuditInput): Promise<void
     actorId: i.adminId,
     action: i.action,
     meetingId: i.meetingId ?? null,
-    assetId: i.subMeetingId === undefined || i.subMeetingId === null ? null : `sub:${i.subMeetingId}`,
+    // 场次的编法由 audit.ts 那个共享函数说了算——`keep.extended` 正是按它去数的
+    // （阶段 4 · T17），两边各拼各的会让读侧一条都数不着而不报任何错
+    assetId:
+      i.subMeetingId === undefined || i.subMeetingId === null
+        ? null
+        : auditSubMeetingAssetId(i.subMeetingId),
     // 存储这一族的动作（改保留天数、暂停清理、删本地文件）对象不是某一份资产，
-    // 这一列没有值可填。从前它装着一句话明细，那是 detail 列还不存在时的将就
+    // 这一列没有值可填。从前它装着一句话明细，那是 detail 列还不存在时的将就（T15）
     assetType: null,
     decision: i.decision,
     matchedRuleId: null,
@@ -515,7 +526,8 @@ export async function extendMeetingRetention(req: Request, ctx: RouteCtx): Promi
 
   await recordAdminWrite(ctx, {
     adminId: auth.identity.adminId,
-    action: 'extend_retention',
+    // 动作名走共享常量：`console-meetings.ts` 的 `keep.extended` 按它数条数
+    action: ACTION_EXTEND_RETENTION,
     meetingId,
     subMeetingId,
     detail: `延长 ${days} 天（累计 ${extendedDays} 天）`,

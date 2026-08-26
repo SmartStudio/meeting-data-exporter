@@ -134,8 +134,12 @@ type AllowState = 'allow' | 'deny'
 /**
  * 下发给控制台的一场会议。`ConsoleMeetingRow` 的四个后端事实字段
  * （`meetingId` / `subMeetingId` / `missing` / `unknownAssetTypes`）与
- * `keep.extendedDays` / `keep.retentionDays` 一并带出去：契约里没有它们，
- * 前端会忽略，**但少一个字段前端就崩**，多的不会。
+ * `keep.extendedDays` / `keep.extendedSource` / `keep.retentionDays` 一并带出去：
+ * 契约里没有它们，前端会忽略，**但少一个字段前端就崩**，多的不会。
+ *
+ * `keep.extendedSource` 尤其别裁——它回答的是「`extended` 这个次数准不准」
+ * （阶段 4 · T17）。裁掉之后一个「至少延长过 1 次」的下界会被渲染成
+ * 「已延长 1 次」，看起来是准确值。
  *
  * `missing` 尤其不该被裁掉——它回答的是「这场会议的标题是空的，还是元数据没拉回来」，
  * 而这两件事在界面上长得一模一样。

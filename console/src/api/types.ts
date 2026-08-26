@@ -56,7 +56,18 @@ export interface KeepWindow {
   archivedAt: number | null
   /** unix 秒。archivedAt + keepDays，由后端算好下发 */
   expiresAt: number | null
-  /** 被人工延长过几次 */
+  /**
+   * 被人工延长过几次。网关数的是 `audit_log` 里这场会议的「延长保留」条数。
+   *
+   * **有一种情况它只是下界**：审计从阶段 4 · T8 才开始记延长操作，在那之前
+   * 延长过的会议数不出真实次数，网关报 1（报 0 等于说「从没延长过」，
+   * 而它明明被延长过）。网关同时下发一个 `extendedSource` 字段说明这个数
+   * 是不是下界（`'floor'` = 是），契约里没有它，要区分「已延长 1 次」和
+   * 「至少延长过 1 次」时读它。
+   *
+   * **「延长了多少天」不要拿这个数乘保留天数**——一次延长几天是可以指定的，
+   * 真实天数在网关下发的 `extendedDays` 里。
+   */
   extended: number
   /** 本地文件是否已被到期清理删掉（记录与 NAS 路径仍在） */
   filesGone: boolean
