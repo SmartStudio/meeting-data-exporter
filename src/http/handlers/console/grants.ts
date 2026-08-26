@@ -67,6 +67,7 @@ import { requireAdminAuth, requireAdminWrite } from '../../middleware'
 import type { AdminIdentity } from '../../../auth/admin'
 import { generateServiceSecret, hashServiceSecret } from '../../../auth/service'
 import { buildAuditDetail } from '../../../store/audit'
+import { AUDIT_ACTION, type AuditAction } from '../../../audit/actions'
 import type { MeetingKey } from '../../../store/grants'
 import {
   computeProgramInventory,
@@ -146,7 +147,8 @@ function auditTarget(target: string, subMeetingId: string): string {
 }
 
 interface AdminWrite {
-  action: string
+  // 收窄成 AuditAction：写一个没在登记表里的动作会在这里编译不过（阶段 5 · A9）
+  action: AuditAction
   /** 没有会议维度的动作（接入新程序）传 null */
   meetingId: string | null
   target: string
@@ -282,7 +284,7 @@ export async function createProgram(req: Request, ctx: RouteCtx): Promise<Respon
   if (!created) return json(409, { error: 'program_id_taken' })
 
   await recordAdminWrite(ctx, auth.identity, {
-    action: 'create_program',
+    action: AUDIT_ACTION.createProgram,
     meetingId: null,
     target: id,
     subMeetingId: '',
@@ -356,7 +358,7 @@ export async function patchProgram(req: Request, ctx: RouteCtx): Promise<Respons
   if (!changed) return json(404, { error: 'program_not_found' })
 
   await recordAdminWrite(ctx, auth.identity, {
-    action: enabled ? 'enable_program' : 'disable_program',
+    action: enabled ? AUDIT_ACTION.enableProgram : AUDIT_ACTION.disableProgram,
     meetingId: null,
     target: id,
     subMeetingId: '',
@@ -397,7 +399,7 @@ export async function rotateProgramSecret(req: Request, ctx: RouteCtx): Promise<
   if (!rotated) return json(404, { error: 'program_not_found' })
 
   await recordAdminWrite(ctx, auth.identity, {
-    action: 'rotate_program_secret',
+    action: AUDIT_ACTION.rotateProgramSecret,
     meetingId: null,
     target: id,
     subMeetingId: '',
@@ -559,7 +561,7 @@ export async function grantMeeting(req: Request, ctx: RouteCtx): Promise<Respons
   })
 
   await recordAdminWrite(ctx, auth.identity, {
-    action: 'grant_meeting',
+    action: AUDIT_ACTION.grantMeeting,
     meetingId,
     target: body.programId,
     subMeetingId,
@@ -583,7 +585,7 @@ export async function revokeGrant(req: Request, ctx: RouteCtx): Promise<Response
   // 撤了个本来就没有的授权照样记：管理员点「撤销」这件事发生过。不记的话，
   // 日后查「谁动了这条授权」会看到一段空白，而当事人记得自己点过
   await recordAdminWrite(ctx, auth.identity, {
-    action: 'revoke_grant',
+    action: AUDIT_ACTION.revokeGrant,
     meetingId,
     target: programId,
     subMeetingId,
@@ -645,7 +647,7 @@ export async function putOverride(req: Request, ctx: RouteCtx): Promise<Response
   })
 
   await recordAdminWrite(ctx, auth.identity, {
-    action: 'put_override',
+    action: AUDIT_ACTION.putOverride,
     meetingId,
     target: body.kind,
     subMeetingId,
@@ -671,7 +673,7 @@ export async function revokeOverride(req: Request, ctx: RouteCtx): Promise<Respo
   )
 
   await recordAdminWrite(ctx, auth.identity, {
-    action: 'revoke_override',
+    action: AUDIT_ACTION.revokeOverride,
     meetingId,
     target: kind,
     subMeetingId,

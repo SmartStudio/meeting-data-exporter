@@ -189,6 +189,31 @@ export interface RuleEvaluation {
 /** 值的形态，规则编辑器（阶段 5 · F3）据此渲染输入控件 */
 export type CondValueKind = 'keywords' | 'strings' | 'string' | 'number' | 'none'
 
+/**
+ * 值形态的**粗粒度类型**：下发给规则编辑器时用它决定渲染哪一类输入控件
+ * （阶段 5 · A9）。`enum` 这一档的约定是「**带 options 才算数**」——
+ * 一个声明成枚举却给不出可选值的字段，在界面上是一个空下拉框，
+ * 比一个自由文本框更糟。今天没有字段落在这一档：`dept` 本该是（spec §5.3
+ * 写的是「部门多选」），但企微通讯录没接，部门清单根本取不到。
+ */
+export type CondValueType = 'string' | 'number' | 'enum' | 'none'
+
+/**
+ * 形态 → 粗粒度类型 + 是不是多值。**这张表是 `CondValueKind` 的唯一解释**，
+ * 端点与将来的任何消费方都从这里读，不各自 switch 一遍：
+ * 各写一份的下场是同一个 `keywords` 在一处渲染成标签输入、在另一处渲染成
+ * 单行文本，而管理员看到的关键词个数与实际求值的不一样。
+ */
+export const COND_VALUE_TYPE: Readonly<
+  Record<CondValueKind, { type: CondValueType; multiple: boolean }>
+> = {
+  keywords: { type: 'string', multiple: true },
+  strings: { type: 'string', multiple: true },
+  string: { type: 'string', multiple: false },
+  number: { type: 'number', multiple: false },
+  none: { type: 'none', multiple: false },
+}
+
 export interface FieldSpec {
   label: string
   ops: readonly string[]
@@ -197,6 +222,43 @@ export interface FieldSpec {
   available: boolean
   /** available 为 false 时的原因，要直接给管理员看 */
   unavailableReason?: string
+  /**
+   * 数字字段的单位，渲染在输入框右边（阶段 5 · A9 加）。
+   *
+   * 求值器自己的判定理由里用的就是这两个词（`evalDur` 的「分钟」、
+   * `evalAge` 的「天」）。放在这里下发，是为了让编辑器与判定理由用同一个词——
+   * 界面上写「大于 30」而理由里写「时长 45 分钟」，管理员得自己猜单位。
+   */
+  unit?: string
+  /** 输入框的占位提示。只是排版，但它是「这个字段该怎么填」的唯一说明 */
+  placeholder?: string
+}
+
+/**
+ * 运算符的中文名。措辞取 spec §5.3 的表格。
+ *
+ * **与 `CONDITION_FIELDS` 分开放而不是塞进 `ops`**：ops 是求值路径读的
+ * （`spec.ops.includes(cond.op)`），塞成对象会让那条热路径多一层取值；
+ * 而「有没有漏写标签」由测试逐条比对两张表来保证（`console-rules-schema.test.ts`），
+ * 不靠人记得。
+ *
+ * `unitSuffix` 是跟在**值与单位之后**的那个字：`age within 90` 读作
+ * 「在最近 90 天内」，那个「内」不属于单位、也不属于运算符名。不下发它的话，
+ * 前端只能硬编码一条 `op === 'within'` 的特例——而这正是镜像的起点。
+ */
+export const OP_LABELS: Readonly<Record<string, { label: string; unitSuffix: string | null }>> = {
+  has: { label: '包含任一', unitSuffix: null },
+  nothas: { label: '不包含', unitSuffix: null },
+  in: { label: '属于', unitSuffix: null },
+  notin: { label: '不属于', unitSuffix: null },
+  is: { label: '是', unitSuffix: null },
+  isnot: { label: '不是', unitSuffix: null },
+  gt: { label: '大于', unitSuffix: null },
+  lt: { label: '小于', unitSuffix: null },
+  within: { label: '在最近', unitSuffix: '内' },
+  before: { label: '早于', unitSuffix: null },
+  isarch: { label: '已写入 NAS', unitSuffix: null },
+  notarch: { label: '未归档', unitSuffix: null },
 }
 
 /**
@@ -209,23 +271,48 @@ export interface FieldSpec {
  * 不如让不一致当场可见。
  */
 export const CONDITION_FIELDS: Record<string, FieldSpec> = {
-  title: { label: '会议标题', ops: ['has', 'nothas'], value: 'keywords', available: true },
+  title: {
+    label: '会议标题',
+    ops: ['has', 'nothas'],
+    value: 'keywords',
+    available: true,
+    placeholder: '关键词，逗号分隔',
+  },
   dept: {
     label: '主持人部门',
     ops: ['in', 'notin'],
     value: 'strings',
     available: false,
-    unavailableReason: '需要企业微信通讯录，尚未接入',
+    // 这句话会**原样上屏**（规则编辑器里这个字段可见但禁用，spec §5.3 的补注
+    // 写明 R0 已定为不做，所以这不是过渡状态而是最终形态）。因此写全：
+    // 光说「尚未接入」，管理员会以为等一等就有了。
+    //
+    // **不要在这句话里写「永远不会命中」**：`describeRuleIssues` 会把它内联进
+    // 一条 issue，而那句话是留给「整条规则失效」那一档的——一条 `or` 规则里
+    // 有一个 dept 条件并不会让整条失效，两句话撞在一起管理员会读成规则死了。
+    unavailableReason:
+      '需要企业微信通讯录，尚未接入（企微自建应用没有真建，R0 已定为不做，见 spec §5.3）',
   },
-  host: { label: '主持人', ops: ['is', 'isnot'], value: 'string', available: true },
-  dur: { label: '会议时长', ops: ['gt', 'lt'], value: 'number', available: true },
-  age: { label: '录制结束', ops: ['within', 'before'], value: 'number', available: true },
+  host: { label: '主持人', ops: ['is', 'isnot'], value: 'string', available: true, placeholder: '用户 id' },
+  dur: { label: '会议时长', ops: ['gt', 'lt'], value: 'number', available: true, unit: '分钟' },
+  age: { label: '录制结束', ops: ['within', 'before'], value: 'number', available: true, unit: '天' },
   arch: { label: '归档状态', ops: ['isarch', 'notarch'], value: 'none', available: true },
 }
 
-/** 关键词分隔：英文逗号、中文逗号、空白，三种都认（与原型一致） */
+/**
+ * 关键词分隔：英文逗号、中文逗号、空白，三种都认（与原型一致）。
+ *
+ * 正则单独取出来是为了能**把切法本身下发出去**（`KEYWORD_SEPARATOR_SOURCE`，
+ * 阶段 5 · A9）：规则编辑器要显示「这条条件有几个关键词」，按另一套切法显示的话，
+ * 管理员看到的个数与实际求值的不一样——而这是一条谁都不会去核对的差异。
+ */
+const KEYWORD_SEPARATOR = /[,，\s]+/
+
+/** 上面那个正则的源码，随 schema 端点下发。前端 `new RegExp(...)` 即可，不必抄 */
+export const KEYWORD_SEPARATOR_SOURCE = KEYWORD_SEPARATOR.source
+
 export function splitKeywords(raw: string): string[] {
-  return raw.split(/[,，\s]+/).filter(Boolean)
+  return raw.split(KEYWORD_SEPARATOR).filter(Boolean)
 }
 
 function ok(detail: string): CondEvaluation {

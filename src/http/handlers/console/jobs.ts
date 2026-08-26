@@ -32,6 +32,7 @@ import type { RouteCtx } from '../../router'
 import { json } from '../../respond'
 import { requireAdminAuth, requireAdminWrite } from '../../middleware'
 import { buildAuditDetail, type AuditEntry, type AuditStore } from '../../../store/audit'
+import { AUDIT_ACTION } from '../../../audit/actions'
 import {
   JOB_CATALOG,
   JOB_RUNS_SPARKLINE_LIMIT,
@@ -245,7 +246,7 @@ export async function runJob(req: Request, ctx: RouteCtx): Promise<Response> {
     occurredAt: now,
     actorType: 'admin',
     actorId: auth.identity.adminId,
-    action: 'run_job',
+    action: AUDIT_ACTION.runJob,
     meetingId: null,
     // audit_log 没有"对象类型"这一列，asset_id 在管理员这一族里当对象键用。
     // 带上 job: 前缀，免得与会议维度的记录（`sub:` 前缀、或裸 assetId）混在一起

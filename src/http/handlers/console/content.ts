@@ -93,6 +93,8 @@ import { isVisible } from '../../../policy/access'
 import { wasOverridden, type OverriddenDecision } from '../../../policy/override'
 import type { AllowEffect, StackRule } from '../../../policy/stacks'
 import { buildAuditDetail, type AuditEntry } from '../../../store/audit'
+import { ASSET_LABEL } from '../../../domain/asset-labels'
+import { AUDIT_ACTION } from '../../../audit/actions'
 import { parseConsoleMeetingId, type ConsoleMeetingRow } from '../../../store/console-meetings'
 import type { MeetingArchiveRecord } from '../../../store/archives'
 import type { AssetContentKey, AssetContentStatus } from '../../../store/contents'
@@ -271,16 +273,7 @@ interface ContentSegment extends ContentAsset {
   content: string | null
 }
 
-const ASSET_LABEL: Record<AssetKey, string> = {
-  video: '录像',
-  audio: '音频',
-  transcript: '完整转写',
-  ai_transcript: 'AI 转写',
-  ai_minutes: 'AI 纪要',
-  ai_topic_minutes: '话题纪要',
-  ai_speaker_minutes: '发言人纪要',
-  ai_ds_minutes: '会议摘要',
-}
+// 八类资产的中文名从 `src/domain/asset-labels.ts` 来（阶段 5 · A9 收拢的唯一一份）
 
 function labelOf(assetType: string): string {
   const key = GATEWAY_TYPE_TO_ASSET_KEY[assetType]
@@ -430,7 +423,7 @@ async function recordView(
   ctx: RouteCtx,
   input: { adminId: string; key: MeetingKey; access: Access; detail: string },
 ): Promise<string> {
-  const action = input.access.restricted ? 'view_restricted_content' : 'view_content'
+  const action = input.access.restricted ? AUDIT_ACTION.viewRestrictedContent : AUDIT_ACTION.viewContent
   const entry: AuditEntry = {
     occurredAt: ctx.deps.now(),
     actorType: 'admin',

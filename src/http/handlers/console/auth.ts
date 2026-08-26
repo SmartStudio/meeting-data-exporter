@@ -5,17 +5,21 @@ import { requireAdminAuth, requireAdminWrite, readCookie, ADMIN_SESSION_COOKIE }
 import { AdminAuthError, ADMIN_PASSWORD_MIN_LENGTH, isAdminPasswordAcceptable } from '../../../auth/admin'
 import type { AdminIdentity } from '../../../auth/admin'
 import { buildAuditDetail } from '../../../store/audit'
+import { AUDIT_ACTION, type AuditAction } from '../../../audit/actions'
 
 /**
  * 账号这一族动作在 `audit_log.action` 里的取值（阶段 5 · A8）。
  *
  * 常量而不是字面量：审计页要按动作筛选，而「筛选用的字符串」与「写入用的
  * 字符串」一旦分成两处，改名的那一次会让筛选静静地筛出零条——没有任何报错。
- * 与 `ACTION_EXTEND_RETENTION` 同一个理由。
+ *
+ * **阶段 5 · A9 起值来自 `src/audit/actions.ts` 的动作登记表**，这三行只是
+ * 别名：登记表同时管着「动作原值 → 中文标签」，从那里取值意味着一个动作
+ * 不可能只有写入而没有界面上的名字。
  */
-export const ACTION_CREATE_ACCOUNT = 'create_admin_account'
-export const ACTION_DELETE_ACCOUNT = 'delete_admin_account'
-export const ACTION_CHANGE_PASSWORD = 'change_admin_password'
+export const ACTION_CREATE_ACCOUNT = AUDIT_ACTION.createAdminAccount
+export const ACTION_DELETE_ACCOUNT = AUDIT_ACTION.deleteAdminAccount
+export const ACTION_CHANGE_PASSWORD = AUDIT_ACTION.changeAdminPassword
 
 /**
  * 账号一族写操作的审计。`actor_type = 'admin'`，`client_kind = 'console'`，
@@ -30,7 +34,9 @@ export const ACTION_CHANGE_PASSWORD = 'change_admin_password'
 async function recordAccountWrite(
   ctx: RouteCtx,
   identity: AdminIdentity,
-  w: { action: string; target: string; detail: string },
+  // action 收窄成 AuditAction：写一个没在登记表里的动作会在这里编译不过，
+  // 而不是等到有人在审计页上看见一行英文 snake_case 才发现（阶段 5 · A9）
+  w: { action: AuditAction; target: string; detail: string },
 ): Promise<void> {
   await ctx.deps.auditStore.record({
     occurredAt: ctx.deps.now(),
