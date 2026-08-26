@@ -36,7 +36,16 @@ import { discoverWithFetchPolicy } from './fetch-policy'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore } from './store-mysql'
 
-export interface WorkerDeps {
+/**
+ * 「拉一轮」需要的东西：发现 → 补探测 → 执行下载 → 写本地清单。**归档不在里面。**
+ *
+ * 从 `WorkerDeps` 里分出来是阶段 4 · T14 的需要：定时任务的任务一「拉取新录制」
+ * 要的正是这一段（discover + 入队 + **真把队列里的资产下下来**），而**不要**后面
+ * 那段归档——归档是任务二 `archive_nas` 自己那一格。两个任务体各起各的归档轮意味着
+ * 两轮同时往同一个 NAS 目录搬同一批文件。一次性的 `bun run worker` 仍然是两段连着跑
+ * （`runWorkerOnce`），行为逐字不变。
+ */
+export interface FetchRoundDeps {
   store: Store
   source: AssetSource
   storage: Storage
@@ -44,21 +53,26 @@ export interface WorkerDeps {
   concurrency: number
   /** 领取任务时写进 lease_expires_at 的租约时长（秒） */
   leaseSec: number
-  /** 归档流水线（P2）依赖：归档记录存取 */
+  /** 拉取判定要读「这场会议归档过没有」（见 ./fetch-policy.ts）；归档流水线（P2）也用它 */
   archives: ArchivesStore
   /** 规则存取。worker 用它的**两栈**：fetch（**拉哪些会议、拉哪几类资产**，阶段 4 · T12
    *  接上，见 ./fetch-policy.ts）与 archive（**往 NAS 的哪个目录归档**，spec §4.6）。
+   *  拉取这一轮只用得着 fetch 栈，archive 栈在 `runWorkerOnce` 的归档段里用。
    *  allow 栈是网关的活，worker 不碰（见 src/policy/access.ts 的文件头）。
    *  这里持有整个读接口、只在下面把各自那一栈收成一个函数递给 fetchPolicy / archiveDeps，
-   *  是刻意的分层：WorkerDeps 是宿主、本来就握着各个 store，那两个 Deps 才是
-   *  要对依赖吝啬的地方。 */
+   *  是刻意的分层：宿主本来就握着各个 store，那两个 Deps 才是要对依赖吝啬的地方。 */
   policy: Pick<PolicyStore, 'listEnabledStackRules'>
   /**
    * 人工改写（spec §5.4：**单场会议的人工改写优先于所有规则**）。
-   * 归档目录的判定要用它；采集清单（visibility.ts）也要用。
+   * 拉不拉的判定要用它；归档目录的判定与采集清单（visibility.ts）也要用。
    *
    * worker 这边只读不写——写侧在控制台的管理端点里（阶段 4）。
    */
+  grants: Pick<GrantsStore, 'listActiveOverridesForMeetings'>
+}
+
+export interface WorkerDeps extends FetchRoundDeps {
+  /** 采集清单（visibility.ts）另外还要 listActiveGrantsForProgram，比拉取那一段宽一格 */
   grants: Pick<GrantsStore, 'listActiveOverridesForMeetings' | 'listActiveGrantsForProgram'>
   /** 本地归档区根目录（MDE_ARCHIVE_ROOT）——与 storage 指向同一棵目录树。
    *  Storage 接口本身不暴露自己的根路径，archiveMeeting 拼本地源文件路径
@@ -68,19 +82,25 @@ export interface WorkerDeps {
   nasRoot: string
 }
 
-export interface WorkerRound {
+export interface FetchRound {
   /** 本轮发现的会议数 */
   meetings: number
   /** 本轮发现的**就绪资产**条数——不是"新增的活"，已 completed 的行照样计入 */
   tasks: number
   probes: { resolved: number; abandoned: number; newTasks: number }
+  /** 本轮**下完**的资产条数 */
   completed: number
+  /** 本轮下挂了的资产条数。逐条都带着 last_error 留在 meeting_assets 里，下一轮照样重试 */
   failed: number
+  /** 本轮跳过的资产条数（会议元数据不全、磁盘不够）。与 failed 分开数，两者要办的事不同 */
   skipped: number
   /** 本轮 sidecar（meeting.json / _manifest.json）收尾的汇总。failed 是写入抛出的场次数——
    *  它**不进退出码**：资产已经落盘了，一份没写出来的清单不该把一轮成功的下载判成失败。
    *  但每一次都会 console.warn，不是静默吞掉。 */
   manifests: { written: number; skipped: number; failed: number }
+}
+
+export interface WorkerRound extends FetchRound {
   /** 本轮归档流水线（P2）的汇总：对 ArchivesStore.listMeetingsNeedingArchive() 给出的
    *  每场"有未归档完成资产"的会议累加。failed 是逐会议错误隔离之后没能正常归档完的
    *  会议数（archiveMeeting 本身抛出，不是可以放心忽略的数字，见 archive.ts 的
@@ -103,26 +123,30 @@ export interface WorkerRound {
 }
 
 /**
- * 一轮完整的拉取：发现 → 补探测 → 执行下载。
+ * 一轮完整的拉取：发现 → 补探测 → 执行下载 → 写本地清单。**不含归档。**
  *
  * 与 mde CLI 的 `run` 命令是**同一套调用序列**（client/src/cli/commands/run.ts），
  * 区别只在 store 与 source 的实现：CLI 那边是 SQLite + HTTP 网关客户端，
  * 这边是 MySQL + 进程内 catalog。这正是引擎抽包的目的——两个宿主共用一条代码
  * 路径，行为不会分叉。
  *
+ * **两个宿主调它**：一次性的 `bun run worker`（经 `runWorkerOnce`，后面还接一段归档）
+ * 与常驻调度器的任务一「拉取新录制」（`src/worker/scheduler.ts`，阶段 4 · T14）。
+ * 调度器那边**只调这一段**，归档留给任务二——别在这里图省事地把归档并进来。
+ *
  * `now` 取**函数**而不是一个冻结的时间戳，这一条不是风格问题：
  * `claimNext` / `touchProgress` 写进 `lease_expires_at` 的是 `now() + leaseSec`，
  * 租约的全部意义就是"这个任务还有人在干"。时钟一旦冻结在本轮开始时刻，
  * 一轮跑得比 leaseSec 久（几 GB 的录制很正常）之后，别的实例按自己的活时钟
  * 一看就判定租约过期，把还在下载中的任务抢走——两个进程同时写同一个 `.part`。
- * CLI 宿主传的也是活时钟，两边必须一致。
+ * CLI 宿主传的也是活时钟，调度器那边传的是 `JobRunContext.clock`，三边必须一致。
  */
-export async function runWorkerOnce(
-  deps: WorkerDeps,
+export async function runFetchRound(
+  deps: FetchRoundDeps,
   sel: MeetingSelector,
   keys: AssetKey[],
   now: () => number,
-): Promise<WorkerRound> {
+): Promise<FetchRound> {
   // 发现走**拉取规则栈**（阶段 4 · T12 / A7，计划 §0 E-c）：discovery 发现一场会议
   // 之后，先按 fetch 栈判「拉不拉、拉哪几类资产」，再决定给它建哪些下载任务。
   // 接线之前这里是裸的 `discover`，也就是"时间窗内全拉"——规则页上的拉取规则
@@ -185,6 +209,26 @@ export async function runWorkerOnce(
     now,
   )
 
+  // 逐字段挑，不 `...found`：`discoverWithFetchPolicy` 还带回一份 `fetchPolicy` 摘要
+  // （本轮拉了几场 / 拦下几场 / 判不出来几场），那是**日志与 job_runs.summary** 的料，
+  // 不属于 `FetchRound` 的形状——退出码与 e2e 的断言都盯着这个形状。
+  return { meetings: found.meetings, tasks: found.tasks, probes, ...ran, manifests }
+}
+
+/**
+ * 一次性 worker 的一轮：`runFetchRound` 之后**接着把已完成的资产归档到 NAS**。
+ *
+ * 两段连着跑是 `bun run worker` 的语义（跑一轮、打印计数、按退出码说话），
+ * 与常驻调度器不同——那边归档是任务二自己那一格，见 `runFetchRound` 的注释。
+ */
+export async function runWorkerOnce(
+  deps: WorkerDeps,
+  sel: MeetingSelector,
+  keys: AssetKey[],
+  now: () => number,
+): Promise<WorkerRound> {
+  const fetched = await runFetchRound(deps, sel, keys, now)
+
   // 归档：把（本轮以及此前遗留、这一轮才终于补齐的）已完成下载的资产搬到 NAS。
   //
   // 枚举源是 ArchivesStore.listMeetingsNeedingArchive()，不是上面的 meetingsById——
@@ -221,10 +265,7 @@ export async function runWorkerOnce(
   }
   const archived = await archivePendingMeetings(archiveDeps, now)
 
-  // 逐字段挑，不 `...found`：`discoverWithFetchPolicy` 还带回一份 `fetchPolicy` 摘要
-  // （本轮拉了几场 / 拦下几场 / 判不出来几场），那是**日志与 job_runs.summary** 的料，
-  // 不属于 `WorkerRound` 的形状——退出码与 e2e 的断言都盯着这个形状。
-  return { meetings: found.meetings, tasks: found.tasks, probes, ...ran, manifests, archived }
+  return { ...fetched, archived }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +290,14 @@ export async function runWorkerOnce(
  */
 const DEFAULT_CONCURRENCY = 4
 
-/** 租约时长，与 mde CLI 的 run 命令一致（client/src/cli/commands/run.ts） */
-const LEASE_SEC = 900
+/**
+ * 租约时长，与 mde CLI 的 run 命令一致（client/src/cli/commands/run.ts）。
+ *
+ * 导出给调度器（阶段 4 · T14 之后任务一也跑执行体）：三个宿主写进同一张
+ * `meeting_assets.lease_expires_at` 的必须是同一个值，各配各的会让一边把另一边
+ * 还在下载中的任务判成"租约过期"抢走。
+ */
+export const DEFAULT_LEASE_SEC = 900
 
 /**
  * 排队等连接的上限 = `2 × 并发度 + 2`。
@@ -564,7 +611,7 @@ async function main(): Promise<number> {
 
     const res = await runWorkerOnce(
       {
-        store, source, storage, concurrency: args.concurrency, leaseSec: LEASE_SEC,
+        store, source, storage, concurrency: args.concurrency, leaseSec: DEFAULT_LEASE_SEC,
         archives, policy, grants, localRoot: archiveRoot, nasRoot,
       },
       args.sel,
