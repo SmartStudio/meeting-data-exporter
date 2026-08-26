@@ -421,7 +421,10 @@ const SCENES: Scene[] = [
   { id: 'popover', why: '时间范围菜单打开', route: '/meetings', setup: openPopover },
   { id: 'grant', why: '授权面板打开', route: '/meetings', setup: openGrant },
   { id: 'toast', why: '延长保留期后的 toast', route: '/meetings', setup: fireToast },
-  { id: 'placeholder', why: '占位页（采集授权）', route: '/consumers' },
+  // `_Placeholder` 在 F0 删掉了，六个页面各有自己的空壳（`pages/<页>/index.tsx`）。
+  // 这个场景验的是空壳共用的页头骨架（`ui/PageShell`）——七页都长这个样子，
+  // 所以扫一页就够；等某一页真的填上内容，再给那一页加自己的场景。
+  { id: 'page-shell', why: '空壳页的页头骨架（采集授权）', route: '/consumers' },
   {
     id: 'login',
     why: '登录页（spec.md §4.1；刻意不经过 AppShell，无左栏/顶栏，见 routes.tsx）',
