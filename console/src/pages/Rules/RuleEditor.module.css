@@ -1,0 +1,490 @@
+/* 规则编辑器。spec §4.7：右侧全高面板，比抽屉宽——条件构建器和影响预览必须同屏。 */
+
+/* 类名写两遍是为了压过 Drawer.module.css 里同为单类选择器的 .panel：
+   两个 CSS Module 在打包后的先后顺序不由本文件决定，靠源序赌不得。
+   提高一级特异性是唯一稳的办法（不用 !important——那连调试都盖不住）。 */
+.panel.panel {
+  width: min(92vw, var(--rule-editor-w));
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+  min-width: 0;
+}
+
+.lede {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.75;
+}
+
+.section {
+  min-width: 0;
+}
+
+.sectionTitle {
+  margin: 0 0 var(--s-3);
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.sectionSub {
+  margin: var(--s-4) 0 var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.hint {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  line-height: 1.7;
+}
+.hint code {
+  font-family: var(--mono);
+  background: var(--surface-2);
+  border-radius: var(--r-xs);
+  padding: 0 var(--s-1);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+.field > span {
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+}
+
+.select {
+  appearance: none;
+  min-height: var(--tap-min);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  cursor: pointer;
+}
+.select:disabled {
+  color: var(--ink-3);
+  background: var(--surface-2);
+  cursor: default;
+}
+/* 键盘焦点环由全局 base.css 的 :focus-visible 提供（品牌蓝、≥3:1、不做出现动画）。
+   这里不再造一圈——重复一份就多一处会与全局走散的宽度。 */
+
+/* ── 条件构建器 ─────────────────────────────────────────────── */
+
+.conds {
+  list-style: none;
+  margin: 0 0 var(--s-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.cond {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+/* 连接词竖排在左侧（spec §4.7）。 */
+.condJoin {
+  flex: none;
+  width: var(--s-9);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.when {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.joinBtn {
+  appearance: none;
+  min-width: var(--s-8);
+  min-height: var(--s-8);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-sm);
+  background: var(--brand-soft);
+  color: var(--brand-text);
+  font-family: inherit;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.condFields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.numberValue {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.unit {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.rawValue {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.rawValue em {
+  font-style: normal;
+  color: var(--warn);
+}
+.rawValue code {
+  font-family: var(--mono);
+}
+
+.condDel {
+  appearance: none;
+  flex: none;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: var(--t-lg);
+}
+.condDel:hover:not(:disabled) {
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+.condDel:disabled {
+  color: var(--ink-4);
+  cursor: default;
+}
+
+/* ── 动作 ───────────────────────────────────────────────────── */
+
+.effects {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.effectOpt {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.effectOpt[data-on='true'] {
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
+}
+.effectOpt span {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-size: var(--t-sm);
+  color: var(--ink);
+}
+.effectOpt small {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  line-height: 1.6;
+}
+
+.assets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.assetOpt {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--tap-min);
+  font-size: var(--t-sm);
+  color: var(--ink);
+  cursor: pointer;
+}
+.assetOpt small {
+  margin-left: var(--s-2);
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.warnLine {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--warn);
+  line-height: 1.7;
+}
+
+.warnBox {
+  margin: 0;
+  padding: var(--s-4);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+  line-height: 1.75;
+}
+.warnBox code {
+  font-family: var(--mono);
+}
+
+.issueBox {
+  padding: var(--s-4);
+  border: 1px solid var(--fail-line);
+  border-radius: var(--r-sm);
+  background: var(--fail-soft);
+  font-size: var(--t-xs);
+  line-height: 1.75;
+  color: var(--ink-2);
+}
+.issueTitle {
+  margin: 0 0 var(--s-2);
+  font-weight: 600;
+  color: var(--fail);
+}
+.issueBox ul {
+  margin: 0;
+  padding-left: var(--s-5);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+.deleteBtn {
+  margin-left: auto;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── 影响预览：钉在底部，不跟正文滚动 ────────────────────────
+   Drawer 的 .body 是滚动容器，所以用 sticky 贴在它的下沿；负 margin
+   把 Drawer 的 --s-6 内边距抵掉，让这块横贯整个面板宽度。 */
+
+.previewDock {
+  position: sticky;
+  bottom: calc(-1 * var(--s-6));
+  margin: var(--s-4) calc(-1 * var(--s-6)) calc(-1 * var(--s-6));
+  padding: var(--s-5) var(--s-6);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.previewTitle {
+  margin: 0 0 var(--s-3);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.previewPending {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.previewSkeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.numbers {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s-6);
+}
+
+.number {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+.number b {
+  font-family: var(--mono);
+  font-size: var(--t-3xl);
+  font-weight: 500;
+  line-height: 1;
+  color: var(--ink);
+}
+.number[data-tone='brand'] b {
+  color: var(--brand-text);
+}
+.number[data-tone='warn'] b {
+  color: var(--warn);
+}
+.number > span {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.previewSummary {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  line-height: 1.7;
+}
+
+.previewNeutral {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+.previewScope {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.previewAside {
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-5);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.7;
+}
+
+.invalidNote {
+  color: var(--fail);
+}
+
+.amber {
+  margin: var(--s-3) 0 0;
+  padding: var(--s-4);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+  line-height: 1.75;
+}
+.amber p {
+  margin: 0;
+}
+.amberList {
+  margin-top: var(--s-2);
+  color: var(--ink-3);
+}
+
+.details {
+  margin-top: var(--s-3);
+  font-size: var(--t-xs);
+}
+.details summary {
+  cursor: pointer;
+  color: var(--brand-text);
+  min-height: var(--tap-min);
+  display: flex;
+  align-items: center;
+}
+
+.changes {
+  list-style: none;
+  margin: var(--s-2) 0 0;
+  padding: 0;
+  max-height: 30vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.change {
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-left: var(--s-0) solid var(--ink-4);
+  border-radius: var(--r-xs);
+}
+.change[data-direction='opened'] {
+  border-left-color: var(--brand);
+}
+.change[data-direction='tightened'] {
+  border-left-color: var(--warn);
+}
+
+.changeTitle {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.changeTitle em {
+  font-style: italic;
+  color: var(--ink-3);
+}
+
+.changeProgram {
+  font-family: var(--mono);
+  color: var(--ink-3);
+}
+
+.changeFlag {
+  margin-left: var(--s-2);
+  padding: 0 var(--s-2);
+  border-radius: var(--r-pill);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--t-2xs);
+}
+
+.changeSummary {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-2);
+  line-height: 1.7;
+}
+
+.changeReason {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.7;
+}
