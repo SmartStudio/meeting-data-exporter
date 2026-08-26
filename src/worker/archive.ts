@@ -5,6 +5,7 @@ import { mkdir } from 'node:fs/promises'
 import {
   MANIFEST_SCHEMA_VERSION,
   createNasStorage,
+  isTextAssetType,
   manifestAssetKey,
   sha256File,
   withFsTimeout,
@@ -15,6 +16,7 @@ import {
   type MeetingMetaFile,
 } from '@yaowu/mde-engine'
 import type { ArchivedAssetRecord, ArchivesStore, CompletedAssetRow } from '../store/archives'
+import { buildAssetContent, type ContentsStore } from '../store/contents'
 import { meetingFacts } from '../policy/access'
 import type { MeetingFacts } from '../policy/conds'
 import { resolveArchiveDir, type ArchiveDirOutcome } from '../policy/archive-dir'
@@ -233,6 +235,45 @@ export interface ArchiveDeps {
    * 一次正确的小文件写入没有天然会失败的路径，与 hashFile 同一个理由。
    */
   writeMeta?: (relPath: string, data: unknown) => Promise<void>
+  /**
+   * 文本类资产正文的落点（阶段 4 · T4，A6 的写侧）。**一个资产刚归档成功之后**，
+   * 按它在 NAS 上那份副本的哈希把正文读进 `asset_contents`。
+   *
+   * ## 为什么在归档时入库，而不是预览时现解析（计划 E-f）
+   *
+   * spec §4.9：到期只删本地文件，数据库记录永久保留。**纪要正文属于「记录」**——
+   * 本地文件被清理之后还要能预览，现解析那一刻文件已经不在了。
+   *
+   * ## 为什么是可选的，而 `getMeeting` / `listArchiveRules` 都是必填
+   *
+   * 这是**刻意破例**，不是遗漏，也不是「测试缝」。T4 的文件边界不含
+   * `src/worker/index.ts`（宿主在那里组装 ArchiveDeps），做成必填会让仓库当场
+   * 编译不过。破例的代价——忘了接线就是正文悄悄不入库——用另一种方式补上了：
+   * **没接线时每一个本该入库的资产都会 warn 一句**（见 ingestAssetContent），
+   * 而不是什么都不发生。接线本身留给宿主侧的任务（A6 的读侧 T10 / 调度器 T11），
+   * 那时这个 `?` 就该去掉。
+   */
+  contents?: ContentsStore
+}
+
+/**
+ * 一场会议这一轮的正文入库结果（阶段 4 · T4）。三个数字分开的理由与
+ * `ArchiveOutcome.sidecar` 刻意不并进 `failed` 完全一样：
+ *
+ * - `ingested`  正文入库了（`status='parsed'`）
+ * - `unparsed`  **明确记了一行「未解析」**：docx / pdf、超过 MEDIUMTEXT 上限、
+ *               不是合法 UTF-8。这是正常结果，不是故障——但它有痕迹，不是静默跳过
+ * - `failed`    想入没入成：NAS 上的副本读不到、正文与 `nas_hash` 对不上、写库炸了。
+ *               **不写行**，所以回填脚本下次还能重试。这个数字非零是有事要办
+ *
+ * 三者都**不进** `ArchiveRoundOutcome.failed`：正文没解析出来是可以补的
+ * （跑一次 `scripts/backfill-contents.ts`），归档失败是不可逆的，
+ * 混成一个数字会让真故障被噪音稀释。
+ */
+export interface ContentIngestOutcome {
+  ingested: number
+  unparsed: number
+  failed: number
 }
 
 export interface ArchiveOutcome {
@@ -282,14 +323,30 @@ export interface ArchiveOutcome {
    * 阶段 4 的会议详情抽屉直接展示它。
    */
   reason: string
+  /**
+   * 这一轮文本类资产正文入库的结果（阶段 4 · T4）。判为不归档时三个数字恒为 0
+   * ——一个字节都没搬，也就没有任何正文可入。
+   *
+   * **轮级（`ArchiveRoundOutcome`）刻意没有对应的计数**：那个形状被
+   * `tests/worker/e2e.test.ts` 逐字断言、又是 T4 文件边界之外，而在正文入库还没
+   * 接进 `src/worker/index.ts` 之前，轮级计数只会是一串恒为 0 的数字。留痕靠的是
+   * 每一次失败/未解析各自的 warn（见 ingestAssetContent），不是轮末的汇总数字。
+   */
+  contents: ContentIngestOutcome
 }
+
+/** 归档一个资产的结果。成功时把 NAS 侧的路径与哈希带回来——正文入库要按它们对齐，
+ *  重新拼一遍路径或再查一次库都是在给「两处算法悄悄分叉」留口子。 */
+type ArchiveAssetOutcome =
+  | { status: 'archived'; nasPath: string; nasHash: string }
+  | { status: 'verification_failed' }
 
 async function archiveOneAsset(
   deps: ArchiveDeps,
   asset: CompletedAssetRow,
   nasDir: string,
   now: number,
-): Promise<'archived' | 'verification_failed'> {
+): Promise<ArchiveAssetOutcome> {
   const localPath = join(deps.localRoot, asset.targetPath)
   const nasPath = join(nasDir, asset.targetPath) // 沿用与本地一致的相对结构，方便人工按路径核对
 
@@ -309,7 +366,7 @@ async function archiveOneAsset(
   const nasHash = await withFsTimeout(doHash(nasPath), `hash ${nasPath}`, timeoutMs)
 
   if (localHash !== nasHash) {
-    return 'verification_failed'
+    return { status: 'verification_failed' }
   }
 
   await deps.archives.recordArchivedAsset({
@@ -323,7 +380,87 @@ async function archiveOneAsset(
     nasHash,
     archivedAt: now,
   })
-  return 'archived'
+  return { status: 'archived', nasPath, nasHash }
+}
+
+/**
+ * 刚归档成功的一个资产：如果它是文本类的，把正文读进 `asset_contents`（阶段 4 · T4）。
+ *
+ * ## 这个函数**永不抛出**
+ *
+ * 与 sidecar 同一口径（见 `archiveMeeting` 里那段「先把不可丢的事实落库，再尽力写
+ * 那份自解释的清单」）：**正文没解析出来是可以补的**（跑一次
+ * `scripts/backfill-contents.ts`），**归档失败是不可逆的**。让入库的异常冒出去，
+ * 会把一次「文本没读出来」升级成 `ArchiveRoundOutcome.failed`——那是最高级别告警，
+ * 而它的数字一旦掺进这类可补的降级，真正的归档故障就会被稀释到没人看。
+ *
+ * ## 失败了为什么不落一行
+ *
+ * 「读不到 / 哈希对不上 / 写库炸了」这三类**不写行**，只 warn。回填脚本只处理
+ * `asset_contents` 里没有的行——写了行就等于宣布「这一条处理过了」，它再也不会
+ * 回头看。不留记录 = 下一次还能重来，与 `archiveOneAsset` 对哈希校验失败的处理
+ * 是同一条道理。
+ */
+async function ingestAssetContent(
+  deps: ArchiveDeps,
+  asset: CompletedAssetRow,
+  archived: { nasPath: string; nasHash: string },
+  now: number,
+  into: ContentIngestOutcome,
+): Promise<void> {
+  // 录像与音频不入库：它们不是文本，而且单个可以有几个 GB。判定用引擎的
+  // isTextAssetType（未知 asset_type 一律按二进制处理，是这里安全的那一侧）
+  if (!isTextAssetType(asset.assetType)) return
+
+  const where = `meeting=${asset.meetingId} subMeeting=${asset.subMeetingId} asset=${asset.assetType}/${asset.remoteId}/${asset.fileType}`
+
+  if (deps.contents === undefined) {
+    // 没接线不能只是「什么都没发生」：这个资产已经归档到 NAS 上了，本地文件到期
+    // 就会被清掉，而预览页要的正文一个字都没进库。见 ArchiveDeps.contents 的注释。
+    console.warn(
+      `archive 正文入库未接线（ArchiveDeps.contents 未提供），${where} 的正文不会进 asset_contents，` +
+        '预览页将查不到它——接线之前可用 scripts/backfill-contents.ts 补',
+    )
+    return
+  }
+
+  try {
+    const built = await buildAssetContent({
+      key: {
+        meetingId: asset.meetingId,
+        subMeetingId: asset.subMeetingId,
+        assetType: asset.assetType,
+        remoteId: asset.remoteId,
+        fileType: asset.fileType,
+      },
+      nasPath: archived.nasPath,
+      nasHash: archived.nasHash,
+      now,
+    })
+
+    // 上面已经按 isTextAssetType 筛过一轮，这里再撞上只可能是两处判据分叉了
+    if (built.kind === 'not_text') return
+
+    if (built.kind === 'failed') {
+      into.failed++
+      console.warn(`archive 正文入库失败，${where}：${built.reason}`)
+      return
+    }
+
+    await deps.contents.put(built.record)
+
+    if (built.record.status === 'parsed') {
+      into.ingested++
+      return
+    }
+    into.unparsed++
+    // 未解析已经在库里留了一行（预览页会显示它），这句 warn 是给运维的第二份痕迹：
+    // 某天纪要格式整体从 txt 变成 docx，日志里会先看见一片这个
+    console.warn(`archive 正文未解析（已记录，非失败），${where}：${built.record.reason}`)
+  } catch (err) {
+    into.failed++
+    console.warn(`archive 正文入库失败，${where}：${err}`)
+  }
 }
 
 /**
@@ -544,6 +681,8 @@ export async function archiveMeeting(
       // 没有算过"是不是全归档完了"——不归档的会议问这个问题没有意义
       fullyArchived: false,
       sidecar: 'skipped',
+      // 一个字节都没搬，也就没有任何正文可入
+      contents: { ingested: 0, unparsed: 0, failed: 0 },
       skipped: true,
       undecidable: dir.undecidable,
       reason: dir.reason,
@@ -555,11 +694,22 @@ export async function archiveMeeting(
 
   let newlyArchived = 0
   let verificationFailed = 0
+  const contents: ContentIngestOutcome = { ingested: 0, unparsed: 0, failed: 0 }
   for (const asset of completed) {
     if (await deps.archives.isAssetArchived(asset)) continue // 已归档过，跳过（支持安全重跑）
     const outcome = await archiveOneAsset(deps, asset, nasDir, now)
-    if (outcome === 'archived') newlyArchived++
-    else verificationFailed++
+    if (outcome.status !== 'archived') {
+      verificationFailed++
+      continue
+    }
+    newlyArchived++
+    // 正文入库紧跟在归档成功之后，用的是这个资产**在 NAS 上那份副本**的路径与哈希
+    // （T4 验收判据 1）。跟着 `isAssetArchived` 那条 continue 走意味着它天然只对
+    // 「这一轮真的新归档了」的资产跑一次：空转重跑不会把已经入过库的正文再解析一遍，
+    // 也就不会把 parsed_at 推着往前走——与上面那条守卫对 archived_at 的保护同一个理由。
+    //
+    // 它永不抛出：正文没解析出来是可以补的，归档失败是不可逆的，见 ingestAssetContent。
+    await ingestAssetContent(deps, asset, outcome, now, contents)
   }
 
   const totalCompleted = await deps.archives.countCompletedAssets(meetingId, subMeetingId)
@@ -613,7 +763,7 @@ export async function archiveMeeting(
   }
 
   return {
-    meetingId, subMeetingId, newlyArchived, verificationFailed, fullyArchived, sidecar,
+    meetingId, subMeetingId, newlyArchived, verificationFailed, fullyArchived, sidecar, contents,
     skipped: false,
     undecidable: false,
     reason: dir.reason,

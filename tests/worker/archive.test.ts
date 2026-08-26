@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises'
 import { MANIFEST_SCHEMA_VERSION, type ArchivedManifestFile, type Meeting, type MeetingMetaFile } from '@yaowu/mde-engine'
 import { withTestDb } from '../helpers/testdb'
 import { createArchivesStore, type ArchivesStore } from '../../src/store/archives'
+import { createContentsStore } from '../../src/store/contents'
 import { archiveMeeting, archivePendingMeetings, type ArchiveDeps } from '../../src/worker/archive'
 import type { StackRule } from '../../src/policy/stacks'
 import type { Pool } from '../../src/store/db'
@@ -199,6 +200,9 @@ test('用例1：单个资产归档成功——archived_assets 有记录、哈希
       skipped: false,
       undecidable: false,
       reason: expect.stringContaining('归档规则 #1「全部归档」决定：归档到'),
+      // T4：正文入库的三个计数。这条用例没接 ArchiveDeps.contents，所以三个都是 0
+      // （没接线本身会 warn 一句，见 T4⑥），归档结果不受影响
+      contents: { ingested: 0, unparsed: 0, failed: 0 },
     })
 
     const assets = await archives.listArchivedAssetsForMeeting('m-1', '')
@@ -1041,5 +1045,186 @@ test('T7×T9：kind 不是 archive 的改写不影响归档目录', async () => 
     const rec = await archives.findMeetingArchive('m-ovr', '')
     expect(rec!.nasDir).toContain('meetings/')
     expect(rec!.nasDir).not.toContain('allow')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// T4 · 文本类资产正文入库（A6 的写侧）
+//
+// 归档流水线这一处接线只做一件事：**一个文本类资产刚归档成功之后**，按它在 NAS 上
+// 那份副本的哈希把正文读进 asset_contents。断言的重心因此不在返回值上，而在库里
+// 那一行——「预览页数年后还查得到这份纪要」这条承诺兑现与否，只看那张表。
+// ---------------------------------------------------------------------------
+
+/** 一份文本资产 + 它的本地文件，省掉每条用例都写两行 */
+async function seedTextAsset(
+  pool: Pool,
+  localRoot: string,
+  input: { meetingId: string; assetType?: string; remoteId?: string; fileType?: string; targetPath: string; body: string },
+): Promise<void> {
+  const { meetingId, assetType = 'meeting_summary', remoteId = 'r-1', fileType = 'txt', targetPath, body } = input
+  await seedCompletedAsset(pool, { meetingId, assetType, remoteId, fileType, targetPath })
+  await writeLocalFile(localRoot, targetPath, body)
+}
+
+test('T4①：转写归档成功后正文进库——content 与文件逐字一致，content_hash 就是 archived_assets.nas_hash', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    const body = '主持人：开始。\n甲：同意 🎯\n乙：下周再看。'
+    await seedTextAsset(pool, localRoot, { meetingId: 'm-c1', targetPath: 'transcript.txt', body })
+
+    const contents = createContentsStore(pool)
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, contents, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const outcome = await archiveMeeting(deps, 'm-c1', '', 50_000, RULES, null)
+
+    expect(outcome.contents).toEqual({ ingested: 1, unparsed: 0, failed: 0 })
+
+    const key = { meetingId: 'm-c1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'r-1', fileType: 'txt' }
+    const row = await contents.get(key)
+    expect(row?.status).toBe('parsed')
+    expect(row?.content).toBe(body)
+    expect(row?.bytes).toBe(Buffer.byteLength(body))
+    expect(row?.parsedAt).toBe(50_000)
+
+    // 这一条是 T4 验收判据 1：入了一份和 NAS 上不一致的正文，比没入更糟
+    const archived = await archives.listArchivedAssetsForMeeting('m-c1', '')
+    expect(row?.contentHash).toBe(archived[0]!.nasHash)
+  })
+})
+
+test('T4②：录像与音频不入库——它们不是文本，而且单个可以有几个 GB', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedTextAsset(pool, localRoot, { meetingId: 'm-c2', assetType: 'video', remoteId: 'r-v', fileType: 'mp4', targetPath: 'v.mp4', body: 'not-text' })
+    await seedTextAsset(pool, localRoot, { meetingId: 'm-c2', assetType: 'audio', remoteId: 'r-a', fileType: 'm4a', targetPath: 'a.m4a', body: 'not-text' })
+
+    const contents = createContentsStore(pool)
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, contents, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const outcome = await archiveMeeting(deps, 'm-c2', '', 51_000, RULES, null)
+
+    expect(outcome.newlyArchived).toBe(2)
+    expect(outcome.contents).toEqual({ ingested: 0, unparsed: 0, failed: 0 })
+    expect(await contents.listPending(10)).toEqual([])
+  })
+})
+
+test('T4③：docx 纪要不解析，但留一行说明原因——静默跳过与「这场会议没有纪要」在界面上分不出来', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedTextAsset(pool, localRoot, { meetingId: 'm-c3', assetType: 'ai_minutes', remoteId: 'r-d', fileType: 'docx', targetPath: 'ai_minutes.docx', body: 'PKfake' })
+
+    const contents = createContentsStore(pool)
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, contents, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const outcome = await archiveMeeting(deps, 'm-c3', '', 52_000, RULES, null)
+
+    // 未解析不是失败：归档照常完成，这场会议照样进 meeting_archives
+    expect(outcome.contents).toEqual({ ingested: 0, unparsed: 1, failed: 0 })
+    expect(outcome.fullyArchived).toBe(true)
+    expect(await archives.findMeetingArchive('m-c3', '')).not.toBeNull()
+
+    const row = await contents.get({ meetingId: 'm-c3', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'r-d', fileType: 'docx' })
+    expect(row?.status).toBe('unsupported_format')
+    expect(row?.content).toBeNull()
+    expect(row?.reason).toContain('docx')
+  })
+})
+
+test('T4④：入库炸了不让归档判为失败——与 sidecar 同一口径（正文可以补，归档不可逆）', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedTextAsset(pool, localRoot, { meetingId: 'm-c4', targetPath: 'transcript.txt', body: '正文' })
+
+      const real = createContentsStore(pool)
+      const contents = { ...real, put: async () => { throw new Error('库炸了') } }
+      const deps: ArchiveDeps = { archives, localRoot, nasRoot, contents, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+      const result = await archivePendingMeetings(deps, () => 53_000)
+
+      // 归档本身是成功的：资产在 NAS 上、哈希校验过、meeting_archives 已落库
+      expect(result.newlyArchived).toBe(1)
+      expect(result.failed).toBe(0)
+      expect(await archives.findMeetingArchive('m-c4', '')).not.toBeNull()
+      // 但没有静默：喊了一句，且库里没有那一行（下次回填还能重试）
+      expect(warnSpy.mock.calls.flat().join(' ')).toContain('m-c4')
+      expect(await real.get({ meetingId: 'm-c4', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'r-1', fileType: 'txt' })).toBeNull()
+      expect(await real.listPending(10)).toHaveLength(1)
+    })
+  } finally {
+    warnSpy.mockRestore()
+    errorSpy.mockRestore()
+  }
+})
+
+test('T4⑤：NAS 上的副本被人动过（哈希对不上）→ 不入库、不写行、喊一句，归档照常', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedTextAsset(pool, localRoot, { meetingId: 'm-c5', targetPath: 'transcript.txt', body: '原始正文' })
+
+      const contents = createContentsStore(pool)
+      // 归档校验用注入的哈希（两边都返回同一个假值，所以校验通过、归档成功），
+      // 而正文入库自己重新算真哈希——于是记录里的 nas_hash 与正文对不上，
+      // 正是「NAS 上那份副本与记录不一致」这个场景
+      const hashFile = async () => 'f'.repeat(64)
+      const deps: ArchiveDeps = { archives, localRoot, nasRoot, contents, hashFile, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+      const outcome = await archiveMeeting(deps, 'm-c5', '', 54_000, RULES, null)
+
+      expect(outcome.newlyArchived).toBe(1)
+      expect(outcome.contents).toEqual({ ingested: 0, unparsed: 0, failed: 1 })
+      expect(await contents.get({ meetingId: 'm-c5', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'r-1', fileType: 'txt' })).toBeNull()
+      expect(warnSpy.mock.calls.flat().join(' ')).toContain('哈希')
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test('T4⑥：ArchiveDeps.contents 没接线时喊出来——正文没入库不能只是「什么都没发生」', async () => {
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+      await seedTextAsset(pool, localRoot, { meetingId: 'm-c6', targetPath: 'transcript.txt', body: '正文' })
+
+      const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+      const outcome = await archiveMeeting(deps, 'm-c6', '', 55_000, RULES, null)
+
+      expect(outcome.newlyArchived).toBe(1)
+      expect(outcome.contents).toEqual({ ingested: 0, unparsed: 0, failed: 0 })
+      const warned = warnSpy.mock.calls.flat().join(' ')
+      expect(warned).toContain('m-c6')
+      expect(warned).toContain('正文入库未接线')
+    })
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test('T4⑦：空转重跑不重复入库——只有「这一轮真的新归档了」的资产才会被解析一次', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedTextAsset(pool, localRoot, { meetingId: 'm-c7', targetPath: 'transcript.txt', body: '正文' })
+
+    const contents = createContentsStore(pool)
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, contents, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const first = await archiveMeeting(deps, 'm-c7', '', 56_000, RULES, null)
+    const second = await archiveMeeting(deps, 'm-c7', '', 57_000, RULES, null)
+
+    expect(first.contents.ingested).toBe(1)
+    expect(second.contents).toEqual({ ingested: 0, unparsed: 0, failed: 0 })
+    // parsed_at 停在第一轮：空转重跑一个字都不该改
+    expect((await contents.get({ meetingId: 'm-c7', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'r-1', fileType: 'txt' }))?.parsedAt).toBe(56_000)
+  })
+})
+
+test('T4⑧：同一场会议的两段转写各入一行，不互相覆盖', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedTextAsset(pool, localRoot, { meetingId: 'm-c8', remoteId: 'seg-1', targetPath: 'transcript.txt', body: '第一段' })
+    await seedTextAsset(pool, localRoot, { meetingId: 'm-c8', remoteId: 'seg-2', targetPath: 'transcript_2.txt', body: '第二段' })
+
+    const contents = createContentsStore(pool)
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, contents, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const outcome = await archiveMeeting(deps, 'm-c8', '', 58_000, RULES, null)
+
+    expect(outcome.contents.ingested).toBe(2)
+    const base = { meetingId: 'm-c8', subMeetingId: '', assetType: 'meeting_summary', fileType: 'txt' }
+    expect((await contents.get({ ...base, remoteId: 'seg-1' }))?.content).toBe('第一段')
+    expect((await contents.get({ ...base, remoteId: 'seg-2' }))?.content).toBe('第二段')
   })
 })
