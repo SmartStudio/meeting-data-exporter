@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import type { ActorIdentity } from '../domain/types'
 import type { AuthStore } from '../store/auth'
 
@@ -12,6 +13,30 @@ const DUMMY_HASH_PROMISE = Bun.password.hash('invalid-placeholder-not-a-real-sec
 })
 // 标记已处理，避免加载期哈希意外失败时的未处理 rejection 警告；authenticate 内仍会 await 它
 DUMMY_HASH_PROMISE.catch(() => {})
+
+/**
+ * 新采集程序的凭据明文。URL 安全的强随机串（32 字节），避免出现需要转义的字符——
+ * 它会被贴进对接方的 shell `export` 语句或 YAML 配置。
+ *
+ * 与 `hashServiceSecret` 一起放在这个文件里，而不是放在建号那一侧（控制台的
+ * `handlers/console/grants.ts`、`scripts/seed-dev.ts`），是**结构上的**理由：
+ * 校验凭据的 `Bun.password.verify` 就在下面几行，产出与校验同处一个文件，
+ * 「两边用的不是同一套哈希」这种事就没有发生的余地。计划 §3 T7 第 2 条写的
+ * 「复用 `src/auth/service.ts`，不要另写一套」指的就是这件事——只是这个文件此前
+ * 只有校验侧，没有可复用的产出侧，于是在这里补上。
+ */
+export function generateServiceSecret(): string {
+  return randomBytes(32).toString('base64url')
+}
+
+/**
+ * 凭据明文 → 入库的哈希。**算法必须是 argon2id**：`Bun.password.verify` 会从哈希串
+ * 自带的前缀里认算法，所以换成别的算法照样"能用"，不会有任何报错——直到某天有人
+ * 想统一强度参数时才发现库里躺着两三种哈希。唯一的产出点就是这里。
+ */
+export function hashServiceSecret(secret: string): Promise<string> {
+  return Bun.password.hash(secret, { algorithm: 'argon2id' })
+}
 
 /**
  * 统一的失败原因，不区分「账号不存在」「密钥错误」「已禁用」「已过期」——

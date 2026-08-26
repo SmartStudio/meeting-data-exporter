@@ -26,9 +26,9 @@
  * 安全：secret 明文只在**本次运行的标准输出**里出现一次，不落盘、不入库
  * （库里只存 argon2id 哈希）。请立刻存进你的密钥管理，丢了就重跑本脚本轮换。
  */
-import { randomBytes } from 'node:crypto'
 import type { RowDataPacket } from 'mysql2'
 import { loadConfig } from '../src/config'
+import { generateServiceSecret, hashServiceSecret } from '../src/auth/service'
 import { createPool, runMigrations, type Pool } from '../src/store/db'
 
 interface Args {
@@ -61,11 +61,6 @@ function parseArgs(argv: string[]): Args {
     }
   }
   return args
-}
-
-/** URL 安全的强随机串，避免出现需要转义的字符（会被贴进 shell 的 export 语句） */
-function generateSecret(): string {
-  return randomBytes(32).toString('base64url')
 }
 
 async function seedPolicyRule(pool: Pool, clientId: string): Promise<'created' | 'exists'> {
@@ -112,8 +107,11 @@ async function seedServiceAccount(
     return { action: '已存在，保留原 secret', secret: null }
   }
 
-  const secret = generateSecret()
-  const hash = await Bun.password.hash(secret, { algorithm: 'argon2id' })
+  // 生成与哈希都走 src/auth/service.ts 那一份：校验凭据的 Bun.password.verify 就在
+  // 那个文件里，产出与校验同处一处，本脚本与控制台的「接入新程序」（阶段 4 · T7）
+  // 因此不可能各自用上不同的算法。
+  const secret = generateServiceSecret()
+  const hash = await hashServiceSecret(secret)
   await pool.execute(
     `INSERT INTO service_accounts (id, name, secret_hash, tm_userid, enabled, expires_at, created_at)
      VALUES (?, ?, ?, ?, 1, NULL, UNIX_TIMESTAMP())

@@ -19,6 +19,12 @@ import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
 import * as consoleAuthHandlers from './handlers/console/auth'
 import type { RateLimiter } from './ratelimit'
+import type { ProgramsStore } from '../store/programs'
+import type { GrantsStore, MeetingKey } from '../store/grants'
+import type { PolicyStore } from '../store/policy'
+import type { AuditStore } from '../store/audit'
+import type { Meeting } from '../domain/types'
+import * as consoleGrantsHandlers from './handlers/console/grants'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -52,6 +58,38 @@ export interface AppDeps {
   adminStore: AdminStore
   /** 生产环境必须为 true（cookie 的 Secure 属性依据它）；本地 http 开发环境为 false */
   cookieSecure: boolean
+
+  // ── 阶段 4 · T7（A3 采集授权 API + 采集清单） ─────────────────────
+  /** 采集程序（service_accounts）的控制台读写侧。读侧不含 secret_hash */
+  programs: ProgramsStore
+  /** 逐会议授权与人工改写的**写侧**。上面 accessGate 内部持有的那份只用于读判定 */
+  grantsStore: GrantsStore
+  /** 采集清单重算要读采集权限栈的启用规则 */
+  policyStore: PolicyStore
+  /**
+   * 采集清单重算要读归档行（local_purged_at / nas_dir）与本地资产。
+   * 上面那个 `archives` 是收窄到 listArchivedMeetingKeys 的 Pick，只够规则的
+   * arch 条件用，读不到清单要的那三列，故另开一个字段而不是把它改宽——
+   * 改宽会动到既有行，而本阶段有多个任务在并行往这个文件追加东西。
+   */
+  archivesStore: ArchivesStore
+  /**
+   * 管理员写操作的审计（计划 §1 约束 6：改规则、改授权、写改写……一条不落）。
+   * 直接用 AuditStore.record 而不是上面的 auditRecorder，理由见
+   * `handlers/console/grants.ts` 的文件头第四节。
+   */
+  auditStore: AuditStore
+  /**
+   * 一批会议的元数据，**批量**。采集清单按程序算，逐场取就是成百上千次往返。
+   *
+   * 声明成结构化的函数字段而不是某个 store 的方法类型：它的正主是 T1 的
+   * `ConsoleMeetingsStore.getMeetings`，T1 落地前由 `src/index.ts` 里的临时实现
+   * 顶着。与 `src/worker/archive.ts` 的 `ArchiveDeps.getMeeting` 是同一个先例。
+   *
+   * 查不到的会议**不要造一个空壳顶上**：返回数组里没有它，`visibility.ts` 会把它
+   * 判成「判不出来」并落到拒绝一侧（见那个文件里 VisibilityDeps.getMeetings 的注释）。
+   */
+  getMeetings: (keys: readonly MeetingKey[]) => Promise<readonly Meeting[]>
 }
 
 export interface RouteCtx {
@@ -113,6 +151,17 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
   compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
   compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
+
+  // A3 采集授权（阶段 4 · T7）。全部走 requireAdminAuth，见 handlers/console/grants.ts。
+  // 周期性会议的场次 id 一律从查询串 `?sub=` 取（路由上只有 :meetingId，而两个
+  // DELETE 没有请求体），四个会议维度的端点因此只有一种写法
+  compile('GET', '/api/v1/admin/programs', consoleGrantsHandlers.listPrograms),
+  compile('POST', '/api/v1/admin/programs', consoleGrantsHandlers.createProgram),
+  compile('GET', '/api/v1/admin/programs/:id/inventory', consoleGrantsHandlers.programInventory),
+  compile('POST', '/api/v1/admin/meetings/:meetingId/grants', consoleGrantsHandlers.grantMeeting),
+  compile('DELETE', '/api/v1/admin/meetings/:meetingId/grants/:programId', consoleGrantsHandlers.revokeGrant),
+  compile('PUT', '/api/v1/admin/meetings/:meetingId/override', consoleGrantsHandlers.putOverride),
+  compile('DELETE', '/api/v1/admin/meetings/:meetingId/override/:kind', consoleGrantsHandlers.revokeOverride),
 ]
 
 /**

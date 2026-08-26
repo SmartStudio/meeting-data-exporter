@@ -26,6 +26,7 @@ import {
   OPERATOR_ID,
   stubWecomClient,
   insertPolicyRule,
+  consoleMeetingLookup,
 } from '../http/testApp'
 import { createTencentClient } from '../../src/tencent/client'
 import { TencentApiError } from '../../src/tencent/errors'
@@ -50,6 +51,7 @@ import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+import { createProgramsStore } from '../../src/store/programs'
 import {
   startFakeTencentServer,
   createFakeTencentState,
@@ -146,7 +148,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(dbPool)
-  const accessGate = createAccessGate({ store: policyStore, grants: createGrantsStore(dbPool) })
+  const grantsStore = createGrantsStore(dbPool)
+  const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
   const archivesStore = createArchivesStore(dbPool)
 
   const auditStore = createAuditStore(dbPool)
@@ -194,6 +197,13 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // 阶段 4 · T7（A3 采集授权）：真实模块，接到同一个 e2e 测试库
+    programs: createProgramsStore(dbPool),
+    grantsStore,
+    policyStore,
+    archivesStore,
+    auditStore,
+    getMeetings: consoleMeetingLookup(dbPool),
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

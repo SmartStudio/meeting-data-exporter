@@ -24,6 +24,10 @@ import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
 import { createLoginRateLimiter } from './http/ratelimit'
+import { createProgramsStore } from './store/programs'
+import type { MeetingKey } from './store/grants'
+import type { Meeting } from './domain/types'
+import type { RowDataPacket } from 'mysql2/promise'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -100,6 +104,48 @@ async function main(): Promise<void> {
   // （见 http/handlers/console/auth.ts 的 cookieAttrs 注释）。
   const cookieSecure = new URL(config.gatewayBaseUrl).protocol === 'https:'
 
+  // 采集授权（阶段 4 · T7，A3）。程序列表与建号的读写侧——注意这个 store 的读侧
+  // 类型里没有 secret_hash，控制台想漏也漏不出去（见 store/programs.ts 的文件头）
+  const programsStore = createProgramsStore(pool)
+
+  /**
+   * **临时实现，T1 落地后整段删掉**，换成 `createConsoleMeetingsStore(pool).getMeetings`。
+   *
+   * 采集清单（`worker/visibility.ts`）要批量的会议元数据，而 `ArchivesStore` 刻意
+   * 不读 meetings 表，`worker/store-mysql.ts` 那个 `getMeeting` 又是单场的。T1 会交付
+   * 正主，本段只是让 T7 的端点在 T1 之前就能真的跑起来。
+   *
+   * 两处已知的将就，T1 要正面处理：
+   * 1. `meetings` 表**没有 state 列**、也没有 meeting_record_id（计划 E-a 写明了这一点），
+   *    这里填的是不参与判定的占位值——`policy/access.ts` 的 `meetingFacts` 只读
+   *    subject / host_userid / start_time / end_time 四项，所以这两个占位值影响不到
+   *    任何一次采集权限判定。
+   * 2. 那张表的列全部 nullable。这里把 NULL 折成空串/0，而不是把整行丢掉：丢掉会让
+   *    清单报「在 meetings 表里查不到」，那句话对一行确实存在、只是元数据不全的记录
+   *    是假的。空标题会让 `title has X → allow` 判不匹配（落在安全侧），但也会让
+   *    `title has X → deny` 判不匹配（落在放行侧）——**这是 T1 要裁定的地方**。
+   */
+  const getMeetings = async (keys: readonly MeetingKey[]): Promise<readonly Meeting[]> => {
+    if (keys.length === 0) return []
+    // 行构造器 IN 需要 mysql2 把嵌套数组展开成 ((a,b),(c,d))，那是 query 的能力
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time
+         FROM meetings WHERE (meeting_id, sub_meeting_id) IN (?)`,
+      [keys.map((k) => [k.meetingId, k.subMeetingId])],
+    )
+    return rows.map((r) => ({
+      meetingId: r.meeting_id as string,
+      subMeetingId: r.sub_meeting_id as string,
+      meetingRecordId: '',
+      meetingCode: (r.meeting_code as string | null) ?? '',
+      subject: (r.subject as string | null) ?? '',
+      hostUserId: (r.host_userid as string | null) ?? '',
+      startTime: r.start_time === null ? 0 : Number(r.start_time),
+      endTime: r.end_time === null ? 0 : Number(r.end_time),
+      state: 'completed' as const,
+    }))
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret: config.jwtSecret,
@@ -121,6 +167,13 @@ async function main(): Promise<void> {
     adminAuth,
     adminStore,
     cookieSecure,
+    // 阶段 4 · T7（A3 采集授权）
+    programs: programsStore,
+    grantsStore,
+    policyStore,
+    archivesStore,
+    auditStore,
+    getMeetings,
   }
 
   const app = createApp(deps)

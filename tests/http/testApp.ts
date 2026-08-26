@@ -31,6 +31,10 @@ import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+import { createProgramsStore } from '../../src/store/programs'
+import type { MeetingKey } from '../../src/store/grants'
+import type { Meeting } from '../../src/domain/types'
+import type { RowDataPacket } from 'mysql2/promise'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -43,6 +47,42 @@ export const OPERATOR_ID = 'operator-1'
  * 密钥加密测试载荷，因此在这里固定导出，而不是每次随机生成）。
  */
 export const WEBHOOK_AES_KEY = Buffer.alloc(32, 7).toString('base64').slice(0, -1)
+
+/**
+ * `AppDeps.getMeetings`（阶段 4 · T7 引入）的测试装配。**跟随 `src/index.ts` 里那段
+ * 临时实现**，T1 交付 `ConsoleMeetingsStore.getMeetings` 之后两处一起换掉。
+ *
+ * 这里读的是 `meetings` 表（计划 E-a：它才是控制台主表，`meeting_cache` 是 record
+ * 维度、和谁都 JOIN 不上）。**不写成 `async () => []`**：那样一来采集清单里每一场
+ * 会议都会被判成「在 meetings 表里查不到」，端到端测试因此永远看不到一次真正的
+ * 采集权限判定，而表面上一切正常。
+ */
+export function consoleMeetingLookup(
+  pool: Pool,
+): (keys: readonly MeetingKey[]) => Promise<readonly Meeting[]> {
+  return async (keys) => {
+    if (keys.length === 0) return []
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time
+         FROM meetings WHERE (meeting_id, sub_meeting_id) IN (?)`,
+      [keys.map((k) => [k.meetingId, k.subMeetingId])],
+    )
+    // meetings 表的列全部 nullable、且没有 state / meeting_record_id 两列，
+    // 占位值与 src/index.ts 那段逐字一致（那两列不参与采集权限判定，
+    // `policy/access.ts` 的 meetingFacts 只读 subject/host/start/end）
+    return rows.map((r) => ({
+      meetingId: r.meeting_id as string,
+      subMeetingId: r.sub_meeting_id as string,
+      meetingRecordId: '',
+      meetingCode: (r.meeting_code as string | null) ?? '',
+      subject: (r.subject as string | null) ?? '',
+      hostUserId: (r.host_userid as string | null) ?? '',
+      startTime: r.start_time === null ? 0 : Number(r.start_time),
+      endTime: r.end_time === null ? 0 : Number(r.end_time),
+      state: 'completed' as const,
+    }))
+  }
+}
 
 export function stubTencentClient(handlers: {
   get?: (path: string, query: QueryParams, opts?: RequestOptions) => unknown
@@ -106,7 +146,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
-  const accessGate = createAccessGate({ store: policyStore, grants: createGrantsStore(pool) })
+  const grantsStore = createGrantsStore(pool)
+  const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
   const archivesStore = createArchivesStore(pool)
 
   const auditStore = createAuditStore(pool)
@@ -153,6 +194,13 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // 阶段 4 · T7（A3 采集授权）：与上面几行同样是真实模块接到同一个测试库
+    programs: createProgramsStore(pool),
+    grantsStore,
+    policyStore,
+    archivesStore,
+    auditStore,
+    getMeetings: consoleMeetingLookup(pool),
   }
 
   return { app: createApp(deps), deps, pool }
