@@ -1,5 +1,5 @@
 import { Skeleton } from '@/ui/Skeleton'
-import type { PreviewChange, PreviewResult, PreviewStack, StackKind } from '@/api/admin/rules'
+import type { PreviewChange, PreviewResult, PreviewStack } from '@/api/admin/rules'
 import { STACK_META } from './order'
 import styles from './RuleEditor.module.css'
 
@@ -30,7 +30,8 @@ import styles from './RuleEditor.module.css'
  * 少显示哪一个，都会让三个主数字看起来在说谎。
  */
 export interface ImpactPreviewProps {
-  kind: StackKind
+  /** kind 认不出时（库里的一条坏行）也照样渲染，只是找不到本栈的那一段。 */
+  kind: string
   result: PreviewResult | null
   error: Error | null
   pending: boolean
@@ -65,7 +66,7 @@ export function ImpactPreview({ kind, result, error, pending }: ImpactPreviewPro
         <>
           {stack === null ? (
             <p className={styles.previewNeutral}>
-              这次改动没有让{STACK_META[kind]?.name ?? kind}这一栈发生变化，没有任何判定会改变。
+              这次改动没有让{stackName(kind)}这一栈发生变化，没有任何判定会改变。
             </p>
           ) : (
             <StackNumbers stack={stack} />
@@ -108,6 +109,12 @@ export function ImpactPreview({ kind, result, error, pending }: ImpactPreviewPro
       )}
     </div>
   )
+}
+
+function stackName(kind: string): string {
+  return kind === 'fetch' || kind === 'archive' || kind === 'allow'
+    ? STACK_META[kind].name
+    : `kind「${kind}」`
 }
 
 function StackNumbers({ stack }: { stack: PreviewStack }) {

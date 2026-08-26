@@ -488,6 +488,28 @@ describe('规则编辑器', () => {
     })
   })
 
+  test('kind 认不出的规则打得开、也修得了——只有这时才给改 kind 的口子', async () => {
+    stubList([{ ...ALLOW_RULE, id: 99, kind: 'sideways' }])
+    reply(/\/rules\/preview$/, previewBody(), { method: 'POST' })
+    mount()
+    const row = await screen.findByRole('listitem', { name: /认不出的规则 #99/ })
+    await userEvent.click(within(row).getByRole('button', { name: '编辑' }))
+
+    const panel = await screen.findByRole('dialog', { name: /编辑/ })
+    const picker = within(panel).getByRole('combobox', { name: '规则类型' })
+    expect(picker).toHaveValue('')
+    // 换栈时动作跟着重置成那一栈的默认值——三栈的 effect 取值域完全不同
+    await userEvent.selectOptions(picker, 'fetch')
+    const radios = within(panel).getAllByRole('radio') as HTMLInputElement[]
+    expect(radios.map((r) => r.value)).toEqual(['all', 'skip'])
+    expect(radios.find((r) => r.value === 'all')).toBeChecked()
+  })
+
+  test('正常的规则不给改 kind 的口子——换栈就在那一栈里新建', async () => {
+    const panel = await openNewAllowRule()
+    expect(within(panel).queryByRole('combobox', { name: '规则类型' })).toBeNull()
+  })
+
   test('Esc 关掉编辑器（浮层基座的契约）', async () => {
     const panel = await openNewAllowRule()
     expect(panel).toHaveAttribute('data-state', 'open')

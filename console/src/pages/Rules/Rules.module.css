@@ -204,7 +204,9 @@
 }
 .hits span {
   font-size: var(--t-2xs);
-  color: var(--ink-3);
+  /* --ink-2 而不是 --ink-3：hover 时底色换成 --brand-soft，--ink-3 在它上面
+     只有 4.37:1。hover 态不在门槛的扫描范围里，正因如此更要在这里定死。 */
+  color: var(--ink-2);
   white-space: nowrap;
 }
 
@@ -215,7 +217,9 @@
   gap: var(--s-2);
 }
 
-/* 认不出 kind 的那一组。 */
+/* 认不出 kind 的那一组。底色留 --surface 而不是 --fail-soft：这一行里有一颗
+   quiet 按钮（--ink-3 的字），压在 --fail-soft 上只有 4.32:1，不达 AA。
+   「这里有问题」由虚线红边框和红色的 kind 标签说，不靠一整块底色。 */
 .unknownRow {
   display: flex;
   align-items: center;
@@ -224,7 +228,7 @@
   padding: var(--s-4) var(--s-5);
   border: 1px dashed var(--fail-line);
   border-radius: var(--r);
-  background: var(--fail-soft);
+  background: var(--surface);
   font-size: var(--t-sm);
 }
 .unknownKind {

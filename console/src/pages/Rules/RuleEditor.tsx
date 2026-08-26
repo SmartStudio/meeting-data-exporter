@@ -41,10 +41,15 @@ import styles from './RuleEditor.module.css'
  *    隐藏了管理员就看不出那条规则为什么不命中。
  * 3. **删除按钮默认是安静的**，点第一次才变红（二次确认）。
  *
- * ## 编辑器里不改 kind
+ * ## 编辑器里不改 kind——除非它本来就认不出
  *
- * 后端的 PATCH 允许改 kind，但界面上不给这个口子：三栈的 effect 取值域、主体规矩、
- * 资产类型全都因栈而异，改 kind 等于把整张表单换一套语义。要换栈就在那一栈里新建。
+ * 后端的 PATCH 允许改 kind，但界面上平时不给这个口子：三栈的 effect 取值域、主体
+ * 规矩、资产类型全都因栈而异，改 kind 等于把整张表单换一套语义，那不是改一个字段。
+ * 要换栈就在那一栈里新建。
+ *
+ * **唯一的例外是打开时 kind 就不在三栈里**（库里的一条坏行，`describeStackRuleIssues`
+ * 会说它「不会参与任何判定」）。那时不开这个口子就是死路：编辑器打得开却修不了，
+ * 而唯一的修法恰恰是改 kind。
  */
 export interface RuleEditorProps {
   state: EditorState | null
@@ -78,6 +83,8 @@ export function RuleEditor({ state, allRules, onClose, onSaved }: RuleEditorProp
 /* ── 草稿 ───────────────────────────────────────────────────────── */
 
 interface Draft {
+  /** 正常情况下等于打开编辑器时那一栈；只有「kind 认不出的规则」才改得动它。 */
+  kind: string
   priority: number
   join: 'and' | 'or'
   conds: RuleCondition[]
@@ -109,6 +116,7 @@ function defaultAssets(kind: string): string[] {
 
 function draftFromRule(rule: Rule): Draft {
   return {
+    kind: rule.kind,
     priority: rule.priority,
     join: rule.join === 'or' ? 'or' : 'and',
     // 写坏的条件项（null）带不进表单——它不是 { f, op, v }，没有可编辑的形状。
@@ -126,6 +134,7 @@ function blankDraft(kind: StackKind, allRules: Rule[]): Draft {
     .filter((r) => r.kind === kind && Number.isFinite(r.priority))
     .reduce((max, r) => Math.max(max, r.priority), 0)
   return {
+    kind,
     priority: top + 100,
     join: 'and',
     // 空 conds 会被写侧拒绝（"空条件在求值器里是「匹配一切」"），所以开局给一条
@@ -147,10 +156,21 @@ interface BodyProps {
 }
 
 function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
-  const kind = (state.mode === 'create' ? state.kind : state.rule.kind) as StackKind
   const editingId = state.mode === 'edit' ? state.rule.id : null
   const [draft, setDraft] = useState<Draft>(() =>
     state.mode === 'edit' ? draftFromRule(state.rule) : blankDraft(state.kind, allRules),
+  )
+  const kind = draft.kind
+  /**
+   * 打开时 kind 就认不出（库里的一条坏行）。**只有这时才让人改 kind**：
+   * 编辑器的整张表单是按栈组织的（effect 取值域、主体规矩、资产类型三栈全不同），
+   * 平时开这个口子等于把换栈伪装成改一个字段。
+   *
+   * 但认不出的时候不开这个口子就是死路：那条规则不参与任何判定，
+   * 而唯一的修法恰恰是改 kind——编辑器打得开却修不了，比打不开更糟。
+   */
+  const initialKindUnknown = !(
+    (state.mode === 'create' ? state.kind : state.rule.kind) in STACK_META
   )
   const [issues, setIssues] = useState<string[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -165,13 +185,14 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
   }, [])
 
   const positive = isPositiveEffect(kind, draft.effect)
-  const stackName = STACK_META[kind]?.name ?? kind
+  const stackName = isStackKind(kind) ? STACK_META[kind].name : `kind「${kind}」的规则`
 
   /* ── 影响预览 ─────────────────────────────────────────────── */
 
   const candidate = useMemo<CandidateRule>(() => {
     const c: CandidateRule = {
-      kind,
+      // 认不出的 kind 也原样发出去：预览要显示的是「管理员真填了什么会发生什么」
+      kind: kind as StackKind,
       priority: draft.priority,
       join: draft.join,
       conds: draft.conds,
@@ -186,13 +207,16 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
     return c
   }, [kind, draft, editingId, state])
 
-  const preview = usePreview(candidate, kind)
+  // kind 认不出时不带 kind 参数：后端会 400 unknown_stack_kind，
+  // 而那条 400 说的是「你问错了」，不是「这条规则有问题」
+  const preview = usePreview(candidate, isStackKind(kind) ? kind : null)
 
   /* ── 写 ───────────────────────────────────────────────────── */
 
   function toInput(): RuleInput {
     return {
-      kind,
+      // 认不出的 kind 照发。后端的校验会拒绝并说清原因，前端不替它猜一个
+      kind: kind as StackKind,
       priority: draft.priority,
       join: draft.join,
       conds: draft.conds,
@@ -253,6 +277,34 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
         </p>
       )}
 
+      {initialKindUnknown && (
+        <section className={styles.section} aria-label="规则类型">
+          <h3 className={styles.sectionTitle}>规则类型</h3>
+          <p className={styles.warnBox} role="alert">
+            这条规则的 <code>kind</code>（<b>{state.mode === 'edit' ? state.rule.kind : ''}</b>）
+            不是三栈之一，引擎不会让它参与任何判定。选一栈把它修回来——
+            换栈会同时把动作重置成那一栈的默认值，因为三栈的 effect 取值域完全不同。
+          </p>
+          <select
+            className={styles.select}
+            aria-label="规则类型"
+            value={isStackKind(kind) ? kind : ''}
+            onChange={(e) => {
+              const next = e.target.value
+              if (!isStackKind(next)) return
+              update({ kind: next, effect: defaultEffect(next), assetTypes: defaultAssets(next) })
+            }}
+          >
+            <option value="">请选择</option>
+            {(Object.keys(STACK_META) as StackKind[]).map((k) => (
+              <option key={k} value={k}>
+                {STACK_META[k].name}
+              </option>
+            ))}
+          </select>
+        </section>
+      )}
+
       <section className={styles.section} aria-label="条件">
         <h3 className={styles.sectionTitle}>条件</h3>
         <ConditionList draft={draft} update={update} />
@@ -267,8 +319,12 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
 
       <section className={styles.section} aria-label="动作">
         <h3 className={styles.sectionTitle}>动作</h3>
-        <EffectPicker kind={kind} draft={draft} update={update} />
-        {positive && kind !== 'archive' && (
+        {isStackKind(kind) ? (
+          <EffectPicker kind={kind} draft={draft} update={update} />
+        ) : (
+          <p className={styles.hint}>先在上面选一栈，动作的可选项随栈而定。</p>
+        )}
+        {positive && isStackKind(kind) && kind !== 'archive' && (
           <AssetPicker kind={kind} draft={draft} update={update} />
         )}
       </section>
@@ -372,6 +428,10 @@ function applyWriteError(
   setError(e instanceof Error ? e.message : String(e))
 }
 
+function isStackKind(v: string): v is StackKind {
+  return v === 'fetch' || v === 'archive' || v === 'allow'
+}
+
 function isPositiveEffect(kind: string, effect: string): boolean {
   if (kind === 'fetch') return effect === 'all'
   if (kind === 'allow') return effect === 'allow'
@@ -395,7 +455,7 @@ interface PreviewHook {
  * 过期响应显式丢弃（每次 effect 自己的 `cancelled`），理由与 `useResource`
  * 里那段注释一样：共享 ref 防不住同一次 flush 里的新旧交替。
  */
-function usePreview(candidate: CandidateRule, kind: StackKind): PreviewHook {
+function usePreview(candidate: CandidateRule, kind: StackKind | null): PreviewHook {
   const [result, setResult] = useState<PreviewResult | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [pending, setPending] = useState(true)
@@ -407,7 +467,7 @@ function usePreview(candidate: CandidateRule, kind: StackKind): PreviewHook {
     let cancelled = false
     setPending(true)
     const timer = window.setTimeout(() => {
-      previewRules({ rule: latest.current, kind })
+      previewRules(kind === null ? { rule: latest.current } : { rule: latest.current, kind })
         .then((r) => {
           if (cancelled) return
           setResult(r)

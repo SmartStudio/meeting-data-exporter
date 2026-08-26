@@ -215,7 +215,8 @@
 }
 .effectOpt small {
   font-size: var(--t-xs);
-  color: var(--ink-3);
+  /* 选中态的底是 --brand-soft，--ink-3 在它上面只有 4.37:1，不达 AA */
+  color: var(--ink-2);
   line-height: 1.6;
 }
 
@@ -411,7 +412,8 @@
 }
 .amberList {
   margin-top: var(--s-2);
-  color: var(--ink-3);
+  /* 底是 --warn-soft，--ink-3 在它上面只有 4.45:1 */
+  color: var(--ink-2);
 }
 
 .details {
