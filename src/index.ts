@@ -126,7 +126,7 @@ async function main(): Promise<void> {
    * 拒绝并说明原因，那是「不许静默放行」这条全局约束的直接要求。
    * 修法见阶段 4 计划的 T13，**不要在这里就地折衷**。
    */
-  const consoleMeetings = createConsoleMeetingsStore(pool)
+  const consoleMeetings = createConsoleMeetingsStore(pool, { policy: policyStore })
   // 归档存储页（阶段 4 · T8，A3）。两个根目录走 process.env 而不是 loadConfig，
   // 与 worker 那边同一口径（它们是由 systemd / 容器挂载决定的进程编排参数）。
   //
@@ -198,6 +198,10 @@ async function main(): Promise<void> {
     // 两个面：写侧只有 record()，读侧只有查询，两者共用同一份 SQL 定义
     auditQuery: auditStore,
     auditMeetings: createAuditMeetingLookup(pool),
+    // 阶段 4 · T6（A3 规则 API）。会议查询 store 与上面 getMeetings 用的是**同一个实例**：
+    // 两份实例指向同一个池只是多一层间接，而 triage 的「待授权」与影响预览都要
+    // 求值采集权限栈，注入的 policy 必须是同一份
+    consoleMeetings,
   }
 
   const app = createApp(deps)

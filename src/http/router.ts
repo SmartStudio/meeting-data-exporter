@@ -30,6 +30,11 @@ import * as consoleGrantsHandlers from './handlers/console/grants'
 import type { AuditQueryStore } from '../store/audit'
 import * as consoleAuditHandlers from './handlers/console/audit'
 import type { AuditMeetingLookup } from './handlers/console/audit'
+// 阶段 4 · T6（A3 规则 API + 影响预览）新增的三条依赖与一组路由。
+// 追加在文件末尾一侧，不动上面任何一行——本波次有几个任务同时往这个文件里加东西，
+// 冲突保持成纯追加型才好合。
+import type { ConsoleMeetingsStore } from '../store/console-meetings'
+import * as consoleRulesHandlers from './handlers/console/rules'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -69,8 +74,6 @@ export interface AppDeps {
   programs: ProgramsStore
   /** 逐会议授权与人工改写的**写侧**。上面 accessGate 内部持有的那份只用于读判定 */
   grantsStore: GrantsStore
-  /** 采集清单重算要读采集权限栈的启用规则 */
-  policyStore: PolicyStore
   /**
    * 采集清单重算要读归档行（local_purged_at / nas_dir）与本地资产。
    * 上面那个 `archives` 是收窄到 listArchivedMeetingKeys 的 Pick，只够规则的
@@ -78,12 +81,6 @@ export interface AppDeps {
    * 改宽会动到既有行，而本阶段有多个任务在并行往这个文件追加东西。
    */
   archivesStore: ArchivesStore
-  /**
-   * 管理员写操作的审计（计划 §1 约束 6：改规则、改授权、写改写……一条不落）。
-   * 直接用 AuditStore.record 而不是上面的 auditRecorder，理由见
-   * `handlers/console/grants.ts` 的文件头第四节。
-   */
-  auditStore: AuditStore
   /**
    * 一批会议的元数据，**批量**。采集清单按程序算，逐场取就是成百上千次往返。
    *
@@ -105,6 +102,25 @@ export interface AppDeps {
   /** 审计「对象」列的会议标题批量补齐（阶段 4 · T9）。audit_log 只存 id，
    *  标题在 meetings / meeting_cache 两张表里，逐行查一页就是 200 次往返 */
   auditMeetings: AuditMeetingLookup
+  // ── 阶段 4 · T6（A3 规则 API）──────────────────────────────────────────
+  /**
+   * 规则的读写侧（T2）。**判定路径不走这里**：网关判 allow 栈走 `accessGate`，
+   * 这一份是控制台规则页的 CRUD 与影响预览要的「含 disabled 的全部规则」，
+   * 采集清单重算（T7 的 inventory 端点）要的启用规则也读它。
+   */
+  policyStore: PolicyStore
+  /**
+   * 审计写侧。管理员的每一次写操作都要落一行（阶段 4 计划 §1 约束 6），而
+   * `auditRecorder` 只认网关那三种动作（下载、登录、列会议），管理侧的动作
+   * 直接走 store 的 `record`——在 recorder 上给每个管理端点加一个方法，
+   * 只是把同一个 `AuditEntry` 换个地方拼。
+   */
+  auditStore: AuditStore
+  /**
+   * 控制台的会议查询（T1）。影响预览与「这条规则命中哪几场」要一批会议的事实，
+   * 会议全集只有这一个来源（`meetings` 表，见计划 §0 E-a）。
+   */
+  consoleMeetings: ConsoleMeetingsStore
 }
 
 export interface RouteCtx {
@@ -186,6 +202,15 @@ const ROUTES: Route[] = [
   // 操作审计（阶段 4 · A5，T9）。spec §4.10
   compile('GET', '/api/v1/admin/audit', consoleAuditHandlers.listAudit),
   compile('GET', '/api/v1/admin/meetings/:meetingId/history', consoleAuditHandlers.meetingHistory),
+  // 自动规则（阶段 4 · T6，A3）。全部走 requireAdminAuth，写操作一律进 audit_log。
+  // /preview 与 /:id 不会互相吃掉：compile 出来的 `[^/]+` 不跨段，
+  // 而 preview 是 POST、:id 是 PATCH/DELETE，方法先一步就分开了
+  compile('GET', '/api/v1/admin/rules', consoleRulesHandlers.listRules),
+  compile('POST', '/api/v1/admin/rules', consoleRulesHandlers.createRule),
+  compile('POST', '/api/v1/admin/rules/preview', consoleRulesHandlers.previewRules),
+  compile('GET', '/api/v1/admin/rules/:id/matches', consoleRulesHandlers.ruleMatches),
+  compile('PATCH', '/api/v1/admin/rules/:id', consoleRulesHandlers.patchRule),
+  compile('DELETE', '/api/v1/admin/rules/:id', consoleRulesHandlers.deleteRule),
 ]
 
 /**

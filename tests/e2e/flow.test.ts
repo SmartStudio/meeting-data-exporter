@@ -26,7 +26,6 @@ import {
   OPERATOR_ID,
   stubWecomClient,
   insertPolicyRule,
-  consoleMeetingLookup,
 } from '../http/testApp'
 import { createTencentClient } from '../../src/tencent/client'
 import { TencentApiError } from '../../src/tencent/errors'
@@ -54,6 +53,8 @@ import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
+// 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
+import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
 import {
   startFakeTencentServer,
   createFakeTencentState,
@@ -150,6 +151,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(dbPool)
+  // 与 src/index.ts / testApp.ts 同一个实例口径
+  const consoleMeetings = createConsoleMeetingsStore(dbPool, { policy: policyStore })
   const grantsStore = createGrantsStore(dbPool)
   const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
   const archivesStore = createArchivesStore(dbPool)
@@ -205,7 +208,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     policyStore,
     archivesStore,
     auditStore,
-    getMeetings: consoleMeetingLookup(dbPool),
+    getMeetings: consoleMeetings.getMeetings,
     // 归档存储页（阶段 4 · T8）。e2e 这条流程不覆盖它，这里只需满足 AppDeps 契约：
     // 没有真实 NAS 挂载点，因此探测固定回"不可达"、清理注入 null——两者都是
     // handler 的显式降级分支，不是会让别的用例静默出错的假实现。
@@ -227,6 +230,9 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     // 审计读侧（阶段 4 · A5）：与 auditRecorder 同源，装配方式跟随 src/index.ts
     auditQuery: auditStore,
     auditMeetings: createAuditMeetingLookup(dbPool),
+    // 阶段 4 · T6（A3 规则 API）。跟随 src/index.ts：会议查询 store 与 getMeetings
+    // 用同一个实例，注入的 policy 也是同一份
+    consoleMeetings,
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

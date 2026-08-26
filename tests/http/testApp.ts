@@ -52,16 +52,6 @@ export const OPERATOR_ID = 'operator-1'
  */
 export const WEBHOOK_AES_KEY = Buffer.alloc(32, 7).toString('base64').slice(0, -1)
 
-/**
- * `AppDeps.getMeetings` 的测试装配。**与 `src/index.ts` 用的是同一个实现**
- * （T1 的 `ConsoleMeetingsStore.getMeetings`）——测试里另写一份读法，等于让
- * 端到端测试验证的不是生产上真正会跑的那段代码。
- */
-export function consoleMeetingLookup(
-  pool: Pool,
-): (keys: readonly MeetingKey[]) => Promise<readonly Meeting[]> {
-  return createConsoleMeetingsStore(pool).getMeetings
-}
 
 export function stubTencentClient(handlers: {
   get?: (path: string, query: QueryParams, opts?: RequestOptions) => unknown
@@ -125,6 +115,10 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
+  // 会议查询 store（T1）。getMeetings 与规则页的影响预览用的是同一个实例，
+  // 与 src/index.ts 逐字一致——测试里另建一份，等于让端到端测试验证的不是
+  // 生产上真正跑的那段装配
+  const consoleMeetings = createConsoleMeetingsStore(pool, { policy: policyStore })
   const grantsStore = createGrantsStore(pool)
   const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
   const archivesStore = createArchivesStore(pool)
@@ -179,7 +173,7 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     policyStore,
     archivesStore,
     auditStore,
-    getMeetings: consoleMeetingLookup(pool),
+    getMeetings: consoleMeetings.getMeetings,
     // 归档存储页（阶段 4 · T8）。这一层的端到端测试里没有真实 NAS 挂载点，
     // 所以探测固定回"不可达"、清理注入 null——两者都是 handler 显式处理的降级
     // 分支（页面显示 NAS 不可达 / 清理端点 503），不是能让别的用例静默出错的假实现。
@@ -202,6 +196,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     // 审计读侧（阶段 4 · A5）：与 auditRecorder 同源，装配方式跟随 src/index.ts
     auditQuery: auditStore,
     auditMeetings: createAuditMeetingLookup(pool),
+    // 阶段 4 · T6（A3 规则 API）。跟随 src/index.ts：会议查询 store 与 getMeetings
+    // 用同一个实例，注入的 policy 也是同一份
+    consoleMeetings,
   }
 
   return { app: createApp(deps), deps, pool }
