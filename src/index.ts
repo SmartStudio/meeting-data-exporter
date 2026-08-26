@@ -6,6 +6,7 @@ import { createPolicyStore } from './store/policy'
 import { createAuthStore } from './store/auth'
 import { createAdminStore } from './store/admin'
 import { createAuditStore } from './store/audit'
+import { createJobsStore, schedulerTzOffsetSec } from './store/jobs'
 import { createMeetingCacheStore } from './store/meetings'
 import { createTencentClient } from './tencent/client'
 import { createRecordsApi } from './tencent/records'
@@ -234,6 +235,17 @@ async function main(): Promise<void> {
     // （src/store/contents.ts，由 worker 与回填脚本使用）分成两个面：网关进程
     // 只读、只按三段键取正文，写侧那套 NAS 读文件 + 哈希校验一行都用不上
     contents: createContentLookup(pool),
+    // 阶段 4 · T11（A4 定时任务）——**只装读侧与手动触发的排队**。
+    // 调度器本身在 worker 进程里（src/worker/scheduler.ts），网关一行都不碰：
+    // 网关是多实例的，四个任务各跑 N 份意味着 N 个实例同时对同一批本地文件
+    // 执行不可逆删除。
+    jobs: {
+      jobs: createJobsStore(pool),
+      audit: auditStore,
+      // **必须与调度器进程用同一个值**，两处读的是同一个环境变量。
+      // 配得不一样时「下次运行」会比真实时刻差几个小时，而且不报任何错。
+      tzOffsetSec: schedulerTzOffsetSec(process.env),
+    },
   }
 
   const app = createApp(deps)

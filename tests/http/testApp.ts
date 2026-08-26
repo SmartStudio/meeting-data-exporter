@@ -33,6 +33,7 @@ import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
+import { createJobsStore } from '../../src/store/jobs'
 import type { MeetingKey } from '../../src/store/grants'
 import type { Meeting } from '../../src/domain/types'
 import type { RowDataPacket } from 'mysql2/promise'
@@ -214,6 +215,14 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     meetingHistory: auditStore,
     // 内容预览（阶段 4 · T10）。装配方式跟随 src/index.ts：真实实现接同一个测试库
     contents: createContentLookup(pool),
+    // 阶段 4 · T11（A4 定时任务）。跟随 src/index.ts：网关只装读侧与手动触发的
+    // 排队，调度器不在这里（它属于 worker 进程）。时区固定 0（UTC），与测试里
+    // 其它时间戳同口径
+    jobs: {
+      jobs: createJobsStore(pool),
+      audit: auditStore,
+      tzOffsetSec: 0,
+    },
   }
 
   return { app: createApp(deps), deps, pool }

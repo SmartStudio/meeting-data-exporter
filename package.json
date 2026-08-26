@@ -8,6 +8,7 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "worker": "bun src/worker/index.ts",
+    "scheduler": "bun src/worker/scheduler.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "preflight": "bun scripts/preflight.ts"

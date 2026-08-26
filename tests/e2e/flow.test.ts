@@ -53,6 +53,7 @@ import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
+import { createJobsStore } from '../../src/store/jobs'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 import { createContentLookup } from '../../src/http/handlers/console/content'
@@ -247,6 +248,9 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     meetingHistory: auditStore,
     // 内容预览（阶段 4 · T10）。装配方式跟随 src/index.ts
     contents: createContentLookup(dbPool),
+    // 阶段 4 · T11（A4 定时任务）：网关只装读侧与手动触发的排队，
+    // 调度器在 worker 进程里，不进这条端到端链路
+    jobs: { jobs: createJobsStore(dbPool), audit: auditStore, tzOffsetSec: 0 },
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }
