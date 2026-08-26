@@ -19,7 +19,9 @@
  *
  * ── 五项检查 ──────────────────────────────────────────────────────
  *   1 对比度      两种主题 × 多个页面形态全页扫描；含语义色令牌的色相/配对
- *                 断言，以及「--ink-4 不许用于文字」
+ *                 断言，以及「--ink-4 不许用于文字」。每个形态都要先过
+ *                 `assertLive`：该有的东西没渲染出来、或者渲染的是错误态，
+ *                 那一次扫描不算数——扫一屏「读取失败」也能扫出几十个元素。
  *   2 Tab 泄漏    真键盘 Tab 走一遍；含关闭态浮层在 Chromium 无障碍树里的缺席、
  *                 以及每一站的焦点环可见性（含浮层基座退化聚焦那条路径）
  *   3 横向溢出    1440 / 1050 / 375；不只量 scrollWidth——被 overflow-x: clip
@@ -406,13 +408,63 @@ interface Scene {
    *  挂载标志——语义选择器，不用 CSS Module 哈希类名，避免样式重命名就打断。 */
   waitFor?: string
   setup?: (page: Page) => Promise<void>
+  /**
+   * **这一屏必须真的渲染出来的东西**，`setup` 跑完之后逐个等。
+   *
+   * 加这一条是因为 F8 之前六个页面的场景等于没扫：`NAV_SELECTOR`（左栏导航）
+   * 在**错误态下照样存在**——那台测试服务器只桩了 `auth/me`，页面拿不到数据，
+   * 于是场景稳稳地扫过一屏"读取失败"，然后报「通过」。三个页面任务各自独立
+   * 发现了这件事。
+   *
+   * 所以每个场景都要点名它这一屏该有的形态标志（那条红色横幅、那张失败项表、
+   * 那个打开的抽屉）。等不到就是失败，而不是安静地扫别的东西。
+   */
+  expect?: string[]
+  /**
+   * 这一屏**就是**错误态。
+   *
+   * 只有一处：`load-failed`——那是 spec §8 的数据三态之一，它的红框本来就是
+   * 要验的东西。除它以外，页面上出现错误标志一律是失败，没有豁免：
+   * 一条「这一页反正也读不到，先豁免着」会让那一页从此静音。
+   */
+  errorOnPurpose?: boolean
 }
+
+/**
+ * 这几处只要出现在页面上，这一屏就不是页面本身的样子了。
+ *
+ * 与 `expect` 是两个方向的同一件事：`expect` 说"该有的必须有"，这里说
+ * "不该有的一个都不许有"。分开写是因为漏一个 `expect` 只是少验一点，
+ * 而扫到错误态是**假通过**——门槛报绿，其实那一页从来没被验过。
+ */
+const ERROR_MARKERS = [
+  // 逐个点名，**不用 `[data-testid$="-error"]` 这种后缀匹配**：归档存储页那条
+  // 「NAS 无法连通」的 testid 就叫 `nas-error`，它是一种要验的内容形态，
+  // 不是这一页读不出来。一个太宽的选择器会把想验的东西判成失败。
+  '[data-testid="meetings-error"]',
+  '[data-testid="jobs-error"]',
+  '[data-testid="storage-error"]',
+  '[data-testid="audit-error"]',
+  '[data-testid="admin-auth-error"]', // AppShell 连登录态都读不到
+  '[data-alert="unreadable"]', // 顶栏：系统状态读取失败
+  '[class*="pageErr"]', // 内容预览页
+  '[class*="pageError"]', // 采集授权页
+  '[class*="Rules__error"]', // 自动规则页
+]
 
 const SCENES: Scene[] = [
   { id: 'ok', why: '正常态', route: '/meetings' },
   { id: 'nas-down', why: 'NAS 断连（保留窗口清零、授权撤下）', route: '/meetings', setup: (p) => setState(p, 'nas-down') },
   { id: 'tencent-down', why: '腾讯会议不可达', route: '/meetings', setup: (p) => setState(p, 'tencent-down') },
-  { id: 'load-failed', why: '会议数据读取失败', route: '/meetings', setup: (p) => setState(p, 'load-failed') },
+  {
+    id: 'load-failed',
+    why: '会议数据读取失败',
+    route: '/meetings',
+    setup: (p) => setState(p, 'load-failed'),
+    // 这一屏要的就是那个红框（spec §8 的三态之一），见 Scene.errorOnPurpose
+    errorOnPurpose: true,
+    expect: ['[data-testid="meetings-error"]'],
+  },
   { id: 'loading', why: '加载中（骨架屏）', route: '/meetings', setup: (p) => setState(p, 'loading') },
   { id: 'empty', why: '一场会议都没有', route: '/meetings', setup: (p) => setState(p, 'empty') },
   { id: 'row-hover', why: 'hover 才浮出的「＋30 天」/ 详情按钮', route: '/meetings', setup: hoverRow },
@@ -421,15 +473,160 @@ const SCENES: Scene[] = [
   { id: 'popover', why: '时间范围菜单打开', route: '/meetings', setup: openPopover },
   { id: 'grant', why: '授权面板打开', route: '/meetings', setup: openGrant },
   { id: 'toast', why: '延长保留期后的 toast', route: '/meetings', setup: fireToast },
-  // `_Placeholder` 在 F0 删掉了，六个页面各有自己的空壳（`pages/<页>/index.tsx`）。
-  // 这个场景验的是空壳共用的页头骨架（`ui/PageShell`）——七页都长这个样子，
-  // 所以扫一页就够；等某一页真的填上内容，再给那一页加自己的场景。
-  { id: 'page-shell', why: '空壳页的页头骨架（采集授权）', route: '/consumers' },
   {
     id: 'login',
     why: '登录页（spec.md §4.1；刻意不经过 AppShell，无左栏/顶栏，见 routes.tsx）',
     route: '/login',
     waitFor: 'input[autocomplete="current-password"]',
+  },
+
+  /* ── 另外六个页面（F8） ────────────────────────────────────────
+     阶段 5 之前这里只有一个 `page-shell` 场景扫 `/consumers`，注释写着
+     「空壳共用的页头骨架」——那时六个页面确实还是空壳。现在它们都接了线，
+     每一页至少一个正常态，有明显形态分支的各给一个。
+
+     `?proto=1` 下的假后端（`src/api/mock/install.ts`）是这些场景的地基：
+     它答不出来的端点，页面就只能渲染错误态，扫过去等于没扫。所以每一条都带
+     `expect`，点名这一屏该有的形态标志。 */
+
+  {
+    id: 'rules',
+    why: '自动规则三栈（写坏 conds 的 / 停用的 / 带 issues 的各一条）',
+    route: '/rules',
+    expect: ['[class*="Rules__issues"]', 'li[data-off="true"]', '[class*="Rules__condBad"]'],
+  },
+  {
+    id: 'rules-editor',
+    why: '规则编辑器打开 + 影响预览（新放行的数字、琥珀警告）',
+    route: '/rules',
+    setup: openRuleEditor,
+    expect: [
+      '[role="dialog"][data-state="open"]',
+      '[role="group"][aria-label="影响预览"]',
+      '[class*="RuleEditor__amber"]',
+    ],
+  },
+  {
+    id: 'rules-matches',
+    why: '命中的会议面板（规则行右边那个数字点开）',
+    route: '/rules',
+    setup: openRuleMatches,
+    expect: ['[role="dialog"][data-state="open"]', '[class*="Rules__matchList"]'],
+  },
+  {
+    id: 'jobs',
+    why: '定时任务：已经落后的红横幅 + 从没跑过 + 正在跑 + 失败项表',
+    route: '/jobs',
+    expect: [
+      'ul[aria-label="内置定时任务"]',
+      '[data-testid="jobs-overdue"]',
+      '[data-testid="job-spark"]',
+      '[data-testid="failure-row"][data-escalated="true"]',
+    ],
+  },
+  {
+    id: 'jobs-stalled',
+    why: '拉取任务连续失败（琥珀横幅，从运行记录推出来的判断）',
+    // 先在会议记录页把状态拨过去，再走左栏进定时任务页，见 viaState()
+    route: '/meetings',
+    setup: (p) => viaState(p, 'tencent-down', '/jobs'),
+    expect: ['[data-testid="jobs-fetch-stalled"]', 'ul[aria-label="内置定时任务"]'],
+  },
+  {
+    id: 'storage',
+    why: '归档存储正常态：容量条 + 八格统计',
+    route: '/storage',
+    expect: ['[data-testid="stat-archived"]', '[data-testid="nas-capacity"] [role="img"]'],
+  },
+  {
+    id: 'storage-nas-down',
+    why: 'NAS 不可达：容量探不到（null 不折成 0）',
+    route: '/meetings',
+    setup: (p) => viaState(p, 'nas-down', '/storage'),
+    expect: ['[data-testid="nas-error"]', '[data-testid="stat-archive-failed"]'],
+  },
+  {
+    id: 'storage-invalid-days',
+    why: '保留天数配置非法 + 归档失败数暂不可得 + 到期清理已暂停',
+    route: '/storage?world=degraded',
+    expect: [
+      '[data-testid="retention-default"][class*="warnNote"]',
+      '[data-testid="stat-archive-failed"] [class*="statVMissing"]',
+      '[data-testid="cleanup-state"][class*="cleanupPaused"]',
+    ],
+  },
+  {
+    id: 'storage-cleanup',
+    why: '「立即清理」二次确认：红色危险按钮（这一屏它是禁用态）+ 为什么现在没得删',
+    route: '/storage',
+    setup: openCleanupSheet,
+    expect: ['[role="dialog"][data-state="open"]', '[data-testid="cleanup-blocked"]'],
+  },
+  {
+    id: 'audit',
+    why: '操作审计：被拒绝 / 存疑的结果 / 认不出的操作者 / 没有明细的老记录',
+    route: '/audit',
+    expect: [
+      '[data-testid="audit-window"]',
+      'tr[data-deny]',
+      '[data-testid^="audit-result-"][data-kind="unknown"]',
+    ],
+  },
+  {
+    id: 'audit-detail',
+    why: '展开一条的完整记录',
+    route: '/audit',
+    setup: openAuditDetail,
+    expect: ['[data-testid^="audit-expanded-"]'],
+  },
+  {
+    id: 'consumers',
+    why: '采集授权：能取走什么 + 已授权但现在取不到（带原因汇总）',
+    route: '/consumers',
+    expect: [
+      '[data-testid="reach-kb-indexer"][data-kind="reachable"]',
+      // 「另有 N 场已授权但现在取不到」那一块是 reach 的兄弟节点，不在它里面
+      '[class*="asideLead"]',
+      '[class*="tallyItem"]',
+    ],
+  },
+  {
+    id: 'consumers-sheet',
+    why: '「现在能取走什么」清单抽屉打开',
+    route: '/consumers',
+    setup: openInventorySheet,
+    expect: ['[role="dialog"][data-state="open"]', '[class*="InventorySheet__row"]'],
+  },
+  {
+    id: 'preview',
+    why: '内容预览 · 纪要 tab（资产索引里六种可得性各有几行）',
+    route: '/preview/m1',
+    expect: [
+      '[role="tablist"][aria-label="内容视图"]',
+      'button[role="tab"][data-tab="minutes"][aria-selected="true"]',
+      '[class*="Preview__assetState"]',
+    ],
+  },
+  {
+    id: 'preview-transcript',
+    why: '内容预览 · 转写文字 tab',
+    route: '/preview/m1',
+    setup: (p) => previewTab(p, 'transcript'),
+    expect: ['#pv-tab-transcript[aria-selected="true"]', 'ul[aria-label="转写分段"]'],
+  },
+  {
+    id: 'preview-timeline',
+    why: '内容预览 · 时间轴 tab（转写分段，不是章节）',
+    route: '/preview/m1',
+    setup: (p) => previewTab(p, 'timeline'),
+    expect: ['#pv-tab-timeline[aria-selected="true"]', '[class*="Preview__backendText"]'],
+  },
+  {
+    id: 'preview-restricted',
+    why: '被规则禁止采集的会议：琥珀警示条 + 认不出时间戳格式的转写',
+    route: '/preview/m6',
+    setup: (p) => previewTab(p, 'timeline'),
+    expect: ['[role="note"][class*="Preview__warn"]', '[class*="Preview__emptyBox"]'],
   },
 ]
 
@@ -460,6 +657,63 @@ async function openGrant(page: Page): Promise<void> {
   await page.locator('[class*="grantAdd"]').first().click()
   await page.waitForTimeout(450)
 }
+/* ── 另外六个页面的形态搭建 ─────────────────────────────────────── */
+
+/**
+ * 把系统状态拨到 `state`（**两层都拨**），再走左栏导航进目标页。
+ *
+ * 三步各有各的必要：
+ *
+ * 1. **顶栏那个下拉**驱动的是全局告警横幅（`app/SystemStatus.tsx` 的 protoAlert）。
+ * 2. **`window.__mdeProto`** 驱动的是数据层（`api/mock/install.ts` 的
+ *    `applyNasDown` / `applyTencentDown`）。页面碰不到 `api/mock/`（那是设计），
+ *    所以那个下拉够不着数据——只拨它，归档存储页照样报 NAS 连得上。
+ *    两层不一起拨，屏幕上就会出现"横幅说断了、页面说好着"。
+ * 3. **走左栏**（客户端路由，React 状态跟着过去）让目标页重新挂载一次：
+ *    定时任务页与归档存储页挂载时各取一次数就不再取了，它们没有理由去订阅一个
+ *    演示用的开关。直接开目标页再拨状态，页面上什么都不会变，
+ *    场景就会稳稳地扫一屏正常态然后报「通过」——那正是 F8 要修掉的那种假通过。
+ *    （整页 reload 也不行：那个状态是 React state，刷新就回到 `ok`。）
+ */
+async function viaState(page: Page, state: string, to: string): Promise<void> {
+  await setState(page, state)
+  await page.evaluate(`window.__mdeProto.setSystemState(${JSON.stringify(state)})`)
+  await page.click(`${NAV_SELECTOR} a[href="${to}"]`)
+  await page.waitForTimeout(700)
+}
+
+/** 影响预览有 350ms 防抖，防抖之后还要跑一次 `POST /rules/preview`。 */
+const PREVIEW_SETTLE_MS = 900
+
+async function openRuleEditor(page: Page): Promise<void> {
+  // 新建（而不是编辑现有的那条）：默认草稿是「标题含空串」，它命中全部会议，
+  // 于是预览里 opened / warnings 都有东西——正是要扫的那几种颜色。
+  await page.getByRole('button', { name: '新建采集权限规则' }).click()
+  await page.waitForTimeout(PREVIEW_SETTLE_MS)
+}
+async function openRuleMatches(page: Page): Promise<void> {
+  await page.locator('[class*="Rules__hits"]').first().click()
+  await page.waitForTimeout(500)
+}
+async function openCleanupSheet(page: Page): Promise<void> {
+  await page.getByRole('button', { name: '立即清理已到期文件' }).click()
+  // 打开时先跑一次 dry-run（POST /storage/cleanup-now，不带 confirm）
+  await page.waitForTimeout(500)
+}
+async function openAuditDetail(page: Page): Promise<void> {
+  await page.getByRole('button', { name: '完整记录' }).first().click()
+  await page.waitForTimeout(250)
+}
+async function openInventorySheet(page: Page): Promise<void> {
+  await page.getByRole('button', { name: '查看清单' }).first().click()
+  await page.waitForTimeout(450)
+}
+async function previewTab(page: Page, id: string): Promise<void> {
+  await page.click(`#pv-tab-${id}`)
+  // 转写那一 tab 会自己再取一次正文
+  await page.waitForTimeout(700)
+}
+
 async function fireToast(page: Page): Promise<void> {
   await hoverRow(page)
   const btn = page.locator('button[aria-label^="把「"]').first()
@@ -475,6 +729,82 @@ async function fireToast(page: Page): Promise<void> {
  * loading / empty）全靠其中的状态下拉驱动——不带这个参数，`setState` 找不到
  * `STATE_SELECT`，那五个场景会直接超时失败。
  */
+/**
+ * 每个场景各扫到了多少个文字元素。**这是"场景真的扫到内容了"的那份证据**，
+ * 单独打一张表：一个只剩页头骨架的错误态也能扫出几十个元素，光看总数看不出来，
+ * 逐场景摆开才看得出哪一屏明显比别的薄。
+ */
+const sceneScans = new Map<string, { why: string; route: string; light: number; dark: number }>()
+
+function recordScan(s: Scene, theme: 'light' | 'dark', checked: number): void {
+  const row = sceneScans.get(s.id) ?? { why: s.why, route: s.route, light: 0, dark: 0 }
+  row[theme] = checked
+  sceneScans.set(s.id, row)
+}
+
+function printScenes(): void {
+  if (sceneScans.size === 0) return
+  const bar = '─'.repeat(78)
+  console.log('\n' + bar)
+  console.log('场景覆盖（每个形态在两种主题下各扫到多少个文字元素）')
+  console.log(bar)
+  const w = Math.max(...[...sceneScans.keys()].map((k) => k.length))
+  for (const [id, r] of sceneScans) {
+    const nums = `浅 ${String(r.light).padStart(4)} · 深 ${String(r.dark).padStart(4)}`
+    console.log(`  ${id.padEnd(w)}  ${nums}  ${r.route}　${r.why}`)
+  }
+}
+
+/**
+ * 这一屏到底是不是它该有的样子。**这是场景有没有意义的那道验收**。
+ *
+ * 分两件事验：`expect` 里点名的形态标志必须真的出现；`ERROR_MARKERS` 里那几种
+ * 错误态一个都不许出现。第二条尤其重要——错误态下 `NAV_SELECTOR` 照样在，
+ * 页面框架也照样渲染，扫过去的元素数还不少，报告里看起来一切正常。
+ *
+ * `proto_not_implemented` 单独拎出来说：那是假后端少了一条端点，
+ * 修的地方在 `src/api/mock/install.ts`，不在页面里。
+ */
+async function assertLive(page: Page, s: Scene, check: string, where: string): Promise<void> {
+  for (const sel of s.expect ?? []) {
+    try {
+      await page.waitForSelector(sel, { timeout: 6000 })
+    } catch {
+      fail(
+        check,
+        where,
+        `这一屏没渲染出该有的东西：等不到 ${sel}`,
+        '    场景是跑过去了，但扫的不是这一页的内容——等于这一页没进门槛。',
+        `    先手动开一次 ${s.route}${s.route.includes('?') ? '&' : '?'}proto=1 看它到底渲染了什么。`,
+      )
+    }
+  }
+
+  const probe =
+    `(() => { const ms = ${JSON.stringify(ERROR_MARKERS)};` +
+    ' return { hit: ms.filter((m) => document.querySelector(m) !== null),' +
+    " notImpl: document.body.innerText.includes('proto_not_implemented') } })()"
+  const bad = (await page.evaluate(probe)) as { hit: string[]; notImpl: boolean }
+  if (s.errorOnPurpose) bad.hit = []
+
+  if (bad.notImpl) {
+    fail(
+      check,
+      where,
+      '这一屏上有 `proto_not_implemented`：原型模式的假后端少答了一条端点',
+      '    页面渲染的是错误态，这一次扫描不算数。补在 src/api/mock/install.ts。',
+    )
+  }
+  for (const m of bad.hit) {
+    fail(
+      check,
+      where,
+      `这一屏是错误态（命中 ${m}），扫到的不是页面本身`,
+      '    要么假后端少答了一条端点，要么这一页真的坏了——两种都得先修，不能豁免。',
+    )
+  }
+}
+
 async function open(page: Page, route: string, waitFor: string = NAV_SELECTOR): Promise<void> {
   const url = new URL(BASE + route)
   url.searchParams.set('proto', '1')
@@ -513,8 +843,10 @@ async function runContrast(page: Page, theme: 'light' | 'dark'): Promise<void> {
         continue
       }
     }
+    await assertLive(page, s, '1 对比度', `${theme}/${s.id}`)
     const r = await page.evaluate('window.__a11y.scanContrast()') as ScanResult
     bump('对比度：受检文字元素', r.checked)
+    recordScan(s, theme, r.checked)
     for (const row of r.fails) fail('1 对比度', `${theme}/${s.id}`, fmtRow(row))
     for (const row of r.inkFourText) {
       fail('1 对比度', `${theme}/${s.id}`,
@@ -886,6 +1218,7 @@ async function runLayout(page: Page): Promise<void> {
           continue
         }
       }
+      await assertLive(page, s, '3 横向溢出', `${w}px/${s.id}`)
       const r = await page.evaluate('window.__a11y.scanLayout()') as LayoutResult
       bump('视口 × 形态')
 
@@ -1229,6 +1562,7 @@ function report(): number {
     }
   }
 
+  printScenes()
   printGaps(gapResults)
 
   const byCheck = new Map<string, Finding[]>()

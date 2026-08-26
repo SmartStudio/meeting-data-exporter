@@ -594,6 +594,28 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
 
 /* ── 安装 ─────────────────────────────────────────────────────── */
 
+/**
+ * 演示旋钮挂在 `window.__mdeProto` 上的名字。
+ *
+ * **为什么需要它**：页面碰不到 `api/mock/`（`tests/mock-gate.test.ts` 用相等
+ * 断言盯着这件事，那是设计不是遗漏），所以顶栏那个「系统状态」下拉改得动的
+ * 只有 React 里的一个值——它驱动得了那条全局横幅，却驱动不了数据层。于是
+ * `applyNasDown` 这样的数据变形在浏览器里一直没人调得到，只有单元测试跑过它。
+ *
+ * `scripts/a11y-check.ts` 需要「NAS 断连时归档存储页长什么样」这一屏，
+ * 所以这里给它一个外部入口。**只在 `?proto=1` 下存在**（这个模块只有那时才
+ * 被加载），默认路径上连下载都不会发生。
+ */
+const HOOK = '__mdeProto'
+
+function exposeHook(): void {
+  ;(globalThis as unknown as Record<string, unknown>)[HOOK] = {
+    setSystemState: setProtoSystemState,
+    setWorldVariant: setProtoWorldVariant,
+    reset: resetProtoWorld,
+  }
+}
+
 let installed = false
 
 /**
@@ -608,6 +630,7 @@ export function installProtoApi(): () => void {
   if (installed) return () => undefined
   installed = true
   resetProtoWorld()
+  exposeHook()
 
   const real = globalThis.fetch.bind(globalThis)
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
