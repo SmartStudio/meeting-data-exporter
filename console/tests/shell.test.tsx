@@ -235,27 +235,13 @@ describe('AppShell · 左栏与路由', () => {
     expect(screen.getByRole('link', { name: '采集授权' })).toHaveAttribute('aria-current', 'page')
   })
 
-  test('还剩几个空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
-    // `_Placeholder` 在 F0 删掉了：七个页面任务并行开工，每人只碰
-    // `pages/<自己>/`，路由表不再有人回来改。空壳仍然不许是白页——
-    // 演示时白页看起来像坏了。
-    //
-    // **这份名单只能变短**：一页接完线之后它就不再是空壳，把自己那一行删掉
-    // 是那个任务的活，页面上也不该再留着「本页的数据接线在 Fx」那句话——
-    // 真页面的说明写的是这一页在回答什么问题。留着不删的话这条测试会去它上面
-    // 找那个本该消失的占位说明、然后变红，那正是它该做的事。接完线的页面各自
-    // 被自己那份测试盯着（`tests/pages/` 下一页一份）。名单空了的时候，
-    // 这条测试也该跟着删。
-    const cases: Array<[string, string, string]> = [
-      ['/preview/m1', '内容预览', 'F6'],
-    ]
-    for (const [path, title, phase] of cases) {
-      const { unmount } = renderApp(path)
-      expect(await screen.findByRole('heading', { name: title, level: 1 })).toBeInTheDocument()
-      expect(screen.getByText(new RegExp(phase))).toBeInTheDocument()
-      unmount()
-    }
-  })
+  // 「还没接线的空壳页」那条测试在 F6 合入时删掉了：六个页面全部接完线，
+  // 名单空了，它再也断言不到任何东西。它当初的作用是逼每个任务把自己那一行
+  // 划掉（留着不删就会红），这个作用已经用完。
+  //
+  // 接完线的页面各自被自己那份测试盯着（`tests/pages/` 下一页一份）。这里只
+  // 留两条与外壳本身有关的：一条盯系统状态横幅那条链的落点，一条验「外壳里挂
+  // 一个真的会发请求的页面」不会白屏。
 
   test('归档存储页已经接上真 API（F5b），不再是空壳', async () => {
     // 系统状态横幅上的「暂停到期清理」链到这一页，所以这里顺带盯着那条链的落点：
@@ -264,6 +250,18 @@ describe('AppShell · 左栏与路由', () => {
     expect(await screen.findByRole('heading', { name: 'NAS 归档', level: 2 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '暂停到期清理' })).toBeInTheDocument()
     expect(screen.queryByText(/F5b/)).toBeNull()
+  })
+
+  test('内容预览页（F6，已接线）在外壳里挂得起来，且仍不占左栏导航', async () => {
+    // 这个文件的 fetch stub 不答内容那三条，于是这一页落到它自己的错误态。
+    // **这正是要验的**：外壳里挂一个真的会发请求的页面，后端不给内容时它照样
+    // 有 h1、有说得出话的错误态，不是一片白。内容本身的行为在
+    // tests/pages/Preview.test.tsx 里测。
+    const { unmount } = renderApp('/preview/m1')
+    expect(await screen.findByRole('heading', { name: '内容预览', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByText(/这场会议的内容读不出来/)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '内容预览' })).not.toBeInTheDocument()
+    unmount()
   })
 
   test('内容区是唯一的 <main>——空壳页自己不再套一个', async () => {

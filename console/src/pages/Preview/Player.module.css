@@ -1,0 +1,251 @@
+/* 播放位置与联动区。
+ *
+ * 底色走 --video-* 那一组令牌：它们是「内容本身的底」，刻意不跟随主题
+ * （tokens.css 的「内容表面」一节）。这一块虽然不播放录像，仍然是录像那一路
+ * 内容的位置，用同一组底色才不会在深浅两套主题之间跳来跳去。 */
+
+.player {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--video-ground);
+}
+
+/* 原型的舞台是一层 radial-gradient（假录像画面的打光）。这里是**平铺实色**,
+   理由不是审美：底一旦是背景图，对比度扫描（scripts/a11y-page.js 的
+   scanContrast）就判不出这块底的颜色，压在上面的十来行字会全部落进
+   "解不出底色"那一档——只留下一条 note，没有人再去量。
+   这块面板现在装的是文字（录像的去向），不是画面，平铺实色既够看也量得出。 */
+.stage {
+  padding: var(--s-5);
+  position: relative;
+  min-height: var(--s-11);
+  background: var(--video-ground);
+}
+
+.stageTitle {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--video-ink);
+  padding-right: 30%;
+}
+
+.stageText {
+  margin: 0 0 var(--s-3);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--video-ink-2);
+  padding-right: 30%;
+}
+
+.mediaList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s-2);
+}
+
+.mediaItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--video-ink-2);
+}
+
+.mediaName {
+  font-weight: 600;
+  color: var(--video-ink);
+}
+
+.mediaType {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--video-ink-3);
+}
+
+.mediaText {
+  color: var(--video-ink-2);
+}
+
+.path {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--video-ink-2);
+  word-break: break-all;
+}
+
+/* 发言人小窗：腾讯是把会场那一路画面叠在共享内容右上角的，这里叠的是名字 */
+.cam {
+  position: absolute;
+  top: var(--s-4);
+  right: var(--s-4);
+  width: 27%;
+  max-width: var(--s-11);
+  padding: var(--s-2);
+  border-radius: var(--r-sm);
+  /* 同 .stage：实色而非渐变，好让对比度扫描量得出压在上面这两行字 */
+  background: var(--video-cam-a);
+  display: grid;
+  gap: var(--s-0);
+  text-align: center;
+}
+
+.camLabel {
+  font-size: var(--t-2xs);
+  color: var(--video-ink-3);
+}
+
+.camName {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--video-ink);
+}
+
+/* 字幕浮层：跟着转写走，不是一句写死的样例 */
+.cc {
+  margin: var(--s-4) 0 0;
+  padding: var(--s-1) var(--s-4);
+  border-radius: var(--r-sm);
+  background: var(--video-cc-bg);
+  color: var(--video-cc-ink);
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  text-align: center;
+}
+
+.ctl {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: var(--s-3) var(--s-4);
+  background: var(--video-chrome);
+}
+
+.track {
+  flex-basis: 100%;
+  order: -1;
+  position: relative;
+  height: var(--s-2);
+  margin: var(--s-0) 0 var(--s-1);
+  border-radius: var(--r-pill);
+  background: var(--video-line);
+  cursor: pointer;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+}
+
+.knob {
+  position: absolute;
+  top: 50%;
+  width: var(--s-4);
+  height: var(--s-4);
+  border-radius: var(--r-pill);
+  background: var(--video-knob);
+  transform: translate(-50%, -50%);
+}
+
+/* 竖线是转写分段的起点。原型这里叫「章节标记」——本系统没有章节，改了名字 */
+.mark {
+  position: absolute;
+  top: 0;
+  width: var(--s-0);
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--video-mark);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.btn {
+  display: grid;
+  place-items: center;
+  padding: var(--s-1);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--video-ink-2);
+  line-height: 0;
+  cursor: pointer;
+}
+
+.btn:hover {
+  color: var(--video-ink);
+  background: var(--video-hover);
+}
+
+.btn[aria-pressed='true'] {
+  color: var(--brand);
+}
+
+.time {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--video-ink-2);
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.rate {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--video-ink-2);
+  background: var(--video-hover);
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: var(--s-0) var(--s-2);
+  cursor: pointer;
+}
+
+.note {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--video-line);
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--video-ink-2);
+}
+
+.note b {
+  color: var(--video-ink);
+  font-weight: 600;
+}
+
+.err {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--video-line);
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--fail);
+  background: var(--fail-soft);
+}
+
+/* 窄屏：发言人小窗压在文字上会把标题挤成一列单字，收成常规块。
+   断点用 em 的理由见 Preview.module.css 末尾那段注释，两处必须是同一个值 */
+@media (max-width: 56em) {
+  .cam {
+    position: static;
+    width: auto;
+    max-width: none;
+    margin-bottom: var(--s-3);
+  }
+
+  .stageTitle,
+  .stageText {
+    padding-right: 0;
+  }
+}

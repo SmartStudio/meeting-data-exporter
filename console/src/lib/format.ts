@@ -80,6 +80,25 @@ export function daysLeft(expiresAt: number, now: Date = new Date()): number {
   return Math.max(0, diffDays)
 }
 
+/**
+ * 播放位置 / 转写时间戳。`0:00` · `1:05` · `1:01:01`。
+ *
+ * **与 `fmtDuration` 是两件事，不能互相顶替。** `fmtDuration` 报的是「这场会议
+ * 开了多久」（时:分，`fmtDuration(65) === '0:01'`）；这里报的是「录像走到哪一秒」
+ * （分:秒，`fmtClock(65) === '1:05'`）。把时长格式套在时间戳上，点开的就是
+ * 另一个位置——而内容预览页的三处联动全靠这个数对得上。
+ *
+ * 秒按向下取整（走时是连续的，四舍五入会让 `0:59` 跳过 `1:00` 直接显示成 `1:00`
+ * 又退回去）。负数夹到 0：播放位置不存在「负几秒」。
+ */
+export function fmtClock(sec: number): string {
+  const total = Math.max(0, Math.floor(sec))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return h === 0 ? `${m}:${pad2(s)}` : `${h}:${pad2(m)}:${pad2(s)}`
+}
+
 /** 中文写法的日期，不补零、不带年份（用于同年内的"归档于 X 月 X 日"这类文案）。 */
 export function fmtDay(unixSec: number): string {
   const d = new Date(unixSec * 1000)

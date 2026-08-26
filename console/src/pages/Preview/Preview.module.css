@@ -1,0 +1,625 @@
+/* 内容预览页。左纪要、右录像去向，中间可拖（spec §4.4）。
+ *
+ * 窄屏（<=900px）改成上下两段并把拖动手柄收起来：一个 5px 宽的拖动条在触屏上
+ * 既够不着也没意义，而 375px 下强行维持两列必然横向溢出（a11y 门槛检查 3）。 */
+
+.back {
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  text-decoration: none;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+}
+
+.back:hover {
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+/* ── 抬头 ─────────────────────────────────────────────────────────── */
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  margin-top: var(--s-5);
+}
+
+.headText {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.meta {
+  margin: var(--s-1) 0 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.audit {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+/* 琥珀警示条：spec §2 点名要它。琥珀在这套设计里只有一个含义——「这需要你看一眼」 */
+.warn {
+  display: flex;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--t-sm);
+  line-height: 1.7;
+}
+
+.warn strong {
+  font-weight: 600;
+}
+
+.warnLine {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--warn);
+}
+
+/* ── 分栏 ─────────────────────────────────────────────────────────── */
+
+.work {
+  display: grid;
+  grid-template-columns: var(--pv-split, 58%) 1px minmax(0, 1fr);
+  gap: var(--s-5);
+  align-items: start;
+  margin-top: var(--s-5);
+}
+
+.docCol,
+.mediaCol {
+  min-width: 0;
+}
+
+.mediaCol {
+  display: grid;
+  gap: var(--s-5);
+  align-content: start;
+}
+
+.handle {
+  align-self: stretch;
+  min-height: var(--s-10);
+  background: var(--line);
+  border-radius: var(--r-pill);
+  cursor: col-resize;
+}
+
+.handle:hover {
+  background: var(--brand);
+}
+
+/* ── tab ──────────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: var(--s-0);
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  background: none;
+  border: 0;
+  /* 选中态那条下划线：2px 走 --s-0，不写裸像素（tokens.css 第 1 条硬规矩） */
+  border-bottom: var(--s-0) solid transparent;
+  padding: var(--s-3) var(--s-4);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--brand);
+}
+
+.tabNum {
+  margin-left: var(--s-1);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.panel {
+  padding-top: var(--s-5);
+}
+
+.tabBody {
+  display: grid;
+  gap: var(--s-4);
+}
+
+/* ── 工具条（模板 / 格式 / 搜索）──────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.toolLabel {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.pick {
+  display: inline-flex;
+  gap: var(--s-0);
+  padding: var(--s-0);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.pickBtn {
+  font: inherit;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  background: none;
+  border: 0;
+  border-radius: var(--r-xs);
+  padding: var(--s-1) var(--s-3);
+  cursor: pointer;
+}
+
+.pickBtn:hover {
+  color: var(--ink);
+}
+
+.pickBtn[aria-checked='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.search {
+  max-width: 18em;
+}
+
+.count {
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+/* ── 说明与状态 ───────────────────────────────────────────────────── */
+
+.notice {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  font-size: var(--t-xs);
+  line-height: 1.75;
+  color: var(--ink-2);
+}
+
+.notice b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.backendText {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.75;
+  color: var(--ink-3);
+}
+
+.stateText {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.75;
+  color: var(--ink-2);
+}
+
+.stateText[data-state='absent'] {
+  color: var(--ink-3);
+}
+
+.reason {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.err {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--fail-line);
+  border-radius: var(--r);
+  background: var(--fail-soft);
+  color: var(--fail);
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.errInline {
+  color: var(--fail);
+}
+
+.errTitle {
+  margin: 0 0 var(--s-3);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.pageErr {
+  margin-top: var(--s-7);
+  display: grid;
+  gap: var(--s-4);
+  justify-items: start;
+}
+
+.retry {
+  font: inherit;
+  font-size: var(--t-xs);
+  margin-left: var(--s-2);
+  padding: var(--s-1) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.retry:hover {
+  border-color: var(--brand-line);
+  color: var(--brand-text);
+}
+
+.skel {
+  display: grid;
+  gap: var(--s-3);
+  margin-top: var(--s-5);
+}
+
+.emptyBox {
+  padding: var(--s-4);
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  display: grid;
+  gap: var(--s-3);
+}
+
+.emptyTitle {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.sample {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--s-1);
+}
+
+/* ── 分段列表（时间轴 / 转写共用形状）────────────────────────────── */
+
+.cueList,
+.turns {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.cue,
+.turn {
+  display: grid;
+  grid-template-columns: 4em minmax(0, 1fr);
+  gap: var(--s-1) var(--s-4);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  padding: var(--s-3) var(--s-2);
+  cursor: pointer;
+}
+
+.cue:hover,
+.turn:hover {
+  background: var(--surface-2);
+}
+
+.cue[aria-current='true'],
+.turn[aria-current='true'] {
+  background: var(--brand-soft);
+}
+
+.cueTime {
+  grid-row: 1 / span 2;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--brand-text);
+}
+
+.cueWho {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.cueText {
+  font-size: var(--t-md);
+  line-height: 1.75;
+  color: var(--ink);
+}
+
+.cueText mark,
+.cueWho mark {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-radius: var(--r-xs);
+}
+
+/* ── 正文 ─────────────────────────────────────────────────────────── */
+
+.seg {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-4);
+  background: var(--surface);
+}
+
+.segHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.segOrd {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.segState {
+  color: var(--ink-2);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.doc {
+  margin: var(--s-3) 0 0;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: var(--t-md);
+  line-height: 1.85;
+  color: var(--ink-2);
+}
+
+.path {
+  display: block;
+  margin-top: var(--s-2);
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  word-break: break-all;
+}
+
+.foot {
+  margin: 0;
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line-soft);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.rawBox {
+  display: grid;
+  gap: var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+
+.rawHead {
+  margin: 0;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ── 右下角：资产与去向 ───────────────────────────────────────────── */
+
+.side {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.sideHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.assetList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.asset {
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.assetRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.assetName {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-sm);
+  color: var(--ink);
+}
+
+.assetState {
+  font-size: var(--t-2xs);
+  color: var(--warn);
+}
+
+.assetState[data-ok='true'] {
+  color: var(--ink-3);
+}
+
+.assetState[data-missing='true'] {
+  color: var(--fail);
+}
+
+.assetMeta {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.kv {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  font-size: var(--t-xs);
+}
+
+.kv dt {
+  color: var(--ink-3);
+  margin-bottom: var(--s-0);
+}
+
+.kv dd {
+  margin: 0 0 var(--s-4);
+  color: var(--ink-2);
+  line-height: 1.7;
+}
+
+.kv dd:last-child {
+  margin-bottom: 0;
+}
+
+.kv b {
+  font-weight: 600;
+  color: var(--brand-text);
+}
+
+.kv b[data-allow='deny'] {
+  color: var(--warn);
+}
+
+/* ── 刻意不做的那一块 ─────────────────────────────────────────────── */
+
+.ask {
+  border: 1px dashed var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: var(--s-4);
+}
+
+.askHead {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ask p {
+  margin: 0 0 var(--s-3);
+  font-size: var(--t-xs);
+  line-height: 1.75;
+  color: var(--ink-3);
+}
+
+.ask p:last-child {
+  margin-bottom: 0;
+}
+
+.ask b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+/* ── 窄屏 ─────────────────────────────────────────────────────────── */
+
+/* 断点用 em 不用 px，有两个理由：
+   1. 令牌进不了 @media 的条件部分——CSS 自定义属性在那里不生效，所以这个数
+      没法收成一个具名令牌，而 tokens.css 第 1 条硬规矩禁的是裸像素；
+   2. em 跟着用户的字号缩放走：把字号调大的人需要更早地折成一列，而不是在
+      同一个物理宽度上被塞进两栏。56em ≈ 默认字号下的 896px。 */
+@media (max-width: 56em) {
+  .work {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .handle {
+    display: none;
+  }
+}
