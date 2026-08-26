@@ -1067,9 +1067,14 @@ const CHECK_TITLES: Array<[string, string]> = [
    已知缺口名单
    ══════════════════════════════════════════════════════════════════
 
-   `spec.md` §11 缺口 #2 已经把移动端列为已知缺口（「导航横向滚动、分诊条两列、
-   表格横向滚动。**能看，不好用。**」），brief 明写「F1 不负责 spec §11 的五个缺口」。
-   所以 375px 下那几条不该由 F1 修——但也绝不能悄悄消失。
+   **这份名单现在是空的。** 它原来装着 8 条来自 `spec.md` §11 缺口 #2（移动端）
+   的豁免：顶栏 7 个控件在 375px 下跑出视口，加上批量条被自身 left 偏移挤成竖柱。
+   F7 把那个缺口做完之后（窄屏断点：左栏收到顶上、顶栏换行、表格改卡片、
+   批量条改 left/right 双锚定），8 条同时不再复现，第 2 条硬约束因此让门槛红了，
+   于是按它自己的要求把这两组从名单里删掉。
+
+   名单留着（而不是连这段注释一起删）是因为下一次同样会需要它：
+   有 spec / 裁定背书的已知缺口该具名列在这里，而不是把某一项检查关掉。
 
    这份名单不是「把门槛调哑」的开关，它有三条硬约束，缺一条就退化成静音：
 
@@ -1101,44 +1106,8 @@ interface KnownGap {
   items: GapItem[]
 }
 
-const NARROW = /^375px\//
-const KNOWN_GAPS: KnownGap[] = [
-  {
-    id: 'gbar-narrow',
-    title: '顶栏在窄屏没有断点',
-    ref: 'docs/console/spec.md §11 缺口 #2（移动端：「能看，不好用」）· brief：F1 不负责 §11 的五个缺口',
-    reason: [
-      '左栏 --rail-w 定宽 196px，AppShell 的 grid-template-columns: var(--rail-w) minmax(0,1fr)',
-      '没有窄屏断点。375px 下内容列只剩 179px，顶栏这几个控件被推到 365–781px，',
-      '再被 base.css 的 `html, body { overflow-x: clip }` 切掉——看不见、也够不着。',
-      '修它是一个窄屏断点决策（左栏折叠 / 顶栏改抽屉），属于 F1 之外。',
-    ],
-    items: [
-      { what: '系统状态下拉跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口[\s\S]*GlobalBar__statePick/ },
-      { what: '全局搜索入口跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口[\s\S]*GlobalBar__search/ },
-      { what: '主题「浅色」按钮跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口、够不着：「浅色」[\s\S]*GlobalBar__themeBtn/ },
-      { what: '主题「深色」按钮跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口、够不着：「深色」[\s\S]*GlobalBar__themeBtn/ },
-      { what: '主题「跟随系统」按钮跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口、够不着：「跟随系统」[\s\S]*GlobalBar__themeBtnActive/ },
-      { what: '用户菜单跑出视口', check: '3 横向溢出', where: NARROW, text: /元素跑出视口[\s\S]*GlobalBar__user/ },
-      { what: '上面几条的合成结果：内容溢出到 body 之外', check: '3 横向溢出', where: NARROW, text: /内容溢出到 body 之外/ },
-    ],
-  },
-  {
-    id: 'batchbar-narrow',
-    title: '批量条心算居中，窄屏挤不进内容列',
-    ref: 'docs/console/spec.md §11 缺口 #2 · brief：F1 不负责 §11 的五个缺口',
-    reason: [
-      'BatchBar.module.css:5 用 `left: calc(50% + var(--rail-w)/2)` 心算居中到内容列。',
-      '375px 下这个偏移把可用宽度砍到 89.5px，条被挤成 97px 宽的竖柱（六个按钮各占一行），',
-      '中心落在视口 76% 处。它**既不横滚也不越界**——「页面横滚」和「元素跑出视口」两条都会放行，',
-      '只有第三条判据（渲染宽 > 视口宽 − 自身 left）抓得到。',
-      '修它要么给窄屏断点，要么改成 left/right 双锚定 + max-width，都是 F1 之外的决策。',
-    ],
-    items: [
-      { what: '批量条被自身 left 偏移挤成竖柱', check: '3 横向溢出', where: /^375px\/selected$/, text: /挤不进自己的位置[\s\S]*BatchBar__bar/ },
-    ],
-  },
-]
+/** 空 = 现在没有任何已知缺口被豁免。上面那段注释记着这里曾经装过什么、为什么空了。 */
+const KNOWN_GAPS: KnownGap[] = []
 
 interface AbsorbedItem { item: GapItem; hits: Finding[] }
 interface GapResult { gap: KnownGap; absorbed: AbsorbedItem[]; stale: GapItem[]; skipped: GapItem[] }

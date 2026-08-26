@@ -1,11 +1,21 @@
 /* 批量条：反相表面（近黑底 / 浅字），浮在内容区下沿。
  * 进出场只动 transform + opacity。 */
 
+/* 居中改成 left/right 双锚定 + margin-inline: auto，不再心算
+   `calc(50% + --rail-w/2)`。
+   心算那一版在窄屏上是坏的：375px 下 left 落在 285.5px，只剩 89.5px 可用，
+   条被挤成一根 97px 宽的竖柱，中心落在视口 76% 处——它**既不横滚也不越界**，
+   「页面横滚」和「元素跑出视口」两条判据都会放行（a11y 门槛的第三条判据才抓
+   得到）。双锚定之后可用宽度就是内容列本身，`width: fit-content` 自带上限，
+   挤不出去也算不错。 */
 .bar {
   position: fixed;
-  left: calc(50% + var(--rail-w) / 2);
+  left: var(--rail-w);
+  right: 0;
+  margin-inline: auto;
+  width: fit-content;
   bottom: var(--s-9);
-  transform: translateX(-50%) translateY(150%);
+  transform: translateY(150%);
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -24,9 +34,28 @@
 }
 
 .bar[data-show='true'] {
-  transform: translateX(-50%) translateY(0);
+  transform: translateY(0);
   opacity: 1;
   pointer-events: auto;
+}
+
+/* 窄屏（≤56em）左栏收到了顶上，内容列就是整个视口。
+   断点写死 56em 的理由见 ui/Table.module.css。 */
+@media (max-width: 56em) {
+  .bar {
+    left: 0;
+    bottom: var(--s-5);
+    /* left/right 都是 0，所以 100% 就是视口宽；留出两侧各半个 --s-6 的余白 */
+    max-width: calc(100% - var(--s-6));
+    /* 六个按钮在 375px 下必然换行，靠左会让最后一行孤零零吊在左边 */
+    justify-content: center;
+    row-gap: var(--s-2);
+  }
+
+  /* 换行之后竖线落在行首行尾，不再是分隔 */
+  .sep {
+    display: none;
+  }
 }
 
 .count {

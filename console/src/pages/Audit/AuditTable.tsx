@@ -52,7 +52,9 @@ export function AuditTable(props: AuditTableProps) {
 
   return (
     <div className={styles.tableWrap}>
-      <Table className={styles.table}>
+      {/* cards：窄屏（≤56em）一行一张卡片，而不是横向滚动（spec §11 缺口 2）。
+          每个 <td> 因此必须带 data-label——见 AuditRow。 */}
+      <Table className={styles.table} cards>
         <thead>
           <tr>
             <th>时间</th>

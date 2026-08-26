@@ -92,9 +92,10 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
   return (
     <>
       <tr data-testid={`audit-row-${row.id}`} data-deny={row.result.kind === 'deny' || undefined}>
-        <td className={styles.timeCell}>{fmtDateTime(row.at, now)}</td>
+        <td className={styles.timeCell} data-label="时间">{fmtDateTime(row.at, now)}</td>
 
-        <td>
+        {/* data-label 是窄屏卡片形态下的列名（`ui/Table` 的 cards 开关）*/}
+        <td data-label="操作者">
           <span className={styles.actor} data-testid={`audit-actor-${row.id}`} data-kind={row.actor.kind}>
             <span className={styles.actorBadge} data-kind={row.actor.kind} aria-hidden="true">
               {kind.letter}
@@ -109,7 +110,7 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
           </span>
         </td>
 
-        <td>
+        <td data-label="动作">
           <span className={styles.stack}>
             <span className={styles.main}>{row.actionLabel ?? row.action}</span>
             {/* 后端认不出的动作 `actionLabel` 是 null，此时主行显示的就是原值，
@@ -118,11 +119,11 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
           </span>
         </td>
 
-        <td>
+        <td data-label="对象">
           <ObjectCell object={row.object} />
         </td>
 
-        <td data-testid={`audit-result-${row.id}`} data-kind={row.result.kind}>
+        <td data-label="结果" data-testid={`audit-result-${row.id}`} data-kind={row.result.kind}>
           <span className={styles.stack}>
             <Pill tone={res.tone}>{res.label}</Pill>
             {res.note !== null && (
@@ -131,7 +132,7 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
           </span>
         </td>
 
-        <td>
+        <td data-label="细节">
           <span className={styles.stack}>
             <span className={styles.detail} data-testid={`audit-detail-${row.id}`}>
               {detailLine === null || detailLine === '' ? (

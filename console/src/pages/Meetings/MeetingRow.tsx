@@ -89,9 +89,15 @@ export function MeetingRow(props: MeetingRowProps) {
         </div>
       </td>
 
-      <td className={styles.host}>{m.missing.includes('host') ? '—' : m.host}</td>
+      {/* data-label 是窄屏卡片形态下的列名（`ui/Table` 的 cards 开关）。
+          宽屏下它不显示——列名在 thead 里。漏一个的表现是窄屏上那一格
+          只剩一个没人看得懂的值。 */}
+      <td className={styles.host} data-label="主持人">
+        {m.missing.includes('host') ? '—' : m.host}
+      </td>
 
       <td
+        data-label="资产"
         className={styles.assets}
         data-state={total === 0 ? 'na' : got < total ? 'partial' : 'full'}
         title={
@@ -104,7 +110,7 @@ export function MeetingRow(props: MeetingRowProps) {
         {m.unknownAssetTypes.length > 0 && <sup aria-hidden="true">?</sup>}
       </td>
 
-      <td className={styles.stage}>
+      <td className={styles.stage} data-label="拉取 · 归档">
         <div className={styles.stageRow}>
           <StageDot m={m} stage="fetch" isPending={isPending} onToggle={onToggleStage} />
           {/* 两阶段之间的连线：拉取完成才是实线，否则虚线——顺序关系是这一栏
@@ -114,11 +120,11 @@ export function MeetingRow(props: MeetingRowProps) {
         </div>
       </td>
 
-      <td className={styles.keep} data-testid={`keep-${m.id}`}>
+      <td className={styles.keep} data-label="本地保留" data-testid={`keep-${m.id}`}>
         <KeepCell m={m} now={now} isPending={isPending} onExtend={onExtend} />
       </td>
 
-      <td className={styles.grant} data-testid={`grant-${m.id}`}>
+      <td className={styles.grant} data-label="已授权给" data-testid={`grant-${m.id}`}>
         <GrantCell m={m} programs={programs} isPending={isPending} onOpenGrant={onOpenGrant} onRevoke={onRevoke} />
       </td>
 

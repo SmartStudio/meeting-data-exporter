@@ -524,6 +524,14 @@ describe('页面骨架', () => {
   })
 })
 
+describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
+  test('六个格子都带 data-label——卡片形态下 thead 不渲染，列名靠它', async () => {
+    const tr = await ready()
+    const labels = [...tr.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
+    expect(labels).toEqual(['时间', '操作者', '动作', '对象', '结果', '细节'])
+  })
+})
+
 describe('只读账号（spec §11 缺口 1）', () => {
   test('这一页本来就没有写入口，只读账号看到的与管理员一模一样', async () => {
     const router = createMemoryRouter([{ path: '/audit', element: <AuditPage /> }], {

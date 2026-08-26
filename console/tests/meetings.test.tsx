@@ -1024,6 +1024,47 @@ describe('页面骨架与令牌', () => {
   })
 })
 
+/* ── 窄屏卡片化（spec §11 缺口 2）───────────────────────────────── */
+
+describe('窄屏一行一张卡片', () => {
+  test('每个数据格都带 data-label——卡片形态下 thead 不渲染，列名靠它', async () => {
+    renderPage()
+    await ready()
+    const row = screen.getByTestId('row-m1')
+    const cells = [...row.querySelectorAll('td')]
+    // 前两格（勾选框、标题）与最后一格（详情箭头）本来就不需要列名
+    const needLabel = cells.slice(2, -1)
+    expect(needLabel.length).toBe(5)
+    expect(needLabel.map((td) => td.getAttribute('data-label'))).toEqual([
+      '主持人',
+      '资产',
+      '拉取 · 归档',
+      '本地保留',
+      '已授权给',
+    ])
+  })
+
+  test('表格开着 cards 开关，且窄屏下把 1020 的最小宽度卸掉', () => {
+    const tableCss = css('src/ui/Table.module.css')
+    expect(tableCss).toMatch(/@media \(max-width: 56em\)/)
+    expect(tableCss).toMatch(/content: attr\(data-label\)/)
+    // 逼出横滚的就是这个下限，卡片形态下必须卸掉
+    const mtCss = css('src/pages/Meetings/MeetingTable.module.css')
+    expect(mtCss).toMatch(/@media \(max-width: 56em\)[\s\S]*min-width:\s*0/)
+  })
+
+  test('批量条不再心算居中——那是 375px 下被挤成竖柱的根因', () => {
+    const barCss = css('src/pages/Meetings/BatchBar.module.css')
+    expect(stripComments(barCss)).not.toMatch(/calc\(50% \+ var\(--rail-w\)/)
+    expect(barCss).toMatch(/margin-inline:\s*auto/)
+  })
+
+  test('触屏没有 hover：「＋30 天」与详情箭头在窄屏常驻', () => {
+    const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
+    expect(rowCss).toMatch(/@media \(max-width: 56em\)[\s\S]*\.extendBtn,\s*\n\s*\.detailBtn\s*\{\s*\n\s*opacity:\s*1/)
+  })
+})
+
 /* ── 只读账号（spec §11 缺口 1）─────────────────────────────────── */
 
 describe('只读账号', () => {

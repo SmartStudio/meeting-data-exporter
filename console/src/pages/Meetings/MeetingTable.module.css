@@ -17,6 +17,14 @@
   padding-right: 0;
 }
 
+/* 窄屏改成卡片（`ui/Table` 的 cards 开关），那时就没有"内容最小宽度"这回事了：
+   1020px 的下限正是逼出横滚的那个数。断点 56em 写死的理由见 Table.module.css。 */
+@media (max-width: 56em) {
+  .table {
+    min-width: 0;
+  }
+}
+
 .checkbox {
   accent-color: var(--brand);
   cursor: pointer;

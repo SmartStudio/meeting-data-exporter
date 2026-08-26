@@ -420,6 +420,15 @@ describe('「新建任务」按钮已删（裁定 G-g）', () => {
   })
 })
 
+describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
+  test('失败项表的六个格子都带 data-label', async () => {
+    await mount(payload({ failuresTotal: 1, failures: [failure()] }))
+    const row = await screen.findByTestId('failure-row')
+    const labels = [...row.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
+    expect(labels).toEqual(['最近失败', '任务', '对象', '原因', '已重试', '影响'])
+  })
+})
+
 describe('只读账号（spec §11 缺口 1）', () => {
   test('「立即运行」禁用而不是消失，并且说得出为什么', async () => {
     stubApi(payload())
