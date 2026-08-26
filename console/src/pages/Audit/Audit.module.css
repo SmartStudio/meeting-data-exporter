@@ -1,0 +1,476 @@
+/* 操作审计页（spec.md §4.10）。
+ *
+ * 色值与间距一律走 styles/tokens.css 的具名令牌，这里不出现裸 px / hex
+ * （1px 边框是门槛明确豁免的那一个）。
+ *
+ * **这张表没有 min-width 令牌**：会议记录页那张表列多且密，需要一个定死的
+ * 内容宽度（--meetings-table-w）；这里的做法是给「时间 / 会议号 / 动作原值」
+ * 这几列 white-space: nowrap，让表格按内容自己撑开。横向溢出照样被
+ * ui/Table 的 .scroll 容器裹住，不会带着 body 一起滚。
+ * 少一个令牌就少一次改 tokens.css —— 阶段 5 有七个页面任务并行，
+ * 那个文件是公共汇聚点。
+ */
+
+/* ── 筛选条 ─────────────────────────────────────────────────────── */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-4);
+}
+
+/* 「只看被拒绝」与前三个身份筛选片不是同一个维度，中间留一道气口 */
+.gap {
+  width: var(--s-2);
+}
+
+.spacer {
+  margin-left: auto;
+}
+
+.loading {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.rangeWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.rangeOpt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  width: 100%;
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: var(--s-2) var(--s-3);
+  min-height: var(--tap-min);
+  cursor: pointer;
+  text-align: left;
+}
+
+.rangeOpt:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.rangeOpt[aria-checked='true'] {
+  color: var(--brand-text);
+  font-weight: 500;
+}
+
+.field {
+  max-width: 26ch;
+}
+
+.hint {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  line-height: 1.6;
+  max-width: 52ch;
+}
+
+/* ── 「未知身份筛不出来」这句提醒 ──────────────────────────────── */
+
+/* 琥珀＝这需要你看一眼。它说的是"你现在看到的结果里少了一类记录"，
+   而在审计页上"少了一类记录"正是最需要被看见的那种缺失。 */
+.caveat {
+  margin: 0 0 var(--s-4);
+  padding: var(--s-3) var(--s-5);
+  border: var(--s-px) solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  max-width: 78ch;
+}
+
+.caveat b {
+  font-weight: 600;
+}
+
+.caveat code {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+}
+
+/* ── 本次结果的时间窗口 ────────────────────────────────────────── */
+
+.window {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  align-items: baseline;
+  margin: 0 0 var(--s-3);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  line-height: 1.7;
+}
+
+.windowRange {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 后端兜的默认窗口——看不见的默认窗口会让"它在窗口之外"被读成"它没发生过" */
+.windowWarn {
+  font-weight: 500;
+  color: var(--warn);
+}
+
+.foot {
+  margin: var(--s-5) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  line-height: 1.7;
+  max-width: 70ch;
+}
+
+/* ── 表 ─────────────────────────────────────────────────────────── */
+
+.tableWrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.table tbody td {
+  vertical-align: top;
+}
+
+.timeCell {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-0);
+  min-width: 0;
+}
+
+.main {
+  font-size: var(--t-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.sub {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.link {
+  font-size: var(--t-sm);
+  color: var(--brand-text);
+  text-decoration: underline;
+  text-underline-offset: var(--s-0);
+  overflow-wrap: anywhere;
+}
+
+/* 缺失的字段。它不是"没什么可说"，是"这里本该有东西而库里没有"，
+   所以给一句话 + 中性偏灰，绝不留空白——空白让人以为是渲染坏了。 */
+.missing {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+/* ── 操作者色块（spec §4.10：prog 蓝 / person 中性 / sys 灰）─────── */
+
+.actor {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+/* 色块里那一个字（程 / 人 / 系 / ?）是 aria-hidden 的装饰，读屏念的是
+   它旁边那行「程序 · service_account」——颜色不是唯一的信息载体。 */
+.actorBadge {
+  flex: none;
+  width: var(--s-6);
+  height: var(--s-6);
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  background: var(--rail);
+  color: var(--ink-2);
+}
+
+.actorBadge[data-kind='prog'] {
+  background: var(--brand-soft);
+  color: var(--brand-text);
+}
+
+.actorBadge[data-kind='sys'] {
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
+/* 认不出的 actor_type。**不折进上面三种任何一种**：折成 prog 是把一次人的
+   操作说成程序干的，折成 person 是反过来。琥珀＝这需要你看一眼。 */
+.actorBadge[data-kind='unknown'] {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* ── 结果 ───────────────────────────────────────────────────────── */
+
+/* 被拒绝的记录是红的（spec §4.10），拒绝原因跟着红——它是这一行的重点。 */
+.denyNote {
+  font-size: var(--t-2xs);
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+/* 整行的左沿也标一道红：一屏几十行时，只有一格红字扫不出来 */
+.table tbody tr[data-deny] td:first-child {
+  box-shadow: inset var(--s-1) 0 0 var(--fail);
+}
+
+/* ── 细节 ───────────────────────────────────────────────────────── */
+
+.detail {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.expandBtn {
+  align-self: flex-start;
+  font: inherit;
+  font-size: var(--t-2xs);
+  font-weight: 500;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--brand-text);
+  text-decoration: underline;
+  text-underline-offset: var(--s-0);
+  cursor: pointer;
+}
+
+.expandCell {
+  background: var(--surface-2);
+}
+
+.expanded {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-7);
+  margin: 0;
+}
+
+.fact {
+  min-width: 0;
+}
+
+.factTerm {
+  margin: 0;
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.factValue {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.detailFull {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+/* 附文是紧凑 JSON，原样展示：拆开重排会把"当时那条规则长什么样"变成
+   "我们现在认为它长什么样"。溢出滚在自己容器里，不带着页面横滚。 */
+.pre {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: auto;
+}
+
+/* ── 三态：大空态（读不到 / 一条都没有）───────────────────────── */
+
+.big {
+  padding: var(--s-10) var(--s-7);
+  text-align: center;
+}
+
+.bigTitle {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.bigText {
+  margin: 0 auto var(--s-5);
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.7;
+  max-width: 52ch;
+}
+
+.bigText b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.bigActs {
+  display: flex;
+  gap: var(--s-2);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* 红只用于失败。读不到审计是失败，所以标题走 --fail；
+   但正文那句「记录还在库里」仍然是中性的，不跟着变红。 */
+.big[data-kind='error'] .bigTitle {
+  color: var(--fail);
+}
+
+.errDetail {
+  margin: var(--s-5) 0 0;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* ── 三态：小空态（筛没了 / 时间范围之外）──────────────────────── */
+
+.small {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-3);
+  padding: var(--s-9) var(--s-6);
+  text-align: center;
+  color: var(--ink-3);
+  font-size: var(--t-sm);
+  flex-wrap: wrap;
+}
+
+/* ── 分页器 ─────────────────────────────────────────────────────── */
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-5);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  flex-wrap: wrap;
+}
+
+.pagerRange {
+  font-variant-numeric: tabular-nums;
+}
+
+.pagerSize {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.select {
+  font: inherit;
+  font-size: var(--t-xs);
+  color: var(--ink);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s-px) var(--s-1);
+  cursor: pointer;
+}
+
+.pagerNav {
+  margin-left: auto;
+  display: inline-flex;
+  gap: var(--s-1);
+  align-items: center;
+}
+
+.pageSlot {
+  display: inline-flex;
+  gap: var(--s-1);
+  align-items: center;
+}
+
+.pageGap {
+  color: var(--ink-3);
+}
+
+.pageBtn {
+  font: inherit;
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  min-width: var(--s-7);
+  height: var(--s-7);
+  padding: 0 var(--s-2);
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.pageBtn:hover:not(:disabled) {
+  border-color: var(--ink-4);
+  color: var(--ink);
+}
+
+.pageBtn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.pageBtn[aria-current='page'] {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--on-brand);
+  font-weight: 500;
+}

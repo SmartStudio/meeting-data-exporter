@@ -103,6 +103,17 @@ beforeEach(() => {
       }
       if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
       if (url.endsWith('/api/v1/admin/jobs')) return json(healthyJobs())
+      // 操作审计页（F5c）挂载时会真的去读这条。答一页空结果就够——
+      // 这个文件测的是外壳的导航，不是那一页的内容。
+      if (url.includes('/api/v1/admin/audit')) {
+        return json({
+          rows: [],
+          total: 0,
+          limit: 50,
+          offset: 0,
+          window: { from: 1699395200, to: null, isDefault: false, days: 7, text: null },
+        })
+      }
       throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
     }),
   )
@@ -176,16 +187,19 @@ describe('AppShell · 左栏与路由', () => {
     expect(screen.getByRole('link', { name: '采集授权' })).toHaveAttribute('aria-current', 'page')
   })
 
-  test('六个空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
+  test('还没接线的空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
     // `_Placeholder` 在 F0 删掉了：七个页面任务并行开工，每人只碰
     // `pages/<自己>/`，路由表不再有人回来改。空壳仍然不许是白页——
     // 演示时白页看起来像坏了。
+    //
+    // **这份名单只能变短**：一页接完线之后它就不再是空壳，把自己那一行
+    // 删掉是那个任务的活（F5c 删掉了 `/audit`）。留着不删的话，这条测试
+    // 会红——那正是它该做的事。
     const cases: Array<[string, string, string]> = [
       ['/consumers', '采集授权', 'F4'],
       ['/rules', '自动规则', 'F3'],
       ['/jobs', '定时任务', 'F5a'],
       ['/storage', '归档存储', 'F5b'],
-      ['/audit', '操作审计', 'F5c'],
       ['/preview/m1', '内容预览', 'F6'],
     ]
     for (const [path, title, phase] of cases) {
