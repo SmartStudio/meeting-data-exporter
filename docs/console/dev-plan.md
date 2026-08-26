@@ -315,12 +315,38 @@ spec 相反（§5 冲突 C1）——这不是「改个符号」：旧数据是�
 
 | 任务 | 内容 | 落点 | 规模 |
 | --- | --- | --- | --- |
-| ~~A1~~ | ~~管理员会话~~ | `src/store/admin.ts` + `src/auth/admin.ts` + `admin_accounts`/`admin_sessions` 表，argon2id 复用 `auth/service.ts` | ✅ **已完成，2026-08-24** |
-| **A2** | 会议查询 API（G7） | `src/http/handlers/console/meetings.ts` | 大 |
-| **A3** | 规则 / 授权 / 任务 / 存储 API | `src/http/handlers/console/*.ts` | 中 |
-| **A4** | 定时任务调度器（G5） | `src/worker/scheduler.ts` | 中 |
-| **A5** | 审计读侧（G8） | `src/store/audit.ts` 补查询 | 小 |
-| **A6** | 内容读取（G9） | `src/http/handlers/console/content.ts` | 中 |
+| ~~A1~~ | ~~管理员会话~~ | `src/store/admin.ts` + `src/auth/admin.ts` + `admin_accounts`/`admin_sessions` 表 | ✅ **已完成，2026-08-24** |
+| ~~**A2**~~ | ~~会议查询 API（G7）~~ | `src/store/console-meetings.ts` + `src/http/handlers/console/meetings.ts` | ✅ **2026-08-26**（T1 · T5） |
+| ~~**A3**~~ | ~~规则 / 授权 / 存储 API~~ | `src/store/{policy,programs,console-storage}.ts` + `src/http/handlers/console/{rules,grants,storage}.ts` | ✅ **2026-08-26**（T2 · T6 · T7 · T8） |
+| ~~**A4**~~ | ~~定时任务调度器（G5）~~ | `migrations/008` + `src/worker/scheduler.ts` + `src/store/jobs.ts` + `handlers/console/jobs.ts` | ✅ **2026-08-26**（T11） |
+| ~~**A5**~~ | ~~审计读侧（G8）~~ | `src/store/audit.ts` 的 `AuditQueryStore` + `handlers/console/audit.ts` | ✅ **2026-08-26**（T3 · T9） |
+| ~~**A6**~~ | ~~内容读取（G9）~~ | `migrations/007` + `src/store/contents.ts` + `handlers/console/content.ts` | ✅ **2026-08-26**（T4 · T10） |
+| ~~**A7**~~ | ~~拉取规则栈接线（本阶段新增，见 E-c）~~ | `src/worker/fetch-policy.ts` + `index.ts` / `scheduler.ts` 两处触发源 | ✅ **2026-08-26**（T12） |
+| ~~**T13**~~ | ~~元数据不全的会议落到拒绝侧（执行途中发现的安全缺口）~~ | `src/policy/{conds,stacks,access}.ts` + `worker/visibility.ts` | ✅ **2026-08-26** |
+
+> **阶段 4 已完成（2026-08-26）**：12 个任务、43 条路由、根 1247 pass / console 133 pass。
+> 逐任务与七条开工前裁定见
+> [`plans/2026-08-26-console-stage4-api-and-scheduler.md`](../superpowers/plans/2026-08-26-console-stage4-api-and-scheduler.md)。
+>
+> **执行途中撞出来的五件事**，都不在开工前的七条里：
+>
+> | | 发现 | 处置 |
+> | --- | --- | --- |
+> | **T13** | `meetings` 表列全 nullable，NULL 标题折成空串后 `title has X → deny` 判不匹配、**落在放行侧**，再被低优先级 allow 接手。**缺口只朝一个方向漏**——配一条 allow 规则试，看起来一切正常 | 已修：判定区分「事实为空」与「没有这个事实」，三栈各落自己的安全侧 |
+> | **秒 / 毫秒** | `audit_log.occurred_at` 被注释写成毫秒，实际是秒。两个独立的任务各自撞上它。照毫秒算「最近 7 天」下界得负数：**实际拉全表，响应上仍写着「最近 7 天」** | 四处注释已统一 |
+> | **`audit_log` 装不下** | 最宽一列是 `asset_id VARCHAR(255)`，装不下一条完整规则，也装不下拒绝原因。两个任务各自撞墙 | `migrations/008` 已加 `detail TEXT`，**写入方尚未改用它** |
+> | **无下载执行体** | spec §4.8 的四个定时任务里没有下载执行体（任务一逐字是「发现并入队」）。只跑调度器时资产排在队列里没人取，而**四个任务全绿** | 照 spec 实现，已写进入口注释与 `.env.example`。**要不要补，是产品决定** |
+> | **无章节数据源** | spec §4.4 的时间轴要章节，但 `tencent/records.ts` 没有取章节的调用点、库里也没有列 | 端点建了，`chapters` 恒空 + `source: 'none'`，另给转写解析出的 `cues` |
+>
+> **四处「规格要的东西没有数据源」全部选了如实报缺**：`why.fetch`（接线前）· 归档失败项 ·
+> 拒绝原因 · 章节。一处都没有编数据——理由都是同一条：编一个看起来像结论、
+> 实际没经过判定的值，比不给更糟。
+>
+> **⚠️ A7 的部署提示**：接线后**不需要**任何上线前动作，库里没有启用的拉取规则时
+> 走兼容模式（合成「全拉」兜底 + 每轮告警），行为与接线前逐字相同。
+> 但**建下第一条拉取规则的那一刻兜底就翻面**，没被规则命中的会议将不再被拉取。
+> 建议第一条建成无条件「全拉」，确认日志 `mode=governed` 且 `fetched` 数与之前的
+> `meetings` 数一致，再逐步收紧。回滚 = 规则页把拉取规则全部停用，不用重新部署。
 
 **A2 是大头**：它要的不是一张表的查询，而是**四个维度的状态 + 逐阶段判定理由 +
 授权列表 + 保留窗口**拼进同一行，外加分诊条的五个计数。这也是 `store/meetings`
