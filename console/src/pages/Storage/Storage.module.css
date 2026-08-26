@@ -1,0 +1,375 @@
+/* 归档存储页（spec.md §4.9）。两块面板 + 一条容量条 + 若干统计格。
+   色值与间距一律走 tokens.css，这里一个裸值都不许有。 */
+
+.panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+}
+
+.panel {
+  background: var(--surface);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--s-6);
+  min-width: 0;
+}
+
+.panelHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+
+.panelHeadText {
+  flex: 1;
+  min-width: 0;
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* 挂载点这类路径用等宽字体：中文正文里混一段路径，比例字体会让它糊成一团。 */
+.path {
+  margin: var(--s-1) 0 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.metaSep {
+  padding: 0 var(--s-2);
+  color: var(--ink-4);
+}
+
+.note {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  line-height: 1.8;
+  max-width: 70ch;
+  overflow-wrap: anywhere;
+}
+
+.note b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* 「配置值非法」这类必须被看见的说明：琥珀底，唯一含义是"这需要你看一眼"。 */
+.warnNote {
+  margin: var(--s-4) 0 0;
+  padding: var(--s-3) var(--s-4);
+  background: var(--warn-soft);
+  border: var(--s-px) solid var(--warn-line);
+  border-radius: var(--r);
+  font-size: var(--t-sm);
+  color: var(--warn);
+  line-height: 1.8;
+  max-width: 70ch;
+  overflow-wrap: anywhere;
+}
+
+.failNote {
+  composes: warnNote;
+  background: var(--fail-soft);
+  border-color: var(--fail-line);
+  color: var(--fail);
+}
+
+/* ── 容量条 ───────────────────────────────────────────────────── */
+
+.cap {
+  display: flex;
+  height: var(--s-3);
+  margin: var(--s-5) 0 0;
+  border-radius: var(--r-pill);
+  background: var(--rail);
+  overflow: hidden;
+}
+
+.capUs {
+  background: var(--brand);
+}
+
+/* --ink-4 是图形专用令牌（描边/分隔/填充），这里正是"填充"，不是文字。 */
+.capOthers {
+  background: var(--ink-4);
+  opacity: 0.4;
+}
+
+.capKey {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-5);
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+}
+
+.capKeyItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.swatch {
+  width: var(--s-3);
+  height: var(--s-3);
+  border-radius: var(--r-xs);
+  flex: none;
+}
+
+.swatchUs {
+  background: var(--brand);
+}
+
+.swatchOthers {
+  background: var(--ink-4);
+  opacity: 0.4;
+}
+
+.capRest {
+  color: var(--ink-3);
+}
+
+/* ── 统计格 ───────────────────────────────────────────────────── */
+
+/* 用 flex 而不是 grid 的 minmax：minmax 要一个像素下限，而这一页不该为了
+   四个统计格往 tokens.css 里加一个只有它用的骨架尺寸令牌（那是七个并行任务
+   共用的文件）。`flex: 1 1 14ch` 用相对单位表达同一件事——放得下"保留期内 10"
+   这样一格，放不下就换行，375px 下不会挤成四条竖着的数字。 */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  margin: var(--s-5) 0 0;
+}
+
+.stat {
+  flex: 1 1 14ch;
+  border: var(--s-px) solid var(--line-soft);
+  border-radius: var(--r);
+  padding: var(--s-4);
+  min-width: 0;
+}
+
+.statK {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.statV {
+  margin-top: var(--s-1);
+  font-size: var(--t-2xl);
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* 拿不到的数不显示成 0——字号降下来，让"暂不可得"读起来是一句话而不是一个值。 */
+.statVMissing {
+  composes: statV;
+  font-size: var(--t-md);
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+.statVFail {
+  composes: statV;
+  color: var(--fail);
+}
+
+.statNote {
+  margin-top: var(--s-2);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.7;
+}
+
+/* ── 动作区 ───────────────────────────────────────────────────── */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin: var(--s-5) 0 0;
+}
+
+/* 375px 下这块面板里能用的宽度只剩九十来像素（左栏 196 + 主区左右留白 + 面板
+   内边距一层层吃掉），而「立即清理已到期文件」是九个汉字——Button 基元默认
+   `white-space: nowrap`，于是它会直挺挺地伸出视口，人够不着。
+   在这里放开换行而不是去改基元：别的地方的按钮短，nowrap 是对的。 */
+.actions > * {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+
+.cleanupState {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: var(--s-5) 0 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: 1.7;
+}
+
+.cleanupPaused {
+  composes: cleanupState;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.cleanupStateLabel {
+  font-weight: 600;
+}
+
+/* ── 浮层里的内容 ─────────────────────────────────────────────── */
+
+.formRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.formLabel {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.daysInput {
+  max-width: 12ch;
+}
+
+.formActions {
+  display: flex;
+  gap: var(--s-3);
+  margin-top: var(--s-5);
+  flex-wrap: wrap;
+}
+
+.alert {
+  margin: var(--s-4) 0 0;
+  padding: var(--s-3) var(--s-4);
+  background: var(--fail-soft);
+  border: var(--s-px) solid var(--fail-line);
+  border-radius: var(--r);
+  font-size: var(--t-sm);
+  color: var(--fail);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.lede {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: 1.8;
+}
+
+.lede b {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.keeps {
+  margin: var(--s-4) 0 0;
+  padding: var(--s-3) var(--s-4);
+  background: var(--brand-soft);
+  border: var(--s-px) solid var(--brand-line);
+  border-radius: var(--r);
+  font-size: var(--t-sm);
+  color: var(--brand-text);
+  line-height: 1.8;
+}
+
+.itemList {
+  margin: var(--s-4) 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 40vh;
+  overflow-y: auto;
+  border: var(--s-px) solid var(--line-soft);
+  border-radius: var(--r);
+}
+
+.item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  border-bottom: var(--s-px) solid var(--line-soft);
+}
+
+.item:last-child {
+  border-bottom: none;
+}
+
+.itemId {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.itemSize {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.resultLine {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: 1.8;
+}
+
+.resultFail {
+  composes: resultLine;
+  color: var(--fail);
+}
+
+/* ── 三态 ─────────────────────────────────────────────────────── */
+
+.skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.errorBox {
+  padding: var(--s-6);
+  background: var(--fail-soft);
+  border: var(--s-px) solid var(--fail-line);
+  border-radius: var(--r-lg);
+  color: var(--fail);
+  font-size: var(--t-sm);
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+.errorActions {
+  margin-top: var(--s-4);
+}

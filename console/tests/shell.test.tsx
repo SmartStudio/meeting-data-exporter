@@ -176,15 +176,17 @@ describe('AppShell · 左栏与路由', () => {
     expect(screen.getByRole('link', { name: '采集授权' })).toHaveAttribute('aria-current', 'page')
   })
 
-  test('六个空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
+  test('还没接线的空壳页各自打得开、有自己的 h1、写明由哪个任务接线，不留空白', async () => {
     // `_Placeholder` 在 F0 删掉了：七个页面任务并行开工，每人只碰
     // `pages/<自己>/`，路由表不再有人回来改。空壳仍然不许是白页——
     // 演示时白页看起来像坏了。
+    //
+    // **接完线的页面要从这张表里删掉**，否则这条测试会去它上面找那个本该
+    // 消失的"由 Fx 接线"占位说明。`/storage` 已经由 F5b 接线，见下一条。
     const cases: Array<[string, string, string]> = [
       ['/consumers', '采集授权', 'F4'],
       ['/rules', '自动规则', 'F3'],
       ['/jobs', '定时任务', 'F5a'],
-      ['/storage', '归档存储', 'F5b'],
       ['/audit', '操作审计', 'F5c'],
       ['/preview/m1', '内容预览', 'F6'],
     ]
@@ -194,6 +196,15 @@ describe('AppShell · 左栏与路由', () => {
       expect(screen.getByText(new RegExp(phase))).toBeInTheDocument()
       unmount()
     }
+  })
+
+  test('归档存储页已经接上真 API（F5b），不再是空壳', async () => {
+    // 系统状态横幅上的「暂停到期清理」链到这一页，所以这里顺带盯着那条链的落点：
+    // 页面得真的渲染出那个开关，而不是一句"由 F5b 接线"。
+    renderApp('/storage')
+    expect(await screen.findByRole('heading', { name: 'NAS 归档', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '暂停到期清理' })).toBeInTheDocument()
+    expect(screen.queryByText(/F5b/)).toBeNull()
   })
 
   test('内容区是唯一的 <main>——空壳页自己不再套一个', async () => {
