@@ -55,6 +55,7 @@ import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
+import { createContentLookup } from '../../src/http/handlers/console/content'
 // 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
 import {
   startFakeTencentServer,
@@ -244,6 +245,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     consoleMeetings,
     meetingVisibility,
     meetingHistory: auditStore,
+    // 内容预览（阶段 4 · T10）。装配方式跟随 src/index.ts
+    contents: createContentLookup(dbPool),
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

@@ -39,6 +39,7 @@ import type { RowDataPacket } from 'mysql2/promise'
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import type { StorageDeps } from '../../src/http/handlers/console/storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
+import { createContentLookup } from '../../src/http/handlers/console/content'
 import type { VisibilityDeps } from '../../src/worker/visibility'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
@@ -211,6 +212,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     consoleMeetings,
     meetingVisibility,
     meetingHistory: auditStore,
+    // 内容预览（阶段 4 · T10）。装配方式跟随 src/index.ts：真实实现接同一个测试库
+    contents: createContentLookup(pool),
   }
 
   return { app: createApp(deps), deps, pool }

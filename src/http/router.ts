@@ -37,6 +37,10 @@ import type { ConsoleMeetingsStore } from '../store/console-meetings'
 import * as consoleRulesHandlers from './handlers/console/rules'
 import * as consoleMeetingsHandlers from './handlers/console/meetings'
 import type { VisibilityDeps } from '../worker/visibility'
+// 阶段 4 · T10（A6 内容读取 API）新增的一条依赖与两条路由。同样只追加，
+// 不动上面任何一行——本波次几个任务都在往这个文件里加东西，冲突保持成纯追加型才好合。
+import * as consoleContentHandlers from './handlers/console/content'
+import type { ContentLookup } from './handlers/console/content'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -138,6 +142,16 @@ export interface AppDeps {
    * 同一个理由——依赖上写着用得到的那几件事，读代码的人不必去猜。
    */
   meetingHistory: Pick<AuditQueryStore, 'listForMeeting'>
+  /**
+   * `asset_contents` 的读侧（阶段 4 · T10，A6）。写侧是 T4 的 `src/store/contents.ts`,
+   * 本字段一个字都不改它。
+   *
+   * 单开一个窄接口而不是把 `ContentsStore` 整个塞进来：那个 store 的 `get` 要**五段全键**,
+   * 答不了内容预览真正要问的「这场会议这一类有几段」——而同一类文本资产可以有多段
+   * （见 migrations/007_asset_contents.sql 的表头），按四段查会漏掉第二段。
+   * 与 `auditMeetings` 收窄成两个方法是同一个先例。
+   */
+  contents: ContentLookup
 }
 
 export interface RouteCtx {
@@ -234,6 +248,13 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/meetings/triage', consoleMeetingsHandlers.meetingTriage),
   compile('GET', '/api/v1/admin/meetings', consoleMeetingsHandlers.listMeetings),
   compile('GET', '/api/v1/admin/meetings/:meetingId', consoleMeetingsHandlers.getMeeting),
+  // A6 内容预览（阶段 4 · T10）。spec §4.4。两条都走 requireAdminAuth，且**两条都留痕**
+  // ——管理员查看会议内容会留痕，被规则禁止采集的那些尤其（spec §2）。
+  //
+  // 不会与上面那条 `/:meetingId` 打架：`compile` 出来的 `[^/]+` 不跨段，三段路径
+  // 匹配不到两段的模式。`/content/chapters` 与 `/content` 同理，多一段就是另一条路由。
+  compile('GET', '/api/v1/admin/meetings/:meetingId/content', consoleContentHandlers.getContent),
+  compile('GET', '/api/v1/admin/meetings/:meetingId/content/chapters', consoleContentHandlers.getChapters),
 ]
 
 /**

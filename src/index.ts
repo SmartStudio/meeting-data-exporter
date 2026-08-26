@@ -24,6 +24,7 @@ import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
 import { createAuditMeetingLookup } from './http/handlers/console/audit'
+import { createContentLookup } from './http/handlers/console/content'
 import { createLoginRateLimiter } from './http/ratelimit'
 import { createProgramsStore } from './store/programs'
 import { createConsoleMeetingsStore } from './store/console-meetings'
@@ -217,6 +218,10 @@ async function main(): Promise<void> {
     consoleMeetings,
     meetingVisibility,
     meetingHistory: auditStore,
+    // 阶段 4 · T10（A6 内容读取）。`asset_contents` 的读侧，与 T4 的写侧
+    // （src/store/contents.ts，由 worker 与回填脚本使用）分成两个面：网关进程
+    // 只读、只按三段键取正文，写侧那套 NAS 读文件 + 哈希校验一行都用不上
+    contents: createContentLookup(pool),
   }
 
   const app = createApp(deps)
