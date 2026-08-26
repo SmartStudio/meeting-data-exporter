@@ -50,6 +50,8 @@ import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+// 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
+import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
 import {
   startFakeTencentServer,
   createFakeTencentState,
@@ -194,6 +196,10 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // 阶段 4 · T6（A3 规则 API）。复用上面已经建好的 policyStore / auditStore
+    policyStore,
+    auditStore,
+    consoleMeetings: createConsoleMeetingsStore(dbPool, { policy: policyStore }),
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }

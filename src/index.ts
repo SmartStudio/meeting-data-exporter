@@ -24,6 +24,9 @@ import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
 import { createLoginRateLimiter } from './http/ratelimit'
+// 阶段 4 · T6（A3 规则 API + 影响预览）：会议查询 store（T1）是预览与命中列表的
+// 会议全集来源。policyStore / auditStore 下面已经建好了，这里只多装配它一个
+import { createConsoleMeetingsStore } from './store/console-meetings'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -121,6 +124,11 @@ async function main(): Promise<void> {
     adminAuth,
     adminStore,
     cookieSecure,
+    // 阶段 4 · T6（A3 规则 API）。policyStore 与 auditStore 复用上面已经建好的那两个
+    // 实例，不另建一份——同一个进程里两份 store 指向同一个池，只是多一层间接
+    policyStore,
+    auditStore,
+    consoleMeetings: createConsoleMeetingsStore(pool, { policy: policyStore }),
   }
 
   const app = createApp(deps)

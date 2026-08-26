@@ -31,6 +31,8 @@ import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+// 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
+import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -153,6 +155,11 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // 阶段 4 · T6（A3 规则 API）。装配方式跟随 src/index.ts：复用上面已经建好的
+    // policyStore / auditStore，会议查询 store 接到同一个测试库
+    policyStore,
+    auditStore,
+    consoleMeetings: createConsoleMeetingsStore(pool, { policy: policyStore }),
   }
 
   return { app: createApp(deps), deps, pool }

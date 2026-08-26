@@ -19,6 +19,13 @@ import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
 import * as consoleAuthHandlers from './handlers/console/auth'
 import type { RateLimiter } from './ratelimit'
+// 阶段 4 · T6（A3 规则 API + 影响预览）新增的三条依赖与一组路由。
+// 追加在文件末尾一侧，不动上面任何一行——本波次有几个任务同时往这个文件里加东西，
+// 冲突保持成纯追加型才好合。
+import type { PolicyStore } from '../store/policy'
+import type { AuditStore } from '../store/audit'
+import type { ConsoleMeetingsStore } from '../store/console-meetings'
+import * as consoleRulesHandlers from './handlers/console/rules'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -52,6 +59,25 @@ export interface AppDeps {
   adminStore: AdminStore
   /** 生产环境必须为 true（cookie 的 Secure 属性依据它）；本地 http 开发环境为 false */
   cookieSecure: boolean
+
+  // ── 阶段 4 · T6（A3 规则 API）──────────────────────────────────────────
+  /**
+   * 规则的读写侧（T2）。**判定路径不走这里**：网关判 allow 栈走 `accessGate`，
+   * 这一份是控制台规则页的 CRUD 与影响预览要的「含 disabled 的全部规则」。
+   */
+  policyStore: PolicyStore
+  /**
+   * 审计写侧。管理员的每一次写操作都要落一行（阶段 4 计划 §1 约束 6），而
+   * `auditRecorder` 只认网关那三种动作（下载、登录、列会议），管理侧的动作
+   * 直接走 store 的 `record`——在 recorder 上给每个管理端点加一个方法，
+   * 只是把同一个 `AuditEntry` 换个地方拼。
+   */
+  auditStore: AuditStore
+  /**
+   * 控制台的会议查询（T1）。影响预览与「这条规则命中哪几场」要一批会议的事实，
+   * 会议全集只有这一个来源（`meetings` 表，见计划 §0 E-a）。
+   */
+  consoleMeetings: ConsoleMeetingsStore
 }
 
 export interface RouteCtx {
@@ -113,6 +139,16 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
   compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
   compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
+
+  // 自动规则（阶段 4 · T6，A3）。全部走 requireAdminAuth，写操作一律进 audit_log。
+  // /preview 与 /:id 不会互相吃掉：compile 出来的 `[^/]+` 不跨段，
+  // 而 preview 是 POST、:id 是 PATCH/DELETE，方法先一步就分开了
+  compile('GET', '/api/v1/admin/rules', consoleRulesHandlers.listRules),
+  compile('POST', '/api/v1/admin/rules', consoleRulesHandlers.createRule),
+  compile('POST', '/api/v1/admin/rules/preview', consoleRulesHandlers.previewRules),
+  compile('GET', '/api/v1/admin/rules/:id/matches', consoleRulesHandlers.ruleMatches),
+  compile('PATCH', '/api/v1/admin/rules/:id', consoleRulesHandlers.patchRule),
+  compile('DELETE', '/api/v1/admin/rules/:id', consoleRulesHandlers.deleteRule),
 ]
 
 /**
