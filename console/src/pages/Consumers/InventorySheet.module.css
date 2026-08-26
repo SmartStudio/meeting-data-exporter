@@ -1,0 +1,105 @@
+/* 「查看清单」面板的内容。面板本身（定位/遮罩/焦点）由 ui/Sheet 负责。 */
+
+.note {
+  margin: 0 0 var(--s-5);
+  font-size: var(--t-sm);
+  line-height: 1.8;
+  color: var(--ink-3);
+}
+.note b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.list {
+  list-style: none;
+  margin: 0 0 var(--s-5);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--t-sm);
+}
+.row:last-child {
+  border-bottom: 0;
+}
+/* 取不到的那些退到后面去，但不隐藏——"取不到"和"取得到"同样是这一页的答案。 */
+.row[data-blocked='true'] {
+  background: var(--surface-2);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ref {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.code {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.assets {
+  margin-top: var(--s-px);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.reason {
+  margin-top: var(--s-px);
+  font-size: var(--t-2xs);
+  line-height: 1.6;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.hand {
+  color: var(--warn);
+}
+
+.hint {
+  color: var(--ink-3);
+}
+
+.pill {
+  flex: none;
+}
+
+.sectionLabel {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.empty {
+  margin: 0 0 var(--s-5);
+  padding: var(--s-6);
+  text-align: center;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.foot {
+  margin: 0;
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}

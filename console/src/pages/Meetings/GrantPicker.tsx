@@ -105,9 +105,11 @@ export function GrantPicker({
             />
             <span>
               <span className={styles.optionName}>{c.name}</span>
-              <span className={styles.optionMeta}>
-                {c.id} · {c.scope}
-              </span>
+              {/* 这里原来还跟着一个 `c.scope`（'AI 纪要 + 完整转写' 一类）。
+                  那是个配置串，不是这个程序实际能取到的东西，阶段 5 · F4 连同
+                  `Consumer.scope` 一起删了——要看实际结果去采集授权页，那一页
+                  的每个数字都来自 `GET /admin/programs/:id/inventory`。 */}
+              <span className={styles.optionMeta}>{c.id}</span>
             </span>
           </label>
         ))}

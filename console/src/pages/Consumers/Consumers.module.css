@@ -1,0 +1,246 @@
+/* 采集授权页：程序卡片栅格 + 卡片正中间那句求交结果。
+ * 色值与间距一律走 tokens.css —— 这里不许出现字面色值或魔法间距。 */
+
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  /* auto-fill 而不是 auto-fit：只有两个程序时不要把两张卡拉成半屏宽，
+     那会让"这一页在讲什么"变成一场排版事故。 */
+  grid-template-columns: repeat(auto-fill, minmax(var(--consumer-card-w), 1fr));
+  gap: var(--s-5);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+.cardTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.ident {
+  min-width: 0;
+}
+
+.name {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.id {
+  display: block;
+  margin-top: var(--s-px);
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* ── 卡片正中间那块 ──────────────────────────────────────────
+   蓝底 = 数据可被取走（design-system §2.2 里 brand 的含义就是这个）。
+   所以只有真的能取走时才是蓝的；取不到、拉不到清单时都不该是蓝的，
+   否则颜色本身就在说一句与文字相反的话。 */
+.reach {
+  padding: var(--s-4);
+  border-radius: var(--r);
+  border: 1px solid var(--brand-line);
+  background: var(--brand-soft);
+  color: var(--brand-text);
+}
+
+.reach[data-kind='none'],
+.reach[data-kind='loading'] {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+/* 拉不到清单：琥珀，与"取不到"（中性）分开——一个是结论，一个是没有结论。 */
+.reach[data-kind='unavailable'] {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.reach[data-kind='reachable-no-assets'] {
+  border-color: var(--fail-line);
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+
+.reachLine {
+  margin: 0;
+  font-size: var(--t-md);
+  line-height: 1.7;
+}
+
+.reachNum {
+  font-weight: 700;
+  font-size: var(--t-xl);
+}
+
+.reachSoon {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--warn);
+}
+
+.reachLead {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+
+.reachReason {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.reachNote {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.reach[data-kind='unavailable'] .reachNote {
+  color: var(--warn);
+}
+
+.reachCaveat {
+  margin: 0 0 var(--s-3);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+/* ── "另有 N 场取不到" ─────────────────────────────────────── */
+
+.aside {
+  margin: 0;
+}
+
+.asideLead {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.tally {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.tallyItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.tallyLabel {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.tallyCount {
+  font-family: var(--mono);
+  color: var(--ink-2);
+}
+
+.tallySample {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+
+.tallyHint {
+  flex-basis: 100%;
+  color: var(--ink-3);
+}
+
+/* ── 卡片底部 ───────────────────────────────────────────────── */
+
+.cardFoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-top: auto;
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line-soft);
+}
+
+.meta {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── 三态 ───────────────────────────────────────────────────── */
+
+.empty {
+  margin: 0;
+  padding: var(--s-8) var(--s-5);
+  text-align: center;
+  font-size: var(--t-sm);
+  line-height: 1.8;
+  color: var(--ink-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.pageError {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-5);
+  background: var(--fail-soft);
+  border: 1px solid var(--fail-line);
+  border-radius: var(--r-lg);
+}
+
+.pageErrorText {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+.pageErrorNote {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-2);
+}

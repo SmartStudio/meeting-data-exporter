@@ -156,6 +156,11 @@
      所以收成令牌，由页面的 CSS Module 引用。 */
   --meetings-table-w: 1020px;
 
+  /* 采集授权页（阶段 5 · F4）程序卡片的最小列宽，喂给
+     `repeat(auto-fill, minmax(var(--consumer-card-w), 1fr))`。同样是骨架尺寸
+     而非内容值——写进 CSS Module 就是一个裸像素。 */
+  --consumer-card-w: 288px;
+
   /* 登录页（控制台阶段 2 Task 6）卡片定宽，同样是骨架尺寸而非内容值。
      `min(92vw, 360px)` 里的 360 若直接写死就是一个裸像素——同上一条的道理，
      收成具名令牌由 `Login.module.css` 引用。 */

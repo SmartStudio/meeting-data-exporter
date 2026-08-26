@@ -99,22 +99,20 @@ export interface Meeting {
   history: Array<{ at: number; text: string }>
 }
 
+/**
+ * 采集程序在会议记录页里需要的那一小块（授权面板要列出"授权给谁"）。
+ * 采集授权页用的是完整的 `ServiceProgram`（`api/admin/grants.ts`）。
+ *
+ * **`scope` 已经删掉，不要再加回来**（阶段 5 · F4，2026-08-26）：它在 mock 里是
+ * 一个配置串（'AI 纪要 + 完整转写'），而真实的 `GET /api/v1/admin/programs`
+ * 根本不下发这个字段。spec.md §4.5 明说采集授权页那句话「**是三个「与」求交
+ * 之后的实际结果，不是配置值**」——下发一个未经求交的配置串，等于把它伪装成
+ * 一次实际结果。要说"这个程序能取到什么"，唯一的来源是
+ * `GET /api/v1/admin/programs/:id/inventory` 的 `assetTypes`。
+ */
 export interface Consumer {
   id: string
   name: string
-  /**
-   * ⚠️ **真实的 `GET /api/v1/admin/programs` 不下发这个字段**（阶段 4 · T7 裁定，2026-08-26）。
-   *
-   * 它在 mock 里是一个配置串（'AI 纪要 + 完整转写'），而 spec.md §4.5 明说采集授权页
-   * 那句话「**是三个「与」求交之后的实际结果，不是配置值**」。下发一个未经求交的配置串，
-   * 等于把它伪装成一次实际结果——与「拉取规则栈没接线却在详情抽屉里报『由规则 #3 决定』」
-   * 是同一类错误。
-   *
-   * **F4 接线时的正确来源是 `GET /api/v1/admin/programs/:id/inventory` 的 `assetTypes`**
-   * （逐程序一个请求）。这个字段暂时留着只是为了不推倒 F1 的 mock 与现有页面，
-   * 接线时应当连同 mock 一起删掉。
-   */
-  scope: string
 }
 
 /** 分诊条五格。每格可点即筛选 */
