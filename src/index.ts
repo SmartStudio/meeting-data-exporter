@@ -24,6 +24,11 @@ import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
 import { createLoginRateLimiter } from './http/ratelimit'
+import { createProgramsStore } from './store/programs'
+import { createConsoleMeetingsStore } from './store/console-meetings'
+import type { MeetingKey } from './store/grants'
+import type { Meeting } from './domain/types'
+import type { RowDataPacket } from 'mysql2/promise'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -100,6 +105,24 @@ async function main(): Promise<void> {
   // （见 http/handlers/console/auth.ts 的 cookieAttrs 注释）。
   const cookieSecure = new URL(config.gatewayBaseUrl).protocol === 'https:'
 
+  // 采集授权（阶段 4 · T7，A3）。程序列表与建号的读写侧——注意这个 store 的读侧
+  // 类型里没有 secret_hash，控制台想漏也漏不出去（见 store/programs.ts 的文件头）
+  const programsStore = createProgramsStore(pool)
+
+  /**
+   * 采集清单（`worker/visibility.ts`）要批量的会议元数据。正主就是 T1 的
+   * `ConsoleMeetingsStore.getMeetings`——它与 `VisibilityDeps.getMeetings` 的语义
+   * 逐条对得上，包括「查不到的会议不造空壳顶上」那一条。
+   *
+   * **一处已知的缺口（T13）**：`meetings` 表的列全部 nullable，而 `getMeetings`
+   * 把 `subject IS NULL` 折成空串。空标题会让 `title has X → allow` 判不匹配
+   * （落在安全侧），但同样会让 `title has X → deny` 判不匹配——**落在放行侧**，
+   * 再被一条低优先级的 allow 规则接手。元数据不全的会议应当在 allow 栈上落到
+   * 拒绝并说明原因，那是「不许静默放行」这条全局约束的直接要求。
+   * 修法见阶段 4 计划的 T13，**不要在这里就地折衷**。
+   */
+  const consoleMeetings = createConsoleMeetingsStore(pool)
+
   const deps: AppDeps = {
     now,
     jwtSecret: config.jwtSecret,
@@ -121,6 +144,13 @@ async function main(): Promise<void> {
     adminAuth,
     adminStore,
     cookieSecure,
+    // 阶段 4 · T7（A3 采集授权）
+    programs: programsStore,
+    grantsStore,
+    policyStore,
+    archivesStore,
+    auditStore,
+    getMeetings: consoleMeetings.getMeetings,
   }
 
   const app = createApp(deps)

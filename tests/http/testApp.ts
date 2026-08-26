@@ -23,6 +23,7 @@ import { createIdentityMapper } from '../../src/auth/identity'
 import { createAdminStore } from '../../src/store/admin'
 import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
+import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
 import { createStsStore } from '../../src/store/sts'
 import { createStsManager } from '../../src/sts/manager'
 import { verifySignature, decryptEvent, decryptCheckStr } from '../../src/sts/crypto'
@@ -31,6 +32,10 @@ import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+import { createProgramsStore } from '../../src/store/programs'
+import type { MeetingKey } from '../../src/store/grants'
+import type { Meeting } from '../../src/domain/types'
+import type { RowDataPacket } from 'mysql2/promise'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -43,6 +48,17 @@ export const OPERATOR_ID = 'operator-1'
  * 密钥加密测试载荷，因此在这里固定导出，而不是每次随机生成）。
  */
 export const WEBHOOK_AES_KEY = Buffer.alloc(32, 7).toString('base64').slice(0, -1)
+
+/**
+ * `AppDeps.getMeetings` 的测试装配。**与 `src/index.ts` 用的是同一个实现**
+ * （T1 的 `ConsoleMeetingsStore.getMeetings`）——测试里另写一份读法，等于让
+ * 端到端测试验证的不是生产上真正会跑的那段代码。
+ */
+export function consoleMeetingLookup(
+  pool: Pool,
+): (keys: readonly MeetingKey[]) => Promise<readonly Meeting[]> {
+  return createConsoleMeetingsStore(pool).getMeetings
+}
 
 export function stubTencentClient(handlers: {
   get?: (path: string, query: QueryParams, opts?: RequestOptions) => unknown
@@ -106,7 +122,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
-  const accessGate = createAccessGate({ store: policyStore, grants: createGrantsStore(pool) })
+  const grantsStore = createGrantsStore(pool)
+  const accessGate = createAccessGate({ store: policyStore, grants: grantsStore })
   const archivesStore = createArchivesStore(pool)
 
   const auditStore = createAuditStore(pool)
@@ -153,6 +170,13 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // 阶段 4 · T7（A3 采集授权）：与上面几行同样是真实模块接到同一个测试库
+    programs: createProgramsStore(pool),
+    grantsStore,
+    policyStore,
+    archivesStore,
+    auditStore,
+    getMeetings: consoleMeetingLookup(pool),
   }
 
   return { app: createApp(deps), deps, pool }
