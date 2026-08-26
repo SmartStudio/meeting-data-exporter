@@ -160,6 +160,29 @@ export interface AuditWindow {
   text: string | null
 }
 
+/**
+ * 这一页 / 这一段历史里，**后端没有登记中文标签**的动作。
+ *
+ * 逐行的 `actionLabel` 为 null 已经把这件事说了一半，但那一半只有在有人盯着
+ * 某一行发呆时才看得见。后端因此按动作汇总一次（阶段 5 · A9），界面上要显示
+ * 成一句「这一页有 N 种动作后端还没登记名字」。
+ *
+ * **前端不许自己补一份动作名映射表**。补了之后「后端漏登记」这件事就被永久
+ * 掩盖：界面上一切正常，而后端那张表停在 3 行——审计页停摆两轮的原因正是
+ * 这个（F5c 报告缺口 1）。A9 为防漏登记加了类型收窄与源码扫描两道门，
+ * 前端兜底等于把那两道门的价值抵消掉。
+ *
+ * 全部登记过时是 `[]`（不是 null）：前端不必区分「没有」与「没算」。
+ */
+export interface UnlabeledAction {
+  /** 库里的原值。 */
+  action: string
+  /** **这一页 / 这一段历史里**它出现了几次。 */
+  count: number
+  /** 一句人话，**原样上屏**，前端不改写。 */
+  hint: string
+}
+
 export interface AuditPage {
   rows: AuditRow[]
   /** 去掉分页之后的命中总数，翻页时不变。 */
@@ -167,6 +190,8 @@ export interface AuditPage {
   limit: number
   offset: number
   window: AuditWindow
+  /** 见 `UnlabeledAction`。顺序是首次出现的顺序，与行序一致，好对。 */
+  unlabeledActions: UnlabeledAction[]
 }
 
 /** 后端支持的**全部**筛选维度。这里没有的，前端也不许有。 */
@@ -241,6 +266,22 @@ function readRow(r: R, raw: Record<string, unknown>, where: string): AuditRow {
   }
 }
 
+/**
+ * `unlabeledActions` 的读法。**两条端点共用**（`/audit` 与
+ * `/meetings/:id/history`），所以放在这里由 `api/admin/meetings.ts` import——
+ * 各读各的就是两份会各自漂的解析。
+ *
+ * 缺这个键就报形状错，不当成空数组：那样一来"后端全都登记过了"与
+ * "后端根本没算这件事"在界面上长得一模一样，而这条字段存在的全部理由
+ * 恰恰是把后者暴露出来。
+ */
+export function readUnlabeledActions(r: R, o: Record<string, unknown>): UnlabeledAction[] {
+  return r.objList(o, 'unlabeledActions', '').map((x, i) => {
+    const at = `unlabeledActions[${i}]`
+    return { action: r.str(x, 'action', at), count: r.num(x, 'count', at), hint: r.str(x, 'hint', at) }
+  })
+}
+
 function readWindow(r: R, o: Record<string, unknown>): AuditWindow {
   const raw = r.object(o.window, 'window')
   return {
@@ -287,5 +328,6 @@ export async function listAudit(filter: AuditFilter = {}): Promise<AuditPage> {
     limit: r.num(o, 'limit', ''),
     offset: r.num(o, 'offset', ''),
     window: readWindow(r, o),
+    unlabeledActions: readUnlabeledActions(r, o),
   }
 }

@@ -271,6 +271,7 @@ describe('api/admin/meetings · 操作历史', () => {
       },
     ],
     window: { since: 1699900000, sinceSource: 'meetings', text: null },
+    unlabeledActions: [],
   }
 
   test('读出现成的那一句 text，并带上判定结果供着色用', async () => {
@@ -299,5 +300,25 @@ describe('api/admin/meetings · 操作历史', () => {
     install(200, HISTORY)
     await fetchMeetingHistory('m-1', 50)
     expect(new URL(calls[0]!.url, 'http://x').searchParams.get('limit')).toBe('50')
+  })
+
+  test('actionLabel 是 null 时照样读得出来——契约就是 string | null（回归）', async () => {
+    // 以前这里用 `r.str` 校验，于是库里出现一个没登记标签的动作，
+    // 整段历史就打成形状错，抽屉里显示「读取失败」
+    install(200, {
+      ...HISTORY,
+      rows: [{ ...HISTORY.rows[0]!, actionLabel: null, text: 'frobnicate（未登记标签）' }],
+      unlabeledActions: [{ action: 'frobnicate', count: 1, hint: '这个动作在后端没有登记中文标签……' }],
+    })
+    const h = await fetchMeetingHistory('m-1')
+    expect(h.rows[0]!.actionLabel).toBeNull()
+    expect(h.rows[0]!.text).toContain('未登记标签')
+    expect(h.unlabeledActions[0]!.action).toBe('frobnicate')
+  })
+
+  test('缺 unlabeledActions 就报形状错，不静默当成「都登记过了」', async () => {
+    const { unlabeledActions: _u, ...body } = HISTORY
+    install(200, body)
+    await expect(fetchMeetingHistory('m-1')).rejects.toThrow(/unlabeledActions/)
   })
 })

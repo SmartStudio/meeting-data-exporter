@@ -540,6 +540,9 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
           text: h.text,
         })),
         window: { since: shift(shown.startAt), sinceSource: 'meetings', text: null },
+        // 这一段历史里没登记中文标签的动作。演示世界里每一行都登记过，
+        // 所以是空数组——**空数组不是 null**，前端不必区分「没有」与「没算」
+        unlabeledActions: [],
       })
     }
     if (tail === '/content' && method === 'GET') {

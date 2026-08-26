@@ -113,9 +113,18 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
         <td data-label="动作">
           <span className={styles.stack}>
             <span className={styles.main}>{row.actionLabel ?? row.action}</span>
-            {/* 后端认不出的动作 `actionLabel` 是 null，此时主行显示的就是原值，
-                不再重复一遍——重复只会让人以为这是两个不同的东西。 */}
-            {row.actionLabel !== null && <span className={styles.mono}>{row.action}</span>}
+            {row.actionLabel !== null ? (
+              <span className={styles.mono}>{row.action}</span>
+            ) : (
+              /* `actionLabel` 是 null = **后端没给这个动作登记中文名**。主行显示的
+                 就是原值，不再重复一遍；但必须说清那是原值——一行裸的
+                 snake_case 读起来与一个真的叫这个名字的动作一模一样，于是漏登记
+                 永远不会被人发现（后端那张表停在 3 行的原因就是这个）。
+                 措辞与 `/history` 那句 `<原值>（未登记标签）` 是同一个词。 */
+              <span className={styles.mono} data-testid={`audit-unlabeled-${row.id}`}>
+                未登记标签
+              </span>
+            )}
           </span>
         </td>
 

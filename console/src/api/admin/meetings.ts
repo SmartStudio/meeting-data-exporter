@@ -32,6 +32,8 @@
 import type { Triage } from '../types'
 import { apiGet, apiSend } from '../client'
 import { reader } from '../validate'
+// `unlabeledActions` 两条端点同形状，读法只有一份（在审计域里，那是它的出处）
+import { readUnlabeledActions, type UnlabeledAction } from './audit'
 
 const BASE = '/api/v1/admin'
 
@@ -167,8 +169,14 @@ export interface MeetingHistoryRow {
   at: number
   /** 后端拼好的一句人话，抽屉直接渲染 */
   text: string
-  /** 动作的中文名，供分组/筛选用 */
-  actionLabel: string
+  /**
+   * 动作的中文名。**没登记时是 null**，后端绝不回退成 snake_case 原值。
+   *
+   * 以前这里读成 `string` 且用 `r.str` 校验——契约从来就是 `string | null`，
+   * 于是库里出现一个没登记标签的动作时，整段操作历史会打成一个形状错，
+   * 而抽屉里显示的是「读取失败」。改成宽读（阶段 5 · F9）。
+   */
+  actionLabel: string | null
   /** allow / deny / null。着色看它——「被拒绝」要看得出来 */
   decision: string | null
   /** console / program / … 谁发起的 */
@@ -181,6 +189,12 @@ export interface MeetingHistory {
   rows: MeetingHistoryRow[]
   /** 这次查询的时间下界。`text` 非空时要显示出来：被截掉与本来就空不是一回事 */
   window: { since: number | null; sinceSource: string | null; text: string | null }
+  /**
+   * 这一段历史里后端没有登记中文标签的动作（阶段 5 · A9）。
+   * 每行的 `text` 里已经带着「（未登记标签）」四个字，这里另给结构化的一份，
+   * 好让抽屉汇总成一句提示。见 `api/admin/audit.ts` 的 `UnlabeledAction`。
+   */
+  unlabeledActions: UnlabeledAction[]
 }
 
 /* ── 校验 ───────────────────────────────────────────────────────── */
@@ -388,7 +402,8 @@ export async function fetchMeetingHistory(id: string, limit?: number): Promise<M
         id: r.num(row, 'id', where),
         at: r.num(row, 'at', where),
         text: r.str(row, 'text', where),
-        actionLabel: r.str(row, 'actionLabel', where),
+        // 契约是 `string | null`：没登记标签时后端给 null，**不回退成原值**
+        actionLabel: r.strOrNull(row, 'actionLabel', where),
         decision: typeof decision === 'string' ? decision : null,
         clientKind: typeof row.clientKind === 'string' ? row.clientKind : null,
       }
@@ -398,5 +413,6 @@ export async function fetchMeetingHistory(id: string, limit?: number): Promise<M
       sinceSource: r.strOrNull(win, 'sinceSource', 'window'),
       text: r.strOrNull(win, 'text', 'window'),
     },
+    unlabeledActions: readUnlabeledActions(r, o),
   }
 }

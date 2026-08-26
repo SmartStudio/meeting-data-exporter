@@ -373,6 +373,12 @@ describe('操作审计', () => {
     ).toBe(true)
     expect(page.rows.some((r) => r.detail === null), '没有缺明细的老记录').toBe(true)
     expect(page.rows.some((r) => r.actionLabel === null), '没有认不出的动作').toBe(true)
+    // 那条 `actionLabel: null` 的记录必须同时出现在顶层的汇总里——
+    // 否则 `?proto=1` 下「这一页有 N 种动作后端还没登记名字」那句提示不会出现，
+    // a11y 门槛的 audit 场景也就扫不到它
+    expect(page.unlabeledActions.length, '没有汇总出没登记标签的动作').toBeGreaterThan(0)
+    expect(page.unlabeledActions[0]!.count).toBeGreaterThan(0)
+    expect(page.unlabeledActions[0]!.hint).toContain('AUDIT_ACTION_LABELS')
   })
 
   test('时间是秒不是毫秒，且落在窗口里', async () => {

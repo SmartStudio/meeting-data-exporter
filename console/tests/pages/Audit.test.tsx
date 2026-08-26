@@ -59,7 +59,17 @@ function row(over: Record<string, unknown> = {}): Record<string, unknown> {
 }
 
 function pageOf(rows: Record<string, unknown>[], over: Record<string, unknown> = {}): unknown {
-  return { rows, total: rows.length, limit: 50, offset: 0, window: win(), ...over }
+  return {
+    rows,
+    total: rows.length,
+    limit: 50,
+    offset: 0,
+    window: win(),
+    // 后端按动作汇总的「这一页有哪几种动作没登记中文名」（阶段 5 · A9）。
+    // 全部登记过时是 `[]`，不是 null
+    unlabeledActions: [],
+    ...over,
+  }
 }
 
 function emptyPage(): unknown {
@@ -172,10 +182,20 @@ describe('审计条目', () => {
     expect(within(tr).getByText(/未知身份/)).toBeInTheDocument()
   })
 
-  test('后端认不出的动作显示原值，不留空也不藏起来', async () => {
+  test('后端没登记中文名的动作显示原值，并说清那是原值——不留空也不藏起来', async () => {
     serve([row({ action: 'purge_expired', actionLabel: null })])
     const tr = await ready()
     expect(within(tr).getByText('purge_expired')).toBeInTheDocument()
+    // 一行裸的 snake_case 读起来与一个真叫这名字的动作一模一样，
+    // 于是漏登记永远不会被发现。措辞与 /history 那句「（未登记标签）」一致
+    expect(within(tr).getByTestId('audit-unlabeled-1')).toHaveTextContent('未登记标签')
+  })
+
+  test('动作登记过时不出现那个标记，原值仍在第二行', async () => {
+    serve([row()])
+    const tr = await ready()
+    expect(within(tr).queryByTestId('audit-unlabeled-1')).toBeNull()
+    expect(within(tr).getByText('issue_download_url')).toBeInTheDocument()
   })
 
   test('对象：标题 + 会议号；能定位到会议时标题是通向内容预览的链接', async () => {
@@ -414,6 +434,55 @@ describe('时间窗口', () => {
     const line = screen.getByTestId('audit-window')
     expect(line.textContent).toContain('不限起点')
     expect(line.textContent).not.toContain('1970')
+  })
+})
+
+/* ── 后端还没登记中文名的动作（阶段 5 · A9 / F9）───────────────── */
+
+describe('unlabeledActions —— 这一页有几种动作后端还没登记名字', () => {
+  const HINT =
+    '这个动作在后端没有登记中文标签（src/audit/actions.ts 的 AUDIT_ACTION_LABELS 里没有这一行），' +
+    '界面上显示的是 audit_log 里的原值。'
+
+  test('汇总成一句，逐个点名并带出现次数；后端那句话原样上屏', async () => {
+    serve([row({ action: 'frobnicate', actionLabel: null })], {
+      unlabeledActions: [
+        { action: 'frobnicate', count: 2, hint: HINT },
+        { action: 'purge_expired', count: 1, hint: HINT },
+      ],
+    })
+    await ready()
+    const note = screen.getByTestId('audit-unlabeled-actions')
+    expect(note).toHaveTextContent(/2\s*种动作/)
+    expect(note).toHaveTextContent('frobnicate')
+    expect(note).toHaveTextContent(/frobnicate（2 次）/)
+    expect(note).toHaveTextContent(/purge_expired（1 次）/)
+    expect(note).toHaveTextContent(/AUDIT_ACTION_LABELS/)
+  })
+
+  test('同一句 hint 只说一遍，不按条数重复 N 行', async () => {
+    serve([row({ action: 'a', actionLabel: null })], {
+      unlabeledActions: [
+        { action: 'a', count: 1, hint: HINT },
+        { action: 'b', count: 1, hint: HINT },
+      ],
+    })
+    await ready()
+    const note = screen.getByTestId('audit-unlabeled-actions')
+    expect(within(note).getAllByText(HINT)).toHaveLength(1)
+  })
+
+  test('全部登记过时一个字都不说', async () => {
+    serve([row()])
+    await ready()
+    expect(screen.queryByTestId('audit-unlabeled-actions')).toBeNull()
+  })
+
+  test('读失败时不显示——那一句描述的是上一次成功的查询', async () => {
+    reply = () => ({ status: 500, body: { error: 'db_down' } })
+    renderPage()
+    await screen.findByTestId('audit-error')
+    expect(screen.queryByTestId('audit-unlabeled-actions')).toBeNull()
   })
 })
 
