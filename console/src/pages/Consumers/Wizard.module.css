@@ -1,0 +1,198 @@
+/* 接入向导的内容。面板本身（定位/遮罩/焦点）由 ui/Sheet 负责。 */
+
+.steps {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin: 0 0 var(--s-5);
+  padding: 0 0 var(--s-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.step[data-state='done'] {
+  color: var(--ink-2);
+}
+.step[data-state='now'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.stepN {
+  width: var(--s-6);
+  height: var(--s-6);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  font-size: var(--t-2xs);
+  font-family: var(--mono);
+}
+.step[data-state='done'] .stepN {
+  background: var(--ink-2);
+  border-color: var(--ink-2);
+  color: var(--surface);
+}
+.step[data-state='now'] .stepN {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--on-brand);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.lede {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.8;
+  color: var(--ink-3);
+}
+
+.strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.alert {
+  margin: 0 0 var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  color: var(--fail);
+  background: var(--fail-soft);
+  border: 1px solid var(--fail-line);
+  border-radius: var(--r);
+  overflow-wrap: anywhere;
+}
+
+/* ── 表单 ───────────────────────────────────────────────────── */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.label {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--t-2xs);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.fieldError {
+  margin: 0;
+  font-size: var(--t-2xs);
+  line-height: 1.6;
+  color: var(--fail);
+}
+
+/* ── 凭据 ───────────────────────────────────────────────────── */
+
+.secretRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.secretK {
+  flex: none;
+  width: var(--s-11);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.secretV {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.copied {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.ack {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--tap-min);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.checkbox {
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+/* ── 接入方式 ───────────────────────────────────────────────── */
+
+/* 代码块的底刻意不跟随主题——它是「内容本身」的底，不是界面的底
+   （tokens.css「内容表面」一节）。 */
+.snippet {
+  margin: 0;
+  padding: var(--s-4);
+  background: var(--code-ground);
+  color: var(--code-ink);
+  border-radius: var(--r);
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* ── 底部动作区 ─────────────────────────────────────────────── */
+
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-6);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+
+.spacer {
+  flex: 1;
+}
