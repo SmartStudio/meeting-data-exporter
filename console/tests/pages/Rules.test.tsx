@@ -4,6 +4,7 @@ import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import RulesPage from '../../src/pages/Rules/index'
+import { RULES_SCHEMA_BODY } from '../helpers/rulesSchema'
 
 /**
  * 自动规则页 + 规则编辑器（spec §4.6 / §4.7 / §5）。
@@ -174,6 +175,9 @@ function previewBody(over: Record<string, unknown> = {}) {
 
 function stubList(rules: unknown[]): void {
   reply(/\/api\/v1\/admin\/rules(\?|$)/, { rules })
+  // 条件字段与动作的取值域全部来自这条端点（阶段 5 · F9）。少了它，
+  // 这一页会挂一条「字段清单读不出来」的横幅并把编辑器禁掉——那正是它该做的事
+  reply(/\/api\/v1\/admin\/rules\/schema$/, RULES_SCHEMA_BODY)
   reply(/\/api\/v1\/admin\/programs$/, PROGRAMS)
 }
 
@@ -181,7 +185,8 @@ function stubList(rules: unknown[]): void {
 
 describe('三态（spec §8）', () => {
   test('加载失败时给出端点名与重试，不白屏也不装作空', async () => {
-    reply(/\/api\/v1\/admin\/rules/, { error: 'db_down' }, { status: 500 })
+    reply(/\/api\/v1\/admin\/rules\/schema$/, RULES_SCHEMA_BODY)
+    reply(/\/api\/v1\/admin\/rules(\?|$)/, { error: 'db_down' }, { status: 500 })
     mount()
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(/GET \/api\/v1\/admin\/rules/)
@@ -196,6 +201,109 @@ describe('三态（spec §8）', () => {
     const allow = screen.getByRole('region', { name: /采集权限规则/ })
     expect(allow).toHaveTextContent(/还没有规则/)
     expect(allow).toHaveTextContent(/任何外部程序都取不到/)
+  })
+})
+
+/* ── 清单来自 GET /rules/schema（阶段 5 · F9）────────────────── */
+
+describe('条件字段清单从后端拿，前端不留镜像', () => {
+  test('后端多一个运算符，下拉框里就多一个——前端一行都不用改', async () => {
+    const body = structuredClone(RULES_SCHEMA_BODY)
+    body.fields[0]!.ops.push({ op: 'startswith', label: '以…开头', unitSuffix: null })
+    reply(/\/api\/v1\/admin\/rules(\?|$)/, { rules: [ALLOW_RULE] })
+    reply(/\/api\/v1\/admin\/rules\/schema$/, body)
+    reply(/\/api\/v1\/admin\/programs$/, PROGRAMS)
+    reply(/\/rules\/preview$/, previewBody(), { method: 'POST' })
+    mount()
+
+    await screen.findByRole('heading', { name: /三、采集权限规则/ })
+    await userEvent.click(screen.getByRole('button', { name: '新建采集权限规则' }))
+    const panel = await screen.findByRole('dialog', { name: /新建采集权限规则/ })
+    const ops = within(panel).getAllByRole('combobox', { name: '条件运算符' })[0]!
+    expect(within(ops).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      '包含任一',
+      '不包含',
+      '以…开头',
+    ])
+  })
+
+  test('后端漏登记运算符中文名时下拉框里说出来，不拿 op 原值冒充中文名', async () => {
+    const body = structuredClone(RULES_SCHEMA_BODY)
+    body.fields[0]!.ops[1]!.label = null as unknown as string
+    reply(/\/api\/v1\/admin\/rules(\?|$)/, { rules: [ALLOW_RULE] })
+    reply(/\/api\/v1\/admin\/rules\/schema$/, body)
+    reply(/\/api\/v1\/admin\/programs$/, PROGRAMS)
+    reply(/\/rules\/preview$/, previewBody(), { method: 'POST' })
+    mount()
+
+    await screen.findByRole('heading', { name: /三、采集权限规则/ })
+    await userEvent.click(screen.getByRole('button', { name: '新建采集权限规则' }))
+    const panel = await screen.findByRole('dialog', { name: /新建采集权限规则/ })
+    expect(within(panel).getByRole('option', { name: /后端没有登记中文名/ })).toBeInTheDocument()
+  })
+
+  test('动作可选项与它下面那句解释都来自 schema', async () => {
+    stubList([ALLOW_RULE])
+    reply(/\/rules\/preview$/, previewBody(), { method: 'POST' })
+    mount()
+    await screen.findByRole('heading', { name: /三、采集权限规则/ })
+    await userEvent.click(screen.getByRole('button', { name: '新建采集权限规则' }))
+    const panel = await screen.findByRole('dialog', { name: /新建采集权限规则/ })
+    expect(panel).toHaveTextContent('准许采集')
+    expect(panel).toHaveTextContent(/仍需在会议列表里授权给具体程序才真的能取走/)
+  })
+
+  test('归档栈那段「目录模板」的说明来自 schema 的 freeform，不是前端写的', async () => {
+    stubList([{ ...FETCH_RULE, id: 30, kind: 'archive', effect: 'nas/x/' }])
+    reply(/\/rules\/preview$/, previewBody(), { method: 'POST' })
+    mount()
+    await screen.findByRole('heading', { name: /二、归档规则/ })
+    await userEvent.click(screen.getByRole('button', { name: '新建归档规则' }))
+    const panel = await screen.findByRole('dialog', { name: /新建归档规则/ })
+    expect(panel).toHaveTextContent(/不会搬迁已经归档过的文件/)
+    // 「填 skip 表示不归档」也是从 effects[0] 拼出来的
+    expect(panel).toHaveTextContent(/填\s*skip\s*表示不归档/)
+  })
+})
+
+describe('字段清单读不出来时（后端不可达 / 契约对不上）', () => {
+  async function withoutSchema() {
+    reply(/\/api\/v1\/admin\/rules(\?|$)/, { rules: [ALLOW_RULE] })
+    reply(/\/api\/v1\/admin\/rules\/schema$/, { error: 'db_down' }, { status: 500 })
+    reply(/\/api\/v1\/admin\/programs$/, PROGRAMS)
+    mount()
+    return screen.findByTestId('rules-schema-error')
+  }
+
+  test('说清是「字段清单读不出来」，并给出端点名与重试', async () => {
+    const box = await withoutSchema()
+    expect(box).toHaveTextContent(/字段清单读不出来/)
+    expect(box).toHaveTextContent(/GET \/api\/v1\/admin\/rules\/schema/)
+    expect(within(box).getByRole('button', { name: '重试' })).toBeInTheDocument()
+  })
+
+  test('规则照常列出来，但条件与动作退成库里的原值——不拿一份旧快照顶上', async () => {
+    await withoutSchema()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    // 「会议标题 包含任一「财务」」是清单读得到时的说法；读不到时只报原值
+    expect(row).toHaveTextContent('title has「财务」')
+    expect(row).not.toHaveTextContent('会议标题')
+    expect(row).not.toHaveTextContent('准许采集')
+  })
+
+  test('新建与编辑全部禁用，且说得出为什么', async () => {
+    await withoutSchema()
+    const create = await screen.findAllByRole('button', { name: /新建/ })
+    for (const b of create) {
+      expect(b).toBeDisabled()
+      expect(b).toHaveAttribute('title', expect.stringMatching(/字段清单读不出来/))
+    }
+    expect(screen.getAllByRole('button', { name: '编辑' })[0]).toBeDisabled()
+  })
+
+  test('「查看命中」不禁用——那条路不需要清单', async () => {
+    await withoutSchema()
+    expect(screen.getAllByRole('button', { name: /查看命中|场命中/ })[0]).toBeEnabled()
   })
 })
 

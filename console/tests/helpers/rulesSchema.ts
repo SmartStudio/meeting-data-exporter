@@ -13,6 +13,8 @@
  * ⚠️ 它是**测试夹具**，不是运行时数据。`src/` 下任何一处出现这份清单的拷贝
  * 都是缺陷；这里出现是因为测试必须有一个假后端可以答话。
  */
+import type { RulesSchema } from '../../src/api/admin/rules'
+
 export const RULES_SCHEMA_BODY = {
   fields: [
     {
@@ -209,3 +211,9 @@ export const RULES_SCHEMA_BODY = {
   ],
   assetAll: '*',
 }
+
+/**
+ * 同一份东西的**已解析形状**（`fetchRulesSchema()` 的产物）。
+ * 呈现层的测试不发请求，直接吃这一个。
+ */
+export const RULES_SCHEMA = RULES_SCHEMA_BODY as unknown as RulesSchema

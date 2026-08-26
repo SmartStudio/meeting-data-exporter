@@ -14,9 +14,12 @@ import {
   type Rule,
   type RuleCondition,
   type RuleInput,
+  type RulesSchema,
+  type SchemaField,
+  type SchemaStack,
   type StackKind,
 } from '@/api/admin/rules'
-import { ASSET_ALL, ASSET_KEYS, CONDITION_FIELDS, OP_LABEL, fieldSpec } from './fields'
+import { FRONTEND_TEXT, effectUsesAssetTypes, fieldOf, opOf, stackOf } from './fields'
 import { STACK_META } from './order'
 import { ImpactPreview } from './ImpactPreview'
 import type { EditorState } from './index'
@@ -50,16 +53,28 @@ import styles from './RuleEditor.module.css'
  * **唯一的例外是打开时 kind 就不在三栈里**（库里的一条坏行，`describeStackRuleIssues`
  * 会说它「不会参与任何判定」）。那时不开这个口子就是死路：编辑器打得开却修不了，
  * 而唯一的修法恰恰是改 kind。
+ *
+ * ## 表单里的每一份取值域都来自 `GET /rules/schema`
+ *
+ * 条件字段、运算符、值的形态与单位、三栈的动作可选项、八类资产的键名——
+ * 一份都不在这个文件里。F9 之前它们是 `fields.ts` 的镜像加本文件的
+ * `EFFECT_OPTIONS` / `isPositiveEffect`，后端加一个运算符，这里的下拉框
+ * 不会自己知道，而界面上一个字都不会提。
+ *
+ * 所以 `schema` 是**必传**：清单读不出来时这个编辑器根本打不开（页面那一侧
+ * 把入口禁掉并说明原因），而不是打开一个填着旧快照的表单。
  */
 export interface RuleEditorProps {
   state: EditorState | null
+  /** 条件字段与动作的取值域。页面保证它在编辑器打开时一定有。 */
+  schema: RulesSchema
   /** 用来算新规则的默认优先级（本栈最高 + 100）。 */
   allRules: Rule[]
   onClose: () => void
   onSaved: (text: string) => void
 }
 
-export function RuleEditor({ state, allRules, onClose, onSaved }: RuleEditorProps) {
+export function RuleEditor({ state, schema, allRules, onClose, onSaved }: RuleEditorProps) {
   const kind = state === null ? null : state.mode === 'create' ? state.kind : (state.rule.kind as StackKind)
   const stackName = kind !== null && kind in STACK_META ? STACK_META[kind].name : '规则'
   const title =
@@ -71,6 +86,7 @@ export function RuleEditor({ state, allRules, onClose, onSaved }: RuleEditorProp
         <EditorBody
           key={state.mode === 'edit' ? `edit-${state.rule.id}` : `create-${state.kind}`}
           state={state}
+          schema={schema}
           allRules={allRules}
           onClose={onClose}
           onSaved={onSaved}
@@ -94,24 +110,35 @@ interface Draft {
   note: string
 }
 
-function defaultEffect(kind: string): string {
-  if (kind === 'fetch') return 'all'
-  if (kind === 'allow') return 'allow'
-  return 'meetings/{年}/{月}/{会议号}-{标题}/'
+/**
+ * 归档目录的起手模板。**这是前端写的建议值，不是取值域**——归档栈的 effect
+ * 是一段自由填写的目录模板（schema 的 `freeform` 说明了这件事），没有可取的
+ * 闭集，所以这里给一段能改的起点。改它不会和后端打架。
+ */
+const ARCHIVE_DIR_TEMPLATE = 'meetings/{年}/{月}/{会议号}-{标题}/'
+
+/**
+ * 新建时预选哪个动作。**闭集的栈取 schema 列出来的第一个**（fetch 是「拉取」、
+ * allow 是「准许采集」），自由填写的那一栈给上面那段模板。
+ */
+function defaultEffect(stack: SchemaStack | null): string {
+  if (stack === null) return ''
+  if (stack.freeform !== null) return ARCHIVE_DIR_TEMPLATE
+  return stack.effects[0]?.value ?? ''
 }
 
 /**
- * 新建时的默认资产类型。
+ * 新建时的默认资产类型。**这是前端的取舍，不是后端的取值域**：
  *
- * `fetch` 默认 `['*']`（全部八类）：把会议的产出全部收进自己的 NAS，
+ * `fetch` 默认 `['*']`（全部）：把会议的产出全部收进自己的 NAS，
  * 与"数据出企业边界"无关，默认全收是对的。
  *
- * `allow` 默认 **空**：那一栈是数据出境闸门，默认给全部八类等于替管理员做了
+ * `allow` 默认 **空**：那一栈是数据出境闸门，默认给全部等于替管理员做了
  * 一次最宽的授权。空的后果是安全的（后端会报"一类都取不到"，界面也说了），
  * 管理员必须自己勾。
  */
-function defaultAssets(kind: string): string[] {
-  return kind === 'fetch' ? [ASSET_ALL] : []
+function defaultAssets(kind: string, assetAll: string): string[] {
+  return kind === 'fetch' ? [assetAll] : []
 }
 
 function draftFromRule(rule: Rule): Draft {
@@ -129,19 +156,33 @@ function draftFromRule(rule: Rule): Draft {
   }
 }
 
-function blankDraft(kind: StackKind, allRules: Rule[]): Draft {
+/**
+ * 一条空白条件。**字段与运算符都从 schema 的第一项取**，前端不再写死
+ * `{ f: 'title', op: 'has' }`——写死的那一份在后端改掉 title 的运算符之后，
+ * 会造出一条 `unknown_op` 的死规则，而管理员什么都看不出来。
+ *
+ * schema 一个字段都没有时返回 null：那时条件构建器无事可做，不编一个空字段。
+ */
+function blankCond(schema: RulesSchema): RuleCondition | null {
+  const field = schema.fields.find((f) => f.available) ?? schema.fields[0]
+  if (field === undefined) return null
+  return { f: field.f, op: field.ops[0]?.op ?? '', v: defaultValueFor(field) }
+}
+
+function blankDraft(kind: StackKind, allRules: Rule[], schema: RulesSchema): Draft {
   const top = allRules
     .filter((r) => r.kind === kind && Number.isFinite(r.priority))
     .reduce((max, r) => Math.max(max, r.priority), 0)
+  const first = blankCond(schema)
   return {
     kind,
     priority: top + 100,
     join: 'and',
     // 空 conds 会被写侧拒绝（"空条件在求值器里是「匹配一切」"），所以开局给一条
-    conds: [{ f: 'title', op: 'has', v: '' }],
+    conds: first === null ? [] : [first],
     subjectValue: '',
-    assetTypes: defaultAssets(kind),
-    effect: defaultEffect(kind),
+    assetTypes: defaultAssets(kind, schema.assetAll),
+    effect: defaultEffect(stackOf(schema, kind)),
     note: '',
   }
 }
@@ -150,17 +191,21 @@ function blankDraft(kind: StackKind, allRules: Rule[]): Draft {
 
 interface BodyProps {
   state: EditorState
+  schema: RulesSchema
   allRules: Rule[]
   onClose: () => void
   onSaved: (text: string) => void
 }
 
-function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
+function EditorBody({ state, schema, allRules, onClose, onSaved }: BodyProps) {
   const editingId = state.mode === 'edit' ? state.rule.id : null
   const [draft, setDraft] = useState<Draft>(() =>
-    state.mode === 'edit' ? draftFromRule(state.rule) : blankDraft(state.kind, allRules),
+    state.mode === 'edit' ? draftFromRule(state.rule) : blankDraft(state.kind, allRules, schema),
   )
   const kind = draft.kind
+  const stack = stackOf(schema, kind)
+  /** 这一栈的主体类型由 schema 说了算：只有 allow 栈是 `program`。 */
+  const subjectType = stack?.subjectType ?? null
   /**
    * 打开时 kind 就认不出（库里的一条坏行）。**只有这时才让人改 kind**：
    * 编辑器的整张表单是按栈组织的（effect 取值域、主体规矩、资产类型三栈全不同），
@@ -184,8 +229,10 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
     setDraft((d) => ({ ...d, ...patch }))
   }, [])
 
-  const positive = isPositiveEffect(kind, draft.effect)
+  const showAssets = effectUsesAssetTypes(schema, kind, draft.effect)
   const stackName = isStackKind(kind) ? STACK_META[kind].name : `kind「${kind}」的规则`
+  /** 当前没有数据源的字段。**逐条把后端那句原因搬上屏**，前端不改写它。 */
+  const unavailableFields = schema.fields.filter((f) => !f.available)
 
   /* ── 影响预览 ─────────────────────────────────────────────── */
 
@@ -196,8 +243,9 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
       priority: draft.priority,
       join: draft.join,
       conds: draft.conds,
-      subjectType: kind === 'allow' ? 'program' : null,
-      subjectValue: kind === 'allow' ? (draft.subjectValue === '' ? null : draft.subjectValue) : null,
+      subjectType,
+      subjectValue:
+        subjectType === null ? null : draft.subjectValue === '' ? null : draft.subjectValue,
       assetTypes: draft.assetTypes,
       effect: draft.effect,
       note: draft.note === '' ? null : draft.note,
@@ -205,7 +253,7 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
     }
     if (editingId !== null) c.id = editingId
     return c
-  }, [kind, draft, editingId, state])
+  }, [kind, subjectType, draft, editingId, state])
 
   // kind 认不出时不带 kind 参数：后端会 400 unknown_stack_kind，
   // 而那条 400 说的是「你问错了」，不是「这条规则有问题」
@@ -220,8 +268,9 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
       priority: draft.priority,
       join: draft.join,
       conds: draft.conds,
-      subjectType: kind === 'allow' ? 'program' : null,
-      subjectValue: kind === 'allow' ? (draft.subjectValue === '' ? null : draft.subjectValue) : null,
+      subjectType,
+      subjectValue:
+        subjectType === null ? null : draft.subjectValue === '' ? null : draft.subjectValue,
       assetTypes: draft.assetTypes,
       effect: draft.effect,
       note: draft.note === '' ? null : draft.note,
@@ -292,7 +341,11 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
             onChange={(e) => {
               const next = e.target.value
               if (!isStackKind(next)) return
-              update({ kind: next, effect: defaultEffect(next), assetTypes: defaultAssets(next) })
+              update({
+                kind: next,
+                effect: defaultEffect(stackOf(schema, next)),
+                assetTypes: defaultAssets(next, schema.assetAll),
+              })
             }}
           >
             <option value="">请选择</option>
@@ -307,29 +360,31 @@ function EditorBody({ state, allRules, onClose, onSaved }: BodyProps) {
 
       <section className={styles.section} aria-label="条件">
         <h3 className={styles.sectionTitle}>条件</h3>
-        <ConditionList draft={draft} update={update} />
+        <ConditionList schema={schema} draft={draft} update={update} />
         <p className={styles.hint}>
           一条规则内只能全用「且」或全用「或」——这是刻意限制。混用而没有括号，
           读起来通顺，求值顺序却常常和人的直觉不一样；需要混用就拆成两条规则。
         </p>
-        <p className={styles.hint}>
-          「主持人部门」当前不可选：{CONDITION_FIELDS.dept?.unavailableReason}
-        </p>
+        {/* 「哪个字段不可选、为什么」全部由 schema 说。以前这里写死的是 dept 一条，
+            而那句话与后端 issues 里的措辞是两句不同的话——同一屏上两种说法 */}
+        {unavailableFields.map((f) => (
+          <p key={f.f} className={styles.hint}>
+            「{f.label}」当前不可选：{f.unavailableReason ?? FRONTEND_TEXT.unavailableNoReason}
+          </p>
+        ))}
       </section>
 
       <section className={styles.section} aria-label="动作">
         <h3 className={styles.sectionTitle}>动作</h3>
-        {isStackKind(kind) ? (
-          <EffectPicker kind={kind} draft={draft} update={update} />
+        {stack !== null ? (
+          <EffectPicker stack={stack} draft={draft} update={update} />
         ) : (
           <p className={styles.hint}>先在上面选一栈，动作的可选项随栈而定。</p>
         )}
-        {positive && isStackKind(kind) && kind !== 'archive' && (
-          <AssetPicker kind={kind} draft={draft} update={update} />
-        )}
+        {showAssets && <AssetPicker schema={schema} kind={kind} draft={draft} update={update} />}
       </section>
 
-      {kind === 'allow' && (
+      {subjectType !== null && (
         <section className={styles.section} aria-label="采集程序">
           <h3 className={styles.sectionTitle}>采集程序</h3>
           <ProgramPicker value={draft.subjectValue} onChange={(v) => update({ subjectValue: v })} />
@@ -432,12 +487,6 @@ function isStackKind(v: string): v is StackKind {
   return v === 'fetch' || v === 'archive' || v === 'allow'
 }
 
-function isPositiveEffect(kind: string, effect: string): boolean {
-  if (kind === 'fetch') return effect === 'all'
-  if (kind === 'allow') return effect === 'allow'
-  return effect !== 'skip'
-}
-
 /* ── 影响预览的取数 ─────────────────────────────────────────────── */
 
 interface PreviewHook {
@@ -496,10 +545,11 @@ interface PartProps {
   update: (patch: Partial<Draft>) => void
 }
 
-function ConditionList({ draft, update }: PartProps) {
+function ConditionList({ schema, draft, update }: PartProps & { schema: RulesSchema }) {
   function setCond(i: number, next: RuleCondition) {
     update({ conds: draft.conds.map((c, j) => (j === i ? next : c)) })
   }
+  const blank = blankCond(schema)
 
   return (
     <>
@@ -521,7 +571,7 @@ function ConditionList({ draft, update }: PartProps) {
               )}
             </div>
 
-            <ConditionFields cond={cond} onChange={(next) => setCond(i, next)} />
+            <ConditionFields schema={schema} cond={cond} onChange={(next) => setCond(i, next)} />
 
             <button
               type="button"
@@ -540,7 +590,9 @@ function ConditionList({ draft, update }: PartProps) {
       <Button
         size="sm"
         variant="quiet"
-        onClick={() => update({ conds: [...draft.conds, { f: 'title', op: 'has', v: '' }] })}
+        disabled={blank === null}
+        title={blank === null ? '后端下发的字段清单是空的，加不出条件' : undefined}
+        onClick={() => blank !== null && update({ conds: [...draft.conds, { ...blank }] })}
       >
         添加条件
       </Button>
@@ -549,19 +601,20 @@ function ConditionList({ draft, update }: PartProps) {
 }
 
 function ConditionFields({
+  schema,
   cond,
   onChange,
 }: {
+  schema: RulesSchema
   cond: RuleCondition
   onChange: (next: RuleCondition) => void
 }) {
-  const spec = fieldSpec(cond.f)
-  const ops = spec?.ops ?? [cond.op]
+  const field = fieldOf(schema, cond.f)
 
   function changeField(f: string) {
-    const next = fieldSpec(f)
+    const next = fieldOf(schema, f)
     // 换字段就换一套运算符与值形态。留着旧的 op 会造出一条 unknown_op 的死规则
-    onChange({ f, op: next?.ops[0] ?? '', v: defaultValueFor(next?.value ?? 'string') })
+    onChange({ f, op: next?.ops[0]?.op ?? '', v: defaultValueFor(next) })
   }
 
   return (
@@ -574,10 +627,11 @@ function ConditionFields({
       >
         {/* 库里的老规则可能用了一个不在清单里的字段。选项里没有它，
             select 会显示成空——所以显式补一个，标明它不认识 */}
-        {spec === null && <option value={cond.f}>未知字段「{cond.f}」</option>}
-        {Object.entries(CONDITION_FIELDS).map(([key, s]) => (
-          <option key={key} value={key} disabled={!s.available}>
-            {s.label}
+        {field === null && <option value={cond.f}>{FRONTEND_TEXT.unknownField(cond.f)}</option>}
+        {/* 顺序就是 schema 的顺序，前端不重排 */}
+        {schema.fields.map((f) => (
+          <option key={f.f} value={f.f} disabled={!f.available}>
+            {f.label}
           </option>
         ))}
       </select>
@@ -588,54 +642,92 @@ function ConditionFields({
         value={cond.op}
         onChange={(e) => onChange({ ...cond, op: e.target.value })}
       >
-        {!ops.includes(cond.op) && <option value={cond.op}>不支持的运算符「{cond.op}」</option>}
-        {ops.map((op) => (
-          <option key={op} value={op}>
-            {OP_LABEL[op] ?? op}
-          </option>
-        ))}
+        {field === null ? (
+          // 字段就认不出的时候不评价运算符：它支不支持这个 op，我们无从判断
+          <option value={cond.op}>{cond.op}</option>
+        ) : (
+          <>
+            {opOf(field, cond.op) === null && (
+              <option value={cond.op}>{FRONTEND_TEXT.unsupportedOp(cond.op)}</option>
+            )}
+            {field.ops.map((o) => (
+              <option key={o.op} value={o.op}>
+                {/* 后端漏登记中文名时说出来，不拿 op 原值冒充 */}
+                {o.label ?? FRONTEND_TEXT.unlabeledOp(o.op)}
+              </option>
+            ))}
+          </>
+        )}
       </select>
 
-      <ConditionValue spec={spec} cond={cond} onChange={onChange} />
+      <ConditionValue field={field} cond={cond} onChange={onChange} />
     </div>
   )
 }
 
-function defaultValueFor(kind: string): unknown {
-  if (kind === 'none') return undefined
-  if (kind === 'number') return 0
-  if (kind === 'strings') return []
+function defaultValueFor(field: SchemaField | null): unknown {
+  if (field === null) return ''
+  if (field.value.kind === 'none') return undefined
+  if (field.value.kind === 'number') return 0
+  if (field.value.multiple && field.value.kind !== 'keywords') return []
   return ''
 }
 
 function ConditionValue({
-  spec,
+  field,
   cond,
   onChange,
 }: {
-  spec: ReturnType<typeof fieldSpec>
+  field: SchemaField | null
   cond: RuleCondition
   onChange: (next: RuleCondition) => void
 }) {
-  if (spec === null) {
+  if (field === null) {
     return (
       <span className={styles.rawValue}>
         值：<code>{JSON.stringify(cond.v)}</code>
       </span>
     )
   }
-  if (spec.value === 'none') return null
-  if (spec.value === 'strings') {
-    // dept 是唯一用这个形态的字段，而它当前不可选。真选到了（库里的老规则）
-    // 也只读——没有数据源，改了也不会命中
+  const { kind, type, unit, placeholder, options, multiple } = field.value
+
+  if (type === 'none') return null
+
+  // 闭集字段：schema 带来了可选值就渲染下拉框。今天一个字段都没落在这一档
+  // （部门 / 人员清单都要通讯录），但契约留了这一档，接住它才算真的接了线。
+  if (type === 'enum' && options !== null && !multiple) {
+    return (
+      <select
+        className={styles.select}
+        aria-label="条件值"
+        value={typeof cond.v === 'string' ? cond.v : ''}
+        onChange={(e) => onChange({ ...cond, v: e.target.value })}
+      >
+        <option value="">请选择</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    )
+  }
+
+  // 多值的自由字符串（今天只有 dept）没有输入控件：只读显示，并说清为什么
+  if (kind === 'strings') {
     return (
       <span className={styles.rawValue}>
         {Array.isArray(cond.v) ? cond.v.map(String).join('、') : String(cond.v)}
-        <em>（这个字段当前没有数据源，改了也不会命中）</em>
+        <em>
+          {field.available
+            ? '（这是个多值字段，本编辑器暂时只显示不修改）'
+            : '（这个字段当前没有数据源，改了也不会命中）'}
+        </em>
       </span>
     )
   }
-  if (spec.value === 'number') {
+
+  if (type === 'number') {
     return (
       <span className={styles.numberValue}>
         <Input
@@ -644,14 +736,16 @@ function ConditionValue({
           value={typeof cond.v === 'number' ? String(cond.v) : ''}
           onChange={(e) => onChange({ ...cond, v: Number(e.target.value) })}
         />
-        <span className={styles.unit}>{spec.unit}</span>
+        {/* 单位是后端下发的，与判定理由里那个词是同一个 */}
+        <span className={styles.unit}>{unit}</span>
       </span>
     )
   }
+
   return (
     <Input
       aria-label="条件值"
-      placeholder={spec.placeholder}
+      placeholder={placeholder ?? undefined}
       value={typeof cond.v === 'string' ? cond.v : ''}
       onChange={(e) => onChange({ ...cond, v: e.target.value })}
     />
@@ -660,37 +754,35 @@ function ConditionValue({
 
 /* ── 动作 ───────────────────────────────────────────────────────── */
 
-const EFFECT_OPTIONS: Record<string, ReadonlyArray<{ value: string; label: string; sub: string }>> = {
-  fetch: [
-    { value: 'all', label: '拉取', sub: '把这场会议的资产拉回本系统。具体拉哪几类由下面的资产类型决定' },
-    { value: 'skip', label: '不拉取', sub: '本系统不持有副本。腾讯会议侧的保留期一到，这场会议就没有了' },
-  ],
-  allow: [
-    { value: 'allow', label: '准许采集', sub: '仍需在会议列表里授权给具体程序才真的能取走。两者是「与」的关系' },
-    { value: 'deny', label: '禁止采集', sub: '照常拉取、照常归档进 NAS，但任何外部程序都取不到' },
-  ],
-}
-
-function EffectPicker({ kind, draft, update }: PartProps & { kind: StackKind }) {
-  if (kind === 'archive') {
+/**
+ * 动作的可选项。**取值、中文名、每一项下面那句解释全部来自 schema**
+ * （`stacks[].effects[]`），这个文件里没有 `EFFECT_OPTIONS` 了。
+ *
+ * `freeform` 非 null 的栈（归档）不是闭集：它的 effect 是一段目录模板，
+ * 所以渲染成输入框，旁边那段说明也是后端下发的那一段。
+ */
+function EffectPicker({ stack, draft, update }: PartProps & { stack: SchemaStack }) {
+  if (stack.freeform !== null) {
+    const closed = stack.effects[0]
     return (
       <>
         <label className={styles.field}>
           <span>目标目录</span>
           <Input value={draft.effect} onChange={(e) => update({ effect: e.target.value })} />
         </label>
-        <p className={styles.hint}>
-          填 <code>skip</code> 表示不归档。改目录<b>不会</b>搬迁已经归档过的文件——
-          历史文件留在原路径，只有之后新归档的会写到新目录。
-        </p>
+        {closed !== undefined && (
+          <p className={styles.hint}>
+            填 <code>{closed.value}</code> 表示{closed.label}。
+          </p>
+        )}
+        <p className={styles.hint}>{stack.freeform}</p>
       </>
     )
   }
-  const options = EFFECT_OPTIONS[kind] ?? []
   return (
     <fieldset className={styles.effects}>
       <legend className={styles.srOnly}>动作</legend>
-      {options.map((o) => (
+      {stack.effects.map((o) => (
         <label key={o.value} className={styles.effectOpt} data-on={draft.effect === o.value}>
           <input
             type="radio"
@@ -701,7 +793,7 @@ function EffectPicker({ kind, draft, update }: PartProps & { kind: StackKind }) 
           />
           <span>
             <b>{o.label}</b>
-            <small>{o.sub}</small>
+            <small>{o.hint}</small>
           </span>
         </label>
       ))}
@@ -709,8 +801,13 @@ function EffectPicker({ kind, draft, update }: PartProps & { kind: StackKind }) 
   )
 }
 
-function AssetPicker({ kind, draft, update }: PartProps & { kind: StackKind }) {
-  const all = draft.assetTypes.includes(ASSET_ALL)
+function AssetPicker({
+  schema,
+  kind,
+  draft,
+  update,
+}: PartProps & { schema: RulesSchema; kind: string }) {
+  const all = draft.assetTypes.includes(schema.assetAll)
   function toggle(key: string) {
     const has = draft.assetTypes.includes(key)
     update({
@@ -725,23 +822,24 @@ function AssetPicker({ kind, draft, update }: PartProps & { kind: StackKind }) {
         <input
           type="checkbox"
           checked={all}
-          onChange={() => update({ assetTypes: all ? [] : [ASSET_ALL] })}
+          onChange={() => update({ assetTypes: all ? [] : [schema.assetAll] })}
         />
         <span>
-          全部八类<small>*</small>
+          {/* 数目也从清单里数，不写死「八类」——后端加第九类时这句话要跟着变 */}
+          全部 {schema.assetTypes.length} 类<small>{schema.assetAll}</small>
         </span>
       </label>
       {!all &&
-        ASSET_KEYS.map((a) => (
-          <label key={a.key} className={styles.assetOpt}>
+        schema.assetTypes.map((a) => (
+          <label key={a.value} className={styles.assetOpt}>
             <input
               type="checkbox"
-              checked={draft.assetTypes.includes(a.key)}
-              onChange={() => toggle(a.key)}
+              checked={draft.assetTypes.includes(a.value)}
+              onChange={() => toggle(a.value)}
             />
             <span>
               {a.label}
-              <small>{a.key}</small>
+              <small>{a.value}</small>
             </span>
           </label>
         ))}

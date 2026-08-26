@@ -2,7 +2,7 @@ import { useId, useState } from 'react'
 import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
 import { ApiError } from '@/api/client'
-import { setRuleEnabled, type Rule, type StackKind } from '@/api/admin/rules'
+import { setRuleEnabled, type Rule, type RulesSchema, type StackKind } from '@/api/admin/rules'
 import { readonlyTitle, useReadonly } from '@/app/session'
 import { fmtDay } from '@/lib/format'
 import { describeCondition, describeEffect } from './fields'
@@ -25,6 +25,10 @@ export interface RuleStackProps {
   meta: StackMeta
   /** 已按判定顺序排好（`groupByStack` 的产物）。 */
   rules: Rule[]
+  /** 条件字段与动作的取值域。**null = `GET /rules/schema` 读不出来**。 */
+  schema: RulesSchema | null
+  /** schema 用不了时的一句话（读取中 / 读取失败），要能上按钮的 title。 */
+  schemaBlocked: string | null
   hitCounts: ReadonlyMap<number, number>
   busyRuleId: number | null
   onCreate: (kind: StackKind) => void
@@ -62,6 +66,8 @@ export function RuleStack(props: RuleStackProps) {
             <RuleRow
               key={rule.id}
               rule={rule}
+              schema={props.schema}
+              schemaBlocked={props.schemaBlocked}
               stackName={meta.name}
               blockedBy={blocked.get(rule.id) ?? null}
               hits={props.hitCounts.get(rule.id)}
@@ -75,7 +81,14 @@ export function RuleStack(props: RuleStackProps) {
         </ul>
       )}
 
-      <Button size="sm" onClick={() => props.onCreate(kind)} disabled={readonly} title={readonlyTitle(readonly)}>
+      {/* schema 读不出来时也禁：编辑器里每一份取值域都来自它，开一个填着
+          旧快照的表单比开不了更糟。为什么开不了在页面顶上那条横幅里说 */}
+      <Button
+        size="sm"
+        onClick={() => props.onCreate(kind)}
+        disabled={readonly || props.schemaBlocked !== null}
+        title={readonly ? readonlyTitle(readonly) : (props.schemaBlocked ?? undefined)}
+      >
         {/* 加号只是装饰：留在可访问名里会让读屏念出「加号新建采集权限规则」 */}
         <span aria-hidden="true">+ </span>新建{meta.name}
       </Button>
@@ -123,6 +136,8 @@ function FetchCompatNotice({ hasRules }: { hasRules: boolean }) {
 
 interface RuleRowProps {
   rule: Rule
+  schema: RulesSchema | null
+  schemaBlocked: string | null
   stackName: string
   blockedBy: number | null
   hits: number | undefined
@@ -138,7 +153,7 @@ function RuleRow(props: RuleRowProps) {
   const readonly = useReadonly()
   const [toggleError, setToggleError] = useState<string | null>(null)
   const joinWord = rule.join === 'or' ? '或' : '且'
-  const neverMatches = neverMatchesForLackOfDataSource(rule)
+  const neverMatches = neverMatchesForLackOfDataSource(props.schema, rule)
 
   async function toggle() {
     props.onBusy(rule.id)
@@ -174,13 +189,13 @@ function RuleRow(props: RuleRowProps) {
               <span key={i}>
                 {i > 0 && <span className={styles.join}> {joinWord} </span>}
                 <span className={c === null ? styles.condBad : undefined}>
-                  {describeCondition(c)}
+                  {describeCondition(props.schema, c)}
                 </span>
               </span>
             ))
           )}
           <span className={styles.arrow}> → </span>
-          <b>{describeEffect(rule.kind, rule.effect, rule.assetTypes)}</b>
+          <b>{describeEffect(props.schema, rule.kind, rule.effect, rule.assetTypes)}</b>
         </p>
 
         <p className={styles.meta}>
@@ -249,8 +264,8 @@ function RuleRow(props: RuleRowProps) {
           size="sm"
           variant="quiet"
           onClick={() => props.onEdit(rule)}
-          disabled={readonly}
-          title={readonlyTitle(readonly)}
+          disabled={readonly || props.schemaBlocked !== null}
+          title={readonly ? readonlyTitle(readonly) : (props.schemaBlocked ?? undefined)}
         >
           编辑
         </Button>
