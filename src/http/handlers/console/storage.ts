@@ -24,7 +24,7 @@
  */
 import type { RouteCtx } from '../../router'
 import { json, readJson } from '../../respond'
-import { requireAdminAuth } from '../../middleware'
+import { requireAdminAuth, requireAdminWrite } from '../../middleware'
 import {
   ACTION_EXTEND_RETENTION,
   auditSubMeetingAssetId,
@@ -37,6 +37,7 @@ import type { ConsoleStorageStore } from '../../../store/console-storage'
 import type { NasProbeResult } from '../../../worker/nas-probe'
 import type { CleanupExecuted, CleanupPreview } from '../../../worker/retention'
 import { expiresAt } from '../../../worker/retention'
+import { JOB_ARCHIVE_NAS, type JobsStore } from '../../../store/jobs'
 
 /**
  * 到期清理的执行入口。注入两个函数而不是注入 `RetentionDeps`，是为了让 handler
@@ -82,6 +83,17 @@ export interface StorageDeps {
    * 那会让操作员以为清理跑过了。
    */
   cleanup: CleanupRunner | null
+  /**
+   * 归档失败项的计数（阶段 5 · A8，spec §4.9 的第三个数）。
+   *
+   * 收窄到 `countOpenFailures` 一个方法而不是把整个 `JobsStore` 塞进来：
+   * 这个 handler 只答「有几场归档不上」，不做失败项的列表与分页（那是 §4.8
+   * 定时任务页的事，走 `handlers/console/jobs.ts`）。与本文件上面
+   * `StorageArchives` 收窄成六个方法是同一个先例。
+   *
+   * 返回的是**按任务名分组的未解决计数**，这里只取 `archive_nas` 那一项。
+   */
+  jobFailures: Pick<JobsStore, 'countOpenFailures'>
 }
 
 /** 保留天数的合法区间，与原型里那个 `<input type="number" min="1" max="365">` 一致 */
@@ -210,7 +222,8 @@ export async function getStorage(req: Request, ctx: RouteCtx): Promise<Response>
   const s = ctx.deps.storage
   const now = ctx.deps.now()
 
-  const [probe, aggregates, unpurged, needingArchive, pausedRaw, retentionRaw] = await Promise.all([
+  const [probe, aggregates, unpurged, needingArchive, pausedRaw, retentionRaw, openFailures] =
+    await Promise.all([
     s.probeNas(),
     s.stats.aggregates(),
     // 返回的是 local_purged_at IS NULL 且 archived_at <= now 的全部归档行，
@@ -221,6 +234,10 @@ export async function getStorage(req: Request, ctx: RouteCtx): Promise<Response>
     s.archives.listMeetingsNeedingArchive(),
     s.archives.getSetting('cleanup_paused'),
     s.archives.getSetting('default_retention_days'),
+    // 归档失败项（阶段 5 · A8）。这一条从前不查——阶段 4 的 T11 建出
+    // job_failures 之前，失败原因只写进 worker 日志，这里报 null 是诚实的。
+    // 现在数据有了，继续报 null 就是在编一个「不知道」
+    s.jobFailures.countOpenFailures(),
   ])
 
   // 到期与否只问 retention.ts 的 expiresAt，边界也照抄它的"严格过期"
@@ -257,16 +274,24 @@ export async function getStorage(req: Request, ctx: RouteCtx): Promise<Response>
       usedByOthersBytes: usedByOthers,
       archivedMeetings: aggregates.archivedMeetings,
       // 还有 completed 资产没进 archived_assets 的场次。它同时包含"还没轮到"和
-      // "一直归档不成功"两种会议——两者在库里现在长得一模一样（见下面 failedMeetings）。
+      // "一直归档不成功"两种会议——后者同时也算进下面的 failedMeetings，
+      // 两个数**有意重叠**：一场归档不上的会议既是"待归档"也是"失败项"。
       pendingMeetings: needingArchive.length,
-      // spec §4.9 要的第三个数。归档失败项现在**不落库**：archive.ts 的失败计数
-      // 只是本轮内存里的数字，原因只走 console.error（阶段 4 计划 E-d）。
-      // 在 T11 建出 job_failures 之前，这里报 null 并说明原因，不编一个数——
-      // 把一个缺口伪装成一次判定比不说更糟（同 E-c）。
-      failedMeetings: null,
-      failedMeetingsNote:
-        '归档失败项尚未落库：失败原因目前只写进 worker 日志（阶段 4 计划 E-d）。' +
-        '调度器任务建出 job_failures 表之后这里才会有数字，在那之前不编。',
+      // spec §4.9 要的第三个数（阶段 5 · A8 接上）。
+      //
+      // 数的是 `job_failures` 里 job_name='archive_nas' 且 resolved_at IS NULL 的行
+      // ——**一行一场会议**（唯一键是 (job_name, target)，重复失败是累加 attempts
+      // 不是新增行，见 migrations/008 表头第三节），所以这个数就是"有几场归档不上"，
+      // 不是"失败了多少次"。
+      //
+      // 恢复了的失败项不算：那张表的行**不删**（曾经卡过三天正是运维要复盘的），
+      // 靠 resolved_at IS NULL 过滤出"需要处理"的那些。
+      //
+      // 这里曾经恒为 null 配一句 failedMeetingsNote 说"尚未落库"。那句话在阶段 4
+      // 的 T11 之后已经不成立了，留着比没有更糟——它描述的是一个不再存在的状态，
+      // 会让读的人以为这个数至今取不到。所以那个字段随本次改动一并删掉，
+      // 不是改文案。
+      failedMeetings: openFailures[JOB_ARCHIVE_NAS] ?? 0,
     },
     retention: {
       defaultDays: retentionDefault.days,
@@ -291,7 +316,7 @@ interface RetentionDaysBody {
 }
 
 export async function setRetentionDays(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const body = await readJson<RetentionDaysBody>(req)
@@ -333,7 +358,7 @@ interface CleanupPauseBody {
  *   回显：响应里带当前状态，而且是**写完之后重新读一遍**的值，不是把请求体抄回去
  */
 export async function setCleanupPause(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const body = await readJson<CleanupPauseBody>(req)
@@ -380,7 +405,7 @@ interface CleanupNowBody {
  * 审计那边记成 decision='deny'，与"被拒绝的记录是红的"（§4.10）对齐。
  */
 export async function cleanupNow(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const s = ctx.deps.storage
@@ -483,7 +508,7 @@ interface ExtendBody {
  * 照常到期删除，事后完全看不出来。
  */
 export async function extendMeetingRetention(req: Request, ctx: RouteCtx): Promise<Response> {
-  const auth = await requireAdminAuth(req, ctx.deps.adminAuth, ctx.deps.now())
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
 
   const meetingId = ctx.params.meetingId ?? ''

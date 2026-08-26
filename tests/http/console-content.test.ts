@@ -41,7 +41,7 @@ import type { Pool } from '../../src/store/db'
 
 const NOW = 1_700_100_000
 const START = 1_700_000_000
-const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice', role: 'admin' }
 const KEY = { meetingId: 'm-1', subMeetingId: '' }
 const ROW_ID = consoleMeetingId(KEY.meetingId, KEY.subMeetingId)
 

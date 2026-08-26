@@ -25,7 +25,7 @@ import type { AppDeps, RouteCtx } from '../../src/http/router'
 /** 2026-08-26 10:07:00 UTC —— 刻意不是任何一个任务的片边界 */
 const NOW = Date.UTC(2026, 7, 26, 10, 7, 0) / 1000
 const HOUR = 3600
-const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice', role: 'admin' }
 
 function fakeAdminAuth(ok = true): AdminAuth {
   return {
@@ -39,6 +39,7 @@ function fakeAdminAuth(ok = true): AdminAuth {
     },
     async revokeSession() { throw new Error('not stubbed') },
     async revokeAllSessionsFor() { throw new Error('not stubbed') },
+    async revokeOtherSessionsFor() { throw new Error('not stubbed') },
   }
 }
 

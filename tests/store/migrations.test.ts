@@ -96,6 +96,52 @@ describe('runMigrations', () => {
     }
   })
 
+  // ── 009（阶段 5 · A8）：admin_accounts 的 role 列 ────────────────────
+
+  test('009 给 admin_accounts 补上 role 列，默认 admin，且重复执行不报错', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const { runMigrations } = await import('../../src/store/db')
+      // 第二遍必须走 information_schema 守卫的 DO 0 分支，而不是撞 ER_DUP_FIELDNAME
+      await runMigrations(pool)
+
+      const [cols] = await pool.query<any[]>(
+        `SELECT column_name, data_type, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND table_name = 'admin_accounts'
+            AND column_name = 'role'`,
+      )
+      expect(cols).toHaveLength(1)
+      expect((cols[0].data_type ?? cols[0].DATA_TYPE) as string).toBe('varchar')
+      expect((cols[0].is_nullable ?? cols[0].IS_NULLABLE) as string).toBe('NO')
+      expect((cols[0].column_default ?? cols[0].COLUMN_DEFAULT) as string).toBe('admin')
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('009 的默认值必须是 admin：已有账号不会因为加了一列就全变成只读', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      // 模拟「009 之前建的账号」：不写 role 这一列，让默认值说话
+      await pool.execute(
+        `INSERT INTO admin_accounts (id, username, password_hash, created_at)
+         VALUES ('legacy-1', 'legacy', 'hash', 1000)`,
+      )
+      // 迁移重跑一遍也不该改动它
+      const { runMigrations } = await import('../../src/store/db')
+      await runMigrations(pool)
+
+      const [rows] = await pool.query<any[]>(
+        `SELECT \`role\` FROM admin_accounts WHERE id = 'legacy-1'`,
+      )
+      expect(rows).toHaveLength(1)
+      expect(rows[0].role as string).toBe('admin')
+    } finally {
+      await cleanup()
+    }
+  })
+
   test('008 只加列、不动任何现有写入方：audit_log 原有的列一个不少', async () => {
     const { pool, cleanup } = await withTestDb()
     try {

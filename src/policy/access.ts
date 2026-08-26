@@ -95,6 +95,19 @@ export interface AccessGate {
 export interface AccessGateDeps {
   store: Pick<PolicyStore, 'listEnabledStackRules'>
   /**
+   * 「这个采集程序还启用着吗」（阶段 5 · A8，spec §11 缺口 4）。
+   *
+   * **为什么这道判断必须在这一层，而不是只在 `auth/service.ts` 里。**
+   * 那里挡的是「拿凭据换访问令牌」，可访问令牌是 JWT，签出去之后到自然过期
+   * 为止服务端不再查库。于是「停用」这个按钮在最长一个令牌生命周期内什么都
+   * 没做——管理员看到程序卡片灰了，数据还在往外走。
+   *
+   * 它排在读规则**和读改写**之前：停用压过人工改写。给一个停用中的程序套一条
+   * allow 改写不该让它取到数据——那是另一条出境路径（spec §1.4），
+   * 与 `notAProgram` 那条短路同一个理由。
+   */
+  programs: ProgramStatusSource
+  /**
    * 人工改写的来源（spec §5.4：**单场会议的人工改写优先于所有规则**）。
    *
    * **为什么由本模块自己取，而不是像 `archived` 那样让调用方传进来**：
@@ -104,6 +117,23 @@ export interface AccessGateDeps {
    * 漏了改写则是让管理员明确按下的那个「不许取」失效。
    */
   grants: OverrideSource
+}
+
+/**
+ * 采集程序的启用状态。**按 policy 层自己的需要声明，不是
+ * `Pick<ProgramsStore, 'find'>`**：这一层只问一个是非题，不必反过来依赖
+ * `ServiceProgram` 那个行结构（`tmUserId` / `createdAt` 它一个都不读）。
+ * 与下面 `OverrideSource` 是同一个取舍。
+ */
+export interface ProgramStatusSource {
+  /**
+   * 这个采集程序此刻是不是启用的。
+   *
+   * **查不到这个 id 时返回 `false`**（不是抛、也不是 true）：程序被删掉之后
+   * 它的令牌可能还没过期，而「查不到」与「停用了」对判定而言是同一件事——
+   * 都不该再取到数据。装配处照这条实现（见 src/index.ts）。
+   */
+  isProgramEnabled(programId: string): Promise<boolean>
 }
 
 /**
@@ -155,6 +185,32 @@ export function meetingFacts(meeting: MeetingMeta, archived: boolean): MeetingFa
   }
 }
 
+/**
+ * 采集程序已停用（或者已经不存在）时的判定。**在读规则和改写之前**就得出。
+ *
+ * 理由写在判定里而不是含糊成「没有规则匹配」：管理员读到「没有规则匹配」会去
+ * **再建一条规则**，而那条规则永远不会生效。判定理由是产品功能
+ * （spec §4.2/§4.3），说错了比不说更贵——与 `notAProgram` 同一个道理。
+ */
+function programDisabled(programId: string): AccessDecision {
+  return {
+    kind: 'allow',
+    effect: 'deny',
+    ruleId: null,
+    note: null,
+    source: 'default',
+    reason:
+      `采集程序「${programId}」已被停用（或已不存在），一律拒绝。` +
+      `它已有的逐会议授权与人工改写都还在（停用是可逆的，不连带删授权），` +
+      `重新启用之后即刻恢复——要恢复采集请在采集授权页启用这个程序，再建规则没有用`,
+    assetTypes: [],
+    issues: [],
+    trace: [],
+    // 这条判定压根没经过规则栈，所以「若无改写本会判成什么」无从谈起
+    overriddenFrom: null,
+  }
+}
+
 /** 身份不是采集程序时的判定。**在读规则之前**就得出，与规则集无关 */
 function notAProgram(actor: ActorIdentity): AccessDecision {
   const who = actor.kind === 'wecom_user' ? '企业微信用户' : '当前身份'
@@ -185,6 +241,10 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
       if (input.actor.programId === null || input.actor.programId === '') {
         return notAProgram(input.actor)
       }
+      // 停用压过一切，包括人工改写——所以这一句在取改写之前
+      if (!(await deps.programs.isProgramEnabled(input.actor.programId))) {
+        return programDisabled(input.actor.programId)
+      }
 
       const rules = await deps.store.listEnabledStackRules('allow')
       const override = await deps.grants.findActiveOverride(
@@ -197,6 +257,22 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
 
     async decideMany(inputs) {
       if (inputs.length === 0) return []
+
+      // 程序的启用状态**按不同的 programId 各查一次**（列会议时一整批共用同一个
+      // actor，所以实际就是一次）。用 Map 缓存而不是逐场查：一页 200 场就是
+      // 200 次同样的往返
+      const enabledCache = new Map<string, boolean>()
+      const isEnabled = async (programId: string): Promise<boolean> => {
+        const hit = enabledCache.get(programId)
+        if (hit !== undefined) return hit
+        const value = await deps.programs.isProgramEnabled(programId)
+        enabledCache.set(programId, value)
+        return value
+      }
+      for (const input of inputs) {
+        const pid = input.actor.programId
+        if (pid !== null && pid !== '') await isEnabled(pid)
+      }
 
       // 规则与改写各取一次。逐场取的话，同一次列会议里前后两场可能按不同的
       // 规则集判——列表里两行的判定理由互相矛盾，而且不可复现
@@ -216,6 +292,10 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
       return inputs.map((input) => {
         if (input.actor.programId === null || input.actor.programId === '') {
           return notAProgram(input.actor)
+        }
+        // 缓存在上面已经被填满，这里只读——`decide` 与本分支因此判得一模一样
+        if (enabledCache.get(input.actor.programId) !== true) {
+          return programDisabled(input.actor.programId)
         }
         const override = byMeeting.get(
           overrideKey(input.meeting.meetingId, input.meeting.subMeetingId),

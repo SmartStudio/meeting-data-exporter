@@ -21,6 +21,7 @@ function baseAccount(overrides: Partial<AdminAccount> = {}): AdminAccount {
     username: 'alice',
     passwordHash: correctHash,
     createdAt: 1000,
+    role: 'admin',
     ...overrides,
   }
 }
@@ -54,6 +55,7 @@ function memAdminStore(opts: { accounts?: AdminAccount[] } = {}): AdminStore {
         username: input.username,
         passwordHash: input.passwordHash,
         createdAt: input.now,
+        role: input.role ?? 'admin',
       }
       byId.set(account.id, account)
       byUsername.set(account.username, account)
@@ -93,6 +95,24 @@ function memAdminStore(opts: { accounts?: AdminAccount[] } = {}): AdminStore {
         }
       }
       return n
+    },
+    async deleteSessionsByAdminIdExcept(adminId, keepTokenHash) {
+      let n = 0
+      for (const [k, v] of sessions) {
+        if (v.adminId === adminId && k !== keepTokenHash) {
+          sessions.delete(k)
+          n++
+        }
+      }
+      return n
+    },
+    async updatePassword(id, passwordHash) {
+      const account = byId.get(id)
+      if (!account) return false
+      const updated: AdminAccount = { ...account, passwordHash }
+      byId.set(id, updated)
+      byUsername.set(account.username, updated)
+      return true
     },
   }
 }
@@ -178,7 +198,7 @@ test('issueSession 签发的令牌可被 verifySession 立即校验通过', asyn
 
   const { token } = await auth.issueSession('admin-1', true, now)
   const identity = await auth.verifySession(token, now)
-  expect(identity).toEqual({ adminId: 'admin-1', username: 'alice' })
+  expect(identity).toEqual({ adminId: 'admin-1', username: 'alice', role: 'admin' })
 })
 
 test('verifySession：不存在的 token 抛 AdminSessionInvalidError', async () => {
@@ -336,5 +356,64 @@ test('revokeAllSessionsFor：撤销该管理员的全部会话，不影响其他
   await expect(auth.verifySession(sessionA2.token, now)).rejects.toThrow(AdminSessionInvalidError)
   // 另一个管理员的会话不受影响
   const identity = await auth.verifySession(sessionB1.token, now)
-  expect(identity).toEqual({ adminId: 'admin-2', username: 'bob' })
+  expect(identity).toEqual({ adminId: 'admin-2', username: 'bob', role: 'admin' })
+})
+
+// ── 只读角色（阶段 5 · A8，spec §2 / §11 缺口 1）────────────────────────
+
+test('verifySession 把角色带进上下文——只读账号的会话解出来就是 readonly', async () => {
+  const store = memAdminStore({
+    accounts: [baseAccount({ id: 'admin-ro', username: 'watcher', role: 'readonly' })],
+  })
+  const auth = createAdminAuth({ store })
+  const now = 1_000_000
+
+  const { token } = await auth.issueSession('admin-ro', false, now)
+  expect(await auth.verifySession(token, now)).toEqual({
+    adminId: 'admin-ro',
+    username: 'watcher',
+    role: 'readonly',
+  })
+})
+
+test('角色以库里那一行为准，不以签发会话时的值为准——改了角色，现有会话立刻跟着变', async () => {
+  // 会话表里不存角色（admin_sessions 只有 token_hash / admin_id / 两个时刻），
+  // verifySession 每次都重新 findById。这不是实现细节而是要求：把一个人从
+  // admin 降成 readonly 之后，他手上那张还没过期的 cookie 必须当场失去写权限，
+  // 而不是等 30 天后自然过期
+  const account = baseAccount({ id: 'admin-demote', username: 'demoted' })
+  const store = memAdminStore({ accounts: [account] })
+  const auth = createAdminAuth({ store })
+  const now = 1_000_000
+
+  const { token } = await auth.issueSession('admin-demote', true, now)
+  expect((await auth.verifySession(token, now)).role).toBe('admin')
+
+  await store.createAccount({
+    id: 'admin-demote', username: 'demoted', passwordHash: account.passwordHash,
+    now: 1000, role: 'readonly',
+  })
+  expect((await auth.verifySession(token, now)).role).toBe('readonly')
+})
+
+// ── 修改密码（阶段 5 · A8，spec §11 缺口 5）────────────────────────────
+
+test('revokeOtherSessionsFor：撤销别处的会话，留下当前这一条', async () => {
+  const store = memAdminStore({
+    accounts: [baseAccount(), baseAccount({ id: 'admin-2', username: 'bob' })],
+  })
+  const auth = createAdminAuth({ store })
+  const now = 1_000_000
+
+  const current = await auth.issueSession('admin-1', true, now)
+  const elsewhere = await auth.issueSession('admin-1', true, now)
+  const otherAdmin = await auth.issueSession('admin-2', true, now)
+
+  expect(await auth.revokeOtherSessionsFor('admin-1', current.token)).toBe(1)
+
+  // 当前这一条还活着：改完密码立刻被踢出去，等于没有人敢改第二次
+  expect((await auth.verifySession(current.token, now)).adminId).toBe('admin-1')
+  await expect(auth.verifySession(elsewhere.token, now)).rejects.toThrow(AdminSessionInvalidError)
+  // 别的管理员一条都不许被牵连
+  expect((await auth.verifySession(otherAdmin.token, now)).adminId).toBe('admin-2')
 })

@@ -34,7 +34,7 @@ import { ADMIN_SESSION_COOKIE } from '../../src/http/middleware'
 
 const NOW = 1_700_000_000
 const DAY = 86_400
-const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice' }
+const ADMIN: AdminIdentity = { adminId: 'admin-1', username: 'alice', role: 'admin' }
 
 function req(method: string, body?: unknown, withCookie = true): Request {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
@@ -59,6 +59,7 @@ function fakeAdminAuth(overrides: Partial<AdminAuth> = {}): AdminAuth {
     },
     revokeSession: notStubbed('revokeSession'),
     revokeAllSessionsFor: notStubbed('revokeAllSessionsFor'),
+    revokeOtherSessionsFor: notStubbed('revokeOtherSessionsFor'),
     ...overrides,
   } as AdminAuth
 }
@@ -116,6 +117,8 @@ interface RigOptions {
   verifySession?: AdminAuth['verifySession']
   /** 审计写入抛错，用来验证"审计写不进去时不能装作写操作成功了" */
   auditFails?: boolean
+  /** `job_failures` 里各任务的未解决计数，键是 job_name（阶段 5 · A8） */
+  openFailures?: Record<string, number>
 }
 
 function rig(opts: RigOptions = {}): Rig {
@@ -194,6 +197,13 @@ function rig(opts: RigOptions = {}): Rig {
     archives,
     audit: auditStore,
     cleanup: opts.cleanup === undefined ? defaultCleanup : opts.cleanup,
+    // 阶段 5 · A8：归档失败数从 job_failures 来。默认一条都没有，
+    // 需要真数字的用例自己给 openFailures
+    jobFailures: {
+      async countOpenFailures() {
+        return opts.openFailures ?? {}
+      },
+    },
   }
 
   const deps = {
@@ -275,12 +285,30 @@ test('GET：NAS 那一块原样透出探测结果，容量拆成「本系统 / �
   expect(r.probeCalls).toBe(1)
 })
 
-test('GET：归档失败数没有数据源时如实报 null 并说明原因，不编一个数字', async () => {
-  const r = rig()
+// ── 归档失败数（阶段 5 · A8，spec §4.9 的第三个数）──────────────────────
+
+test('GET：归档失败数取 job_failures 里 archive_nas 的未解决行数', async () => {
+  const r = rig({ openFailures: { archive_nas: 3, cleanup_expired: 9 } })
   const body = (await (await getStorage(req('GET'), r.ctx)).json()) as Record<string, any>
-  expect(body.nas.failedMeetings).toBeNull()
-  expect(typeof body.nas.failedMeetingsNote).toBe('string')
-  expect(body.nas.failedMeetingsNote.length).toBeGreaterThan(0)
+  // 只数归档那个任务。别的任务的失败项不是「归档失败」
+  expect(body.nas.failedMeetings).toBe(3)
+})
+
+test('GET：一条归档失败项都没有时是 0，不是 null', async () => {
+  // 0 与 null 是两句不同的话：0 是「查过了，没有失败的」，null 是「不知道」。
+  // 数据源现在真的有了（阶段 4 的 T11 建了 job_failures），继续报 null
+  // 就是把一个已经能回答的问题伪装成缺口
+  const r = rig({ openFailures: {} })
+  const body = (await (await getStorage(req('GET'), r.ctx)).json()) as Record<string, any>
+  expect(body.nas.failedMeetings).toBe(0)
+})
+
+test('GET：failedMeetingsNote 已随数据源接上而删掉，不许再出现', async () => {
+  // 那句话说的是「归档失败项尚未落库」。T11 之后它描述的是一个不存在的状态，
+  // 留着比没有更糟——前端照它显示「暂不可得」，而数字其实就在旁边
+  const r = rig({ openFailures: { archive_nas: 1 } })
+  const body = (await (await getStorage(req('GET'), r.ctx)).json()) as Record<string, any>
+  expect(body.nas).not.toHaveProperty('failedMeetingsNote')
 })
 
 test('GET：NAS 探不通时返回 200 而不是 500，把不可达本身当成要展示的内容', async () => {

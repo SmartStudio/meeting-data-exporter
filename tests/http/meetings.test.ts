@@ -3,17 +3,47 @@ import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../src/store/db'
 import type { QueryParams } from '../../src/tencent/url'
 import { withTestDb } from '../helpers/testdb'
-import { buildTestApp, insertPolicyRule, JWT_SECRET } from './testApp'
+import { buildTestApp, insertPolicyRule, insertServiceProgram, JWT_SECRET } from './testApp'
 import { signAccessToken } from '../../src/auth/tokens'
 import type { ActorIdentity } from '../../src/domain/types'
 
 let pool: Pool
 let cleanup: () => Promise<void>
 
+/**
+ * 本文件用到的全部采集程序（阶段 5 · A8）。
+ *
+ * **一条 allow 规则不足以让判定放行**：AccessGate 在读规则之前先问
+ * `service_accounts.enabled`——查不到这个 id 或者它被停用了，一律拒绝，
+ * 且理由里写明是「程序已停用」而不是「没有规则匹配」（见 src/policy/access.ts
+ * 的 programDisabled）。这条判断必须在判定层而不是只在换令牌那一层：
+ * 本文件的用例正是自己签 JWT、不走 POST /auth/service-token 的那条路，
+ * 而线上「停用之后还没过期的令牌」走的也是同一条路。
+ *
+ * 所以这里一次性把它们建出来。停用的表现由 tests/policy/access.test.ts
+ * 与 tests/http/console-grants.test.ts 覆盖，本文件只需要它们都是启用的。
+ */
+const TEST_PROGRAM_IDS = [
+    'prog-alice-1',
+    'prog-alice-2',
+    'prog-carol-1',
+    'prog-dave-1',
+    'prog-erin-1',
+    'prog-frank-1',
+    'prog-frank-2',
+    'prog-grace-1',
+    'prog-henry-1',
+    'prog-ivan-1',
+    'prog-judy-1',
+    'prog-kate-1',
+    'prog-noaccess-1',
+] as const
+
 beforeAll(async () => {
   const db = await withTestDb()
   pool = db.pool
   cleanup = db.cleanup
+  for (const id of TEST_PROGRAM_IDS) await insertServiceProgram(pool, { id })
 })
 afterAll(() => cleanup())
 

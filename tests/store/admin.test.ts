@@ -16,7 +16,7 @@ test('createAccount + findByUsername 往返', async () => {
     await store.createAccount({ id: 'admin-1', username: 'alice', passwordHash: 'hash-1', now: 1000 })
 
     const found = await store.findByUsername('alice')
-    expect(found).toEqual({ id: 'admin-1', username: 'alice', passwordHash: 'hash-1', createdAt: 1000 })
+    expect(found).toEqual({ id: 'admin-1', username: 'alice', passwordHash: 'hash-1', createdAt: 1000, role: 'admin' })
   } finally {
     await cleanup()
   }
@@ -39,7 +39,7 @@ test('findById 往返，且对不存在的 id 返回 null', async () => {
     await store.createAccount({ id: 'admin-2', username: 'bob', passwordHash: 'hash-2', now: 1000 })
 
     const found = await store.findById('admin-2')
-    expect(found).toEqual({ id: 'admin-2', username: 'bob', passwordHash: 'hash-2', createdAt: 1000 })
+    expect(found).toEqual({ id: 'admin-2', username: 'bob', passwordHash: 'hash-2', createdAt: 1000, role: 'admin' })
     expect(await store.findById('admin-does-not-exist')).toBeNull()
   } finally {
     await cleanup()
@@ -263,6 +263,87 @@ test('中文用户名正确往返（utf8mb4）', async () => {
 
     const found = await store.findByUsername('张三')
     expect(found?.username).toBe('张三')
+  } finally {
+    await cleanup()
+  }
+})
+
+// ── 只读角色（阶段 5 · A8，spec §2 / §11 缺口 1）────────────────────────
+
+test('createAccount 不给 role 时落成 admin——加一列不改变任何既有账号的权限', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({ id: 'role-default', username: 'role-default', passwordHash: 'h', now: 1000 })
+    expect((await store.findById('role-default'))?.role).toBe('admin')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('createAccount 显式建只读账号，三条读路径都带得出 role', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({
+      id: 'role-ro', username: 'watcher', passwordHash: 'h', now: 1000, role: 'readonly',
+    })
+    expect((await store.findById('role-ro'))?.role).toBe('readonly')
+    expect((await store.findByUsername('watcher'))?.role).toBe('readonly')
+    expect((await store.listAccounts())[0]?.role).toBe('readonly')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('库里出现认不出的角色值时读成 readonly——认不出来按最小权限，不是按最大权限', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    // 手工 UPDATE 写错、或者将来多一个角色再降级回滚，都会留下这样一行。
+    // 这一列是 VARCHAR 不是 ENUM，所以库拦不住它——拦得住的只有读侧
+    await pool.execute(
+      `INSERT INTO admin_accounts (id, username, password_hash, created_at, \`role\`)
+       VALUES ('role-weird', 'weird', 'h', 1000, 'superadmin')`,
+    )
+    expect((await store.findById('role-weird'))?.role).toBe('readonly')
+  } finally {
+    await cleanup()
+  }
+})
+
+// ── 修改密码（阶段 5 · A8，spec §11 缺口 5）────────────────────────────
+
+test('updatePassword 换掉哈希，且对不存在的 id 返回 false', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({ id: 'pw-1', username: 'pw-user', passwordHash: 'old-hash', now: 1000 })
+
+    expect(await store.updatePassword('pw-1', 'new-hash')).toBe(true)
+    expect((await store.findById('pw-1'))?.passwordHash).toBe('new-hash')
+    expect(await store.updatePassword('pw-does-not-exist', 'x')).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('deleteSessionsByAdminIdExcept 吊销其它会话但留下当前这一条', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createSession({ tokenHash: 'keep-me', adminId: 'pw-2', expiresAt: 9000, now: 1000 })
+    await store.createSession({ tokenHash: 'other-a', adminId: 'pw-2', expiresAt: 9000, now: 1000 })
+    await store.createSession({ tokenHash: 'other-b', adminId: 'pw-2', expiresAt: 9000, now: 1000 })
+    // 别人的会话不许被牵连
+    await store.createSession({ tokenHash: 'someone-else', adminId: 'pw-3', expiresAt: 9000, now: 1000 })
+
+    expect(await store.deleteSessionsByAdminIdExcept('pw-2', 'keep-me')).toBe(2)
+
+    expect(await store.findSessionByTokenHash('keep-me')).not.toBeNull()
+    expect(await store.findSessionByTokenHash('other-a')).toBeNull()
+    expect(await store.findSessionByTokenHash('other-b')).toBeNull()
+    expect(await store.findSessionByTokenHash('someone-else')).not.toBeNull()
   } finally {
     await cleanup()
   }
