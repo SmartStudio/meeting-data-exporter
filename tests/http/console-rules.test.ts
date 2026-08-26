@@ -729,6 +729,70 @@ test('候选规则集不是数组时 400，不把一份垃圾当成「管理员�
   expect(policy.calls).toHaveLength(0)
 })
 
+// ── 兼容兜底翻面的琥珀警告（阶段 4 · T16）────────────────────────────────
+
+function fetchRule(over: Partial<AdminRule> = {}): AdminRule {
+  return rule({
+    id: 1, kind: 'fetch', effect: 'all', assetTypes: ['*'],
+    subjectType: null, subjectValue: null, note: '财务会议要拉',
+    ...over,
+  })
+}
+
+test('建第一条拉取规则时报琥珀：库里零条规则 = 兼容兜底全拉，这一条会给整条链路装闸门', async () => {
+  // 库里一条拉取规则都没有 ⇒ worker 走兼容兜底「时间窗内全拉」，两场都在被拉。
+  // 这条只命中财务的规则一落地，技术周会就不再被拉——预览不说，管理员看不出来
+  const policy = fakePolicyStore({ listAllRules: async () => [] })
+  const res = await previewRules(
+    req('POST', { rules: [fetchRule()] }),
+    ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+  )
+  const body = await bodyOf(res)
+
+  const stacks = body.stacks as Array<{ kind: StackKind; counts: Record<string, number> }>
+  expect(stacks[0]!.kind).toBe('fetch')
+  // 财务那场本来就在拉，这条规则没「新增」什么
+  expect(stacks[0]!.counts.opened).toBe(0)
+  expect(stacks[0]!.counts.tightened).toBe(1)
+
+  const warnings = body.warnings as Array<{ level: string; code: string; text: string; meetings: Array<{ title: string }> }>
+  expect(warnings).toHaveLength(1)
+  expect(warnings[0]!.level).toBe('amber')
+  expect(warnings[0]!.code).toBe('fetch_compat_off')
+  expect(warnings[0]!.meetings.map((m) => m.title)).toEqual(['技术周会'])
+  expect(warnings[0]!.text).toContain('兼容兜底')
+})
+
+test('第一条拉取规则是无条件全拉时不报琥珀——那是推荐的上线路径，不该弹假警报', async () => {
+  const policy = fakePolicyStore({ listAllRules: async () => [] })
+  const res = await previewRules(
+    req('POST', { rules: [fetchRule({ conds: [], note: '把现状显式化：无条件全拉' })] }),
+    ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+  )
+  const body = await bodyOf(res)
+  const stacks = body.stacks as Array<{ counts: Record<string, number> }>
+  expect(stacks[0]!.counts.tightened).toBe(0)
+  expect(stacks[0]!.counts.deciderOnly).toBe(2)
+  expect(body.warnings).toEqual([])
+})
+
+test('库里已经有启用的拉取规则时不报琥珀：兜底没翻面，收紧就是管理员自己要的', async () => {
+  const base = fetchRule({ id: 1, priority: 10, effect: 'all', conds: [], note: '兜底全拉' })
+  const finance = fetchRule({
+    id: 2, priority: 200, effect: 'skip', note: '财务会议不落本地',
+    conds: [{ f: 'title', op: 'has', v: '财务' }],
+  })
+  const policy = fakePolicyStore({ listAllRules: async () => [base] })
+  const res = await previewRules(
+    req('POST', { rules: [base, finance] }),
+    ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+  )
+  const body = await bodyOf(res)
+  const stacks = body.stacks as Array<{ counts: Record<string, number> }>
+  expect(stacks[0]!.counts.tightened).toBe(1)
+  expect(body.warnings).toEqual([])
+})
+
 // ── 命中的会议 ───────────────────────────────────────────────────────────
 
 test('命中列表只返回这条规则自身条件匹配的会议（§4.7 的「命中数」可点）', async () => {

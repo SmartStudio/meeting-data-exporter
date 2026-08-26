@@ -58,11 +58,24 @@
  * **兼容模式不是"绕过整栈"**：人工改写照样优先（`applyOverride` 套在合成规则之外），
  * 否则一条"这场误录了，别拉"的改写在界面上显示成已生效、实际却被绕过去了。
  *
- * **一处已知的边界，留给后续任务**：影响预览（`src/policy/preview.ts`）按**库里**的
- * 规则集算，兼容兜底不参与。所以管理员建**第一条**拉取规则时，预览会把"本来就在拉"
- * 的会议算成「新放行」，把落在新规则之外、本来也在拉的会议漏报为不变——预览的两个数
- * 在那一次是偏乐观的。本任务不碰 `src/policy/`，记在这里免得下一个人当成偶发。
- * 在预览补齐之前，第一条规则请按下面那条建议来建（先无条件全拉，再逐步收紧）。
+ * **那处已知的边界已修（阶段 4 · T16）**。原来的毛病：影响预览（`src/policy/preview.ts`）
+ * 按**库里**的规则集算，兼容兜底不参与，于是管理员建**第一条**拉取规则时，预览把
+ * "本来就在拉"的会议算成「新放行」，又把落在新规则之外、本来也在拉的会议漏报为不变
+ * ——两个数都偏乐观，而漏掉的那一半正是事故本身（这条规则给整条拉取链路装上了闸门）。
+ *
+ * **修法**：兼容兜底的定义搬到 `src/policy/fetch-compat.ts`（本文件原样 re-export，
+ * 论证仍在这里），预览与真实判定从此读**同一个** `fetchRulesInEffect`。预览里落地成两件事：
+ *
+ *   1. 预览 fetch 栈时，新旧两侧的规则集各自过一遍 `fetchRulesInEffect`——
+ *      "当前规则集为空"算成兼容兜底（全拉），不再算成 `skip`。
+ *   2. 兜底翻面（`fetchStackUnconfigured` 在新旧两侧结论不同）时，
+ *      spec §5.5 那句"只算命中(旧) ∪ 命中(新)"的安全性论证**不再成立**——
+ *      整栈的兜底行为换了，没被任何规则命中的会议照样会变。所以那一次**逐场全算**，
+ *      于是"这一条会让 M 场会议从在拉变成不拉"报得出来。
+ *      规则编辑器还会为此额外出一条琥珀警告（`src/http/handlers/console/rules.ts`
+ *      的 `fetch_compat_off`，与 §4.7「从未对外开放过却将被放行」是同一个先例）。
+ *
+ * archive 栈（兜底 `skip`）与 allow 栈（兜底 `deny`）**没有兼容模式**，预览行为一个字没变。
  *
  * ⚠️ **部署这次改动前运维要做什么**：什么都不用做，链路不会停。
  * 但要知道**建下第一条拉取规则的那一刻兜底就翻面**——从那一刻起，没有被任何一条
@@ -86,6 +99,11 @@ import {
   type MeetingOverride,
   type OverriddenDecision,
 } from '../policy/override'
+import {
+  FETCH_STACK_UNCONFIGURED_REASON,
+  fetchRulesInEffect,
+  fetchStackUnconfigured,
+} from '../policy/fetch-compat'
 import { evaluateFetchStack, type FetchEffect, type StackRule } from '../policy/stacks'
 import { archiveStateKey, type ArchivesStore } from '../store/archives'
 import type { MeetingKey } from '../store/grants'
@@ -93,52 +111,20 @@ import type { MeetingKey } from '../store/grants'
 // ── 兼容模式 ──────────────────────────────────────────────────────────────
 
 /**
- * 规则集为空时顶上的那条合成规则。**它不在库里**，`id` 取 0 是因为
- * `policy_rules.id` 是 AUTO_INCREMENT，真规则的 id 从 1 起，0 永远不会撞上。
+ * 兼容兜底的定义本体在 `src/policy/fetch-compat.ts`，这里**原样 re-export**。
  *
- * 界面上**不许**把它显示成「由规则 #0 决定」——那正是 E-c 骂过的那件事（把一个
- * 缺口伪装成一次判定）。控制台读到 `fetchRules.length === 0` 时改用
- * `FETCH_STACK_UNCONFIGURED_REASON` 那句话，见
- * `src/http/handlers/console/meetings.ts` 的 `fetchWhy`。
- */
-const COMPAT_RULE: StackRule = {
-  id: 0,
-  kind: 'fetch',
-  priority: 0,
-  enabled: true,
-  join: 'and',
-  conds: [],
-  effect: 'all',
-  assetTypes: ['*'],
-  subjectType: null,
-  subjectValue: null,
-  note: '兼容兜底（不是库里的规则）：库里一条启用的拉取规则都没有，沿用接线前的「时间窗内全拉」',
-}
-
-/**
- * 这一轮**真正参与判定**的规则集。库里有就用库里的，一条都没有才顶上兼容兜底。
+ * 为什么挪走：T16 给影响预览接上了同一个兜底，于是读者从两个（worker、控制台）
+ * 变成三个，而 `src/policy/preview.ts` 是纯函数模块，反向 import 本文件会把
+ * `@yaowu/mde-engine` 的 `discover` 与 `src/store/*` 一起拽进规则求值的依赖图。
+ * **「兼容兜底是什么」只许有一处定义**——那正是 T16 在修的毛病的根源。
  *
- * **worker 与控制台都调它**，这是两处结论一致的唯一保证：控制台的 `why.fetch`
- * 算的必须是 worker 真会做的那件事，否则界面会说"这场会被规则拦下了"而 worker
- * 其实拉了它（或者反过来）。
+ * 这条决定的完整论证仍然在本文件的文件头，没有搬走。
  */
-export function fetchRulesInEffect(configured: readonly StackRule[]): readonly StackRule[] {
-  return configured.length > 0 ? configured : [COMPAT_RULE]
-}
-
-/**
- * 「拉取规则栈还没配」这件事的唯一一句解释。控制台的 `why.fetch` 直接用它，
- * worker 的每轮告警在它前后再加上运维要做的动作。
- *
- * 两处共用一份，是因为这句话要回答的是同一个问题："这场会议为什么被拉了？"
- * ——而答案是"还没有规则可管它"，不是"某条规则放行了它"。
- */
-export const FETCH_STACK_UNCONFIGURED_REASON =
-  '库里一条启用的拉取规则都没有。这种情况下 worker 沿用接线前的行为：' +
-  '按时间窗发现到的录制全部拉取（见 src/worker/fetch-policy.ts 的兼容模式）。' +
-  '所以这场会议不是「被某条规则放行的」，而是「还没有规则可管它」。' +
-  '⚠️ 建下第一条拉取规则的那一刻兜底就翻面——spec §4.6 的拉取兜底是 skip，' +
-  '届时没有被任何一条拉取规则命中的会议将不再被拉取。'
+export {
+  FETCH_STACK_UNCONFIGURED_REASON,
+  fetchRulesInEffect,
+  fetchStackUnconfigured,
+} from '../policy/fetch-compat'
 
 /** 兼容模式每轮都喊一次。喊的是配置状态，不是故障，所以与会议数无关、一轮一条 */
 const COMPAT_ALARM =
@@ -394,7 +380,9 @@ export async function discoverWithFetchPolicy(
   const log = deps.log ?? DEFAULT_LOG
   const configured = await deps.listFetchRules()
   const rules = fetchRulesInEffect(configured)
-  const mode: FetchPolicyMode = configured.length > 0 ? 'governed' : 'compat'
+  // 「什么时候算兼容模式」与 `fetchRulesInEffect` 读同一个谓词，不各写一个
+  // `length` 判断——两处漂移的后果是日志说 governed 而判定走的是兜底
+  const mode: FetchPolicyMode = fetchStackUnconfigured(configured) ? 'compat' : 'governed'
   if (mode === 'compat') log.warn(COMPAT_ALARM)
 
   // ① 枚举。`wantedKeys` 传空数组 ⇒ discover 只会 upsertMeeting：不向腾讯要资产清单、
