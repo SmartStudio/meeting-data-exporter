@@ -77,8 +77,8 @@ nas-down/tencent-down 六个值，`mockApi(state)` 照着分支返回假数据�
 | --- | --- |
 | `loading` / `load-failed` | `useResource` 的三态，本来就是真的 |
 | `empty` | 真实的空结果（`total === 0`） |
-| `nas-down` | `GET /api/v1/admin/storage` 的 NAS 连通状态字段 |
-| `tencent-down` | **没有专门端点**——从 `GET /api/v1/admin/jobs` 里「拉取新录制」这个任务的最近运行推：连续失败即视为腾讯会议不可达 |
+| `nas-down` | `GET /api/v1/admin/storage` 的 `nas.reachable`（`false` 时仍返回 200——不可达本身是要展示的内容，不是错误） |
+| `tencent-down` | **没有专门端点**——从 `GET /api/v1/admin/jobs` 里 `name === 'fetch_recordings'`（"拉取新录制"）那一项的 `recentRuns` 推：连续失败即视为腾讯会议不可达 |
 
 `tencent-down` 这条是推断而非直报，**必须在界面上说清它是推断**（"最近 N 轮拉取
 连续失败"），不能显示成一句肯定的"腾讯会议不可达"——那是在替一个我们没有的探测
@@ -428,6 +428,10 @@ mock 与真 API 不是一一对应的，照着换会撞上这三处。**先想�
 **规格**：spec §4.9
 **要点清单**：`<SCRATCH>/spec-pages.md` 第 6 节
 
+> **依赖 A8**：`nas.failedMeetings` 现在恒为 `null`（handler 还没接上
+> `job_failures`，见 §11.3）。**这一轮先照 `failedMeetingsNote` 显示"暂不可得"，
+> 不要编一个数，也不要拿"归档中"顶替。** A8 合进来之后这一格自然点亮。
+
 - 两块：NAS 归档（挂载点/协议/连通状态/最近检测/容量三分/归档三态计数）与
   本地保留窗口（保留期内/其中已授权/7 天内到期/本地占用）
 - 三个动作：改默认保留天数 · 导出可采集清单 · 立即清理已到期文件。
@@ -515,7 +519,19 @@ mock 与真 API 不是一一对应的，照着换会撞上这三处。**先想�
 
 两条都进 `audit_log`。
 
-### 11.3 修改密码（缺口 5）
+### 11.3 归档失败数接上 `job_failures`（阶段 5 侦察时发现）
+
+`GET /api/v1/admin/storage` 现在返回 `nas.failedMeetings: null` 配一句
+`failedMeetingsNote: "归档失败项尚未落库…"`。这句话在阶段 4 之前是对的，
+但 **T-A4 已经把 `job_failures` 建起来并让 `src/worker/archive.ts` 往里落行了**，
+数据现在有了，只是这个 handler 还在照旧报 null。
+
+- `failedMeetings` 从 `job_failures` 里 `job_name = 'archive_nas'` 的未解决行数取
+- `failedMeetingsNote` 随之删掉——它现在描述的是一个已经不成立的状态，
+  留着比没有更糟
+- spec §4.9 的「已归档 / 归档中 / 归档失败」三态因此才是完整的
+
+### 11.4 修改密码（缺口 5）
 
 `POST /api/v1/admin/auth/password`，请求体 `{ currentPassword, newPassword }`。
 
