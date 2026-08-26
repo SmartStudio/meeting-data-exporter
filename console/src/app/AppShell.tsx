@@ -1,12 +1,14 @@
+import { useEffect, useState } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { fetchAdminIdentity } from '@/api/admin'
+import { setUnauthorizedHandler } from '@/api/client'
 import { useResource } from '@/lib/useResource'
 import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
 import GlobalBar from './GlobalBar'
 import Rail from './Rail'
 import ShortcutBar from './ShortcutBar'
-import SystemStatus from './SystemStatus'
+import SystemStatus, { SystemHealthProvider } from './SystemStatus'
 import styles from './AppShell.module.css'
 
 /**
@@ -29,6 +31,27 @@ import styles from './AppShell.module.css'
 export default function AppShell() {
   const location = useLocation()
   const identity = useResource(() => fetchAdminIdentity(), [])
+
+  /**
+   * **全局的 401 出口**（计划 §3.1）。33 条 admin 端点里任何一条返回 401，
+   * `api/client.ts` 都会抛 `UnauthorizedError` 并回调这里——页面自己不处理它，
+   * 也就不用在七个页面里各写一遍跳转。
+   *
+   * 卸载时注销不是礼貌：不注销的话，组件已经不在了还会有人来改它的 state。
+   *
+   * `fetchAdminIdentity()` 刻意不走那一层（`api/admin.ts` 的文件头写着理由），
+   * 所以"探测登录态"这件事本身不会触发这个出口——否则登录页会把自己重定向到
+   * 登录页，死循环。
+   */
+  const [sessionExpired, setSessionExpired] = useState(false)
+  useEffect(() => {
+    setUnauthorizedHandler(() => setSessionExpired(true))
+    return () => setUnauthorizedHandler(null)
+  }, [])
+
+  if (sessionExpired) {
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  }
 
   if (identity.state === 'loading') {
     return (
@@ -55,17 +78,24 @@ export default function AppShell() {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />
   }
 
+  // `SystemHealthProvider` 在登录态确认**之后**才挂：它要发两条真实的 admin
+  // 请求，没有会话时发出去只会拿到 401，然后触发上面那个全局出口——
+  // 一次本来不需要发生的跳转。
   return (
-    <div className={styles.shell}>
-      <Rail />
-      <div className={styles.main}>
-        <GlobalBar />
-        <SystemStatus />
-        <div className={styles.view}>
-          <Outlet />
+    <SystemHealthProvider>
+      <div className={styles.shell}>
+        <Rail />
+        <div className={styles.main}>
+          <GlobalBar />
+          <SystemStatus />
+          {/* 唯一的 <main>：一页只能有一个，所以它在外壳这一层，
+              页面自己用 PageShell 的 <section aria-labelledby> */}
+          <main className={styles.view}>
+            <Outlet />
+          </main>
         </div>
+        <ShortcutBar />
       </div>
-      <ShortcutBar />
-    </div>
+    </SystemHealthProvider>
   )
 }

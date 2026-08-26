@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { NavLink } from 'react-router-dom'
-import { useMeetings, useSystemState } from './SystemStatus'
+import { fetchStreakText } from '@/api/admin/health'
+import { useSystemStatusView } from './SystemStatus'
 import styles from './Rail.module.css'
 
 /**
@@ -78,37 +79,47 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: ReactElement }> = [
   },
 ]
 
-/** 左栏底部的系统状态摘要（原型的 `.rail-foot`）。点开是详情，F1 暂不接——
- * 数字来自当前系统状态下真实读到的会议数据，不是写死的。 */
+/**
+ * 左栏底部的系统状态摘要（原型的 `.rail-foot`）。
+ *
+ * 数据与顶栏那条告警条同源（`useSystemStatusView()`，`SystemHealthProvider`
+ * 里只取一次），不再从会议列表里数归档失败的行——那是 mock 时代的替代品，
+ * 它数的是"会议数据里有几行 archive === 'failed'"，与"有几件事需要人处理"
+ * 不是一回事。
+ *
+ * 「一切正常」这四个字只在**真的读到了状态而且没问题**时出现：读不到就说
+ * 读不到，推不出来就说未知——默认成正常的那一刻，这块摘要就再也不值得看了。
+ */
 function RailStatus() {
-  const { state } = useSystemState()
-  const meetings = useMeetings()
+  const { alert, openFailures } = useSystemStatusView()
 
   let severity: 'ok' | 'warn' | 'fail' = 'ok'
   let title = '一切正常'
-  let subtitle = '三个依赖都通 · 任务运行中'
+  let subtitle = '依赖都通 · 任务运行中'
 
-  if (state === 'nas-down') {
+  if (alert.kind === 'checking') {
+    title = '正在检测…'
+    subtitle = '读取系统状态中'
+  } else if (alert.kind === 'unreadable') {
+    severity = 'warn'
+    title = '系统状态读不到'
+    subtitle = '不影响已归档的文件'
+  } else if (alert.kind === 'nas-down') {
     severity = 'fail'
     title = '1 个依赖异常'
     subtitle = 'NAS 归档存储'
-  } else if (state === 'tencent-down') {
+  } else if (alert.kind === 'fetch-stalled') {
     severity = 'warn'
-    title = '1 个依赖异常'
-    subtitle = '腾讯会议接口'
-  } else if (state === 'loading') {
-    title = '正在检测…'
-    subtitle = '读取会议数据中'
-  } else if (state === 'load-failed') {
-    title = '会议数据读取失败'
-    subtitle = '不影响已归档的文件'
-  } else if (meetings.state === 'ready') {
-    const fails = meetings.data.filter((m) => m.archive === 'failed').length
-    if (fails > 0) {
-      severity = 'warn'
-      title = `${fails} 项需要处理`
-      subtitle = 'NAS 连通 · 任务运行中'
-    }
+    title = '拉取可能不通'
+    subtitle = fetchStreakText(alert.streak)
+  } else if (alert.kind === 'fetch-unknown') {
+    severity = 'warn'
+    title = '拉取状态未知'
+    subtitle = '任务清单里没有这一项'
+  } else if (openFailures !== null && openFailures > 0) {
+    severity = 'warn'
+    title = `${openFailures} 项需要处理`
+    subtitle = '依赖都通 · 有失败项待处理'
   }
 
   return (

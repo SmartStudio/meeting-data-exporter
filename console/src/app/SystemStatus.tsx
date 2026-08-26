@@ -1,7 +1,14 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { Meeting, SystemState } from '@/api/types'
-import { mockApi } from '@/api/mock'
-import { useResource, type Resource } from '@/lib/useResource'
+import { Link } from 'react-router-dom'
+import type { SystemState } from '@/api/types'
+import {
+  TENCENT_DOWN_STREAK,
+  fetchStreakText,
+  fetchSystemHealth,
+  type SystemHealth,
+} from '@/api/admin/health'
+import { useResource } from '@/lib/useResource'
+import { isProtoMode } from './proto'
 import styles from './SystemStatus.module.css'
 
 /**
@@ -36,8 +43,14 @@ interface SystemStateContextValue {
 const SystemStateContext = createContext<SystemStateContextValue | null>(null)
 
 /**
- * 五种系统状态是规格的一部分（spec.md §7、§8），不是彩蛋——通过 Context
- * 下发给页面，页面据此各自响应（告警等级、给出的操作都不一样）。
+ * **手动切系统状态，只在 `?proto=1` 下有意义**（计划 G-d）。
+ *
+ * 它是演示与截图工具：spec §7/§8 的五种形态本来就要能一键复现，
+ * `scripts/a11y-check.ts` 也靠顶栏那个下拉驱动五个无障碍检查场景。
+ * 默认路径下这个值没人读——真实状态从 `useSystemStatusView()` 来。
+ *
+ * 它同时还是 mock 数据层的开关（`mockApi(state)`，会议记录页在用），
+ * 所以 Provider 仍然包在整棵树外面（`App.tsx`）。
  */
 export function SystemStateProvider({
   children,
@@ -57,100 +70,243 @@ export function useSystemState(): SystemStateContextValue {
   return ctx
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   真实的系统健康状态
+   ══════════════════════════════════════════════════════════════════ */
+
 /**
- * 会议数据，随当前系统状态联动。T2 的 `mockApi(state)` 已经把 nas-down 的
- * 变换（保留窗口清零、授权撤下）实现好了——这里只是把 Context 里的 `state`
- * 接进去，不重新发明一遍。
+ * 状态条与左栏摘要要显示的那一件事。
  *
- * 所有需要会议列表的页面（含 T6 的会议记录页）都应该用这个 hook 取数据，
- * 而不是自己再拼一次 `mockApi(state)`——不然切系统状态时数据不会跟着变，
- * 「故障必须在数据里可见」这条就成了一句空话。
+ * 拆成一个显式的联合而不是几个布尔，是为了让"读不到"有自己的取值：
+ * `unreadable` 与 `none` 必须分得开——**拿不到状态时显示"未知"，
+ * 不许默认成"正常"**（计划 §1 全局约束第 2 条）。
  */
-export function useMeetings(): Resource<Meeting[]> & { retry: () => void } {
-  const { state } = useSystemState()
-  return useResource(() => mockApi(state).listMeetings(), [state])
+export type SystemAlert =
+  /** 一切正常，或者数据三态（loading/load-failed/empty，出口在页面内容区） */
+  | { kind: 'none' }
+  /** 首次探测还没回来 */
+  | { kind: 'checking' }
+  /** 系统状态本身读不到（后端不可达 / 响应形状不对）。**不是"正常"** */
+  | { kind: 'unreadable'; detail: string }
+  /** `GET /api/v1/admin/storage` 的 `nas.reachable === false` */
+  | { kind: 'nas-down'; error: string | null; pendingMeetings: number | null }
+  /** 从 `fetch_recordings` 的最近运行**推断**出来的"拉不通"。措辞见下 */
+  | { kind: 'fetch-stalled'; streak: number; label: string }
+  /** 任务清单里没有 `fetch_recordings`——推不出来，也不许当成正常 */
+  | { kind: 'fetch-unknown' }
+
+export interface SystemStatusView {
+  alert: SystemAlert
+  /** 需要人处理的失败项总数；读不到时是 `null`——`0` 是"没有失败"，不是同一件事 */
+  openFailures: number | null
+  retry: () => void
 }
 
-function archiveFailed(meetings: Meeting[]): Meeting[] {
-  return meetings.filter((m) => m.archive === 'failed')
+const SystemStatusContext = createContext<SystemStatusView | null>(null)
+
+function protoAlert(state: SystemState): SystemAlert {
+  switch (state) {
+    case 'nas-down':
+      return { kind: 'nas-down', error: null, pendingMeetings: null }
+    case 'tencent-down':
+      return { kind: 'fetch-stalled', streak: TENCENT_DOWN_STREAK, label: '拉取新录制' }
+    default:
+      // ok / loading / load-failed / empty 是**数据**三态，出口在页面内容区
+      // （spec.md §8），不占用这条全局横幅。
+      return { kind: 'none' }
+  }
+}
+
+function liveAlert(health: SystemHealth): SystemAlert {
+  if (!health.nas.reachable) {
+    return {
+      kind: 'nas-down',
+      error: health.nas.error,
+      pendingMeetings: health.nas.pendingMeetings,
+    }
+  }
+  if (health.fetchJob === null) return { kind: 'fetch-unknown' }
+  if (health.fetchJob.consecutiveFailures >= TENCENT_DOWN_STREAK) {
+    return {
+      kind: 'fetch-stalled',
+      streak: health.fetchJob.consecutiveFailures,
+      label: health.fetchJob.label,
+    }
+  }
+  return { kind: 'none' }
 }
 
 /**
- * 顶栏下方的告警条（原型的 `.sysbar`）。只在 nas-down / tencent-down 时出现——
- * loading / load-failed / empty 是数据三态，出口在页面内容区（spec.md §8），
- * 不占用这条全局横幅。
+ * 真实系统状态的唯一取数点。挂在 `AppShell` 里（登录态确认之后），
+ * 状态条与左栏摘要共用同一份，不各发一遍请求。
  *
- * nas-down 的「暂停到期清理」是唯一能阻止不可逆损失的动作，必须长在横幅本身
- * 上。F1 只画按钮 + 一个内联确认，不接后端，也不借用 T4 的浮层组件。
+ * **原型模式下一次请求都不发**：那时的状态来自顶栏那个下拉。这是"默认路径
+ * 一步都不许碰 mock、原型路径一步都不许碰真实后端"的那条分界线。
+ */
+export function SystemHealthProvider({ children }: { children: ReactNode }) {
+  // 冻结在挂载那一刻：原型模式中途不会切换，而每次渲染都重读 sessionStorage
+  // 会让 `useResource` 的 deps 抖动。
+  const [proto] = useState(() => isProtoMode())
+  const { state } = useSystemState()
+
+  const res = useResource<SystemHealth | null>(
+    () => (proto ? Promise.resolve(null) : fetchSystemHealth()),
+    [proto],
+  )
+
+  // `useResource` 每次渲染都返回一个新对象（`{...res, retry}`），直接放进 deps
+  // 等于没有 memo。拆成三个稳定值再依赖它们。
+  const phase = res.state
+  const error = res.state === 'error' ? res.error : null
+  const health = res.state === 'ready' ? res.data : null
+  const { retry } = res
+
+  const value = useMemo<SystemStatusView>(() => {
+    if (proto) return { alert: protoAlert(state), openFailures: null, retry }
+    if (phase === 'error' && error !== null) {
+      return { alert: { kind: 'unreadable', detail: error.message }, openFailures: null, retry }
+    }
+    // `health === null` 有两种来源：还在 loading，或者原型模式那个 resolve(null)。
+    // 后者在上面已经返回了，所以这里只剩"还没探完"。
+    if (health === null) return { alert: { kind: 'checking' }, openFailures: null, retry }
+    return { alert: liveAlert(health), openFailures: health.openFailures, retry }
+  }, [proto, state, phase, error, health, retry])
+
+  return <SystemStatusContext.Provider value={value}>{children}</SystemStatusContext.Provider>
+}
+
+/**
+ * 状态条与左栏摘要都读它。**只有 `AppShell` 之下才有**——七条路由的每一页
+ * 都在它底下，登录页刻意不在（那时还没有会话，发请求只会拿到 401）。
+ */
+export function useSystemStatusView(): SystemStatusView {
+  const ctx = useContext(SystemStatusContext)
+  if (!ctx) throw new Error('useSystemStatusView 必须在 SystemHealthProvider 内使用')
+  return ctx
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   顶栏下方的告警条
+   ══════════════════════════════════════════════════════════════════ */
+
+function WarnIcon() {
+  return (
+    <svg
+      className={styles.icon}
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M8 2.4 14.4 13.2H1.6L8 2.4Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path d="M8 6.6v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="8" cy="11.4" r=".8" fill="currentColor" />
+    </svg>
+  )
+}
+
+/**
+ * 顶栏下方的告警条（原型的 `.sysbar`）。
+ *
+ * 三件事在 F0 变了：
+ *
+ * 1. **状态来自真实端点**（`nas.reachable` 与 `fetch_recordings` 的最近运行），
+ *    不再是顶栏那个手动下拉——它退回 `?proto=1` 下的演示工具。
+ * 2. **「腾讯会议不可达」这句话没有了**。我们没有探测腾讯会议的端点，
+ *    有的只是"拉取任务最近几轮都失败了"这个观察。文案照观察写
+ *    （`fetchStreakText()`），不替一个不存在的探测下结论。
+ * 3. **「暂停到期清理」不再是一个点了只改本地 state 的按钮**。这个动作有真实
+ *    端点（`POST /api/v1/admin/storage/cleanup-pause`），但它归归档存储页
+ *    （F5b 独占 `api/admin/storage.ts`），地基不越界去写。所以这里给的是
+ *    一个真的能走到那个动作的链接，而不是一个假按钮——
+ *    "点了没反应"比"多点一次"糟得多。
  */
 export default function SystemStatus() {
-  const { state } = useSystemState()
-  const meetings = useMeetings()
-  const [purgePaused, setPurgePaused] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  const { alert, retry } = useSystemStatusView()
 
-  if (state !== 'nas-down' && state !== 'tencent-down') return null
+  if (alert.kind === 'none' || alert.kind === 'checking') return null
 
-  const isNas = state === 'nas-down'
-  const failedCount = meetings.state === 'ready' ? archiveFailed(meetings.data).length : null
+  if (alert.kind === 'unreadable') {
+    return (
+      <div className={styles.bar} data-sev="warn" role="status" data-alert="unreadable">
+        <WarnIcon />
+        <p className={styles.text}>
+          <b>系统状态读取失败</b>，下面显示的一切都可能不是现在的实际情况。
+          <br />
+          <span className={styles.sub}>{alert.detail}</span>
+        </p>
+        <div className={styles.acts}>
+          <button type="button" className={styles.btn} onClick={retry}>
+            重试
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (alert.kind === 'fetch-unknown') {
+    return (
+      <div className={styles.bar} data-sev="warn" role="status" data-alert="fetch-unknown">
+        <WarnIcon />
+        <p className={styles.text}>
+          <b>拉取任务的状态未知</b>：后端的任务清单里没有「拉取新录制」这一项，
+          判断不了新录制还拉不拉得到。
+          <br />
+          <span className={styles.sub}>已经拉下来的会议、归档与对外采集不受影响。</span>
+        </p>
+        <div className={styles.acts}>
+          <Link className={styles.btn} to="/jobs">
+            查看定时任务
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (alert.kind === 'fetch-stalled') {
+    return (
+      <div className={styles.bar} data-sev="warn" role="status" data-alert="fetch-stalled">
+        <WarnIcon />
+        <p className={styles.text}>
+          <b>{fetchStreakText(alert.streak)}</b>
+          ——「{alert.label}」这个任务连着没跑成，新的录制多半正在积压。
+          <br />
+          <span className={styles.sub}>
+            这是从任务运行记录推出来的判断，不是对腾讯会议接口的直接探测；
+            已经拉下来的会议、归档与对外采集不受影响。
+          </span>
+        </p>
+        <div className={styles.acts}>
+          <Link className={styles.btn} to="/jobs">
+            查看失败原因
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className={styles.bar} data-sev={isNas ? 'fail' : 'warn'} role="status">
-      <svg className={styles.icon} width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M8 2.4 14.4 13.2H1.6L8 2.4Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-        <path d="M8 6.6v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <circle cx="8" cy="11.4" r=".8" fill="currentColor" />
-      </svg>
-
+    <div className={styles.bar} data-sev="fail" role="status" data-alert="nas-down">
+      <WarnIcon />
       <p className={styles.text}>
-        {isNas ? (
-          <>
-            <b>NAS 无法写入</b>，归档任务全部失败。归档不成功的会议，本地保留期一到就彻底没有了
-            ——现在有 <b>{failedCount ?? '…'}</b> 场正等着归档。
-            <br />
-            <span className={styles.sub}>
-              {purgePaused
-                ? '到期清理已暂停，NAS 恢复前不会再删除任何本地文件。'
-                : '建议先暂停到期清理，避免今晚 03:00 的清理任务删掉还没归档的文件。'}
-            </span>
-          </>
-        ) : (
-          <>
-            <b>腾讯会议接口不可达</b>，拉取任务已暂停（重试中）。已经拉下来的会议不受影响，
-            归档和对外采集照常。
-          </>
-        )}
+        <b>NAS 无法写入</b>，归档任务全部失败。归档不成功的会议，本地保留期一到就彻底没有了
+        ——现在有 <b>{alert.pendingMeetings ?? '…'}</b> 场还没归档完成。
+        <br />
+        <span className={styles.sub}>
+          {alert.error ?? '建议先暂停到期清理，避免今晚 03:00 的清理任务删掉还没归档的文件。'}
+        </span>
       </p>
-
-      {isNas && (
-        <div className={styles.acts}>
-          {purgePaused ? (
-            <span className={styles.pausedTag}>已暂停到期清理</span>
-          ) : confirming ? (
-            <span className={styles.confirm} role="alertdialog" aria-label="确认暂停到期清理">
-              <span className={styles.confirmText}>确认暂停？NAS 恢复前不会再删除任何本地文件。</span>
-              <button
-                type="button"
-                className={styles.btn}
-                autoFocus
-                onClick={() => {
-                  setPurgePaused(true)
-                  setConfirming(false)
-                }}
-              >
-                确认暂停
-              </button>
-              <button type="button" className={styles.btnQuiet} onClick={() => setConfirming(false)}>
-                取消
-              </button>
-            </span>
-          ) : (
-            <button type="button" className={styles.btn} onClick={() => setConfirming(true)}>
-              暂停到期清理
-            </button>
-          )}
-        </div>
-      )}
+      <div className={styles.acts}>
+        <Link className={styles.btn} to="/storage">
+          暂停到期清理
+        </Link>
+      </div>
     </div>
   )
 }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { mockApi, MOCK_NOW } from '@/api/mock'
 import type { Consumer, Meeting, Why, WhyKind } from '@/api/types'
-import { useMeetings, useSystemState } from '@/app/SystemStatus'
+import { useSystemState } from '@/app/SystemStatus'
 import { daysLeft, fmtDateTime, fmtDay } from '@/lib/format'
 import { useMeetingKeys, type MeetingKeyAction } from '@/lib/keys'
 import { useResource } from '@/lib/useResource'
@@ -17,6 +17,7 @@ import { BatchBar, type BatchAction } from './BatchBar'
 import { GrantPicker } from './GrantPicker'
 import { emptyKind, MeetingTable } from './MeetingTable'
 import { TRIAGE_DEFS, TriageBar, type TriageId } from './TriageBar'
+import { useMeetings } from './useMeetings'
 import {
   applyWrite,
   canWrite,
