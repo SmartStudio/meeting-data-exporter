@@ -40,7 +40,15 @@ export const TENCENT_DOWN_STREAK = 3
 export const FETCH_JOB_NAME = 'fetch_recordings'
 
 export interface NasStatus {
-  root: string
+  /**
+   * NAS 挂载点。**可空**——网关的 `nasRoot` 在没配 `MDE_NAS_ROOT` 时就是 null
+   * （`src/index.ts`）。这里曾经按必填读，于是那种部署上每一页顶上都会挂一条
+   * "系统状态读取失败"，而真正的原因（没配挂载点）一个字都不会出现。
+   *
+   * 状态条本身不用它——它只关心通得通、几场没归档。留着这个字段是因为
+   * 「挂载点是什么」迟早要在横幅上说，届时按可空渲染即可。
+   */
+  root: string | null
   /** false 时后端仍返回 200——不可达本身是要展示的内容，不是一次错误 */
   reachable: boolean
   /** unix 秒 */
@@ -120,7 +128,7 @@ export async function fetchSystemHealth(): Promise<SystemHealth> {
   const storage = sr.object(storageRaw, '')
   const nasRaw = sr.object(storage.nas, 'nas')
   const nas: NasStatus = {
-    root: sr.str(nasRaw, 'root', 'nas'),
+    root: sr.strOrNull(nasRaw, 'root', 'nas'),
     reachable: sr.bool(nasRaw, 'reachable', 'nas'),
     checkedAt: sr.num(nasRaw, 'checkedAt', 'nas'),
     error: sr.strOrNull(nasRaw, 'error', 'nas'),

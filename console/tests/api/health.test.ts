@@ -167,6 +167,19 @@ describe('fetchSystemHealth · 两条真实端点', () => {
     expect(h.nas.error).toBe('ENOENT: /mnt/nas')
   })
 
+  test('nas.root 为 null 不算读取失败——没配 MDE_NAS_ROOT 的部署照样看得见状态条', async () => {
+    // 网关的 nasRoot 在没配 MDE_NAS_ROOT 时就是 null（src/index.ts）。
+    // 这里曾经按必填读，于是那种部署上每一页顶上都挂一条"系统状态读取失败"，
+    // 而真正的原因（没配挂载点）一个字都不会出现。状态条本身不用 root，
+    // 它只关心通得通、几场没归档——这两样在这种部署上依然是真的。
+    const noRoot = structuredClone(STORAGE) as Record<string, Record<string, unknown>>
+    noRoot.nas!.root = null
+    ok(jobsPayload(['succeeded']), noRoot)
+    const h = await fetchSystemHealth()
+    expect(h.nas.root).toBeNull()
+    expect(h.nas.reachable).toBe(true)
+  })
+
   test('拉取任务连续失败的轮数从 recentRuns 推出来', async () => {
     ok(jobsPayload(['failed', 'failed', 'failed', 'succeeded']))
     const h = await fetchSystemHealth()
