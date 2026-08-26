@@ -31,6 +31,8 @@ import { createAddressesApi } from '../../src/tencent/addresses'
 import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
+import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
+import type { VisibilityDeps } from '../../src/worker/visibility'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const WEBHOOK_TOKEN = 'a'.repeat(25)
@@ -130,6 +132,16 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const adminAuth = createAdminAuth({ store: adminStore })
   const gatewayBaseUrl = 'https://gw.example'
 
+  // 控制台会议查询（阶段 4 · T5，A2）。装配方式跟随 src/index.ts：
+  // meetingVisibility 与 worker 的采集清单重算共用同一组读法，两处不各判一遍
+  const consoleMeetings = createConsoleMeetingsStore(pool, { policy: policyStore })
+  const meetingVisibility: VisibilityDeps = {
+    policy: policyStore,
+    grants: createGrantsStore(pool),
+    archives: archivesStore,
+    getMeetings: (keys) => consoleMeetings.getMeetings(keys),
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret,
@@ -153,6 +165,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    consoleMeetings,
+    meetingVisibility,
+    meetingHistory: auditStore,
   }
 
   return { app: createApp(deps), deps, pool }

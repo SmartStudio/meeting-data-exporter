@@ -19,6 +19,10 @@ import * as meetingsHandlers from './handlers/meetings'
 import * as webhookHandlers from './handlers/webhook'
 import * as consoleAuthHandlers from './handlers/console/auth'
 import type { RateLimiter } from './ratelimit'
+import * as consoleMeetingsHandlers from './handlers/console/meetings'
+import type { ConsoleMeetingsStore } from '../store/console-meetings'
+import type { VisibilityDeps } from '../worker/visibility'
+import type { AuditQueryStore } from '../store/audit'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -52,6 +56,22 @@ export interface AppDeps {
   adminStore: AdminStore
   /** 生产环境必须为 true（cookie 的 Secure 属性依据它）；本地 http 开发环境为 false */
   cookieSecure: boolean
+  /** 控制台会议记录页的查询底座（阶段 4 · T1，A2）。读 `meetings` 那张表，不碰 `meeting_cache` */
+  consoleMeetings: ConsoleMeetingsStore
+  /**
+   * 单场会议的采集权限答疑（`explainMeetingAccess`）与整页批量求值
+   * （`evaluateInventory`）共用的那组读法。**与采集清单重算是同一套依赖**——
+   * 控制台说「准许采集」而网关取的时候被拒，就是这两处各判一遍的下场。
+   */
+  meetingVisibility: VisibilityDeps
+  /**
+   * 会议详情抽屉底部那一段操作历史（阶段 4 · T3 的读侧）。
+   *
+   * 收窄到 `listForMeeting` 一个方法：这个 handler 只答「这场会议发生过什么」，
+   * 不做审计流的分页筛选（那是 A5 的事）。与 `archives: Pick<ArchivesStore, …>`
+   * 同一个理由——依赖上写着用得到的那几件事，读代码的人不必去猜。
+   */
+  meetingHistory: Pick<AuditQueryStore, 'listForMeeting'>
 }
 
 export interface RouteCtx {
@@ -113,6 +133,13 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
   compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
   compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
+
+  // A2 会议查询（阶段 4 · T5）。**triage 必须排在 :meetingId 前面**——路由是
+  // 顺序匹配的，`:meetingId` 编译成 `([^/]+)`，会先把 `/meetings/triage` 吃掉，
+  // 于是分诊条请求变成「查一场 id 为 triage 的会议」，稳定返回 404。
+  compile('GET', '/api/v1/admin/meetings/triage', consoleMeetingsHandlers.meetingTriage),
+  compile('GET', '/api/v1/admin/meetings', consoleMeetingsHandlers.listMeetings),
+  compile('GET', '/api/v1/admin/meetings/:meetingId', consoleMeetingsHandlers.getMeeting),
 ]
 
 /**

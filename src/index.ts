@@ -24,6 +24,8 @@ import { createServiceAuth } from './auth/service'
 import { createAdminAuth } from './auth/admin'
 import { createApp, type AppDeps } from './http/router'
 import { createLoginRateLimiter } from './http/ratelimit'
+import { createConsoleMeetingsStore } from './store/console-meetings'
+import type { VisibilityDeps } from './worker/visibility'
 
 /** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
 const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
@@ -100,6 +102,19 @@ async function main(): Promise<void> {
   // （见 http/handlers/console/auth.ts 的 cookieAttrs 注释）。
   const cookieSecure = new URL(config.gatewayBaseUrl).protocol === 'https:'
 
+  // 控制台的会议查询（阶段 4 · T5，A2）。
+  // meetingVisibility 的四件依赖与 worker 的采集清单重算（computeProgramInventory）
+  // 是**同一组**——控制台答「这场会议准不准采集」和网关真去取时的判定必须同源，
+  // 各判一遍的下场是「详情抽屉说准许、程序取的时候被拒」。
+  // getMeetings 直接接 ConsoleMeetingsStore：签名与语义（含「查不到不造空壳」）都对得上。
+  const consoleMeetings = createConsoleMeetingsStore(pool, { policy: policyStore })
+  const meetingVisibility: VisibilityDeps = {
+    policy: policyStore,
+    grants: grantsStore,
+    archives: archivesStore,
+    getMeetings: (keys) => consoleMeetings.getMeetings(keys),
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret: config.jwtSecret,
@@ -121,6 +136,9 @@ async function main(): Promise<void> {
     adminAuth,
     adminStore,
     cookieSecure,
+    consoleMeetings,
+    meetingVisibility,
+    meetingHistory: auditStore,
   }
 
   const app = createApp(deps)

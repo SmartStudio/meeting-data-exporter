@@ -40,6 +40,8 @@ import { createPolicyStore } from '../../src/store/policy'
 import { createAccessGate } from '../../src/policy/access'
 import { createArchivesStore } from '../../src/store/archives'
 import { createAuditStore } from '../../src/store/audit'
+import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
+import type { VisibilityDeps } from '../../src/worker/visibility'
 import { createAuditRecorder } from '../../src/audit/recorder'
 import { createAuthStore } from '../../src/store/auth'
 import { createDeviceFlow } from '../../src/auth/device'
@@ -170,6 +172,15 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const adminAuth = createAdminAuth({ store: adminStore })
   const gatewayBaseUrl = 'https://gw.e2e.example'
 
+  // 控制台会议查询（阶段 4 · T5，A2）。装配方式跟随 src/index.ts
+  const consoleMeetings = createConsoleMeetingsStore(dbPool, { policy: policyStore })
+  const meetingVisibility: VisibilityDeps = {
+    policy: policyStore,
+    grants: createGrantsStore(dbPool),
+    archives: archivesStore,
+    getMeetings: (keys) => consoleMeetings.getMeetings(keys),
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret: JWT_SECRET,
@@ -194,6 +205,9 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    consoleMeetings,
+    meetingVisibility,
+    meetingHistory: auditStore,
   }
 
   return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }
