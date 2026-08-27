@@ -63,16 +63,35 @@ export interface ManifestAssetEntry {
   /** 目录内的文件名，不含路径——清单描述的就是「这个目录里有什么」 */
   fileName: string
   /**
-   * 文件字节数；取的是 `bytes_expected`（平台声明的大小）而**不是**
-   * `bytes_written`。
+   * 文件字节数；`null` 表示**不知道**（清单从不猜大小）。
    *
-   * 这不是随手选的：`bytes_written` 是**进度检查点**，不是文件大小——
-   * downloader 每 8MB 才回调一次进度且结束时不补最后一次，所以它对小文件恒为 0、
-   * 对大文件停在最后一个 8MB 边界上。把它写进清单等于写一个假的大小。
-   * 而 `bytes_expected` 在 downloader 里是**被校验过的**：完成前有一条
-   * `written !== bytesExpected → failed` 的硬判定，所以一个 completed 的资产的
-   * `bytes_expected` 就是磁盘上的真实字节数。平台没给期望大小时该判定不成立，
-   * 那就如实写 null（不知道），不拿检查点凑数。
+   * 取值顺序：`bytes_expected` 优先，为 null 时回落到该行的 `bytes_written`。
+   * 两个来源各自可信到什么程度，是这个字段唯一需要讲清楚的事：
+   *
+   * **`bytes_expected`（平台声明的大小）——可信，因为被校验过**：downloader 完成前
+   * 有一条 `written !== bytesExpected → failed` 的硬判定，所以只要这一列非 null 且
+   * 该行是 completed，它就等于磁盘上的字节数。
+   * 但它**经常没有**：2026-08-26 的真实环境联调实测，腾讯对这批资产一个
+   * `bytes_expected` 都不返回（docs/m3.5-stage8-9-plan.md §0.1 第 2 条），
+   * 这个字段因此曾经在生产里长期恒为 null，形同虚设——所以才有下面这条回落。
+   *
+   * **`bytes_written`——只在 completed 行上可信，别的状态一概不可信**：
+   * - `completed`：**是真实文件大小**。`markCompleted` 用 downloader 完成那一刻
+   *   逐 chunk 累加出来的值覆盖了这一列（见 store 的 `markCompleted` 与
+   *   downloader 的 `DownloadResult`），它不是采样、不是估算。
+   * - 其余任何状态（pending / running / failed / dead / skipped）：是**进度检查点**
+   *   ——每 8MB 回调一次、结束时不补最后一次，所以对小文件恒为 0、对大文件停在
+   *   最后一个 8MB 边界上。当文件大小用就是写假数据。
+   *   清单本来只列 completed 行（非终态属于「不知有无」，见 ManifestMissingEntry），
+   *   这条边界因此与清单的取值范围正好重合——但改动这里的人要知道它是靠什么成立的。
+   *
+   * **completed 行上的 `0` 是唯一说不清的值，一律写 null**：它可能是「文件真的是
+   * 0 字节」，也可能是「这一行在本条回落上线**之前**就完成了」——那时 `markCompleted`
+   * 不写这一列，留在里边的是从没触发过的检查点默认值 0。两者在数据里分不开，
+   * 而这个仓库的规矩是分不开时落到安全的一侧：写 null（不知道），
+   * 不写一个「0 字节」的谎。同理，`store-mysql.ts` 里记着的那个已知竞态
+   * （不 await 的 `touchProgress` 落在 `markCompleted` 之后）真发生时，
+   * 这一列会被写回一个检查点值——那是那条竞态的账，修在那边，不在这里补猜。
    */
   bytes: number | null
   /**

@@ -7,6 +7,7 @@ import {
   createNasStorage,
   isTextAssetType,
   manifestAssetKey,
+  manifestBytes,
   sha256File,
   withFsTimeout,
   type ArchivedManifestAssetEntry,
@@ -562,8 +563,10 @@ async function writeNasSidecars(
       remoteId: emptyToNull(row.remoteId),
       fileType: emptyToNull(row.fileType),
       fileName: baseNameOf(nas.nasPath),
-      // bytes 取 bytes_expected 而不是 bytes_written，理由见 domain/manifest.ts 的字段注释
-      bytes: row.bytesExpected,
+      // 与本地那份清单共用同一条取值规则（平台声明值优先、否则用落盘真实大小），
+      // 理由见 domain/manifest.ts 的 bytes 字段注释。两份清单描述的是同一批资产，
+      // 这个字段的含义必须逐字相同——所以调的是同一个函数，不是各写一遍。
+      bytes: manifestBytes(row.bytesExpected, row.bytesWritten),
       sha256: row.contentHash,
       nasPath: nas.nasPath,
       nasHash: nas.nasHash,

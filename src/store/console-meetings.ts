@@ -239,9 +239,12 @@ export interface ConsoleMeetingRow {
    * 字节。**已下载完成的资产的 `bytes_expected` 之和**，一个 completed 行都没有
    * 声明大小时是 `null`（算不出来，不是 0 字节）。
    *
-   * 不用 `bytes_written` 顶替缺失的声明值：那一列是 downloader 每 8MB 一次的
-   * **进度检查点**，对小文件恒为 0、对大文件停在最后一个 8MB 边界上，
-   * 把它当文件大小是写假数据（推理见 `archives.ts` 的 `CompletedAssetRow.bytesExpected`）。
+   * **这里还没跟进 `bytes_written` 的语义变更**：那一列如今在 completed 行上是
+   * 落盘的真实大小（`markCompleted` 写的），不再是进度检查点——只有非终态的行才是
+   * 检查点（见 `packages/engine/src/domain/manifest.ts` 的 `bytes` 字段注释）。
+   * 也就是说这里**可以**像清单和 `console-storage.ts` 那样回落到它，从而不再对着
+   * 一场真实会议显示"算不出来"。没有顺手改，是因为这是界面口径的改动：要和
+   * `console-storage.ts` 的两个 SUM 一起动、一起定，而不是两个页面各回落各的。
    */
   sizeBytes: number | null
 }

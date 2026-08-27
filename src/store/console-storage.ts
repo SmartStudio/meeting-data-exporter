@@ -13,13 +13,14 @@ import type { Pool } from './db'
  * 逐场累加：那是 N+1（几百场会议 × 2 次往返），而这一页会被反复刷新。
  *
  * **口径说明（与 retention.ts 的 localBytesOf 有意不同，不是笔误）**：
- * 那边算"本轮清理能腾出多少空间"用的是 `meeting_assets.bytes_written`，
- * 而 `archives.ts` 已经写明 `bytes_written` 是下载器每 8MB 一次的**进度检查点**
- * ——对小文件恒为 0、对大文件停在最后一个 8MB 边界上。用它去显示"本地占用 X GB"
- * 会让页面长期显示成 0，那是个假数字。所以这里取
- * `COALESCE(bytes_expected, bytes_written)`：优先用平台声明的字节数
- * （写 NAS sidecar 的 `bytes` 用的也是它，见 domain/manifest.ts），
- * 平台没给才回退到进度检查点。
+ * 那边算"本轮清理能腾出多少空间"用的是 `meeting_assets.bytes_written` 裸值。
+ * 这里取的是 `COALESCE(bytes_expected, bytes_written)`：优先用平台声明的字节数
+ * （它被 downloader 的尺寸校验钉过），平台没给才用 `bytes_written`。
+ * 下面两个 SUM 数的都是 completed 行（能进 archived_assets 就说明它当时是
+ * completed），而**completed 行的 `bytes_written` 是落盘的真实大小**——
+ * `markCompleted` 用下载器累加出来的值写的，不是进度检查点（检查点那个说法只对
+ * 非终态的行成立，完整边界见 `packages/engine/src/domain/manifest.ts` 的 `bytes`）。
+ * 所以这条回落给的是真数字，不是拿假数据凑一个不为 0 的显示值。
  */
 export interface StorageAggregates {
   /** `meeting_archives` 的行数 —— 已完整归档到 NAS 的会议场次。

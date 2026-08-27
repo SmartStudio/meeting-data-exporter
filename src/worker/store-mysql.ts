@@ -107,10 +107,13 @@ export function createMysqlStore(pool: Pool): Store {
       }
     },
 
-    async markCompleted(id, h, now) {
+    // bytes_written 写的是 downloader 报回的真实文件大小，覆盖掉 touchProgress 留下的
+    // 进度检查点——与 SQLite 版逐字一致。**两处必须一起改**：只改一处的话服务端会
+    // 静默失效（下载照常成功、清单照常写出，只是 bytes 永远是 null，没有任何报错）。
+    async markCompleted(id, h, bytes, now) {
       await pool.query(
-        `UPDATE meeting_assets SET status='completed', content_hash=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
-        [h, now, now, id],
+        `UPDATE meeting_assets SET status='completed', content_hash=?, bytes_written=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
+        [h, bytes, now, now, id],
       )
     },
     async markFailed(id, e, now) {

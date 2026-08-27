@@ -424,6 +424,39 @@ describe('runWorkerOnce', () => {
     })
   }, 30_000)
 
+  // 真实环境的形态：腾讯对这批资产**一个 bytes_expected 都不返回**（2026-08-26 实测），
+  // 清单里的 bytes 因此曾经全场为 null。这条端到端跑的是完整链路——真下载报回真实
+  // 字节数 → **MySQL 宿主的 markCompleted** 落库 → 清单取到它。MySQL 那一份
+  // markCompleted 漏改的话，引擎那边的单测照样全绿，只有这条会红。
+  test('平台不给 bytes_expected 时，清单里的 bytes 是磁盘上的真实大小', async () => {
+    const noSize = (a: Asset): Asset => ({ ...a, bytesExpected: null })
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
+      const now = () => START + 100
+      const deps = makeDeps(pool, root, nasRoot, server, [noSize(TRANSCRIPT_ASSET), noSize(VIDEO_ASSET)], now)
+
+      await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
+
+      // ① 库里：completed 行的 bytes_written 就是文件大小（MySQL 宿主也落了库）
+      const rows = await rowsByType(pool)
+      expect(rows.map((r) => r.bytes_expected)).toEqual([null, null])
+      expect(rows.map((r) => Number(r.bytes_written))).toEqual([TRANSCRIPT_BODY.length, VIDEO_BODY.length])
+
+      // ② 本地清单：bytes 不再是 null，且与盘上那个文件逐字节对得上
+      const manifest = JSON.parse(await readFile(join(root, DIR, '_manifest.json'), 'utf8'))
+      const bytesByName = new Map<string, number | null>(
+        (manifest.assets as { fileName: string; bytes: number | null }[]).map((a) => [a.fileName, a.bytes]),
+      )
+      expect(bytesByName.get('transcript.txt')).toBe((await stat(join(root, TRANSCRIPT_REL))).size)
+      expect(bytesByName.get('recording_f-video-1.mp4')).toBe((await stat(join(root, VIDEO_REL))).size)
+
+      // ③ NAS 上那份清单是长期活下来的那一份，同一个字段必须是同一个值
+      const nasDir = join(nasRoot, '2026', '08', '881-123-40')
+      const nasManifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
+      expect((nasManifest.assets as { fileName: string; bytes: number | null }[]).map((a) => [a.fileName, a.bytes]))
+        .toEqual([['transcript.txt', TRANSCRIPT_BODY.length], ['recording_f-video-1.mp4', VIDEO_BODY.length]])
+    })
+  }, 30_000)
+
   test('断点续传：上一轮只下到一半，下一轮带 Range 接着下而不是从头来', async () => {
     await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100

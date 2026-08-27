@@ -159,10 +159,26 @@ function toAssetEntry(row: AssetRow, targetPath: string): ManifestAssetEntry {
     remoteId: emptyToNull(row.remote_id),
     fileType: emptyToNull(row.file_type),
     fileName: targetPath.slice(targetPath.lastIndexOf('/') + 1),
-    // bytes 取 bytes_expected 而不是 bytes_written，理由见 domain/manifest.ts 的字段注释
-    bytes: row.bytes_expected,
+    bytes: manifestBytes(row.bytes_expected, row.bytes_written),
     sha256: row.content_hash,
   }
+}
+
+/**
+ * 清单里 `bytes` 字段的取值规则。**完整推理见 domain/manifest.ts 的字段注释**，
+ * 这里只写结论：平台声明的大小优先；没有就用这个 completed 行落盘的真实字节数；
+ * 那也是 0（说不清是空文件还是本条回落上线之前完成的旧行）就写 null。
+ *
+ * 导出成一个函数而不是在两处各写一遍同样的 `??`：本地清单（本文件）与 NAS 清单
+ * （src/worker/archive.ts）写的是**同一个字段**，字段含义必须逐字相同。
+ * 「取不到时怎么办」是这个字段的语义决定，只该有一处——与 manifestAssetKey 同理。
+ *
+ * **只对 completed 的行调用**。非终态行的 bytes_written 是进度检查点，不是大小；
+ * 两个调用点也确实都只枚举 completed 行。
+ */
+export function manifestBytes(bytesExpected: number | null, bytesWritten: number): number | null {
+  if (bytesExpected !== null) return bytesExpected
+  return bytesWritten > 0 ? bytesWritten : null
 }
 
 /**

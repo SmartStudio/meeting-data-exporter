@@ -44,7 +44,7 @@ test('markSkippedByKey 不回退已完成的同类资产，只跳过未完成的
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'seg1', bytesExpected: 1 }, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'seg2', bytesExpected: 1 }, 1)
   const c1 = (await s.claimNext(100, 300))!          // 领到 seg1（id 最小）
-  await s.markCompleted(c1.id, 'hash', 100)        // seg1 → completed
+  await s.markCompleted(c1.id, 'hash', 1, 100)     // seg1 → completed
   await s.markSkippedByKey({ meetingId: 'm1', subMeetingId: '', assetType: 'video' }, 'download_not_allowed', 200)
   const cnt = await s.counts()
   expect(cnt.completed).toBe(1)              // seg1 未被回退
@@ -141,10 +141,22 @@ test('assetsForMeeting 只给本场次的行、按 id 升序，各状态一并�
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'sub2', assetType: 'video', remoteId: 'r3' }, 1)
   await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r4' }, 1)
   const first = (await s.claimNext(100, 300))!
-  await s.markCompleted(first.id, 'h', 100)
+  await s.markCompleted(first.id, 'h', 11, 100)
 
   const rows = await s.assetsForMeeting('m1', '')
   expect(rows.map((r) => r.remote_id)).toEqual(['r1', 'r2'])            // 兄弟场次与别的会议都不在内
   expect(rows.map((r) => r.status)).toEqual(['completed', 'pending'])   // 状态不过滤，交给调用方分类
   expect(await s.assetsForMeeting('m1', 'sub2')).toHaveLength(1)
+})
+
+test('markCompleted 用真实文件大小覆盖 touchProgress 留下的进度检查点', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const row = (await s.claimNext(100, 300))!
+  await s.touchProgress(row.id, 8 * 1024 * 1024, 110, 300)   // 最后一次 8MB 检查点
+  await s.markCompleted(row.id, 'h', 8 * 1024 * 1024 + 4242, 120)
+
+  const done = (await s.assetsForMeeting('m1', ''))[0]!
+  expect(done.status).toBe('completed')
+  expect(done.bytes_written).toBe(8 * 1024 * 1024 + 4242)    // completed 行上这一列是真实大小
 })

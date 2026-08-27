@@ -32,8 +32,11 @@ interface SeedAssetInput {
   remoteId?: string
   fileType?: string
   targetPath: string
-  /** 平台声明的大小——NAS sidecar 的 `bytes` 取的就是这一列（不是 bytes_written） */
+  /** 平台声明的大小——NAS sidecar 的 `bytes` 优先取这一列 */
   bytesExpected?: number | null
+  /** 落盘的真实字节数。**这些行都是 completed，所以这一列是文件大小、不是进度检查点**
+   *  （见 domain/manifest.ts 的 bytes 注释）；平台没声明大小时清单回落到它 */
+  bytesWritten?: number
   /** 下载器在本地算的整文件 sha256；视频/音频那一栏本来就是 null */
   contentHash?: string | null
 }
@@ -48,14 +51,15 @@ async function seedCompletedAsset(pool: Pool, input: SeedAssetInput): Promise<vo
     fileType = 'mp4',
     targetPath,
     bytesExpected = null,
+    bytesWritten = 0,
     contentHash = null,
   } = input
   await pool.execute(
     `INSERT INTO meeting_assets
        (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path,
         bytes_written, bytes_expected, content_hash, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'completed', ?, 0, ?, ?, 1000, 1000)`,
-    [meetingId, subMeetingId, assetType, remoteId, fileType, targetPath, bytesExpected, contentHash],
+     VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, 1000, 1000)`,
+    [meetingId, subMeetingId, assetType, remoteId, fileType, targetPath, bytesWritten, bytesExpected, contentHash],
   )
 }
 
@@ -600,6 +604,41 @@ test('sidecar①：整场归档完成后 NAS 目录里出现 meeting.json 与 _m
     // ③ 确认取不到的资产显式标注原因（US-6.2 第三条验收标准）
     expect(manifest.missing).toEqual([
       { assetType: 'ai_minutes', assetKey: 'ai_minutes', remoteId: 'r-ai', status: 'skipped', reason: 'download_not_allowed' },
+    ])
+  })
+})
+
+/**
+ * NAS 那份清单的 `bytes` 与本地那份走**同一条**取值规则（engine 的 manifestBytes）。
+ *
+ * 为什么这条必须单独钉一遍：真实环境里平台一个 `bytes_expected` 都不给
+ * （2026-08-26 实测），而 NAS 那份才是「数年后翻到该目录」时还在的那一份。
+ * 只修本地那份的话，长期活下来的这一份仍然是满屏 null。
+ */
+test('sidecar⑧：平台没给 bytes_expected 时，NAS 清单的 bytes 回落到落盘真实大小；说不清的 0 仍写 null', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    await seedCompletedAsset(pool, {
+      meetingId: 'm-nobytes', assetType: 'meeting_summary', remoteId: 'r-sum', fileType: 'txt',
+      targetPath: '2026/08/d/summary.txt', bytesExpected: null, bytesWritten: 12, contentHash: SUM_SHA,
+    })
+    // 本次改动之前完成的旧行：bytes_written 还留着从没触发过的检查点默认值 0
+    await seedCompletedAsset(pool, {
+      meetingId: 'm-nobytes', assetType: 'video', remoteId: 'r-vid', fileType: 'mp4',
+      targetPath: '2026/08/d/video.mp4', bytesExpected: null, bytesWritten: 0, contentHash: null,
+    })
+    await writeLocalFile(localRoot, '2026/08/d/summary.txt', 'summary text')
+    await writeLocalFile(localRoot, '2026/08/d/video.mp4', 'binary-ish-content')
+
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const outcome = await archiveMeeting(deps, 'm-nobytes', '', Date.UTC(2026, 7, 24) / 1000, RULES, null)
+    expect(outcome.sidecar).toBe('written')
+
+    const manifest = await readJson<ArchivedManifestFile>(
+      join(expectedNasDir(nasRoot, 'm-nobytes'), '_manifest.json'),
+    )
+    expect(manifest.assets.map((a) => [a.remoteId, a.bytes])).toEqual([
+      ['r-sum', 12],     // 平台没声明 → 用落盘真实大小
+      ['r-vid', null],   // 0 说不清（空文件？旧行？）→ 如实写不知道，不写 0
     ])
   })
 })

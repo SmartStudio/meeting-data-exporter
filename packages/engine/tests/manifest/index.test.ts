@@ -29,17 +29,24 @@ function fakeStorage() {
   return { writes, writeMeta: async (rel: string, data: unknown) => { writes.set(rel, data) } }
 }
 
+/** 假下载报回的「磁盘上的真实字节数」，按扩展名区分——每一条各自对上才算验过 */
+const REAL_BYTES: Record<string, number> = { mp4: 205_818_547, txt: 4_096, m4a: 7_777, docx: 33 }
+function realBytesOf(relPath: string): number {
+  return REAL_BYTES[relPath.slice(relPath.lastIndexOf('.') + 1)] ?? 1
+}
+
 /** 真 store + 真 runExecutor + 假下载：让 target_path 由**真实的**拼路径逻辑产生 */
-async function downloadAll(store: Store): Promise<string[]> {
+async function downloadAll(store: Store, bytesOf: (relPath: string) => number = realBytesOf): Promise<string[]> {
   const meetingsById = await store.meetingsForPaths()
   const relPaths: string[] = []
   const deps = {
     store, gw: {}, meetingsById,
     storage: { ensureFreeSpace: async () => true, writeMeta: async () => {} },
-    // 与真 downloader 同规则：文本类算整文件 sha256，视频/音频不算（会吃爆内存）
+    // 与真 downloader 同规则：文本类算整文件 sha256，视频/音频不算（会吃爆内存）；
+    // bytesWritten 是下载器完成那一刻的累加值 = 盘上的真实大小
     download: async (t: { relPath: string; isText: boolean }) => {
       relPaths.push(t.relPath)
-      return { status: 'completed' as const, contentHash: t.isText ? TEXT_SHA : null }
+      return { status: 'completed' as const, contentHash: t.isText ? TEXT_SHA : null, bytesWritten: bytesOf(t.relPath) }
     },
   }
   await runExecutor(deps as never, { concurrency: 2, leaseSec: 300 }, () => 1000)
@@ -207,4 +214,56 @@ test('sidecar 的目录与 runExecutor 算出的资产目录逐字节一致', as
   expect(relPaths.length).toBeGreaterThan(0)
   expect(sidecarDirs.size).toBe(1)
   expect([...sidecarDirs]).toEqual([...assetDirs])              // 同一个目录，逐字节
+})
+
+// ---------------------------------------------------------------------------
+// bytes 字段：平台不给 bytes_expected 是**真实环境的常态**，不是边角情况。
+// 2026-08-26 联调实测（docs/m3.5-stage8-9-plan.md §0.1 第 2 条）：腾讯对这批资产
+// 一个 bytes_expected 都没返回，于是清单里的 bytes 全场为 null，字段形同虚设。
+// ---------------------------------------------------------------------------
+
+/** 与 seeded() 同形，但**一个 bytesExpected 都不给**——这才是真实环境的形态 */
+async function seededWithoutExpectedBytes(): Promise<Store> {
+  const store = createStore(openDb(':memory:'))
+  await store.upsertMeeting(MEETING, 1)
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'f-video-1', fileType: 'mp4' }, 1)
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'f-sum-1', fileType: 'txt' }, 1)
+  return store
+}
+
+test('平台不给 bytes_expected 时，bytes 回落到 completed 资产落盘的真实大小', async () => {
+  const store = await seededWithoutExpectedBytes()
+  await downloadAll(store)
+  const storage = fakeStorage()
+
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+
+  const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
+  const byType = new Map(manifest.assets.map((a) => [a.assetType, a]))
+  expect(byType.get('video')!.bytes).toBe(REAL_BYTES.mp4)             // 205,818,547：联调里那个录像的真实大小
+  expect(byType.get('meeting_summary')!.bytes).toBe(REAL_BYTES.txt)
+})
+
+test('平台给了 bytes_expected 就仍然用它——它是被 downloader 校验过的那一个', async () => {
+  const store = await seeded()          // bytesExpected = 1234 / 42
+  await downloadAll(store)              // 而"落盘真实大小"是 205818547 / 4096
+  const storage = fakeStorage()
+
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+
+  const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
+  const byType = new Map(manifest.assets.map((a) => [a.assetType, a]))
+  expect(byType.get('video')!.bytes).toBe(1234)
+  expect(byType.get('meeting_summary')!.bytes).toBe(42)
+})
+
+test('completed 但 bytes_written 是 0（本次改动之前完成的旧行）→ 如实写 null，不写「0 字节」这个谎', async () => {
+  const store = await seededWithoutExpectedBytes()
+  await downloadAll(store, () => 0)     // 旧行的形态：进度检查点一次都没触发过，列里留着默认值 0
+  const storage = fakeStorage()
+
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+
+  const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
+  expect(manifest.assets.map((a) => a.bytes)).toEqual([null, null])
 })
