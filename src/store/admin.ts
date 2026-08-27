@@ -69,8 +69,56 @@ export interface AdminStore {
    * 只写 `password_hash` 一列：角色、用户名、建号时刻一个都不碰。
    */
   updatePassword(id: string, passwordHash: string): Promise<boolean>
+  /**
+   * 换掉角色。返回是否真的改到了一行（语义同 `updatePassword`）。
+   *
+   * 在这个方法出现之前，角色**只能在建号那一刻定死**：一个只读账号撞上 403 时，
+   * 响应里那句「请让管理员把角色改成 admin」在产品里没有任何路径能执行，
+   * 只能手工 UPDATE 库。一条指向不存在的操作的提示语比不给提示更糟。
+   *
+   * 只写 `role` 一列：用户名、密码哈希、建号时刻一个都不碰。
+   *
+   * **它不判「这是不是最后一个管理员」**——那条判据是 `isLastAdminAccount`，
+   * 由调用方在降级前问一次。理由见那个方法。
+   */
+  updateRole(id: string, role: AdminRole): Promise<boolean>
   /** 返回是否真的删到了一行（供 handler 判断"账号不存在"与"删成功"） */
   deleteAccount(id: string): Promise<boolean>
+  /**
+   * 这个账号是不是库里**唯一一个** `admin` 角色的账号（US-3.5「不能把自己
+   * 锁在外面」）。
+   *
+   * ## 为什么不是「至少保留一个账号」
+   *
+   * 从前那条守卫数的是 `countAccounts() <= 1`，**不分角色**。于是库里
+   * 1 个 admin + 1 个 readonly 时，那个 admin 删掉自己是放行的（2 > 1）。
+   * 删完之后：19 条写端点全部要 admin 角色，没人能写；建号本身就是写端点，
+   * 没人能建号；`scripts/admin-bootstrap.ts` 只在空表时可用，而表里还躺着
+   * 那个 readonly——**系统进入一个没有任何产品路径能退出的状态**，
+   * 正是这条验收标准要防的那件事。
+   *
+   * ## 为什么删号与降级共用这一个方法
+   *
+   * 「删掉最后一个 admin」与「把最后一个 admin 降成 readonly」的后果一模一样。
+   * 两条路径各写一份判据，迟早分叉——而分叉的方向一定是「有一条忘了拦」。
+   *
+   * ## 为什么在 TS 里折叠角色，而不是 `WHERE role = 'admin'`
+   *
+   * 这一列是 VARCHAR，MySQL 默认排序规则又不区分大小写：一行手工写成
+   * `'ADMIN'` 的记录会被 SQL 数成第二个管理员，而 `parseAdminRole`
+   * （`=== 'admin'`）把它折成 readonly——它一个写端点都调不动。两处不一致的
+   * 代价正好落在最坏的方向：真正的最后一个管理员被当成「还有别人」放走。
+   * 判据必须与**认证链上那份折叠**是同一份，所以这里把行读出来，用同一个函数折。
+   * 表的规模是运维人员数（十几行），全表扫一次不值得为它引入第二套判定。
+   *
+   * ## 它不是原子的
+   *
+   * 两个管理员在同一瞬间各删掉对方，两次调用都可能看到「还有别人」。
+   * 这个窗口在旧守卫里同样存在，本次不扩大也不收窄它；真要根除得靠一次
+   * 带 `FOR UPDATE` 的事务，而账号变更是人手点出来的低频操作，
+   * 为它常驻一条独占连接不划算。
+   */
+  isLastAdminAccount(id: string): Promise<boolean>
   createSession(input: { tokenHash: string; adminId: string; expiresAt: number; now: number }): Promise<void>
   findSessionByTokenHash(tokenHash: string): Promise<AdminSession | null>
   touchSessionExpiry(tokenHash: string, newExpiresAt: number): Promise<void>
@@ -92,6 +140,12 @@ interface AdminAccountRow extends RowDataPacket {
   username: string
   password_hash: string
   created_at: number
+  role: string
+}
+
+/** `isLastAdminAccount` 用的窄行：判「还剩几个管理员」只需要 id 与角色两列 */
+interface AdminRoleRow extends RowDataPacket {
+  id: string
   role: string
 }
 
@@ -190,12 +244,35 @@ export function createAdminStore(pool: Pool): AdminStore {
       return result.affectedRows === 1
     },
 
+    async updateRole(id, role) {
+      const [result] = await pool.execute<ResultSetHeader>(
+        `UPDATE admin_accounts SET \`role\` = ? WHERE id = ?`,
+        [role, id],
+      )
+      // affectedRows 而不是 changedRows：把角色改成它已经是的那个值，
+      // changedRows 会是 0，而调用方问的是"这一行还在不在"
+      return result.affectedRows === 1
+    },
+
     async deleteAccount(id) {
       const [result] = await pool.execute<ResultSetHeader>(
         `DELETE FROM admin_accounts WHERE id = ?`,
         [id],
       )
       return result.affectedRows === 1
+    },
+
+    async isLastAdminAccount(id) {
+      // 只取 id 与 role 两列：这里不需要密码哈希，读出来只是让它多在内存里
+      // 待一会儿。折叠用 parseAdminRole，理由写在接口那一侧
+      const [rows] = await pool.execute<AdminRoleRow[]>(
+        'SELECT id, `role` FROM admin_accounts',
+      )
+      const adminIds = rows.filter((r) => parseAdminRole(r.role) === 'admin').map((r) => r.id)
+      // 恰好一个、且就是它。零个管理员时回 false：那种库（只剩只读账号）已经
+      // 没有什么可保护的了，把删除也拦下来只会连"清空表之后用 admin-bootstrap
+      // 重建"这条唯一的出路一起堵死
+      return adminIds.length === 1 && adminIds[0] === id
     },
 
     async createSession({ tokenHash, adminId, expiresAt, now }) {

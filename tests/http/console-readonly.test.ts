@@ -4,7 +4,7 @@
  * ## 这个文件为什么遍历路由表，而不是一条条列端点
  *
  * 计划 §11.1 写着「每个写端点各有一条『只读账号被 403 挡住』的用例，
- * 少一条就是一个洞」。手写清单确实能覆盖今天这 18 条，但**它覆盖不了明天新增的
+ * 少一条就是一个洞」。手写清单确实能覆盖今天这 19 条，但**它覆盖不了明天新增的
  * 那一条**——而漏掉一条的表现是：一个只读账号能改规则、能停用采集程序、能触发
  * 不可逆的清理，全过程没有任何报错，界面上也看不出异常。这类洞不会被用户报告，
  * 只会在事后审计里被发现。
@@ -129,10 +129,13 @@ test('路由表里非 GET 的 admin 端点一条不少地被数到（清单不�
   const keys = adminWriteRoutes().map((r) => `${r.method} ${r.path}`)
   // 兜底：如果哪天 listRoutes 的形状变了、或者过滤条件写错，这里会先红，
   // 而不是让下面那条循环用例在一个空清单上「全部通过」
-  expect(keys.length).toBeGreaterThanOrEqual(18)
+  expect(keys.length).toBeGreaterThanOrEqual(19)
   for (const expected of [
     'POST /api/v1/admin/accounts',
     'DELETE /api/v1/admin/accounts/:id',
+    // 改角色（本轮新增）。它是写操作里最该挡住只读账号的那一条：放过去等于
+    // 一个只读账号能把自己提成管理员，那样角色这套东西就不存在了
+    'PATCH /api/v1/admin/accounts/:id',
     'POST /api/v1/admin/programs',
     'PATCH /api/v1/admin/programs/:id',
     'POST /api/v1/admin/programs/:id/rotate-secret',

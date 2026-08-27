@@ -348,3 +348,115 @@ test('deleteSessionsByAdminIdExcept 吊销其它会话但留下当前这一条',
     await cleanup()
   }
 })
+
+// ── 「最后一个管理员」的判据（US-3.5「不能把自己锁在外面」）─────────────
+//
+// 这里测的是**唯一那一份判据**：删号与改角色两条路径问的是同一句话
+// （见 src/http/handlers/console/auth.ts 的 refuseIfLastAdmin）。
+// 它取代的是旧的 `countAccounts() <= 1`——那句数的是 COUNT(*) 不分角色，
+// 于是「1 admin + 1 readonly」时 admin 删掉自己是放行的：删完没人能写、
+// 没人能建号，admin-bootstrap 也因为表非空而拒跑。
+
+test('isLastAdminAccount：1 admin + 1 readonly 时那个 admin 就是最后一个管理员（旧守卫放走的正是这个死局）', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({ id: 'the-admin', username: 'boss', passwordHash: 'h', now: 1000, role: 'admin' })
+    await store.createAccount({ id: 'the-watcher', username: 'watcher', passwordHash: 'h', now: 1000, role: 'readonly' })
+
+    // 旧守卫在这里数出 COUNT(*) = 2 > 1，于是放行
+    expect(await store.countAccounts()).toBe(2)
+    expect(await store.isLastAdminAccount('the-admin')).toBe(true)
+    // 只读账号无论如何都不是「最后一个管理员」——删掉它不会把任何人锁在外面
+    expect(await store.isLastAdminAccount('the-watcher')).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('isLastAdminAccount：还有第二个 admin 时谁都不是最后一个', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({ id: 'admin-a', username: 'a', passwordHash: 'h', now: 1000, role: 'admin' })
+    await store.createAccount({ id: 'admin-b', username: 'b', passwordHash: 'h', now: 1000, role: 'admin' })
+
+    expect(await store.isLastAdminAccount('admin-a')).toBe(false)
+    expect(await store.isLastAdminAccount('admin-b')).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('isLastAdminAccount：不存在的 id 与空库都回 false（没有要保护的东西，不能拿它当拒绝的理由）', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    expect(await store.isLastAdminAccount('nobody')).toBe(false)
+
+    await store.createAccount({ id: 'solo-admin', username: 'solo', passwordHash: 'h', now: 1000, role: 'admin' })
+    expect(await store.isLastAdminAccount('nobody')).toBe(false)
+    expect(await store.isLastAdminAccount('solo-admin')).toBe(true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('isLastAdminAccount：认不出来的角色值不算「另一个管理员」——折叠方式与 parseAdminRole 一致', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({ id: 'real-admin', username: 'real', passwordHash: 'h', now: 1000, role: 'admin' })
+    // 手工 UPDATE 写成大写：MySQL 默认排序规则不区分大小写，`WHERE role = 'admin'`
+    // 会把它数成第二个管理员，而 parseAdminRole（`=== 'admin'`）把它折成 readonly
+    // ——它一个写端点都调不动。两处不一致的代价正好落在最坏的方向：真正的最后
+    // 一个管理员被当成「还有别人」放走
+    await pool.execute(
+      `INSERT INTO admin_accounts (id, username, password_hash, created_at, \`role\`)
+       VALUES ('fake-admin', 'fake', 'h', 1000, 'ADMIN')`,
+    )
+    expect((await store.findById('fake-admin'))?.role).toBe('readonly')
+    expect(await store.isLastAdminAccount('real-admin')).toBe(true)
+  } finally {
+    await cleanup()
+  }
+})
+
+// ── 改角色（缺陷二：角色从前只能在建号那一刻定死）──────────────────────
+
+test('updateRole 换掉角色，且对不存在的 id 返回 false', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({ id: 'role-1', username: 'role-user', passwordHash: 'h', now: 1000, role: 'readonly' })
+
+    expect(await store.updateRole('role-1', 'admin')).toBe(true)
+    expect((await store.findById('role-1'))?.role).toBe('admin')
+    expect(await store.updateRole('role-1', 'readonly')).toBe(true)
+    expect((await store.findById('role-1'))?.role).toBe('readonly')
+
+    expect(await store.updateRole('role-does-not-exist', 'admin')).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('updateRole 只碰 role 一列：用户名、密码哈希、建号时刻一个都不动', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createAdminStore(pool)
+    await store.createAccount({ id: 'role-2', username: 'keep-me', passwordHash: 'keep-hash', now: 4242, role: 'admin' })
+
+    await store.updateRole('role-2', 'readonly')
+
+    expect(await store.findById('role-2')).toEqual({
+      id: 'role-2',
+      username: 'keep-me',
+      passwordHash: 'keep-hash',
+      createdAt: 4242,
+      role: 'readonly',
+    })
+  } finally {
+    await cleanup()
+  }
+})

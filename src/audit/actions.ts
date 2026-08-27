@@ -44,6 +44,8 @@ export const AUDIT_ACTION_LABELS = {
   delete_admin_account: '删除管理员账号',
   /** 改的永远是调用者自己的密码，路径上没有 :id */
   change_admin_password: '修改自己的登录密码',
+  /** 改的是**别人**（或自己）的角色，路径上有 :id。detail 里写明了改前改后 */
+  change_admin_role: '修改管理员账号的角色',
 
   // ── 控制台 · 采集程序 ─────────────────────────────────────────────
   create_program: '接入新的采集程序',
@@ -100,6 +102,7 @@ export const AUDIT_ACTION = {
   createAdminAccount: 'create_admin_account',
   deleteAdminAccount: 'delete_admin_account',
   changeAdminPassword: 'change_admin_password',
+  changeAdminRole: 'change_admin_role',
 
   createProgram: 'create_program',
   enableProgram: 'enable_program',

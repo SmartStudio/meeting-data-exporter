@@ -114,6 +114,18 @@ function memAdminStore(opts: { accounts?: AdminAccount[] } = {}): AdminStore {
       byUsername.set(account.username, updated)
       return true
     },
+    async updateRole(id, role) {
+      const account = byId.get(id)
+      if (!account) return false
+      const updated: AdminAccount = { ...account, role }
+      byId.set(id, updated)
+      byUsername.set(account.username, updated)
+      return true
+    },
+    async isLastAdminAccount(id) {
+      const admins = [...byId.values()].filter((a) => a.role === 'admin')
+      return admins.length === 1 && admins[0]!.id === id
+    },
   }
 }
 
