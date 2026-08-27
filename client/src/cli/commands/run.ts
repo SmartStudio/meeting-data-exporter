@@ -29,6 +29,6 @@ export async function cmdRun(cmd: ParsedCommand, env: Record<string, string | un
   // 一轮的收尾：给每场会议写 meeting.json / _manifest.json（US-6.2）。写失败只 warn 不改
   // 退出码——文件已经在盘上了，一份没写出来的清单不该把一轮成功的下载判成失败。
   const man = await writeMeetingManifests({ store, storage, generatedBy: 'mde-engine' }, meetingsById, now)
-  console.log(`manifests written=${man.written} skipped=${man.skipped} failed=${man.failed}`)
+  console.log(`manifests written=${man.written} unchanged=${man.unchanged} skipped=${man.skipped} failed=${man.failed}`)
   return r.failed > 0 ? 1 : 0
 }

@@ -293,7 +293,7 @@ describe('runWorkerOnce', () => {
         failed: 0,
         skipped: 0,
         // 一轮收尾给这场会议写出 meeting.json / _manifest.json
-        manifests: { written: 1, skipped: 0, failed: 0 },
+        manifests: { written: 1, unchanged: 0, skipped: 0, failed: 0 },
         // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，
         // 本轮紧接着把它们都归档到 NAS 且哈希校验通过
         archived: { newlyArchived: 2, verificationFailed: 0, failed: 0, sidecarFailed: 0, skipped: 0, undecidable: 0 },
@@ -421,6 +421,37 @@ describe('runWorkerOnce', () => {
       const rows = await rowsByType(pool)
       expect(rows.map((r) => r.status)).toEqual(['meeting_summary', 'video'].map(() => 'completed'))
       expect(rows.map((r) => r.attempts)).toEqual([1, 1])
+    })
+  }, 30_000)
+
+  // 幂等的另一半：资产不重下之外，**两个 sidecar 也不该被重写**。
+  // 2026-08-26 联调实测的第 4 条：资产一个都没重下，但两个 JSON 每轮都重写，
+  // `generatedAt` 每轮都变 → 文件哈希每轮都变、mtime 天天跳 → 同步到 NAS 每轮重传。
+  test('第二遍不重写 sidecar：内容没变，mtime 与内容都不动，计进 unchanged', async () => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
+      const clock = { t: START + 100 }
+      const now = () => clock.t
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+
+      const r1 = await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
+      expect(r1.manifests).toEqual({ written: 1, unchanged: 0, skipped: 0, failed: 0 })
+      const manifestPath = join(root, DIR, '_manifest.json')
+      const metaPath = join(root, DIR, 'meeting.json')
+      const before = {
+        manifest: await readFile(manifestPath, 'utf8'),
+        meta: await readFile(metaPath, 'utf8'),
+        manifestMtime: (await stat(manifestPath)).mtimeMs,
+        metaMtime: (await stat(metaPath)).mtimeMs,
+      }
+
+      clock.t = START + 7200        // 时钟往前走两小时：generatedAt 会不一样，但内容一样
+      const r2 = await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
+
+      expect(r2.manifests).toEqual({ written: 0, unchanged: 1, skipped: 0, failed: 0 })
+      expect(await readFile(manifestPath, 'utf8')).toBe(before.manifest)   // 逐字节没变
+      expect(await readFile(metaPath, 'utf8')).toBe(before.meta)
+      expect((await stat(manifestPath)).mtimeMs).toBe(before.manifestMtime)  // 连 mtime 都没动
+      expect((await stat(metaPath)).mtimeMs).toBe(before.metaMtime)
     })
   }, 30_000)
 
@@ -700,7 +731,7 @@ describe('定时任务的任务一（fetch_recordings）', () => {
         failed: 0,
         skipped: 0,
         probes: { resolved: 0, abandoned: 0, newTasks: 0 },
-        manifests: { written: 1, skipped: 0, failed: 0 },
+        manifests: { written: 1, unchanged: 0, skipped: 0, failed: 0 },
       })
 
       // ④ 任务一**不越界去归档**：归档是任务二自己那一格。两个任务体各起各的归档轮

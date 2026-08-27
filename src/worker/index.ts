@@ -96,8 +96,12 @@ export interface FetchRound {
   skipped: number
   /** 本轮 sidecar（meeting.json / _manifest.json）收尾的汇总。failed 是写入抛出的场次数——
    *  它**不进退出码**：资产已经落盘了，一份没写出来的清单不该把一轮成功的下载判成失败。
-   *  但每一次都会 console.warn，不是静默吞掉。 */
-  manifests: { written: number; skipped: number; failed: number }
+   *  但每一次都会 console.warn，不是静默吞掉。
+   *
+   *  `unchanged` 是内容与盘上那份一字不差、因此没有重写的场次。稳定状态下一轮应该
+   *  几乎全是 unchanged——这个数长期为 0 而 written 一直等于会议数，说明「内容没变
+   *  就不重写」那条判定失灵了（每轮重写两个 JSON = 每轮往 NAS 重传两个 JSON）。 */
+  manifests: { written: number; unchanged: number; skipped: number; failed: number }
 }
 
 export interface WorkerRound extends FetchRound {
@@ -624,8 +628,8 @@ async function main(): Promise<number> {
     )
     console.log(`completed=${res.completed} failed=${res.failed} skipped=${res.skipped}`)
     console.log(
-      `manifests written=${res.manifests.written} skipped=${res.manifests.skipped} ` +
-        `failed=${res.manifests.failed}`,
+      `manifests written=${res.manifests.written} unchanged=${res.manifests.unchanged} ` +
+        `skipped=${res.manifests.skipped} failed=${res.manifests.failed}`,
     )
     console.log(
       `archived newlyArchived=${res.archived.newlyArchived} ` +

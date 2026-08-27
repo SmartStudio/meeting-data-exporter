@@ -505,7 +505,7 @@ const EMPTY_FETCH_ROUND: FetchRound = {
   completed: 0,
   failed: 0,
   skipped: 0,
-  manifests: { written: 0, skipped: 0, failed: 0 },
+  manifests: { written: 0, unchanged: 0, skipped: 0, failed: 0 },
 }
 
 function bodyDeps(over: Partial<JobBodyDeps>): JobBodyDeps {
@@ -656,7 +656,7 @@ test('任务一把发现数与下载数一起写进摘要', async () => {
       completed: 9,
       failed: 1,
       skipped: 1,
-      manifests: { written: 4, skipped: 0, failed: 0 },
+      manifests: { written: 4, unchanged: 0, skipped: 0, failed: 0 },
     }),
   })
   await withScheduler({ fetch_recordings: createJobRunners(deps).fetch_recordings }, T0, async (h) => {
@@ -674,7 +674,7 @@ test('任务一把发现数与下载数一起写进摘要', async () => {
       failed: 1,
       skipped: 1,
       probes: { resolved: 2, abandoned: 1, newTasks: 2 },
-      manifests: { written: 4, skipped: 0, failed: 0 },
+      manifests: { written: 4, unchanged: 0, skipped: 0, failed: 0 },
     })
   })
 })

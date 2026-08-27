@@ -24,9 +24,22 @@ const DIR = '2026/08/2026-08-20_0930_周会 - Q3 复盘_881-123-40'
 /** sha256("test")，只要是个像样的定值即可——本文件不验证哈希算法本身 */
 const TEXT_SHA = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
 
+/**
+ * 假存储。**readMeta 与 writeMeta 是同一份状态**——写进去的读得回来，没写过的读回
+ * null——否则「内容没变就不重写」这条根本测不出来（读永远是空的话每轮都会写）。
+ * 两端都走一次 JSON 序列化，与真实的 local.ts / nas.ts 同形。
+ */
 function fakeStorage() {
   const writes = new Map<string, unknown>()
-  return { writes, writeMeta: async (rel: string, data: unknown) => { writes.set(rel, data) } }
+  let writeCount = 0
+  const clone = (d: unknown) => JSON.parse(JSON.stringify(d)) as unknown
+  return {
+    writes,
+    /** 累计写入次数——`writes.size` 看不出「同一个路径被重写了一遍」 */
+    writeCount: () => writeCount,
+    writeMeta: async (rel: string, data: unknown) => { writeCount++; writes.set(rel, clone(data)) },
+    readMeta: async (rel: string) => (writes.has(rel) ? clone(writes.get(rel)) : null),
+  }
 }
 
 /** 假下载报回的「磁盘上的真实字节数」，按扩展名区分——每一条各自对上才算验过 */
@@ -177,12 +190,12 @@ test('writeMeta 抛错不让整轮挂掉，但必须留下 warn 痕迹（不是�
   await downloadAll(store)
   const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
   try {
-    const storage = { writeMeta: async () => { throw new Error('nas gone') } }
+    const storage = { readMeta: async () => null, writeMeta: async () => { throw new Error('nas gone') } }
     const meetingsById = await store.meetingsForPaths()
 
     const r = await writeMeetingManifests({ store, storage, generatedBy: 'mde-worker' }, meetingsById, () => 5000)
 
-    expect(r).toEqual({ written: 0, skipped: 0, failed: 1 })   // 整轮正常返回，没有抛出
+    expect(r).toEqual({ written: 0, unchanged: 0, skipped: 0, failed: 1 })   // 整轮正常返回，没有抛出
     expect(warnSpy).toHaveBeenCalled()                          // 但错误留下了痕迹
   } finally {
     warnSpy.mockRestore()
@@ -197,7 +210,7 @@ test('一轮收尾对每场会议各写一次，计数分 written/skipped', asyn
 
   const r = await writeMeetingManifests({ store, storage, generatedBy: 'mde-worker' }, await store.meetingsForPaths(), () => 5000)
 
-  expect(r).toEqual({ written: 1, skipped: 1, failed: 0 })     // m1 有资产、m2 没有
+  expect(r).toEqual({ written: 1, unchanged: 0, skipped: 1, failed: 0 })   // m1 有资产、m2 没有
   expect((storage.writes.get(`${DIR}/meeting.json`) as MeetingMetaFile).generatedBy).toBe('mde-worker')
 })
 
@@ -266,4 +279,102 @@ test('completed 但 bytes_written 是 0（本次改动之前完成的旧行）�
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   expect(manifest.assets.map((a) => a.bytes)).toEqual([null, null])
+})
+
+// ---------------------------------------------------------------------------
+// 「内容没变就不重写」——2026-08-26 联调的第 4 条实测事实：资产一个都没重下，
+// 但两个 JSON 每轮都被重写，`generatedAt` 每轮都变，于是文件哈希每轮都变、
+// mtime 天天跳，同步到 NAS 时每轮重传。
+// ---------------------------------------------------------------------------
+
+test('第二轮内容一个字没变 → unchanged，一次都不写（generatedAt 也不许动）', async () => {
+  const store = await seeded()
+  await downloadAll(store)
+  const storage = fakeStorage()
+
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)).toBe('written')
+  const afterFirst = storage.writeCount()
+
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 9999)).toBe('unchanged')
+
+  expect(storage.writeCount()).toBe(afterFirst)                 // 一次新的写都没发生
+  // 盘上留着的仍是第一轮那份：generatedAt 还是 5000，文件哈希因此不变
+  expect((storage.writes.get(`${DIR}/meeting.json`) as MeetingMetaFile).generatedAt).toBe(5000)
+  expect((storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile).generatedAt).toBe(5000)
+})
+
+test('内容真的变了就写，且只写变了的那个文件', async () => {
+  const store = await seeded()
+  await downloadAll(store)
+  const storage = fakeStorage()
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  const afterFirst = storage.writeCount()
+
+  // 新下完一个资产：_manifest.json 的 assets 多一条，meeting.json 一个字没变
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'f-audio-1', fileType: 'm4a' }, 1)
+  await downloadAll(store)
+
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 9999)).toBe('written')
+
+  expect(storage.writeCount()).toBe(afterFirst + 1)             // 只多了一次写
+  expect((storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile).generatedAt).toBe(9999)
+  expect((storage.writes.get(`${DIR}/meeting.json`) as MeetingMetaFile).generatedAt).toBe(5000)   // 没被顺手重写
+  expect((storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile).assets).toHaveLength(3)
+})
+
+test('生成方换了（mde-engine → mde-worker）算内容变了，要重写', async () => {
+  const store = await seeded()
+  await downloadAll(store)
+  const storage = fakeStorage()
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-worker' }, 'm1', '', 9999)).toBe('written')
+  expect((storage.writes.get(`${DIR}/meeting.json`) as MeetingMetaFile).generatedBy).toBe('mde-worker')
+})
+
+test('读不回已有文件（存储抛错）→ 落到"要写"这一侧，并留下带原因的 warn', async () => {
+  const store = await seeded()
+  await downloadAll(store)
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    const base = fakeStorage()
+    const storage = { ...base, readMeta: async () => { throw new Error('EACCES: permission denied') } }
+
+    const r = await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+
+    expect(r).toBe('written')                                   // 判断不了 → 写，不是跳过
+    expect(base.writeCount()).toBe(2)
+    const said = warnSpy.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(said).toContain('_manifest.json')                    // 是哪个文件
+    expect(said).toContain('EACCES: permission denied')         // 因为什么——可回溯，不是静默吞掉
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test('文件还不存在（首写）不是异常：照写，且不 warn', async () => {
+  const store = await seeded()
+  await downloadAll(store)
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    const storage = fakeStorage()
+    expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)).toBe('written')
+    expect(warnSpy).not.toHaveBeenCalled()
+  } finally {
+    warnSpy.mockRestore()
+  }
+})
+
+test('一轮收尾：unchanged 单独计数，不混进 written', async () => {
+  const store = await seeded()
+  await store.upsertMeeting({ ...MEETING, meetingId: 'm2', meetingCode: '882-000-00', subject: '没下过东西的会' }, 1)
+  await downloadAll(store)
+  const storage = fakeStorage()
+  const meetings = await store.meetingsForPaths()
+
+  const first = await writeMeetingManifests({ store, storage, generatedBy: 'mde-worker' }, meetings, () => 5000)
+  const second = await writeMeetingManifests({ store, storage, generatedBy: 'mde-worker' }, meetings, () => 9999)
+
+  expect(first).toEqual({ written: 1, unchanged: 0, skipped: 1, failed: 0 })
+  expect(second).toEqual({ written: 0, unchanged: 1, skipped: 1, failed: 0 })
 })

@@ -25,7 +25,9 @@ import {
  */
 export interface ManifestDeps {
   store: Pick<Store, 'getMeeting' | 'assetsForMeeting'>
-  storage: Pick<Storage, 'writeMeta'>
+  /** `readMeta` 是为了「内容没变就别重写」——写之前先把已有的那份读回来比一比，
+   *  理由见 writeMeetingManifest 的注释 */
+  storage: Pick<Storage, 'writeMeta' | 'readMeta'>
   /** 写进两个文件的 `generatedBy`：CLI 宿主 `mde-engine`，服务端 worker `mde-worker`。
    *  收窄成联合类型而不是 string，是为了让「两个宿主写的值必须能区分开」这件事由编译器
    *  盯着——写错一个下划线不会有任何运行期症状，只会在数年后的清单里留下一个查不出来处的名字。 */
@@ -33,11 +35,23 @@ export interface ManifestDeps {
 }
 
 /**
- * 给一场会议写出 `meeting.json` 与 `_manifest.json`，返回是否真的写了。
+ * 给一场会议写出 `meeting.json` 与 `_manifest.json`，返回这一次到底做了什么。
  *
  * **可重复调用**：同一场会议再跑一次会覆盖出同样的内容（`generatedAt` 除外）——
  * 归档流水线是持续跑的，「重跑安全」不是加分项而是前提。内容的稳定性靠两点保证：
  * 资产按 id 升序枚举（顺序不抖），字段全部取自库里的既成事实（不掺入本次运行的偶然值）。
+ *
+ * **内容没变就一个字节都不写**（返回 `'unchanged'`）。宿主每一轮都会对每场已知会议
+ * 调一次这个函数，而绝大多数轮次里这场会议什么都没发生。只有 `generatedAt` 在变的
+ * 情况下照写不误，代价是实打实的：文件哈希每轮都变、mtime 天天跳，往 NAS 同步时
+ * 每轮重传两个 JSON（2026-08-26 联调实测到的第 4 条事实，见
+ * docs/m3.5-stage8-9-plan.md §0.1）。所以写之前先把盘上那份读回来比一比，
+ * 除 `generatedAt` 外一字不差就跳过。两个文件**各比各的**：加了一个资产时
+ * `meeting.json` 并没有变，没道理跟着被重写一遍。
+ *
+ * 「读不回来」一律当作**要写**处理（判断不了就落到安全的一侧：写一遍最多是多写，
+ * 不写才可能让一份错清单永远留在盘上），并且**每一次都留下带原因的 warn**——
+ * 唯一不出声的是「文件还不存在」，那是首写，是正常情况不是异常。
  *
  * 一个 completed 资产都没有时返回 `'skipped'` 且不写任何文件：那意味着这个目录还不
  * 存在（或至少不是我们放的东西），凭空写一份空清单等于声称「这里什么都没有」，
@@ -48,7 +62,7 @@ export async function writeMeetingManifest(
   meetingId: string,
   subMeetingId: string,
   now: number,
-): Promise<'written' | 'skipped'> {
+): Promise<'written' | 'unchanged' | 'skipped'> {
   const meeting = await deps.store.getMeeting(meetingId, subMeetingId)
   if (meeting === null) return 'skipped'   // 会议元数据都没有就算不出目录，与 executor 的 meeting_meta_missing 同一处境
 
@@ -106,13 +120,58 @@ export async function writeMeetingManifest(
     generatedBy: deps.generatedBy,
   }
 
-  await deps.storage.writeMeta(`${dir}/meeting.json`, meta)
-  await deps.storage.writeMeta(`${dir}/_manifest.json`, manifest)
-  return 'written'
+  let wrote = 0
+  for (const [path, data] of [[`${dir}/meeting.json`, meta], [`${dir}/_manifest.json`, manifest]] as const) {
+    if (await alreadyOnDisk(deps.storage, path, data)) continue
+    await deps.storage.writeMeta(path, data)
+    wrote++
+  }
+  return wrote > 0 ? 'written' : 'unchanged'
+}
+
+/**
+ * 盘上那份与要写的这份除 `generatedAt` 外是否一字不差。
+ *
+ * 读不回来时返回 false（= 去写），**且必须说出是哪个文件、因为什么**：这条路上
+ * 的失败（权限、坏 JSON、NAS 挂起）都不影响清单本身的正确性，所以不该中断一轮；
+ * 但静默吞掉就等于把「这个目录读不了」这件事彻底抹掉，而它恰恰是要人看的。
+ * 文件不存在（`null`）是首写，不是异常，不出声。
+ */
+async function alreadyOnDisk(
+  storage: Pick<Storage, 'readMeta'>,
+  path: string,
+  data: unknown,
+): Promise<boolean> {
+  let existing: unknown
+  try {
+    existing = await storage.readMeta(path)
+  } catch (err) {
+    console.warn(`manifest: 读不回已有的 ${path}（${err}），按「内容可能变了」处理，照写`)
+    return false
+  }
+  if (existing === null) return false
+  return withoutGeneratedAt(existing) === withoutGeneratedAt(data)
+}
+
+/**
+ * 比较用的规范形式：把 `generatedAt` 归零之后序列化。
+ *
+ * 用 JSON 字符串比而不是逐字段比，是因为「内容变没变」问的就是**将要落盘的那串字节**
+ * 变没变；新增字段、去掉字段都会被自动算作变了，不需要谁记得来这里补一笔。
+ * 键序不是问题：盘上那份是同一段代码 `JSON.stringify` 出来的，读回来键序照旧，
+ * 而 `generatedAt` 是就地覆盖（不是追加），不影响顺序。
+ */
+function withoutGeneratedAt(v: unknown): string {
+  return JSON.stringify({ ...(v as object), generatedAt: 0 })
 }
 
 export interface ManifestRoundOutcome {
   written: number
+  /** 内容与盘上那份一字不差、因此一个字节都没写的场次。
+   *  **与 written 分开数**：稳定状态下的一轮应该是清一色的 unchanged，
+   *  把它算进 written 就等于把「什么都没发生」报成「又写了一遍」，
+   *  而后者正是本字段要盯住的那个毛病。 */
+  unchanged: number
   /** 还没有任何已完成资产（或会议元数据缺失）而没写的场次——正常情况，不是错误 */
   skipped: number
   /** 写入本身抛出的场次。**不让整轮挂掉，但也不静默**，每一次都会 console.warn */
@@ -138,12 +197,11 @@ export async function writeMeetingManifests(
   meetings: ReadonlyMap<string, { subMeetingId: string }>,
   now: () => number,
 ): Promise<ManifestRoundOutcome> {
-  const out: ManifestRoundOutcome = { written: 0, skipped: 0, failed: 0 }
+  const out: ManifestRoundOutcome = { written: 0, unchanged: 0, skipped: 0, failed: 0 }
   for (const [meetingId, m] of meetings) {
     try {
       const r = await writeMeetingManifest(deps, meetingId, m.subMeetingId, now())
-      if (r === 'written') out.written++
-      else out.skipped++
+      out[r]++
     } catch (err) {
       out.failed++
       console.warn(`manifest write failed for meeting=${meetingId} subMeeting=${m.subMeetingId}: ${err}`)

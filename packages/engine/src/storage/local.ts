@@ -20,6 +20,11 @@ export function createLocalStorage(root: string): Storage {
     async finalize(rel) { await mkdir(dirname(abs(rel)), { recursive: true }); await rename(part(rel), abs(rel)) },
     async discardPart(rel) { await rm(part(rel), { force: true }) },
     async writeMeta(rel, data) { await mkdir(dirname(abs(rel)), { recursive: true }); await Bun.write(abs(rel), JSON.stringify(data, null, 2)) },
+    async readMeta(rel) {
+      const f = Bun.file(abs(rel))
+      if (!(await f.exists())) return null            // 没有这个文件 ≠ 读不了，见 types.ts
+      return JSON.parse(await f.text()) as unknown    // 坏 JSON 原样抛，不静默当成"没有"
+    },
     async ensureFreeSpace(bytes) {
       try { const s = await statfsAsync(root); return s.bavail * s.bsize >= bytes } catch { return true } // 取不到时不阻断
     },
