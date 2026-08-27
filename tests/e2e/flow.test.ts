@@ -254,6 +254,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     consoleMeetings,
     meetingVisibility,
     meetingHistory: auditStore,
+    // 归档失败的真原因（阶段 5 · D-4）：真实实现接同一个 e2e 库
+    archiveFailures: createJobsStore(dbPool),
     // 内容预览（阶段 4 · T10）。装配方式跟随 src/index.ts
     contents: createContentLookup(dbPool),
     // 阶段 4 · T11（A4 定时任务）：网关只装读侧与手动触发的排队，

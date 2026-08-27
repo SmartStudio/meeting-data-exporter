@@ -337,9 +337,17 @@ export function parseConsoleMeetingId(id: string): MeetingKey {
  *   从会议时间起算会把一场刚拉完的老会议立刻判成失败。
  *
  * 这套判据是**启发式**的：`meeting_archives` 没有行只说明「没归成」，说不出
- * 「为什么没归成」——真正的失败原因要等 A4（T11）建 `job_failures` 才落库
- * （计划 §0 E-d）。在那之前，这里宁可用一个说得清的时间判据，也不用一个
- * 「归档失败数恒为 0」的假太平。
+ * 「为什么没归成」。**「为什么」现在有出处了**——A4（T11）建的 `job_failures`
+ * 里落着归档轮的失败原因，会议详情抽屉那一格先读它、读不到才回落到这条时间判据
+ * （`src/http/handlers/console/meetings.ts` 的 `archiveFailedWhy`）。
+ *
+ * 这条判据因此**不能删**，它回答的是另一个问题：`job_failures` 里没有行不等于
+ * 归档没出事（归档轮还没轮到、或者进程在记账之前就断了），那种时候宁可给一个
+ * 说得清的时间判据，也不给一个「归档失败数恒为 0」的假太平。
+ *
+ * 两个数字的口径因此本来就不同，别去「对齐」它们：分诊条这一格数的是这条时间
+ * 判据，归档存储页那个「归档失败 N 场」（spec §4.9）数的是 `job_failures` 里
+ * `archive_nas` 未恢复的行数（`handlers/console/storage.ts`）。
  */
 export const ARCHIVE_GRACE_SEC = 6 * 3600
 

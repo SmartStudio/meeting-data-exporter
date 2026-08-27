@@ -250,6 +250,10 @@ async function main(): Promise<void> {
     consoleMeetings,
     meetingVisibility,
     meetingHistory: auditStore,
+    // 归档失败那一格的真原因（阶段 5 · D-4）。**同一个 jobsStore 实例**——
+    // 定时任务页的失败项表、归档存储页的「归档失败 N 场」、抽屉里这句话读的
+    // 必须是同一张 job_failures，否则三处会互相打架
+    archiveFailures: jobsStore,
     // 阶段 4 · T10（A6 内容读取）。`asset_contents` 的读侧，与 T4 的写侧
     // （src/store/contents.ts，由 worker 与回填脚本使用）分成两个面：网关进程
     // 只读、只按三段键取正文，写侧那套 NAS 读文件 + 哈希校验一行都用不上

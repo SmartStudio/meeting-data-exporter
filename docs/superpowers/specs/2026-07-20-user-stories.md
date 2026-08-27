@@ -629,12 +629,13 @@ US-3.2（对真实网关）· US-4.2（幂等）· US-4.3（3 场会议 21 个�
 
 ### 9.8 反向检查四：代码里说的和事实对不上
 
-本次复核撞见的、**会误导人**的过期文本。前两条最要紧——它们不是注释脏，是**原样上屏给管理员看**：
+本次复核撞见的、**会误导人**的过期文本。前两条最要紧——它们不是注释脏，是**原样上屏给管理员看**，
+**这两条已于 2026-08-27 改掉**（第 3 条起仍在）：
 
 | # | 位置 | 说了什么 | 事实 |
 | --- | --- | --- | --- |
-| 1 | `src/http/handlers/console/meetings.ts:443` | 告诉管理员「真正的失败原因目前不落库（只走 worker 的 console.error），要等 A4 建 `job_failures` 才查得到」 | `job_failures` 早已建成并接线：`migrations/008` + `src/worker/archive.ts` 的 `recordFailure` + `src/store/jobs.ts` 的 `listFailures`（**支持按 `meetingId` 反查，还专门建了 `idx_job_failure_meeting`**）+ Jobs 页已在显示 `reason`。`migrations/008` 表头自述这两列「是为了让详情抽屉能按会议反查」——抽屉本来就该 join 它。管理员看到的是一句假话：一个已经查得到的原因，界面告诉他查不到 |
-| 2 | `console/src/pages/Consumers/Wizard.tsx:42,77` | 「轮换端点这一轮还没有」 | `POST /api/v1/admin/programs/:id/rotate-secret` 阶段 5 已做，**同目录的 `ProgramActions.tsx` 就在调它** |
+| ~~1~~ | `src/http/handlers/console/meetings.ts` | ~~告诉管理员「真正的失败原因目前不落库（只走 worker 的 console.error），要等 A4 建 `job_failures` 才查得到」~~ | ✅ **已改，2026-08-27**：归档失败那一格改成先读 `job_failures` 的真原因（按 `(meeting_id, sub_meeting_id)` 两段键反查，整页一次问完），读不到才回落到 6 小时时间启发式，读不成则把错误话带进理由 |
+| ~~2~~ | `console/src/pages/Consumers/Wizard.tsx` | ~~「轮换端点这一轮还没有」~~ | ✅ **已改，2026-08-27**：两处都改成指向卡片上的「轮换凭据」（`POST /api/v1/admin/programs/:id/rotate-secret`），并写明旧凭据当场失效 |
 | 3 | `src/http/handlers/console/audit.ts:85` | 「`system` / `scheduler` 由 A4 的定时任务产生（T11）——后两者尚未落地，先在表里留好位置」 | T11 已落地，但 `scheduler.ts` 里 `audit` 出现零次。那两个槽位不是「等着被填」，是**永远空的** |
 | 4 | `src/http/handlers/console/auth.ts:113,133` | 两次引用「spec §4.11 的账号表」 | `docs/console/spec.md` 的 §4 到 §4.10 就结束了，**没有 §4.11** |
 | 5 | `scripts/admin-bootstrap.ts:50` | 拒绝重复引导时告诉运维「Use the console's 添加运维人员 to add more accounts」 | `console/src` 全文搜不到「添加运维人员」这六个字。**在建号失败的现场把人指向一个不存在的按钮** |

@@ -532,6 +532,21 @@ describe('接入向导', () => {
     expect(next).toBeEnabled()
   })
 
+  test('关不掉时那句提醒指向真实存在的「轮换凭据」，不说「还没有」', async () => {
+    const panel = await openWizard()
+    respond(/POST .*\/admin\/programs$/, () => [201, CREATED])
+    await fillBasics(panel)
+    await userEvent.click(within(panel).getByRole('button', { name: '创建并生成凭据' }))
+    await within(panel).findByText(CREATED.secret)
+    await userEvent.click(within(panel).getByRole('button', { name: '关闭' }))
+
+    const alert = within(panel).getByRole('alert')
+    // 轮换端点（POST /programs/:id/rotate-secret）阶段 5 就做了，卡片上的
+    // 「轮换凭据」正在调它。告诉管理员「还没有」会让他以为丢了 Secret 就只能删号重建
+    expect(alert).toHaveTextContent('轮换凭据')
+    expect(alert.textContent ?? '').not.toContain('还没有')
+  })
+
   test('创建之后回不到第一步——再填一遍就是再建一个程序', async () => {
     const panel = await openWizard()
     respond(/POST .*\/admin\/programs$/, () => [201, CREATED])

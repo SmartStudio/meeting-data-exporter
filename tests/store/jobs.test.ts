@@ -387,3 +387,30 @@ test('失败项按会议反查得到——详情抽屉要显示"这场归档失�
     expect(await store.listFailures({ meetingId: 'm-1', subMeetingId: '' })).toHaveLength(0)
   })
 })
+
+test('一整页会议一次问完：`meetings` 批量反查，场次是键的一半', async () => {
+  await withStore(async (store) => {
+    const base = { jobName: 'archive_nas', targetLabel: '', impact: 'y', maxAttempts: 5, now: 1 }
+    await store.recordFailure({ ...base, target: 'm-1|', meetingId: 'm-1', subMeetingId: '', reason: 'a' })
+    await store.recordFailure({ ...base, target: 'm-2|s-2', meetingId: 'm-2', subMeetingId: 's-2', reason: 'b' })
+    await store.recordFailure({ ...base, target: 'm-3|', meetingId: 'm-3', subMeetingId: '', reason: 'c' })
+
+    // 会议记录页整页反查：查询数与页上有几场归档失败的会议无关，恒为 1
+    const rows = await store.listFailures({
+      jobName: 'archive_nas',
+      meetings: [
+        { meetingId: 'm-1', subMeetingId: '' },
+        { meetingId: 'm-2', subMeetingId: 's-2' },
+      ],
+    })
+    expect(rows.map((r) => r.reason).sort()).toEqual(['a', 'b'])
+
+    // 只给会议号会把周期性会议的**另一场**捞进来，而抽屉里那句话会因此
+    // 把别的场次的失败原因说成这一场的
+    expect(await store.listFailures({ meetings: [{ meetingId: 'm-2', subMeetingId: '' }] })).toHaveLength(0)
+
+    // 空数组 = 这一页一场归档失败的会议都没有。**返回空，不是返回全表**：
+    // 退化成"没有条件"的话，抽屉会把别的会议的失败原因安到这一场头上
+    expect(await store.listFailures({ meetings: [] })).toEqual([])
+  })
+})
