@@ -149,6 +149,23 @@ test('assetsForMeeting 只给本场次的行、按 id 升序，各状态一并�
   expect(await s.assetsForMeeting('m1', 'sub2')).toHaveLength(1)
 })
 
+// 进度回写是**不 await 的**（executor 的 onProgress），所以一次慢的 touchProgress
+// 完全可能落在 markCompleted 之后。在 bytes_written 只是进度检查点的年代那只是脏数据；
+// 现在这一列是 completed 行的文件大小、并且会被写进永久留在 NAS 上的清单，
+// 一次迟到的回写就是一份撒谎的清单。终态行一律不接受进度回写。
+test('touchProgress 不回写终态的行：迟到的检查点不许盖掉真实文件大小', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const row = (await s.claimNext(100, 300))!
+  await s.markCompleted(row.id, 'h', 12_345, 120)
+  await s.touchProgress(row.id, 8 * 1024 * 1024, 130, 300)    // 迟到的那一次
+
+  const done = (await s.assetsForMeeting('m1', ''))[0]!
+  expect(done.bytes_written).toBe(12_345)
+  expect(done.status).toBe('completed')
+  expect(done.lease_expires_at).toBeNull()                     // 也没有把租约续回来
+})
+
 test('markCompleted 用真实文件大小覆盖 touchProgress 留下的进度检查点', async () => {
   const s = fresh(); await s.upsertMeeting(M, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)

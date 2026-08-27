@@ -89,9 +89,12 @@ export interface ManifestAssetEntry {
    * 0 字节」，也可能是「这一行在本条回落上线**之前**就完成了」——那时 `markCompleted`
    * 不写这一列，留在里边的是从没触发过的检查点默认值 0。两者在数据里分不开，
    * 而这个仓库的规矩是分不开时落到安全的一侧：写 null（不知道），
-   * 不写一个「0 字节」的谎。同理，`store-mysql.ts` 里记着的那个已知竞态
-   * （不 await 的 `touchProgress` 落在 `markCompleted` 之后）真发生时，
-   * 这一列会被写回一个检查点值——那是那条竞态的账，修在那边，不在这里补猜。
+   * 不写一个「0 字节」的谎。
+   *
+   * 「completed 行上这一列可信」这句话不是自然成立的，它靠一条判定撑着：
+   * 两个 store 的 `touchProgress` 都带 `AND status='running'`，终态行不接受进度
+   * 回写。没有它的话，一次不 await 的进度回写落在 `markCompleted` 之后就会把检查点
+   * 值盖回来——而这份清单会一直留在 NAS 上。动那条判定之前，先回来读这一段。
    */
   bytes: number | null
   /**

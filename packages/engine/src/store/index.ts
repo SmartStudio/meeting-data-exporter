@@ -115,7 +115,11 @@ export function createStore(db: Database): Store {
     async markSkipped(id, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(r, now, id) },
     async markSkippedByKey(k, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=? AND status NOT IN ('completed','running')`).run(r, now, k.meetingId, k.subMeetingId, k.assetType) }, // 不回退已完成的下载、不中断执行中的任务
     async markDead(id, e, now) { db.query(`UPDATE assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
-    async touchProgress(id, bytes, now, leaseSec) { db.query(`UPDATE assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=?`).run(bytes, now + leaseSec, now, id) },
+    // `AND status='running'`：进度回写在 executor 里是**不 await 的**，一次慢的写库
+    // 可以落在 markCompleted 之后。终态行不接受进度回写，否则一个迟到的 8MB 检查点
+    // 会盖掉 markCompleted 刚写下的真实文件大小——而那个值会被写进永久留在 NAS 上的
+    // 清单（见 domain/manifest.ts 的 bytes 字段注释）。MySQL 版逐字同样，别只改一处。
+    async touchProgress(id, bytes, now, leaseSec) { db.query(`UPDATE assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running'`).run(bytes, now + leaseSec, now, id) },
     async setTargetPath(id, p, ft, now) { db.query(`UPDATE assets SET target_path=?, file_type=COALESCE(?,file_type), updated_at=? WHERE id=?`).run(p, ft, now, id) },
     async siblingRank(row) {
       const r = db.query<{ total: number; ordinal: number }, [string, string, string, string, number]>(
