@@ -3,13 +3,24 @@
 管理员用的 Web 控制台。腾讯会议的录制与纪要从这里被拉下来、归档进 NAS、
 在本地保留一个窗口期，期间按规则和授权被外部程序取走。
 
-- 日期：2026-08-23（状态 2026-08-25 更新）
-- 状态：**进行中**。阶段 0/1/2 与前端 F1 已合并 master（2026-08-23～08-24）；
-  阶段 3（规则与授权）、阶段 4 的 A2–A6、阶段 5 的 F2–F7 未开工。
-  逐阶段状态以 [`dev-plan.md` §3](dev-plan.md) 为准
+- 日期：2026-08-23（状态 2026-08-27 更新）
+- 状态：**六个阶段的功能全部写完，但一行都没上线。**
+  阶段 0/1/2/3/4/5 与前端 F1–F9 已全部合并 master（2026-08-23～08-27）：
+  后端 `src/http/router.ts` 的 `ROUTES` 现在是 **51 条**（其中 `/api/v1/admin/*` **37 条**）、
+  9 份迁移、前端 **8 个页面**（Audit · Consumers · Jobs · Login · Meetings · Preview ·
+  Rules · Storage）全部接真实 API。逐阶段状态以 [`dev-plan.md` §3](dev-plan.md) 为准
+- **⚠️ 下一步不是继续写功能，是部署。** `Dockerfile` 只
+  `COPY src scripts migrations package.json`——`packages/` 与 `console/` 都不在镜像里，
+  所以控制台前端**从没被任何人打开过**，`src/worker/*` 与 `src/policy/access.ts` 在镜像里
+  连 import 都做不到。逐条见 [`dev-plan.md` §7](dev-plan.md)
 - 所属：yaowu-ai / meeting-data-exporter
 - 定位：新的子项目（**子项目 5**）。路线图 M5「子项目 4 桌面应用」已决定
   **无限期推迟**——见 [`backend-gap.md` §6](backend-gap.md#6-与路线图的关系已决策)
+
+> **「写完」与「验证过」是两件事，本目录一律分开写。** 上面这些数字都是
+> **代码成立**的证据（路由数、页面数、测试数）；控制台在真实环境里被人打开过、
+> 归档 worker 在生产上跑过——这两件**都还没有发生**。判据见
+> [`dev-plan.md` §7](dev-plan.md) 与 [`../roadmap.md`](../roadmap.md) M6 章。
 
 ---
 
@@ -19,13 +30,28 @@
 | --- | --- | --- |
 | [`spec.md`](spec.md) | **功能说明书**。逐页的行为、规则引擎语义、数据模型、状态机 | 写后端和前端的人 |
 | [`design-system.md`](design-system.md) | 设计系统。令牌、排版、颜色语义、状态规范、无障碍基线 | 写前端的人 |
-| [`backend-gap.md`](backend-gap.md) | **原型要求 vs 现有网关能力**，逐条带落点。**写于立项时（2026-08-23），G1/G2/G10 已在阶段 2 闭合**——缺口状态以 `dev-plan.md` §3 为准 | 排开发计划的人 |
-| [`dev-plan.md`](dev-plan.md) | **研发计划**。阶段拆解、并行编排、CLI 整合方案、开工前的七处冲突 | 排开发计划的人 |
+| [`backend-gap.md`](backend-gap.md) | **原型要求 vs 现有网关能力**，逐条带落点。**写于立项时（2026-08-23），G1–G10 十条已在 2026-08-27 全部闭合**——它现在的价值是「当初缺什么、各自落在哪个阶段」这份账，不是现状 | 排开发计划的人 |
+| [`dev-plan.md`](dev-plan.md) | **研发计划**。阶段拆解、并行编排、CLI 整合方案、开工前的七处冲突，**§7 是当前的下一步（部署）、§8 是欠账清单** | 排开发计划的人 |
 | `prototype/gate-console.html` | 可运行的单文件原型，所有交互都是真的 | 所有人 |
 | `prototype/tokens.css` | 设计令牌，可直接被前端工程引入 | 写前端的人 |
 | `screens/*.webp` | 22 张原型图，含全部异常态 | 所有人 |
 
-## 怎么看原型
+## 怎么看真前端（2026-08-27 起）
+
+阶段 5 已经把原型做成了工程，8 个页面全部接真实 API：
+
+```bash
+cd console && npm install && npm run dev
+# 直接访问        → 接真后端，需要网关跑在本地
+# 访问时带 ?proto=1 → 走 api/mock/ 那份假后端，不需要后端
+```
+
+（`node_modules` 不在 git 里，新工作树不 `npm install` 连 `npm run test` 都跑不起来。）
+`?proto=1` 那份假后端答全部读端点，断网/没后端时也能把八个页面走一遍。
+**但注意：真前端至今没有被部署过**——`Dockerfile` 不 COPY `console/`，网关也不 serve
+任何静态文件，见页首那条 ⚠️。
+
+## 怎么看原型（仍然有效，它是形态的权威）
 
 ```bash
 open docs/console/prototype/gate-console.html
@@ -48,8 +74,13 @@ open docs/console/prototype/gate-console.html
 1. `spec.md` §1 产品模型 —— **不读这一节，后面全看不懂**。这套系统的四个阶段和
    三个「与」条件是所有界面的骨架
 2. `spec.md` §5 规则引擎语义 —— 最需要逐字实现的一节
-3. `backend-gap.md` —— 知道现在有什么、缺什么，再决定先做哪块
-4. `dev-plan.md` —— 怎么排、谁先谁后、`mde` CLI 怎么并进来，**以及每个阶段现在做到哪了**
+3. `backend-gap.md` —— **读它是为了知道当初缺什么、各自落在哪个阶段**；十条缺口已全部闭合，
+   它不再是现状的来源
+4. `dev-plan.md` —— 怎么排、谁先谁后、`mde` CLI 怎么并进来，**§3 是每个阶段做到哪了、
+   §7 是当前的下一步、§8 是全部欠账**
+5. 逐条用户故事的实现覆盖率（✅/◐/⬜/⏸ 明细）见
+   [用户故事 §9.4](../superpowers/specs/2026-07-20-user-stories.md)——**只有那一处有明细**，
+   本目录的文档一律引用它，不各抄一份
 
 ## 重要前提
 
