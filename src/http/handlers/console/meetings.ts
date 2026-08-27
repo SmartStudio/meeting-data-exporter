@@ -18,7 +18,7 @@
  * | --- | --- |
  * | `allow` / `why.allow` | 采集权限栈的判定，走 `explainMeetingAccess` / `evaluateInventory`（见下） |
  * | `why.fetch` | `evaluateFetchStack` + `applyOverride`，与 `src/worker/fetch-policy.ts` 同源 |
- * | `why.archive` | `evaluateArchiveStack` + `applyOverride`，与 `src/worker/archive.ts` 同源 |
+ * | `why.archive` | `evaluateArchiveStack` + `applyOverride`，与 `src/worker/archive.ts` 同源；归档失败那一格另读 `job_failures`（见下） |
  * | `history` | `AuditQueryStore.listForMeeting`，**只在详情端点**（见 `getMeeting`） |
  *
  * store 给的 `fetch` / `archive` 是**库里看得见的那一半**：`'off'`（被人工改写关掉）
@@ -41,6 +41,20 @@
  * 会议元数据查不到（规则根本没跑过），以及**库里一条启用的拉取规则都没有**
  * ——后者 worker 走兼容模式全拉，那句解释是共用的
  * `FETCH_STACK_UNCONFIGURED_REASON`，不在本文件里另写一份。
+ *
+ * ## 归档失败那一格从「查不到」变成一条读出来的失败记录（阶段 5 · D-4）
+ *
+ * 这一格曾经原样告诉管理员：「真正的失败原因目前不落库，要等 A4 建 `job_failures`
+ * 才查得到」。写下那句话时它是真的；`migrations/008` 之后就不是了——那张表不仅建了，
+ * 还**专门为「让详情抽屉能按会议反查」单列了 `meeting_id` / `sub_meeting_id` 并建了
+ * `idx_job_failure_meeting`**，写侧是 `src/worker/archive.ts` 的 `recordFailure`。
+ * 索引早就在，只是没人 join 它，于是界面上那句话把一个查得到的原因说成查不到。
+ *
+ * 现在的顺序是：**先读 `job_failures` 的真原因，读不到才回落到「6 小时没归成」的
+ * 时间启发式**（`archiveFailedWhy`）。启发式不删——没有失败记录不等于归档没出事，
+ * 那种时候它仍然是唯一说得清的判据（见 `ARCHIVE_GRACE_SEC` 的注释）。
+ * 读这一步**自己失败时不吞**：喊一句到日志，并把错误话带进判定理由，因为
+ * 「没查成」与「没有失败记录」是两件事，混成一件就又是一句假话。
  *
  * ## 「准许采集」在没有采集程序的前提下是什么意思
  *
@@ -102,6 +116,7 @@ import {
   type TriageBucket,
 } from '../../../store/console-meetings'
 import type { MeetingKey } from '../../../store/grants'
+import { JOB_ARCHIVE_NAS, type JobFailureRecord } from '../../../store/jobs'
 import {
   FETCH_STACK_UNCONFIGURED_REASON,
   fetchRulesInEffect,
@@ -293,7 +308,29 @@ interface StageMaterial {
    */
   meta: MeetingMeta | undefined
   overrides: MeetingOverrideSet
+  /**
+   * 这场会议在 `job_failures` 里的归档失败记录（阶段 5 · D-4）。
+   * 只有归档状态是 `'failed'` 的行才会去查，见 `lookupArchiveFailures`。
+   */
+  archiveFailure: ArchiveFailureLookup
 }
+
+/**
+ * 「这场会议归档为什么失败」的查询结果，**四种结果各是一句不同的话**。
+ *
+ * 压成 `JobFailureRecord | null` 不行：「查过了，没有这条记录」与「这次没查成」
+ * 在界面上要说的是两件事，而把后者显示成前者，就是用「没有失败记录」冒充
+ * 「查不出来」——这一族改动要消灭的正是这种假话。
+ */
+type ArchiveFailureLookup =
+  /** 读到了那条未恢复的失败记录 */
+  | { status: 'found'; record: JobFailureRecord }
+  /** 查过了，`job_failures` 里没有这场会议未恢复的归档失败项 */
+  | { status: 'none' }
+  /** 查这一步自己出错了（表不存在、查询报错）。错误话要原样进判定理由 */
+  | { status: 'unavailable'; error: string }
+  /** 这一行的归档状态不是 `failed`，压根没去查 */
+  | { status: 'skipped' }
 
 /**
  * 归档阶段的 `'blocked'`。
@@ -399,10 +436,10 @@ function archiveWhy(
   row: ConsoleMeetingRow,
   state: ArchiveState,
   decision: OverriddenDecision<ArchiveEffect> | null,
-  overrides: MeetingOverrideSet,
+  stage: StageMaterial,
 ): Why {
   if (state === 'off') {
-    const reason = overrides.archive?.reason
+    const reason = stage.overrides.archive?.reason
     return {
       by: 'hand',
       text:
@@ -433,17 +470,7 @@ function archiveWhy(
 
   if (state === 'blocked') return { by: 'rule', text: decision.reason }
 
-  if (state === 'failed') {
-    return {
-      by: 'fail',
-      text:
-        `最后一个资产下载完成已超过 ${ARCHIVE_GRACE_SEC / 3600} 小时，仍然没有归档记录。` +
-        `归档任务每小时整点跑一次，连续这么多轮都没归成，不是「还没轮到」能解释的。` +
-        `归档不成功，本地保留期一到这场会议就**永久**没有了。` +
-        `真正的失败原因目前不落库（只走 worker 的 console.error），要等 A4 建 job_failures 才查得到——` +
-        `所以这条判据是时间上的启发式，不是一条读出来的失败记录。`,
-    }
-  }
+  if (state === 'failed') return archiveFailedWhy(stage.archiveFailure)
 
   if (state === 'none') {
     return {
@@ -456,6 +483,121 @@ function archiveWhy(
 
   // running
   return { by: 'wait', text: `资产已下载完成，等待归档任务把它搬到 NAS。${decision.reason}` }
+}
+
+/**
+ * 归档失败这一格的理由。**先给 `job_failures` 里那条真原因，读不到才回落到
+ * 「6 小时没归成」的时间启发式。**
+ *
+ * 为什么真原因排在前面：`ARCHIVE_GRACE_SEC` 那套判据回答的是「归成了没有」，
+ * 它天生说不出「为什么没归成」——而 NAS 路径与 errno 才是运维接着往下查的线索。
+ * `migrations/008` 建 `job_failures` 时专门为「让详情抽屉能按会议反查」单列了
+ * `meeting_id` / `sub_meeting_id` 并建了 `idx_job_failure_meeting`，接的就是这里。
+ *
+ * 为什么启发式不删（三种回落分支都还带着它）：`job_failures` 里没有行**不等于
+ * 归档没出事**——归档轮可能还没轮到这场会议，也可能进程在记账之前就断了。
+ * 那种时候这一格宁可给一个说得清的时间判据，也不给一个「归档失败数恒为 0」的假太平。
+ *
+ * 三种回落各说各的话，不合并成一句：「查过了没有」「这次没查成」「压根没去查」
+ * 要做的处置完全不同，而把后两种显示成第一种就是在用「没有失败记录」冒充
+ * 「查不出来」。
+ */
+function archiveFailedWhy(lookup: ArchiveFailureLookup): Why {
+  // 三条回落共用的那段——**判据本身没有变**，见 ARCHIVE_GRACE_SEC 的注释
+  const heuristic =
+    `最后一个资产下载完成已超过 ${ARCHIVE_GRACE_SEC / 3600} 小时，仍然没有归档记录。` +
+    `归档任务每小时整点跑一次，连续这么多轮都没归成，不是「还没轮到」能解释的。` +
+    `归档不成功，本地保留期一到这场会议就**永久**没有了。`
+
+  switch (lookup.status) {
+    case 'found': {
+      const f = lookup.record
+      return {
+        by: 'fail',
+        text:
+          `归档任务把这场会议记进了失败项：${f.reason}` +
+          `（第 ${f.attempts} / ${f.maxAttempts} 次尝试，首次 ${stamp(f.firstFailedAt)}，` +
+          `最近一次 ${stamp(f.lastFailedAt)}）。影响：${f.impact}。` +
+          `${f.maxAttempts} 是「该找人了」的阈值，不是「到此为止」——` +
+          `只要本地还有未归档的完成资产，归档轮就会把这场会议一直捞回来重试。` +
+          `这一句是从 job_failures 读出来的那条记录，不是时间上的推断。`,
+      }
+    }
+    case 'none':
+      return {
+        by: 'fail',
+        text:
+          heuristic +
+          `job_failures 里没有这场会议未恢复的归档失败记录` +
+          `（归档轮还没轮到它、或者进程在把失败记下来之前就断了），` +
+          `所以这一条是时间上的启发式，不是一条读出来的失败记录。`,
+      }
+    case 'unavailable':
+      return {
+        by: 'fail',
+        text:
+          heuristic +
+          `另外：这次读 job_failures 取真实失败原因时出错了（${lookup.error}），` +
+          `所以这一格只剩时间启发式——而「没查成」不等于「没有失败记录」，` +
+          `失败项表（定时任务页）里可能正躺着这场会议的原因。`,
+      }
+    case 'skipped':
+      // 到不了：`lookupArchiveFailures` 恰好问的就是 `archive === 'failed'` 的那几行，
+      // 而叠加只会把 failed 变成 blocked，不会凭空造出一个 failed。留着这一支是为了
+      // 那个前提哪天被改坏时，界面上说的是「这次没去查」而不是「没有失败记录」。
+      return {
+        by: 'fail',
+        text: heuristic + `这一次渲染没有去读 job_failures，所以这一格只有时间启发式。`,
+      }
+  }
+}
+
+/**
+ * 这一页里归档失败的那几场，各自在 `job_failures` 里的真原因，**一次问完**。
+ *
+ * 查询数与页上有几行无关（0 行失败 = 0 次查询，N 行失败 = 1 次查询）：逐行反查是
+ * N+1，而列表端点的验收判据就是「一页的查询数与行数无关」（见文件头）。
+ *
+ * 只问 `row.archive === 'failed'` 的行：`overlayArchive` 只会把 failed 收窄成
+ * blocked，不会凭空造出 failed，所以这个候选集是完备的。**归档状态还在 running
+ * （6 小时宽限内）却已经失败过一次的会议不在这里反查**——那一格显示的是「等待归档」，
+ * 改动它就等于把分诊条的红格判据搬到这个文件里来，两处判据从此可以分叉。
+ *
+ * 查询本身抛出时**不吞掉**：喊一句到日志，并把错误话带回每一行的判定理由里
+ * （`status: 'unavailable'`）。`.catch(() => {})` 的表现是界面若无其事地说
+ * 「没有失败记录」，而真相是我们没查成。
+ */
+async function lookupArchiveFailures(
+  deps: Pick<RouteCtx['deps'], 'archiveFailures'>,
+  rows: readonly ConsoleMeetingRow[],
+): Promise<Map<string, ArchiveFailureLookup>> {
+  const out = new Map<string, ArchiveFailureLookup>()
+  const keys: MeetingKey[] = rows
+    .filter((r) => r.archive === 'failed')
+    .map((r) => ({ meetingId: r.meetingId, subMeetingId: r.subMeetingId }))
+  if (keys.length === 0) return out
+
+  let records: readonly JobFailureRecord[]
+  try {
+    records = await deps.archiveFailures.listFailures({ jobName: JOB_ARCHIVE_NAS, meetings: keys })
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e)
+    console.error(`[console/meetings] 读 job_failures 取归档失败原因失败：${error}`)
+    for (const k of keys) out.set(keyOf(k), { status: 'unavailable', error })
+    return out
+  }
+
+  for (const k of keys) out.set(keyOf(k), { status: 'none' })
+  for (const r of records) {
+    // meeting_id 可空（整轮性的失败项没有会议维度），那种行落不到任何一场会议上
+    if (r.meetingId === null) continue
+    const k = keyOf({ meetingId: r.meetingId, subMeetingId: r.subMeetingId })
+    // 同一场会议在同一个任务上只可能有一行（唯一键 (job_name, target)），
+    // 真出现第二行时取先来的那条，不合并成一句读不懂的话
+    if (out.get(k)?.status === 'found') continue
+    if (out.has(k)) out.set(k, { status: 'found', record: r })
+  }
+  return out
 }
 
 // ── 审计历史 ──────────────────────────────────────────────────────────────
@@ -588,13 +730,16 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
   if (row === null) return json(404, { error: 'meeting_not_found' })
 
   const vis = ctx.deps.meetingVisibility
-  const [allowRules, archiveRules, fetchRules, metas, overrideRows] = await Promise.all([
+  const [allowRules, archiveRules, fetchRules, metas, overrideRows, failures] = await Promise.all([
     vis.policy.listEnabledStackRules('allow'),
     vis.policy.listEnabledStackRules('archive'),
     // A7（T12）接线之后 `why.fetch` 是一次真判定，所以这一栈也要取
     vis.policy.listEnabledStackRules('fetch'),
     vis.getMeetings([key]),
     vis.grants.listActiveOverridesForMeetings([key]),
+    // 归档失败时那句「为什么失败」的真原因（阶段 5 · D-4）。这场会议没在归档上
+    // 失败就一条查询都不发，见 `lookupArchiveFailures`
+    lookupArchiveFailures(ctx.deps, [row]),
   ])
 
   // 验收 2：单场走 `explainMeetingAccess`，与采集清单重算（`computeProgramInventory`）
@@ -629,6 +774,7 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
     archiveRules,
     meta: metas.find((m) => keyOf(m) === keyOf(key)),
     overrides: indexOverrides(overrideRows as readonly PolicyOverride[]),
+    archiveFailure: failures.get(keyOf(key)) ?? { status: 'skipped' },
   }
   return json(200, render(row, stage, verdicts, history))
 }
@@ -654,7 +800,7 @@ async function renderPage(
     subMeetingId: r.subMeetingId,
   }))
 
-  const [allowRules, archiveRules, fetchRules, archives, overrideRows, metas] = await Promise.all([
+  const [allowRules, archiveRules, fetchRules, archives, overrideRows, metas, failures] = await Promise.all([
     vis.policy.listEnabledStackRules('allow'),
     vis.policy.listEnabledStackRules('archive'),
     // 第三栈。整页取一次，与行数无关——列表的查询数不许随行数长（T1 的验收判据）
@@ -666,6 +812,9 @@ async function renderPage(
     vis.archives.listMeetingArchives(keys),
     vis.grants.listActiveOverridesForMeetings([...keys]),
     vis.getMeetings(keys),
+    // 归档失败那几行的真原因（阶段 5 · D-4）。**这一趟的查询数与行数无关**：
+    // 页上一场归档失败都没有就是 0 次，有几场也只是 1 次
+    lookupArchiveFailures(ctx.deps, rows),
   ])
 
   const metaByKey = new Map(metas.map((m) => [keyOf(m), m]))
@@ -713,6 +862,7 @@ async function renderPage(
       archiveRules,
       meta: metaByKey.get(k),
       overrides: indexOverrides(overridesByKey.get(k) ?? []),
+      archiveFailure: failures.get(k) ?? { status: 'skipped' },
     }
     // 列表**不查审计**：一页 50 行就是 50 次 listForMeeting（每次两条查询）。
     // 操作历史是详情抽屉底部那一段（spec §4.3），由单场端点给。
@@ -764,7 +914,7 @@ function render(
     allow,
     why: {
       fetch: fetchWhy(row, stage, fetchDecision),
-      archive: archiveWhy(row, archive, archiveDecision, stage.overrides),
+      archive: archiveWhy(row, archive, archiveDecision, stage),
       allow: why,
     },
     history: history.map((r) => ({ at: r.occurredAt, text: historyText(r) })),

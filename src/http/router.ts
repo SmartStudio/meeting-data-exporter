@@ -45,6 +45,7 @@ import type { ContentLookup } from './handlers/console/content'
 // 调度器属于 worker 进程，网关一行都不许碰，见那个文件的文件头。
 import * as consoleJobsHandlers from './handlers/console/jobs'
 import type { JobsDeps } from './handlers/console/jobs'
+import type { JobsStore } from '../store/jobs'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -149,6 +150,17 @@ export interface AppDeps {
    * 同一个理由——依赖上写着用得到的那几件事，读代码的人不必去猜。
    */
   meetingHistory: Pick<AuditQueryStore, 'listForMeeting'>
+  /**
+   * 会议详情抽屉里「归档为什么失败」的**真原因**来源（阶段 5 · D-4）。
+   *
+   * 收窄到 `listFailures` 一个方法：会议记录页只读 `job_failures`，一个字都不写它
+   * （写侧是 worker 的归档轮）。与 `meetingHistory` / `StorageDeps.jobFailures`
+   * 同一个先例——依赖上写着用得到的那件事，读代码的人不必去猜。
+   *
+   * **必须与定时任务页、归档存储页是同一张表、同一个实例**：三处各读各的，
+   * 界面上会出现「失败项表里有一条、抽屉里说没有」这种自相矛盾。
+   */
+  archiveFailures: Pick<JobsStore, 'listFailures'>
   /**
    * `asset_contents` 的读侧（阶段 4 · T10，A6）。写侧是 T4 的 `src/store/contents.ts`,
    * 本字段一个字都不改它。

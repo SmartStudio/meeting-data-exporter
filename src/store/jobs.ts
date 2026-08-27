@@ -314,6 +314,17 @@ export interface ListFailuresOptions {
   meetingId?: string
   /** 只在给了 `meetingId` 时有意义。单场会议的键是两段，只给前一段会串场 */
   subMeetingId?: string
+  /**
+   * 一批会议一次问完（阶段 5 · D-4：会议记录页整页反查归档失败的真原因）。
+   *
+   * 与 `meetingId` 的分工：那一个是「问某一场」，这一个是「问这一页的这几场」。
+   * 逐场问也答得出，但那是 N 次查询，而列表端点的验收判据就是**查询数与行数无关**
+   * （见 `src/store/console-meetings.ts` 的文件头）。
+   *
+   * **空数组返回空，不退化成「没有条件」**：退化的表现是抽屉把别的会议的失败原因
+   * 安到这一场头上——那正是这一族改动要消灭的那种假话。
+   */
+  meetings?: readonly { meetingId: string; subMeetingId: string }[]
   limit?: number
 }
 
@@ -688,6 +699,16 @@ export function createJobsStore(pool: Pool): JobsStore {
         // 那正是单场会议的键。周期性会议必须显式给场次，否则会串场。
         where.push('sub_meeting_id = ?')
         params.push(opts.subMeetingId ?? '')
+      }
+      if (opts.meetings !== undefined) {
+        // 空数组不是「不筛选」，是「这一页没有要问的会议」——直接返回空，
+        // 一条查询都不发（同 `archives.listMeetingArchives`）
+        if (opts.meetings.length === 0) return []
+        // 行构造器 IN，走 idx_job_failure_meeting (meeting_id, sub_meeting_id)。
+        // 两段一起进条件：只按 meeting_id 筛会把周期性会议的别的场次也捞进来
+        const pairs = opts.meetings.map(() => '(?, ?)').join(', ')
+        where.push(`(meeting_id, sub_meeting_id) IN (${pairs})`)
+        for (const k of opts.meetings) params.push(k.meetingId, k.subMeetingId)
       }
       const n = Math.max(1, Math.trunc(opts.limit ?? JOB_FAILURES_DEFAULT_LIMIT))
       const clause = where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`

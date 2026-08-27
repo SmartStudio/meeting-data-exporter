@@ -39,7 +39,12 @@ const STEPS = ['基本信息', '生成凭据', '可取资产', '接入方式'] a
  *
  * 明文只在 201 响应里出现，库里只存 argon2id 哈希。所以第二步不勾「我已保存」
  * 就走不掉、也**关不掉**——Sheet 的关闭按钮与 Esc 都被拦下来先提醒一次。
- * 这不是刁难：关掉之后这串明文在世界上就不存在了，而轮换端点这一轮还没有。
+ * 这不是刁难：关掉之后这串明文在世界上就不存在了。
+ *
+ * 丢了不是死路：卡片上的「轮换凭据」（`ProgramActions.tsx` 调
+ * `POST /programs/:id/rotate-secret`）能换一串新的。但那是**有代价的**恢复——
+ * 旧凭据当场失效，对接方的定时任务会开始收到 401 直到那边换上新串，
+ * 所以这句提醒要把「换得回来」和「换要付什么」一起说，而不是只说其中一半。
  */
 export function Wizard({ open, onDone }: { open: boolean; onDone: (created: boolean) => void }) {
   const uid = useId()
@@ -74,7 +79,11 @@ export function Wizard({ open, onDone }: { open: boolean; onDone: (created: bool
   /** 关闭意图（× / Esc / 完成）都走这里。凭据没被确认保存之前拦一次。 */
   function requestClose(): void {
     if (created !== null && !savedAck) {
-      setCloseWarn('Secret 关掉之后不能再取回，只能轮换（轮换端点这一轮还没有）。勾上「我已经把 Secret 保存好了」再关。')
+      setCloseWarn(
+        'Secret 关掉之后不能再取回：服务端只存哈希，没有「再看一次」。' +
+          '真丢了就到这个程序的卡片上点「轮换凭据」换一串新的——旧的当场失效，对接方要同时改配置。' +
+          '勾上「我已经把 Secret 保存好了」再关。',
+      )
       return
     }
     finish()

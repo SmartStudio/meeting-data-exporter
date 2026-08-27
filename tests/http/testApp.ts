@@ -225,6 +225,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     consoleMeetings,
     meetingVisibility,
     meetingHistory: auditStore,
+    // 归档失败的真原因（阶段 5 · D-4）。跟随 src/index.ts：与定时任务页、
+    // 归档存储页读同一张 job_failures、同一个实例
+    archiveFailures: jobsStore,
     // 内容预览（阶段 4 · T10）。装配方式跟随 src/index.ts：真实实现接同一个测试库
     contents: createContentLookup(pool),
     // 阶段 4 · T11（A4 定时任务）。跟随 src/index.ts：网关只装读侧与手动触发的

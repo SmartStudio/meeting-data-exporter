@@ -683,15 +683,15 @@ handlers/console/meetings.ts → @yaowu/mde-engine` 是一条模块加载期就�
 | **D-2** | **角色建号之后改不了** | `src/store/admin.ts` 里没有任何 `updateRole`；`ACCOUNT_COLS` 有 `role`，写入只在 `createAccount` 那一次（`:169-179`） | `src/http/middleware.ts:143` 的 403 响应里那句「请让管理员把角色改成 admin」**在产品里没有任何路径能执行**。只读账号想转正只能删号重建，而删号又撞上 D-1 |
 | **D-3** | **US-5.2「切换存储目标不需要迁移已有记录」不成立** | `src/policy/archive-dir.ts:167` 用 `resolve(nasRoot, trimmed)` 算出**绝对路径**存进 `archived_assets.nas_path` / `meeting_archives.nas_dir` | 换掉 `MDE_NAS_ROOT` 之后，老记录全指向旧挂载点。到期清理前的哈希重校验读不到那份文件 → **整场拒删**、进 `verificationFailed` 等人工介入。没有迁移脚本。**这不是「没验证过」，是判定为不成立** |
 
-### 8.2 会说假话的（三条）
+### 8.2 会说假话的（三条，2026-08-27 结清两条）
 
 这三条的共同形状：**界面/日志上会渲染给管理员一句话，而那句话现在是错的。**
 比不说更糟，因为管理员会照着它做决定。
 
 | # | 欠账 | 判据 |
 | --- | --- | --- |
-| **D-4** | **详情抽屉告诉管理员「失败原因要等 A4 才查得到」，而 A4 早就做完了** | `src/http/handlers/console/meetings.ts:443` 原文：「真正的失败原因目前不落库（只走 worker 的 console.error），要等 A4 建 job_failures 才查得到」。而 `migrations/008` 建 `job_failures` 时**专门为「让详情抽屉按会议反查」单列了 `meeting_id`/`sub_meeting_id` 两列并建了 `idx_job_failure_meeting` 索引**（`:134-135,152`），`worker/archive.ts:909` 也在往里落行——**索引建好了，抽屉却没 join** |
-| **D-5** | **接入向导告诉管理员「轮换端点这一轮还没有」，而它就在隔壁文件里被调用** | `console/src/pages/Consumers/Wizard.tsx:42` 与 `:77`（关闭拦截的那句提示）都写着「轮换端点这一轮还没有」；`POST /programs/:id/rotate-secret` 已由 A8 做出来，同目录的 `ProgramActions.tsx` 正在调它 |
+| ~~**D-4**~~ | ~~**详情抽屉告诉管理员「失败原因要等 A4 才查得到」，而 A4 早就做完了**~~ | ✅ **已结清，2026-08-27**：抽屉的归档失败理由改成**先读 `job_failures` 的真原因**（`archiveFailedWhy` + `lookupArchiveFailures`，整页一次批量反查），读不到才回落到 `ARCHIVE_GRACE_SEC` 的时间启发式；读这一步自己出错时不吞，错误话进判定理由 |
+| ~~**D-5**~~ | ~~**接入向导告诉管理员「轮换端点这一轮还没有」，而它就在隔壁文件里被调用**~~ | ✅ **已结清，2026-08-27**：`Wizard.tsx` 那两处改成指向卡片上的「轮换凭据」，并说清它的代价（旧凭据当场失效、对接方会收到 401） |
 | **D-6** | **两份文档对 R0 的结论互相打架** | `docs/console/spec.md:395-403` 说「把接企微通讯录 API + 部门同步立成阶段 3 的前置任务 R0」；`src/policy/conds.ts:281-297` 的 `unavailableReason` 写着「R0 已定为不做」并会**原样上屏**。编辑器把 `dept` 画成可见但禁用 = 按「不做」走。**spec 那一段没跟上**（订正要动 `spec.md`，本文只记账） |
 
 ### 8.3 结构性的（阶段 5 §13.4 六条 + 本轮新增两条）
