@@ -1,7 +1,21 @@
 import { buildAuthHeaders } from './signer'
 import { buildUrl, type QueryParams } from './url'
 import { parseErrorResponse, TencentApiError } from './errors'
-import { createTokenBucket } from './ratelimit'
+import { createEndpointQuota, type EndpointQuota, createTokenBucket } from './ratelimit'
+
+/**
+ * **按接口**另设的分钟级配额，路径 → 每分钟上限。
+ *
+ * 全局令牌桶（`TM_QPS`，默认 5 即 300 次/min）对这些接口来说宽得没有意义：
+ * `/v1/corp/records` 官方写明「访问限制：**10次/min**」，全局桶 6 秒就能超掉它
+ * 一整分钟的配额。这里的闸门是零突发的，见 ratelimit.ts 的 createEndpointQuota。
+ *
+ * 只在这张表里的路径上生效，其余接口一如既往只受全局桶约束。
+ */
+const ENDPOINT_QUOTAS_PER_MINUTE: Readonly<Record<string, number>> = {
+  // https://cloud.tencent.com/document/product/1095/53224 「访问限制：10次/min」
+  '/v1/corp/records': 10,
+}
 
 export interface TencentClientConfig {
   appId: string
@@ -42,8 +56,27 @@ export function createTencentClient(
   deps: TencentClientDeps,
 ): TencentClient {
   const bucket = createTokenBucket(cfg.qps)
+  // 闸门随 client 实例存活：每次调用新建一个等于完全不限流。
+  const quotas = new Map<string, EndpointQuota>()
+  for (const [path, perMinute] of Object.entries(ENDPOINT_QUOTAS_PER_MINUTE)) {
+    quotas.set(path, createEndpointQuota(perMinute))
+  }
 
-  async function acquire(): Promise<void> {
+  /**
+   * 先过该接口自己的分钟级配额（若有），再过全局令牌桶。
+   *
+   * 顺序是有意的：先过紧的那道。反过来会先从全局桶里拿走令牌、再在配额闸门前
+   * 干等几秒，白白挤占其它接口的额度。
+   */
+  async function acquire(path: string): Promise<void> {
+    const quota = quotas.get(path)
+    if (quota) {
+      for (;;) {
+        const waitMs = quota.tryTake(deps.nowMs())
+        if (waitMs === 0) break
+        await deps.sleep(waitMs)
+      }
+    }
     while (!bucket.tryTake(deps.nowMs())) {
       await deps.sleep(1000 / Math.max(1, bucket.currentQps()))
     }
@@ -60,7 +93,8 @@ export function createTencentClient(
     let lastError: TencentApiError | null = null
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      await acquire()
+      // 重试也是真实的 API 调用，同样要占配额——放在循环内而非循环外。
+      await acquire(path)
 
       // 每次重试都重新构造 URL 与请求头——nonce 与 timestamp 必须换新，
       // 否则触发 190301 请求重放错误。

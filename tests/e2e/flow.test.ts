@@ -978,3 +978,118 @@ test('假腾讯服务对签名不匹配的请求返回 9042，网关判定为致
   expect(fakeServer.requestLog).toHaveLength(1)
   expect(fakeServer.requestLog[0]!.signatureValid).toBe(false)
 })
+
+/**
+ * **全公司归档的数据来源**（spec §1.2 · US-5.1），端到端钉死。
+ *
+ * 2026-08-27 真实环境实测：走 `/v1/records` 拉最近 31 天，7 场会议的
+ * host_userid 全是 TM_OPERATOR_ID 本人——官方文档对该接口的原话是「查询**用户**
+ * 所有会议的录制列表」，参数表里根本没有指定查谁的参数，应用配了「查看企业录制」
+ * 权限也改变不了。范围查询因此改走账户级的 `/v1/corp/records`。
+ *
+ * 这条用例走真网关 + 真签名 + 假腾讯 HTTP 服务，验三件事：
+ *   1. 范围查询打的是 `/v1/corp/records`，一次都没打 `/v1/records`；
+ *   2. 拿得到**别人主持的**会议，主持人不再恒等于 operator；
+ *   3. `userid` → hostUserId 的映射真的接通了。
+ */
+test('范围查询经 /v1/corp/records 拿到别人主持的会议——不再只看得到 operator 自己的', async () => {
+  const clock = stepClock(NOW)
+  const { app, fakeState, requestLog } = buildE2eApp(pool, {
+    now: clock.now,
+    wecomExchangeCode: async () => ({ userId: 'ww-e2e-corp-1', email: null }),
+  })
+
+  // 三场会议，主持人各不相同，且**没有一个**是网关的 operator。
+  // 走旧的 /v1/records 时这三场一场都拉不到。
+  const hosts = ['ww-e2e-corp-alice', 'ww-e2e-corp-bob', 'ww-e2e-corp-carol']
+  hosts.forEach((host, i) => {
+    fakeState.records.push({
+      meeting_record_id: 'rec-e2e-corp-' + i,
+      meeting_id: 'm-e2e-corp-' + i,
+      meeting_code: '70011' + i,
+      host_user_id: host,
+      media_start_time: NOW * 1000,
+      subject: '别人主持的会议 ' + i,
+      state: 3,
+    })
+  })
+  expect(fakeState.records.every((r) => r.host_user_id !== OPERATOR_ID)).toBe(true)
+
+  await insertPolicyRule(pool, {
+    priority: 10,
+    programId: 'prog-e2e-corp-1',
+    assetTypes: ['*'],
+    effect: 'allow',
+    note: '放行 e2e 企业维度采集程序',
+  })
+
+  const { access_token } = await serviceLogin(app, 'prog-e2e-corp-1', 'ww-e2e-corp-1')
+  const headers = { Authorization: 'Bearer ' + access_token }
+
+  // 不带 meeting_code / meeting_id ⇒ 范围查询（worker 的主路径）
+  const res = await app(new Request('https://gw/api/v1/meetings', { headers }))
+  expect(res.status).toBe(200)
+  const body = (await res.json()) as {
+    meetings: Array<{ meeting_id: string; host_user_id: string }>
+  }
+
+  expect(body.meetings.map((m) => m.meeting_id).sort()).toEqual([
+    'm-e2e-corp-0', 'm-e2e-corp-1', 'm-e2e-corp-2',
+  ])
+  // userid → hostUserId 的映射真的接通了；照搬 host_user_id 时这里全是 undefined
+  expect(body.meetings.map((m) => m.host_user_id).sort()).toEqual(hosts)
+  expect(body.meetings.every((m) => m.host_user_id !== OPERATOR_ID)).toBe(true)
+
+  const hitPaths = requestLog.filter((r) => r.signatureValid).map((r) => r.path)
+  expect(hitPaths).toContain('/v1/corp/records')
+  expect(hitPaths).not.toContain('/v1/records') // 范围查询一次都不该打用户维度接口
+  expect(requestLog.every((r) => r.signatureValid)).toBe(true) // 新路径的签名同样正确
+})
+
+/**
+ * 与上一条互补：精确查询（`mde get --code` 依赖的那条路）仍走 `/v1/records`。
+ *
+ * 理由见 tencent/records.ts 的 EXACT_LOOKUP_SCOPE_NOTE：`/v1/corp/records` 没有
+ * meeting_id / meeting_code 参数，改成「拉全范围再本地过滤」会把一次点名查询变成
+ * 几十次调用，直接撞死 10次/min 的配额。代价是精确查询只看得到 operator 自己的
+ * 会议——所以未命中时的提示必须把这条限制说出来，不能只说「未找到」。
+ */
+test('精确查询仍走 /v1/records，未命中时的 404 说得出「只看得到 operator 自己的会议」', async () => {
+  const clock = stepClock(NOW)
+  const { app, fakeState, requestLog } = buildE2eApp(pool, {
+    now: clock.now,
+    wecomExchangeCode: async () => ({ userId: 'ww-e2e-exact-1', email: null }),
+  })
+
+  fakeState.records.push({
+    meeting_record_id: 'rec-e2e-exact-1',
+    meeting_id: 'm-e2e-exact-1',
+    meeting_code: '700120',
+    host_user_id: 'ww-e2e-exact-1',
+    media_start_time: NOW * 1000,
+    subject: '按会议号点名查询',
+    state: 3,
+  })
+
+  await insertPolicyRule(pool, {
+    priority: 10, programId: 'prog-e2e-exact-1', assetTypes: ['*'], effect: 'allow',
+  })
+  const { access_token } = await serviceLogin(app, 'prog-e2e-exact-1', 'ww-e2e-exact-1')
+  const headers = { Authorization: 'Bearer ' + access_token }
+
+  const hitRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700120', { headers }))
+  expect(hitRes.status).toBe(200)
+  const hitPaths = requestLog.filter((r) => r.signatureValid).map((r) => r.path)
+  expect(hitPaths).toContain('/v1/records')
+  expect(hitPaths).not.toContain('/v1/corp/records')
+
+  // 未命中：错误提示要能让人查下去，而不是只丢一句「没找到」
+  const missRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700999', { headers }))
+  expect(missRes.status).toBe(404)
+  const missBody = (await missRes.json()) as { error: string; message: string }
+  expect(missBody.error).toBe('meeting_not_found_in_range')
+  expect(missBody.message).toContain('700999')
+  expect(missBody.message).toContain('/v1/records')
+  expect(missBody.message).toMatch(/operator/i)
+  expect(missBody.message).toContain('/v1/corp/records')
+})

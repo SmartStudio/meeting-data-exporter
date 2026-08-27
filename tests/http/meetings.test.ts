@@ -74,6 +74,28 @@ function recordsPage(meetings: unknown[]): unknown {
   return { total_page: 1, record_meetings: meetings }
 }
 
+/**
+ * 同一批会议按**两个列表接口各自的 wire 形状**供给。
+ *
+ * `/v1/records`（用户维度）的主持人字段是 `host_user_id`；
+ * `/v1/corp/records`（企业维度）的是 `userid`。两者形状不同，测试里也不能混成
+ * 一份——混了就等于把「主持人字段改名了」这件事从覆盖里抹掉（见 tencent/records.ts）。
+ *
+ * 返回 null 表示该 path 不是会议列表接口，调用方继续往下判断。
+ */
+function recordsFor(path: string, meetings: unknown[]): unknown | null {
+  if (path === '/v1/records') return recordsPage(meetings)
+  if (path === '/v1/corp/records') {
+    return recordsPage(
+      meetings.map((m) => {
+        const { host_user_id: host, ...rest } = m as Record<string, unknown>
+        return { ...rest, userid: host }
+      }),
+    )
+  }
+  return null
+}
+
 function addressesPage(files: unknown[]): unknown {
   return { total_page: 1, record_files: files }
 }
@@ -95,7 +117,7 @@ test('列表按策略过滤，被拒的会议不出现', async () => {
 
   const { app } = buildTestApp(pool, {
     now: () => NOW,
-    tencentGet: (path) => (path === '/v1/records' ? recordsPage([meetingA, meetingB]) : {}),
+    tencentGet: (path) => (recordsFor(path, [meetingA, meetingB]) ?? {}),
   })
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-alice-1',
@@ -122,7 +144,7 @@ test('单场详情对无可见权限的会议返回 404，且不泄露会议属�
 
   const { app } = buildTestApp(pool, {
     now: () => NOW,
-    tencentGet: (path) => (path === '/v1/records' ? recordsPage([secretMeeting]) : {}),
+    tencentGet: (path) => (recordsFor(path, [secretMeeting]) ?? {}),
   })
   // 有意不插入任何策略规则：noAccess 对该会议的任何资产类型都判定为 deny，
   // 因此按 listMeetings 相同口径，这场会议对她不可见。
@@ -163,7 +185,8 @@ test('download-url 对无权资产返回 403 且写审计', async () => {
   const { app } = buildTestApp(pool, {
     now: () => NOW,
     tencentGet: (path) => {
-      if (path === '/v1/records') return recordsPage([meeting])
+      const meetingsRes = recordsFor(path, [meeting])
+      if (meetingsRes) return meetingsRes
       if (path === '/v1/addresses') return addressesPage([addressFile])
       return {}
     },
@@ -211,7 +234,7 @@ test('download-url 对越权构造的 assetId 返回 403（不是 404）', async
 
   const { app } = buildTestApp(pool, {
     now: () => NOW,
-    tencentGet: (path) => (path === '/v1/records' ? recordsPage([meetingA, meetingB]) : {}),
+    tencentGet: (path) => (recordsFor(path, [meetingA, meetingB]) ?? {}),
   })
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-alice-2',
@@ -265,7 +288,8 @@ test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条�
   const { app } = buildTestApp(pool, {
     now: () => NOW,
     tencentGet: (path) => {
-      if (path === '/v1/records') return recordsPage([meeting])
+      const meetingsRes = recordsFor(path, [meeting])
+      if (meetingsRes) return meetingsRes
       if (path === '/v1/addresses') return addressesPage([addressFile])
       return {}
     },
@@ -319,9 +343,10 @@ test('未传 from/to 时默认最近 31 天', async () => {
   const { app } = buildTestApp(pool, {
     now: () => NOW,
     tencentGet: (path, query) => {
-      if (path === '/v1/records') {
+      const meetingsRes = recordsFor(path, [])
+      if (meetingsRes) {
         queries.push(query)
-        return recordsPage([])
+        return meetingsRes
       }
       return {}
     },
@@ -347,7 +372,7 @@ test('meeting_code 命中多场时返回数组而非单个对象', async () => {
 
   const { app } = buildTestApp(pool, {
     now: () => NOW,
-    tencentGet: (path) => (path === '/v1/records' ? recordsPage([m1, m2]) : {}),
+    tencentGet: (path) => (recordsFor(path, [m1, m2]) ?? {}),
   })
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-erin-1', assetTypes: ['*'], effect: 'allow',
@@ -368,7 +393,7 @@ test('范围外未命中返回 404 且 error 为 meeting_not_found_in_range（�
   }
   const { app } = buildTestApp(pool, {
     now: () => NOW,
-    tencentGet: (path) => (path === '/v1/records' ? recordsPage([]) : {}),
+    tencentGet: (path) => (recordsFor(path, []) ?? {}),
   })
 
   const res = await app(
@@ -384,7 +409,7 @@ test('范围外未命中返回 404（列表端点携带 meeting_id 过滤时同�
   }
   const { app } = buildTestApp(pool, {
     now: () => NOW,
-    tencentGet: (path) => (path === '/v1/records' ? recordsPage([]) : {}),
+    tencentGet: (path) => (recordsFor(path, []) ?? {}),
   })
 
   const res = await app(
@@ -409,7 +434,8 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
   const { app } = buildTestApp(pool, {
     now: () => NOW,
     tencentGet: (path) => {
-      if (path === '/v1/records') return recordsPage([meeting])
+      const meetingsRes = recordsFor(path, [meeting])
+      if (meetingsRes) return meetingsRes
       if (path === '/v1/addresses') return addressesPage([addressFile])
       if (path.startsWith('/v1/addresses/')) {
         detailCalls += 1
@@ -452,7 +478,7 @@ test('STS-Token 不可用时请求 ai_* 资产的 download-url 返回 503（而�
 
   const { app } = buildTestApp(pool, {
     now: () => NOW,
-    tencentGet: (path) => (path === '/v1/records' ? recordsPage([meeting]) : {}),
+    tencentGet: (path) => (recordsFor(path, [meeting]) ?? {}),
   })
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-ivan-1', assetTypes: ['*'], effect: 'allow',

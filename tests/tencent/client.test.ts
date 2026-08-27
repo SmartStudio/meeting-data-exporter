@@ -134,3 +134,69 @@ test('突发耗尽后按 qps 恢复：总模拟耗时符合速率，而非慢若
   // 也不能是 0：真的限了流，而不是压根没生效
   expect(elapsedMs).toBeGreaterThan(0)
 })
+
+/**
+ * `/v1/corp/records` 的**单接口配额**：官方「访问限制：10次/min」。
+ *
+ * 全局令牌桶挡不住它——TM_QPS 默认 5 就是 300 次/min，6 秒即可超掉一分钟的
+ * 配额。所以这个接口另有一道零突发的闸门。这里同样用「被 sleep 推进的模拟
+ * 时钟」，不做任何真实等待。
+ */
+test('/v1/corp/records 被单独限到 10 次/min——全局桶再宽也不放行', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn, calls } = fakeFetch([{ status: 200, body: { ok: true } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 50 }, // 全局 50/s = 3000/min，比该接口的配额宽 300 倍
+    {
+      fetch: fn,
+      sleep: async (ms: number) => { clockMs += ms },
+      nowMs: () => clockMs,
+    },
+  )
+
+  const startMs = clockMs
+  for (let i = 0; i < 11; i++) await c.get('/v1/corp/records', { page: i })
+  const elapsedMs = clockMs - startMs
+
+  expect(calls).toHaveLength(11)
+  // 第 11 次调用必须落在第一次之后的 60 秒之外，否则某个 60 秒窗口里就有 11 次
+  expect(elapsedMs).toBeGreaterThanOrEqual(60_000)
+})
+
+test('这道闸门只管 /v1/corp/records，不拖慢其它接口', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn, calls } = fakeFetch([{ status: 200, body: { ok: true } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 5 },
+    {
+      fetch: fn,
+      sleep: async (ms: number) => { clockMs += ms },
+      nowMs: () => clockMs,
+    },
+  )
+
+  const startMs = clockMs
+  for (let i = 0; i < 11; i++) await c.get('/v1/records', { page: i })
+  const elapsedMs = clockMs - startMs
+
+  expect(calls).toHaveLength(11)
+  // 只受全局 5/s 约束：容量 5 先放行 5 个，余下 6 个约 1.2 秒。
+  // 若把按分钟的闸门错误地套到全部接口上，这里会是 60 秒量级。
+  expect(elapsedMs).toBeLessThan(4_000)
+})
+
+test('配额闸门跟着 client 实例走：同一实例的后续调用继续受限，不会每次调用重置', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn } = fakeFetch([{ status: 200, body: { ok: true } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 50 },
+    { fetch: fn, sleep: async (ms: number) => { clockMs += ms }, nowMs: () => clockMs },
+  )
+
+  await c.get('/v1/corp/records', { page: 1 })
+  const afterFirstMs = clockMs
+  await c.get('/v1/corp/records', { page: 2 })
+
+  // 两次之间必须隔满 60000/10 = 6 秒
+  expect(clockMs - afterFirstMs).toBeGreaterThanOrEqual(6_000)
+})

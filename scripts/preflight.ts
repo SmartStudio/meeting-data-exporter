@@ -11,7 +11,7 @@
  *   2   数据库连通性      SELECT 1
  *   2b  数据库字符集      必须 utf8mb4 / utf8mb4_unicode_ci
  *   2c  数据库版本        >= 5.7
- *   3   腾讯凭证与签名    调 GET /v1/records 取最近 1 天
+ *   3   腾讯凭证与签名    调 GET /v1/corp/records 取最近 1 天
  *   4   账号版本          由第 3 步的成败推出（免费版/专业版会在第 3 步失败）
  *   5   企微凭证          调 gettoken
  *   6   身份映射策略      用 --sample-user 实测能否解析出腾讯会议 userid
@@ -298,13 +298,23 @@ async function stepTencent(cfg: AppConfig): Promise<boolean> {
 
   try {
     // 取最近 1 天：成功即证明签名算法与账号权限均正确，不要求这个窗口里真的有会议。
+    // kind:'range' ⇒ 打的是 /v1/corp/records（企业维度），与 worker 主路径同一个接口。
+    // 这是有意的：它的权限要求比 /v1/records 更高（录制管理的查看/编辑权限），
+    // 只探 /v1/records 会在缺这项权限时给出一个「通过」的假结论。
     await recordsApi.listMeetings({ kind: 'range', from: now - 86400, to: now }, now)
-    record('3', '腾讯凭证与签名', 'pass', '成功调用 GET /v1/records 取最近 1 天的会议列表，签名与权限校验通过。')
+    record(
+      '3',
+      '腾讯凭证与签名',
+      'pass',
+      '成功调用 GET /v1/corp/records（账户级会议录制列表）取最近 1 天的会议列表，签名与权限校验通过。' +
+        '这正是 worker 持续归档走的那个接口——它要求账号具备录制管理的查看/编辑权限，' +
+        '而按会议号点名查询走的 /v1/records 不需要，所以这一项过了才说明全公司归档拿得到数据。',
+    )
     record(
       '4',
       '账号版本',
       'pass',
-      '上一步 /v1/records 调用成功，说明企业账号版本满足要求（免费版/专业版会在这一步直接被拒绝）。',
+      '上一步 /v1/corp/records 调用成功，说明企业账号版本满足要求（免费版/专业版会在这一步直接被拒绝）。',
     )
     return true
   } catch (err) {
@@ -313,10 +323,10 @@ async function stepTencent(cfg: AppConfig): Promise<boolean> {
         '3',
         '腾讯凭证与签名',
         'fail',
-        `调用 /v1/records 失败: error_code=${err.errorCode} message="${err.apiMessage}"`,
+        `调用 /v1/corp/records 失败: error_code=${err.errorCode} message="${err.apiMessage}"`,
         tencentErrorHint(err.errorCode),
       )
-      record('4', '账号版本', 'fail', '上一步 /v1/records 调用失败，无法确认账号版本是否满足要求。', '先修复第 3 项后重新运行本脚本。')
+      record('4', '账号版本', 'fail', '上一步 /v1/corp/records 调用失败，无法确认账号版本是否满足要求。', '先修复第 3 项后重新运行本脚本。')
       return false
     }
     record(

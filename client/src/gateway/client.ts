@@ -6,7 +6,7 @@ export class GatewayError extends Error {
   }
 }
 export class MeetingNotFoundInRangeError extends Error {
-  constructor() { super('meeting not found in range'); this.name = 'MeetingNotFoundInRangeError' }
+  constructor(msg?: string) { super(msg ?? 'meeting not found in range'); this.name = 'MeetingNotFoundInRangeError' }
 }
 
 export function createGatewayClient(
@@ -39,10 +39,18 @@ export function createGatewayClient(
   function withAuth(init: RequestInit | undefined, bearer: string): RequestInit {
     return { ...init, headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${bearer}`, 'content-type': 'application/json' } }
   }
+  /**
+   * 网关的错误体是 `{ error, message }` 两段：`error` 是**机器码**（分支判定用），
+   * `message` 是**判定理由**（给人看的）。这里必须把 message 一并带上——丢掉它，
+   * 终端上就只剩一句笼统的「meeting not found in range」，而网关那句话里恰恰
+   * 写着关键限制：按会议号/ID 的点名查询走用户维度的 `/v1/records`，只看得到
+   * operator 自己主持的会议（见网关侧 tencent/records.ts 的 EXACT_LOOKUP_SCOPE_NOTE）。
+   * 使用者会因此把「可见范围不够」误判成「时间范围没覆盖到」，反复加宽 --from/--to 而永远查不到。
+   */
   async function parseError(res: Response): Promise<never> {
-    const body = (await res.json().catch(() => ({}))) as { error?: string }
-    if (body.error === 'meeting_not_found_in_range') throw new MeetingNotFoundInRangeError()
-    throw new GatewayError(res.status, body.error ?? 'unknown')
+    const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
+    if (body.error === 'meeting_not_found_in_range') throw new MeetingNotFoundInRangeError(body.message)
+    throw new GatewayError(res.status, body.error ?? 'unknown', body.message)
   }
 
   return {

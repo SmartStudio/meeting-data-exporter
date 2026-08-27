@@ -45,3 +45,48 @@ test('meeting_not_found_in_range → 专用错误类', async () => {
   const gw = createGatewayClient(cfg, { fetch: fetchStub, now: () => 1000 })
   await expect(gw.listMeetings({ kind: 'id', meetingId: 'x' })).rejects.toThrow(MeetingNotFoundInRangeError)
 })
+
+/**
+ * 网关在 404 体里给的 `message` 才是**判定理由**：按会议号/ID 的点名查询走的是
+ * 用户维度的 `/v1/records`，只看得到 operator 自己主持的会议（见网关侧
+ * tencent/records.ts 的 EXACT_LOOKUP_SCOPE_NOTE）。客户端只读 `body.error`、
+ * 把 message 丢掉的话，终端上只剩一句笼统的「meeting not found in range」，
+ * 使用者无从知道自己撞的是时间范围还是可见范围。
+ */
+test('网关给的 message 要带到错误里，不能只剩一句笼统的「未找到」', async () => {
+  const gatewayMessage =
+    'meeting 700999 not found within [1, 2]. Lookup by meeting code/ID uses /v1/records, ' +
+    "which returns ONLY meetings hosted by the gateway's own operator account."
+  const fetchStub = stub([
+    { match: (u) => u.includes('/auth/service-token'), res: () => ok({ access_token: 'tok', expires_in: 900 }) },
+    {
+      match: (u) => u.includes('/api/v1/meetings'),
+      res: () => new Response(JSON.stringify({ error: 'meeting_not_found_in_range', message: gatewayMessage }), { status: 404 }),
+    },
+  ])
+  const gw = createGatewayClient(cfg, { fetch: fetchStub, now: () => 1000 })
+  await expect(gw.listMeetings({ kind: 'code', meetingCode: '700999' })).rejects.toThrow(gatewayMessage)
+})
+
+test('其它网关错误同样带上 message', async () => {
+  const fetchStub = stub([
+    { match: (u) => u.includes('/auth/service-token'), res: () => ok({ access_token: 'tok', expires_in: 900 }) },
+    {
+      match: (u) => u.includes('/api/v1/meetings'),
+      res: () => new Response(JSON.stringify({ error: 'upstream_rate_limited', message: 'tencent 190310, retry later' }), { status: 503 }),
+    },
+  ])
+  const gw = createGatewayClient(cfg, { fetch: fetchStub, now: () => 1000 })
+  await expect(gw.listMeetings({ kind: 'range', from: 1, to: 2 })).rejects.toThrow('tencent 190310, retry later')
+})
+
+test('网关没给 message 时保留原有的兜底措辞，不产出 undefined', async () => {
+  const fetchStub = stub([
+    { match: (u) => u.includes('/auth/service-token'), res: () => ok({ access_token: 'tok', expires_in: 900 }) },
+    { match: (u) => u.includes('/api/v1/meetings'), res: () => new Response('{"error":"meeting_not_found_in_range"}', { status: 404 }) },
+  ])
+  const gw = createGatewayClient(cfg, { fetch: fetchStub, now: () => 1000 })
+  const err = await gw.listMeetings({ kind: 'id', meetingId: 'x' }).then(() => null, (e: unknown) => e as Error)
+  expect(err!.message).toBe('meeting not found in range')
+  expect(err!.message).not.toContain('undefined')
+})

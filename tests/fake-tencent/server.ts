@@ -3,9 +3,13 @@ import type { RawAddressFile } from '../../src/tencent/addresses'
 import type { RawDetail } from '../../src/catalog/assets'
 
 /**
- * `/v1/records` 返回条目的字段名与 src/tencent/records.ts 内部的
- * `RawRecordMeeting` 一致，但那个类型未导出（属实现细节），因此这里
- * 按平台响应形状重新声明一份，仅供构造测试 fixture 使用。
+ * fixture 的规范形状，字段名与 `/v1/records`（用户维度）的响应一致——
+ * src/tencent/records.ts 内部的 `RawUserRecordMeeting` 未导出（属实现细节），
+ * 故这里按平台响应形状重新声明一份。
+ *
+ * `/v1/corp/records`（企业维度）的响应由同一份 fixture 转换而来：那个接口的
+ * 主持人字段叫 **`userid`** 而不是 `host_user_id`，转换在下面的 `toCorpShape()`
+ * 里做——两个接口 wire 形状不同这件事，假服务这一侧也要如实反映。
  */
 export interface FakeRecordMeeting {
   meeting_record_id: string
@@ -69,8 +73,17 @@ function errorEnvelope(code: number, message: string): { error_info: { error_cod
 }
 
 /**
- * 假腾讯会议服务：只实现网关实际会用到的四个端点——`/v1/records`、
- * `/v1/addresses`、`/v1/addresses/:id`、`/v1/app/sts-token`——返回固定 fixture，
+ * 把一条 fixture 转成 `/v1/corp/records` 的响应形状：主持人字段改名为 `userid`，
+ * 且**不带** `host_user_id`——留着它会让「实现照搬了旧字段名」的 bug 在这里蒙混过关。
+ */
+function toCorpShape(r: FakeRecordMeeting): Record<string, unknown> {
+  const { host_user_id: host, ...rest } = r
+  return { ...rest, userid: host }
+}
+
+/**
+ * 假腾讯会议服务：只实现网关实际会用到的五个端点——`/v1/records`、
+ * `/v1/corp/records`、`/v1/addresses`、`/v1/addresses/:id`、`/v1/app/sts-token`——返回固定 fixture，
  * 但对每一个到达的请求都用 src/tencent/signer.ts 的同一套算法重新计算一遍
  * 签名，不匹配就返回 9042（与真实平台在 src/tencent/errors.ts 里的 FATAL
  * 分类一致：配置/签名问题重试无意义，应立即失败）。
@@ -134,6 +147,33 @@ export function startFakeTencentServer(
         if (meetingCode) matched = matched.filter((r) => r.meeting_code === meetingCode)
 
         return Response.json({ total_page: 1, record_meetings: matched })
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/corp/records') {
+        // 这个接口**没有** meeting_id / meeting_code 参数。假服务在这里比真平台更严：
+        // 带了就报错，而不是默默忽略——否则「精确查询误走了企业维度接口」这种回归
+        // 会表现为「返回了全公司的会议」，而不是一个当场可见的失败。
+        if (url.searchParams.get('meeting_id') || url.searchParams.get('meeting_code')) {
+          return Response.json(
+            errorEnvelope(-1, 'fake-tencent: /v1/corp/records has no meeting_id/meeting_code param'),
+            { status: 400 },
+          )
+        }
+        // 同样比真平台严：query_record_type 不显式传时，真平台按 **1（只有云录制）**
+        // 处理，会静默漏掉上传录制与客户端录制。漏传是要在测试里当场暴露的错误。
+        if (url.searchParams.get('query_record_type') === null) {
+          return Response.json(
+            errorEnvelope(-1, 'fake-tencent: /v1/corp/records requires an explicit query_record_type'),
+            { status: 400 },
+          )
+        }
+
+        const startTimeSec = Number(url.searchParams.get('start_time'))
+        const endTimeSec = Number(url.searchParams.get('end_time'))
+        const matched = state.records.filter(
+          (r) => r.media_start_time >= startTimeSec * 1000 && r.media_start_time <= endTimeSec * 1000,
+        )
+        return Response.json({ total_page: 1, record_meetings: matched.map(toCorpShape) })
       }
 
       if (req.method === 'GET' && url.pathname === '/v1/addresses') {

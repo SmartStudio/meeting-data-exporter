@@ -68,10 +68,37 @@
 
 | 接口 | 路径 | STS-Token | 用途 |
 | --- | --- | --- | --- |
-| [查询会议录制列表](https://cloud.tencent.com/document/product/1095/51189) | `GET /v1/records` | 不需要 | 发现会议与录制 |
+| [获取账户级会议录制列表](https://cloud.tencent.com/document/product/1095/53224) | `GET /v1/corp/records` | 不需要 | **按企业维度**发现会议与录制（范围查询走这条） |
+| [查询会议录制列表](https://cloud.tencent.com/document/product/1095/51189) | `GET /v1/records` | 不需要 | **按用户维度**发现；仅用于按 code/ID 的精确查询 |
 | [查询会议录制地址](https://cloud.tencent.com/document/product/1095/51174) | `GET /v1/addresses` | 不需要 | 取视频/音频/原始转写地址 |
 | [查询单个录制详情](https://cloud.tencent.com/document/product/1095/51180) | `GET /v1/addresses/{record_file_id}` | **强制要求** | 取全部 AI 纪要 |
 | [STS Token 生成](https://cloud.tencent.com/document/product/1095/127650) | `POST /v1/app/sts-token` | 不需要 | 触发 Token 生成 |
+
+#### 两个列表接口的可见范围（2026-08-27 实测补记）
+
+**这两条不能互换，选错的后果是产品目标不成立。**
+
+| | `GET /v1/records` | `GET /v1/corp/records` |
+| --- | --- | --- |
+| 可见范围 | **只有 operator 本人主持的会议** | **全企业**的会议 |
+| 权限 | — | 需具备录制管理的查看/编辑权限（账户管理员） |
+| 精确过滤 | 支持 `meeting_id` / `meeting_code` | **不支持**（参数表里没有这两项） |
+| 主持人字段 | `host_user_id` | **`userid`** |
+| `query_record_type` 默认值 | `0`（全部） | **`1`（只有云录制）** |
+| `operator_id_type` | 1 / 2 / 3 | **仅支持 1**（userid） |
+| `page_size` | 默认 10、最大 20 | 默认 10、最大 20 |
+| 时间区间 | ≤ 31 天 | ≤ 31 天 |
+| 访问限制 | 受全局 QPS 约束 | **10 次/min**（另设单接口配额） |
+
+`/v1/records` 的官方原话是「当会议 ID 和会议 code 均为空时，表示查询**用户**所有会议的录制列表」，其参数表里**没有任何指定查谁的参数**（只有 `operator_id` / `operator_id_type` / `meeting_id` / `meeting_code` / `start_time` / `end_time` / `page` / `page_size` / `media_set_type` / `query_record_type`）——所以应用侧的「查看企业录制」权限只决定**能不能调**，不决定**返回谁的**。
+
+> **2026-08-27 真实环境实测**：本地网关连真实腾讯 API，跑 worker 拉最近 31 天，得到 7 场会议，`host_userid` 全部是同一个人，且正是 `TM_OPERATOR_ID` 本人。全公司持续归档（§1.2 · US-5.1）拿 `/v1/records` 做数据源是不成立的。
+
+实现上的分流（`src/tencent/records.ts`）：
+
+- **范围查询**（`kind: 'range'`，worker 主路径、产品核心）→ `/v1/corp/records`，并**显式传 `query_record_type=0`**（不传会被按默认值 1 处理，静默漏掉上传录制与客户端录制）。
+- **精确查询**（`kind: 'code'` / `kind: 'id'`，`mde get --code` 依赖）→ 保留 `/v1/records`，因为它是**唯一**支持 `meeting_id` / `meeting_code` 的列表接口。代价是**只看得到 operator 自己主持的会议**；不改成「拉全范围再本地过滤」是因为那会把一次点名查询变成几十次 API 调用，直接撞死 10 次/min 的配额。这条限制会**原样进未命中时的错误提示**（`EXACT_LOOKUP_SCOPE_NOTE`），不允许只回一句笼统的「未找到」。
+- 两个接口的响应**不共用一个 TypeScript 类型**：主持人字段名不同，硬套会让它静默变成 `undefined`（M3.5 的 `asset_type` 词汇表栽的就是这一类，见 `ae5d7c9`）。
 
 ### 3.2 资产类型（八类）
 
@@ -95,8 +122,9 @@
 | 约束 | 事实 | 影响 |
 | --- | --- | --- |
 | 下载链接时效 | `/v1/addresses` 默认 **6 小时**；`/v1/addresses/{id}` 仅 **5 分钟** | 换链续传是主干流程，非边界优化 |
-| 查询时间窗口 | `/v1/records` 区间**不得超过 31 天** | 必须切分窗口循环查询 |
-| 分页大小 | `/v1/records` 默认 10、**最大 20**；`/v1/addresses` 默认/最大 50 | API 调用量大，限流器必需 |
+| 查询时间窗口 | `/v1/records` 与 `/v1/corp/records` 区间均**不得超过 31 天** | 必须切分窗口循环查询 |
+| 分页大小 | 两个列表接口均默认 10、**最大 20**；`/v1/addresses` 默认/最大 50 | API 调用量大，限流器必需 |
+| 单接口配额 | `/v1/corp/records` **10 次/min** | 全局令牌桶（`TM_QPS` 默认 5 = 300 次/min）挡不住，6 秒即可超掉。该接口另设零突发的分钟级闸门（`tencent/ratelimit.ts` 的 `createEndpointQuota`） |
 | 转码状态 | `RecordMeeting.state`：1 录制中 / 2 转码中 / **3 转码完成**。仅 state=3 返回录制文件列表 | 用状态驱动等待，替代盲目探测 |
 | 下载许可 | `RecordFile.allow_download=false` 时，全部 `ai_*` 字段返回空 | 可即时判定，无需超时等待 |
 | 时间戳单位 | 查询参数为**秒**；`media_start_time` / `record_*_time` 为**毫秒**；`record_info.start_time` 为字符串型毫秒，时区 UTC+8 | 网关出口统一为秒 + 显式时区 |
@@ -139,6 +167,8 @@
 | 5 | `meeting_room_id` | 不支持 |
 
 `userid` 为企业内用户唯一 ID，以企业为维度隔离，来源为企业 SSO 的员工唯一标识，或调用创建用户接口时传入的 `userid`。
+
+> **`/v1/corp/records`（53224）比上表更窄：`operator_id_type` 当前仅支持 `1`（userid）。** 本项目本来就只用 1，无影响；但复制这段配对逻辑到别处时不能假定 2 / 3 也可用。
 
 网关使用固定的 operator 账号（见 §6），该账号须为超级管理员/管理员，或具备企业录制管理权限。
 
@@ -327,7 +357,7 @@ POST /api/v1/assets/{asset_id}/download-url
 
 #### 定点查询的约束
 
-平台侧 `GET /v1/records` 的 `start_time` / `end_time` 为**必填**，`meeting_id` / `meeting_code` 仅为补充过滤条件。而 51174 需要 `meeting_record_id`、51180 需要 `record_file_id`，二者均只能从列表接口取得。
+两个列表接口的 `start_time` / `end_time` 都是**必填**；`meeting_id` / `meeting_code` 只是 `/v1/records` 上的补充过滤条件（`/v1/corp/records` 根本没有这两个参数）。而 51174 需要 `meeting_record_id`、51180 需要 `record_file_id`，二者均只能从列表接口取得。
 
 **因此不存在「仅凭会议 ID 直接查询」的路径**，时间窗口无法绕过。网关据此约定：
 
