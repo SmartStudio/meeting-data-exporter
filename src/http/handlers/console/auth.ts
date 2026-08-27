@@ -20,6 +20,7 @@ import { AUDIT_ACTION, type AuditAction } from '../../../audit/actions'
 export const ACTION_CREATE_ACCOUNT = AUDIT_ACTION.createAdminAccount
 export const ACTION_DELETE_ACCOUNT = AUDIT_ACTION.deleteAdminAccount
 export const ACTION_CHANGE_PASSWORD = AUDIT_ACTION.changeAdminPassword
+export const ACTION_CHANGE_ROLE = AUDIT_ACTION.changeAdminRole
 
 /**
  * 账号一族写操作的审计。`actor_type = 'admin'`，`client_kind = 'console'`，
@@ -158,14 +159,47 @@ export async function createAccount(req: Request, ctx: RouteCtx): Promise<Respon
   return json(201, { id, username: body.username, role })
 }
 
+/**
+ * 「不能把最后一个管理员弄没」这条守卫的**唯一一处**判定（US-3.5 验收标准）。
+ *
+ * 通往同一个死局的路有两条——**删掉那个账号**，和**把它降成 readonly**——
+ * 后果一模一样：19 条写端点全部要 admin 角色，此后没人能写、没人能建号，
+ * 而 `scripts/admin-bootstrap.ts` 只在空表时可用，表里还躺着那些只读账号。
+ * 所以两条路径在这里问同一句话，而不是各写一份 `if`：各写一份迟早分叉，
+ * 而分叉的方向一定是「有一条忘了拦」。
+ *
+ * ## 判据在 store，拒绝在这里
+ *
+ * 「还剩几个能写的账号」是一句关于**整张表**的话，且它的折叠方式必须与认证链
+ * 上那一份完全相同（见 `AdminStore.isLastAdminAccount` 的注释）——那是数据的
+ * 事情，留在 store。而「拒绝时回哪个状态码、说哪句话」是 HTTP 的事情，留在这里。
+ * 从前那条守卫也是这么分的（handler 调 `countAccounts()` 自己判），
+ * 本次只把 store 那一侧的判据从「有几个账号」换成「有几个管理员」。
+ *
+ * 返回 `null` 表示可以继续，返回 `Response` 表示这次操作到此为止。
+ */
+async function refuseIfLastAdmin(ctx: RouteCtx, targetId: string): Promise<Response | null> {
+  if (!(await ctx.deps.adminStore.isLastAdminAccount(targetId))) return null
+  return json(409, {
+    error: 'cannot_remove_last_admin',
+    // 判定理由要说得出口：只回一个 409 的话，收到它的人会去建一个只读账号
+    // 再试一次——那一次还是失败，而他仍然不知道为什么
+    message:
+      '这是最后一个管理员账号（角色 admin），删除或降级它之后，' +
+      '控制台上没有任何账号还能改状态、也没有任何账号还能建号，' +
+      '首个账号引导脚本又只在账号表为空时可用——系统会进入一个没有产品路径能退出的状态。' +
+      '请先把另一个账号的角色改成 admin，再回来做这一步。',
+  })
+}
+
 export async function deleteAccount(req: Request, ctx: RouteCtx): Promise<Response> {
   const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
   if (!auth.ok) return auth.response
   const targetId = ctx.params.id!
-  // 系统内至少保留一个账号（US-3.5 验收标准）：删前查计数，等于 1 就拒绝，
-  // 不给"最后一个也删了、谁都进不去控制台"的机会。
-  const count = await ctx.deps.adminStore.countAccounts()
-  if (count <= 1) return json(409, { error: 'cannot_delete_last_account' })
+  // 至少保留一个**管理员**（不是「一个账号」，见 refuseIfLastAdmin）。
+  // 删前问一次，不给"最后一个管理员也删了、谁都改不动控制台"的机会
+  const refusal = await refuseIfLastAdmin(ctx, targetId)
+  if (refusal !== null) return refusal
   const deleted = await ctx.deps.adminStore.deleteAccount(targetId)
   if (!deleted) return json(404, { error: 'account_not_found' })
   // 移除账号后其会话立即失效（US-3.5 验收标准）——不等自然过期
@@ -178,6 +212,79 @@ export async function deleteAccount(req: Request, ctx: RouteCtx): Promise<Respon
     detail: `移除控制台账号 ${targetId}，其全部会话已一并吊销`,
   })
   return json(204, null)
+}
+
+// ────────────────────────────────────────────────────────────────
+// PATCH /api/v1/admin/accounts/:id —— 改一个账号的角色
+// ────────────────────────────────────────────────────────────────
+
+interface UpdateRoleBody { role?: unknown }
+
+/**
+ * 改角色。**在这条端点出现之前，角色只能在建号那一刻定死**：只读账号撞上 403 时
+ * 响应里那句「请让管理员把角色改成 admin」在产品里没有任何路径能执行，
+ * 只能手工 UPDATE 库。一条指向不存在的操作的提示语，比不给提示更糟。
+ *
+ * ## 只改角色，不改别的
+ *
+ * 请求体只认 `role` 一个字段。改用户名、改密码各有各的权限判定与各自的审计动作，
+ * 混进同一条 PATCH 里意味着「谁能做哪一件」这个问题要在一个 handler 内部分叉。
+ *
+ * ## 它是写操作，走 requireAdminWrite
+ *
+ * 与「改自己的密码」那条**刻意的例外**不同：那条改的是调用者自己的凭据，
+ * 挡住它只会让人无法自救；这条改的是**权限本身**。放只读账号过来，等于它可以
+ * 把自己提成管理员——角色这套东西就整个不存在了。
+ * `tests/http/console-readonly.test.ts` 遍历路由表钉着这一点。
+ *
+ * ## 降级要过「最后一个管理员」那道守卫
+ *
+ * 把最后一个 admin 降成 readonly，与删掉它是同一个死局。两条路径共用
+ * `refuseIfLastAdmin`，理由写在那个函数上。**改成 admin 的方向不问**：
+ * 提权不会让管理员变少。
+ *
+ * ## 降完之后那个人的会话不必吊销
+ *
+ * `verifySession` 每次都从库里读账号（`findById`）再折角色，所以角色一改，
+ * 那个人下一个请求拿到的就是新角色。这里再撤一次会话只会把一次降级变成一次
+ * 强制登出，而降级本身并不意味着这个人不该再看东西。
+ */
+export async function updateAccountRole(req: Request, ctx: RouteCtx): Promise<Response> {
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
+  if (!auth.ok) return auth.response
+
+  // 认不出来的取值报 400，不悄悄折成某一个角色——与建号那条端点同一个判定
+  // （`parseAdminRole` 的「认不出来当 readonly」是**读侧**的兜底，
+  // 不该被搬到写侧来吞掉一次拼错的请求）
+  const body = await readJson<UpdateRoleBody>(req)
+  const role = body?.role
+  if (role !== 'admin' && role !== 'readonly') {
+    return json(400, { error: 'invalid_role', allowed: ['admin', 'readonly'] })
+  }
+
+  const targetId = ctx.params.id!
+  // 先读一份：审计要写「从什么改成了什么」，而"什么"只有在改之前读得到
+  const target = await ctx.deps.adminStore.findById(targetId)
+  if (target === null) return json(404, { error: 'account_not_found' })
+
+  if (role !== 'admin') {
+    const refusal = await refuseIfLastAdmin(ctx, targetId)
+    if (refusal !== null) return refusal
+  }
+
+  const updated = await ctx.deps.adminStore.updateRole(targetId, role)
+  // 账号在这两步之间被别人删掉了。不能回 200——那会让调用方以为角色改好了
+  if (!updated) return json(404, { error: 'account_not_found' })
+
+  // 先做事、再记账（同 deleteAccount）
+  await recordAccountWrite(ctx, auth.identity, {
+    action: ACTION_CHANGE_ROLE,
+    target: targetId,
+    // 改前改后都要在：只写「改了角色」的审计，回答不了事后唯一要问的那句话
+    // ——「他之前是什么，是谁把他变成现在这样的」
+    detail: `把控制台账号 ${target.username}（${targetId}）的角色从 ${target.role} 改为 ${role}`,
+  })
+  return json(200, { id: targetId, username: target.username, role })
 }
 
 // ────────────────────────────────────────────────────────────────

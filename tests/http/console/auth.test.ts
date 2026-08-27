@@ -12,8 +12,9 @@
  * 假实现，二是这样写不会因为未来任务往 AppDeps 上加字段而被迫跟着改。
  */
 import { expect, test } from 'bun:test'
-import { login, logout, me, listAccounts, createAccount, deleteAccount, changePassword }
-  from '../../../src/http/handlers/console/auth'
+import {
+  login, logout, me, listAccounts, createAccount, deleteAccount, changePassword, updateAccountRole,
+} from '../../../src/http/handlers/console/auth'
 import { AdminAuthError, AdminSessionInvalidError, ADMIN_PASSWORD_MIN_LENGTH } from '../../../src/auth/admin'
 import type { AdminAuth, AdminIdentity } from '../../../src/auth/admin'
 import type { AdminAccount, AdminStore } from '../../../src/store/admin'
@@ -92,6 +93,12 @@ function fakeAdminStore(overrides: Partial<AdminStore> = {}): AdminStore {
     },
     async updatePassword() {
       throw new Error('fakeAdminStore.updatePassword not stubbed for this test')
+    },
+    async updateRole() {
+      throw new Error('fakeAdminStore.updateRole not stubbed for this test')
+    },
+    async isLastAdminAccount() {
+      throw new Error('fakeAdminStore.isLastAdminAccount not stubbed for this test')
     },
   }
   return { ...base, ...overrides }
@@ -595,12 +602,16 @@ test('deleteAccount：未登录返回 401', async () => {
   expect(res.status).toBe(401)
 })
 
-test('deleteAccount：只剩最后一个账号时拒绝删除（409），且不会真的调用 store.deleteAccount', async () => {
+test('deleteAccount：目标是最后一个管理员时拒绝删除（409），且不会真的调用 store.deleteAccount', async () => {
   let deleteCalled = false
   const ctx = makeCtx({
     adminStore: {
-      async countAccounts() {
-        return 1
+      // 判据是「还剩几个 admin」，不是「还剩几个账号」——1 admin + 1 readonly
+      // 时账号数是 2，而删掉这一个之后没人能写、没人能建号（见
+      // tests/http/console-last-admin.test.ts 里那个走真库的死局）
+      async isLastAdminAccount(id) {
+        expect(id).toBe('the-only-admin')
+        return true
       },
       async deleteAccount() {
         deleteCalled = true
@@ -612,7 +623,11 @@ test('deleteAccount：只剩最后一个账号时拒绝删除（409），且不�
   const req = authedRequest('https://gw/api/v1/admin/accounts/the-only-admin', { method: 'DELETE' })
   const res = await deleteAccount(req, ctx)
   expect(res.status).toBe(409)
-  expect((await res.json()).error).toBe('cannot_delete_last_account')
+  const body = await res.json()
+  expect(body.error).toBe('cannot_remove_last_admin')
+  // 说得出为什么：不然收到 409 的人会以为「再建一个账号就能删了」，
+  // 而建一个只读账号之后这次删除还是会失败
+  expect(body.message).toContain('最后一个管理员')
   expect(deleteCalled).toBe(false)
 })
 
@@ -620,8 +635,8 @@ test('deleteAccount：目标账号不存在返回 404，且不调用 revokeAllSe
   let revokeCalled = false
   const ctx = makeCtx({
     adminStore: {
-      async countAccounts() {
-        return 2
+      async isLastAdminAccount() {
+        return false
       },
       async deleteAccount() {
         return false
@@ -648,8 +663,8 @@ test('deleteAccount：成功删除后返回 204，并调用 revokeAllSessionsFor
   }
   const ctx = makeCtx({
     adminStore: {
-      async countAccounts() {
-        return 2
+      async isLastAdminAccount() {
+        return false
       },
       async deleteAccount(id) {
         recorded.deletedId = id
@@ -963,8 +978,8 @@ test('deleteAccount：成功删号落一行审计', async () => {
   const rig = makeCtxFull({
     params: { id: 'admin-2' },
     adminStore: {
-      async countAccounts() {
-        return 2
+      async isLastAdminAccount() {
+        return false
       },
       async deleteAccount() {
         return true
@@ -985,4 +1000,173 @@ test('deleteAccount：成功删号落一行审计', async () => {
     actorId: 'admin-1',
     assetId: 'admin-2',
   })
+})
+
+// ---------------------------------------------------------------------------
+// updateAccountRole —— PATCH /api/v1/admin/accounts/:id
+//
+// 「最后一个管理员」这条判据在这里与 deleteAccount 共用同一个函数
+// （refuseIfLastAdmin）。走真库、真路由的死局用例在
+// tests/http/console-last-admin.test.ts；这一层只关心 handler 自己的胶水。
+// ---------------------------------------------------------------------------
+
+const READONLY_TARGET: AdminAccount = {
+  id: 'admin-2', username: 'watcher', passwordHash: 'h', createdAt: 1000, role: 'readonly',
+}
+const ADMIN_TARGET: AdminAccount = {
+  id: 'admin-2', username: 'peer', passwordHash: 'h', createdAt: 1000, role: 'admin',
+}
+
+function patchRoleRequest(id: string, body: unknown): Request {
+  return authedRequest(`https://gw/api/v1/admin/accounts/${id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+test('updateAccountRole：未登录返回 401', async () => {
+  const ctx = makeCtx({
+    adminAuth: {
+      async verifySession() {
+        throw new AdminSessionInvalidError()
+      },
+    },
+    params: { id: 'admin-2' },
+  })
+  const res = await updateAccountRole(patchRoleRequest('admin-2', { role: 'admin' }), ctx)
+  expect(res.status).toBe(401)
+})
+
+test('updateAccountRole：role 缺失或认不出来时 400，且一次库都不查', async () => {
+  for (const body of [{}, { role: 'read-only' }, { role: 'ADMIN' }, { role: null }]) {
+    const ctx = makeCtx({ params: { id: 'admin-2' } })
+    // adminStore 的每个方法默认都抛——真查了库这条用例就会以异常收场，
+    // 而不是悄悄通过
+    const res = await updateAccountRole(patchRoleRequest('admin-2', body), ctx)
+    expect({ body, status: res.status }).toEqual({ body, status: 400 })
+    expect(await res.json()).toMatchObject({ error: 'invalid_role', allowed: ['admin', 'readonly'] })
+  }
+})
+
+test('updateAccountRole：目标账号不存在返回 404，且不写角色', async () => {
+  let wrote = false
+  const rig = makeCtxFull({
+    params: { id: 'nobody' },
+    adminStore: {
+      async findById() {
+        return null
+      },
+      async updateRole() {
+        wrote = true
+        return true
+      },
+    },
+  })
+  const res = await updateAccountRole(patchRoleRequest('nobody', { role: 'admin' }), rig.ctx)
+  expect(res.status).toBe(404)
+  expect((await res.json()).error).toBe('account_not_found')
+  expect(wrote).toBe(false)
+  expect(rig.audits).toEqual([])
+})
+
+test('updateAccountRole：把最后一个管理员降级时 409，且不会真的调用 store.updateRole', async () => {
+  let wrote = false
+  const rig = makeCtxFull({
+    params: { id: 'admin-2' },
+    adminStore: {
+      async findById() {
+        return ADMIN_TARGET
+      },
+      async isLastAdminAccount(id) {
+        expect(id).toBe('admin-2')
+        return true
+      },
+      async updateRole() {
+        wrote = true
+        return true
+      },
+    },
+  })
+  const res = await updateAccountRole(patchRoleRequest('admin-2', { role: 'readonly' }), rig.ctx)
+  expect(res.status).toBe(409)
+  const body = await res.json()
+  // 与删号同一个错误码：两条路通往的是同一个死局，说成两件事只会让人以为
+  // 其中一条还有别的办法
+  expect(body.error).toBe('cannot_remove_last_admin')
+  expect(body.message).toContain('最后一个管理员')
+  expect(wrote).toBe(false)
+  expect(rig.audits).toEqual([])
+})
+
+test('updateAccountRole：改成 admin 时根本不问「是不是最后一个管理员」（提权不会让管理员变少）', async () => {
+  const rig = makeCtxFull({
+    params: { id: 'admin-2' },
+    adminStore: {
+      async findById() {
+        return READONLY_TARGET
+      },
+      // 默认实现会抛——这条用例要证明这条路上压根不问它
+      async updateRole() {
+        return true
+      },
+    },
+  })
+  const res = await updateAccountRole(patchRoleRequest('admin-2', { role: 'admin' }), rig.ctx)
+  expect(res.status).toBe(200)
+})
+
+test('updateAccountRole：改成功返回 200 + 新角色，并落一行看得出改前改后的审计', async () => {
+  const written: { id: string; role: string }[] = []
+  const rig = makeCtxFull({
+    params: { id: 'admin-2' },
+    adminStore: {
+      async findById() {
+        return READONLY_TARGET
+      },
+      async updateRole(id, role) {
+        written.push({ id, role })
+        return true
+      },
+    },
+  })
+  const res = await updateAccountRole(patchRoleRequest('admin-2', { role: 'admin' }), rig.ctx)
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({ id: 'admin-2', username: 'watcher', role: 'admin' })
+  expect(written).toEqual([{ id: 'admin-2', role: 'admin' }])
+
+  expect(rig.audits).toHaveLength(1)
+  expect(rig.audits[0]).toMatchObject({
+    action: 'change_admin_role',
+    actorType: 'admin',
+    actorId: 'admin-1',
+    assetId: 'admin-2',
+    decision: 'allow',
+    clientKind: 'console',
+  })
+  // detail 要回答「他之前是什么、现在是什么」——只写「改了角色」的审计
+  // 在事后追责时正好答不上唯一要问的那句话
+  const detail = rig.audits[0]!.detail ?? ''
+  expect(detail).toContain('watcher')
+  expect(detail).toContain('readonly')
+  expect(detail).toContain('admin')
+})
+
+test('updateAccountRole：写的时候账号已经被别人删了（updateRole 回 false）返回 404，不记审计', async () => {
+  const rig = makeCtxFull({
+    params: { id: 'admin-2' },
+    adminStore: {
+      async findById() {
+        return READONLY_TARGET
+      },
+      async updateRole() {
+        return false
+      },
+    },
+  })
+  const res = await updateAccountRole(patchRoleRequest('admin-2', { role: 'admin' }), rig.ctx)
+  expect(res.status).toBe(404)
+  expect((await res.json()).error).toBe('account_not_found')
+  // 先做事、再记账：没写进去的事不许出现在审计里
+  expect(rig.audits).toEqual([])
 })

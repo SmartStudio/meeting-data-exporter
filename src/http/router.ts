@@ -241,6 +241,10 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/accounts', consoleAuthHandlers.listAccounts),
   compile('POST', '/api/v1/admin/accounts', consoleAuthHandlers.createAccount),
   compile('DELETE', '/api/v1/admin/accounts/:id', consoleAuthHandlers.deleteAccount),
+  // 改角色。在它出现之前角色只能在建号那一刻定死，而 403 里那句「请让管理员把
+  // 角色改成 admin」没有任何路径能执行。**降级与删除共用「不能弄没最后一个
+  // 管理员」那道守卫**——见 handlers/console/auth.ts 的 refuseIfLastAdmin
+  compile('PATCH', '/api/v1/admin/accounts/:id', consoleAuthHandlers.updateAccountRole),
 
   // A3 采集授权（阶段 4 · T7）。全部走 requireAdminAuth，见 handlers/console/grants.ts。
   // 周期性会议的场次 id 一律从查询串 `?sub=` 取（路由上只有 :meetingId，而两个

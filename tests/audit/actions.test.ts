@@ -39,7 +39,8 @@ import {
  *
  * 出处（截至阶段 5 · A9）：
  * - `src/audit/recorder.ts`：网关侧三个
- * - `src/http/handlers/console/auth.ts`：账号三个（阶段 5 · A8 新加）
+ * - `src/http/handlers/console/auth.ts`：账号四个（三个来自阶段 5 · A8，
+ *   `change_admin_role` 是补上「角色只能建号时定」那个洞时加的）
  * - `src/http/handlers/console/grants.ts`：程序与授权八个（后三个 A8 新加）
  * - `src/http/handlers/console/rules.ts`：规则四个
  * - `src/http/handlers/console/storage.ts`：存储六个（含 `extend_retention`）
@@ -55,6 +56,7 @@ const WRITTEN_ACTIONS = [
   'create_admin_account',
   'delete_admin_account',
   'change_admin_password',
+  'change_admin_role',
   // 采集程序
   'create_program',
   'enable_program',

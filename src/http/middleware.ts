@@ -138,9 +138,17 @@ export async function requireAdminWrite(
       response: json(403, {
         error: 'readonly_role',
         role: auth.identity.role,
+        // 这句话必须**指向一个真的做得到的动作**。它从前写的是「请让管理员把角色
+        // 改成 admin」，而那时改角色在产品里没有任何路径能执行（store 层连
+        // updateRole 都没有），只能手工 UPDATE 库——一条指向不存在的操作的提示语，
+        // 比不给提示更糟：看到它的人会去点一个不存在的按钮，然后以为是自己没找到。
+        // 现在有 PATCH /api/v1/admin/accounts/:id 了，所以这里明说走哪条路，
+        // 并说清界面上暂时还没有这一页（账号管理界面不在本轮范围内）
         message:
           '这个账号是只读角色（spec §2），只能查看、不能改任何状态。' +
-          '需要改规则、改授权、延长保留或手动触发任务，请让管理员把角色改成 admin。',
+          '需要改规则、改授权、延长保留或手动触发任务，' +
+          '请让管理员用 PATCH /api/v1/admin/accounts/:id（请求体 {"role":"admin"}）把这个账号提成 admin' +
+          '——控制台目前还没有账号管理页，这一步只能走接口。',
       }),
     }
   }
