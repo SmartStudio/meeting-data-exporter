@@ -8,6 +8,8 @@
 
 > **2026-08-25 同步**：补登记 **8 条 P5 控制台故事**（US-2.4 / US-2.5 / US-2.6 / US-3.4 / US-3.5 / US-5.4 / US-5.5 / US-5.6）。它们此前只以草稿形态活在 M6 阶段 2 实现计划的映射表里——代码和迁移脚本已经在引用这些编号（`migrations/003_console_stage2.sql` 的注释里就写着 US-5.5），本文档却查不到，这次把它们写回来。同时新增 **§9.4 实现覆盖状态**：逐条标注每个故事现在是否真的能用、证据在哪、缺口是什么。
 
+> **2026-08-27 复核**：五路并行逐条对着代码走了一遍 §9.4，**两个方向都查**（标 ✅ 的验真、标 ◐/⬜ 的查是不是已经补上了）。八条转正、一条降级、补登记两条早已上线却没有故事的能力（**US-2.7** 逐会议 × 逐程序授权、**US-4.8** 控制台看正文）——**33 条里 ✅26 · ◐4 · ⬜1 · ⏸1 · —1**。同时新增三节反向检查：**§9.7** 哪些 ✅ 只由替身证明 · **§9.8** 代码里说的和事实对不上（10 条，其中 2 条会原样上屏给管理员看）· **§9.9** `Dockerfile` 里没有 `packages/` 和 `console/`，阶段 2–5 的交付在生产上执行不了。
+
 阅读方式：先看 **§8 需求验证问题**——那是设计文档仍没有答案、需要你拍板的部分。前七节是正向故事清单。
 
 ---
@@ -132,6 +134,22 @@
 
 > 依据控制台说明书 §4.2 表格列「本地保留」、§4.3 第 3 段。
 
+### US-2.7 逐会议逐程序授权采集 `P5`
+**作为**数据管理员，**我想要**指定某一场会议可以被哪几个采集程序取走，**以便**放行的粒度落到「这场会议 × 这个程序」，而不是一条规则放开一整类。
+
+- 授权与撤销都是逐条的，撤销后该程序立即取不到这场会议
+- 能看到一个程序**实际能取到什么**——那是三层求交之后的结果，不是配置值
+- 程序被停用时，已有的授权一律失效，不需要逐条撤
+
+> **这是一条事后补登记的故事（2026-08-27）。** 它描述的能力在阶段 3–5 已经完整落地
+> （`POST/DELETE /api/v1/admin/meetings/:meetingId/grants`、
+> `GET /api/v1/admin/programs/:id/inventory`、`console/src/pages/Consumers/`），
+> 但 P1–P4 时代不存在这个需求——控制台把产品模型从「按需导出」推进到
+> 「持续归档 + 授权取用」之后才出现。验收标准是**从已实现的行为反推**写下的，
+> 不是先有标准后有实现，读的时候要知道这个顺序。依据控制台说明书 §4.5。
+> 与 US-2.1 的分界：US-2.1 管的是**规则**（一类会议、一类程序），本条管的是
+> **逐条例外**（这一场、这个程序）。两者在三栈引擎里是 allow 栈与人工改写的关系。
+
 ---
 
 ## 3. 登录与身份
@@ -250,6 +268,19 @@
 
 > 依据 spec A.4。`allow_download=false` 时可即时判定，
 > 超时上限（视频 6 小时 / 纪要类 48 小时）仅作安全网。产品表达见 Q5。
+
+### US-4.8 在控制台里看会议正文 `P5`
+**作为**数据管理员，**我想要**不下载就能读到一场会议的纪要与转写正文，**以便**判断这场会议该不该放行、该不该延长保留，而不必先把文件取到本地。
+
+- 六类纪要与逐字稿都能直接读到正文
+- 每一类资产要说清楚它**为什么**读不到（没产出 / 未授权 / 已清理 / 还在生成），不是一律空白
+- 看正文这个动作本身不改变任何状态
+
+> **这是一条事后补登记的故事（2026-08-27）**，与 US-2.7 同一批。能力在阶段 4–5 落地
+> （`GET /api/v1/admin/meetings/:meetingId/content` 与 `/content/chapters`、
+> `console/src/pages/Preview/`），验收标准从已实现的行为反推。依据控制台说明书 §4.4。
+> 与 US-4.3 的分界：US-4.3 是**把资产取回本地**，本条是**在控制台里读**，
+> 两者的数据来源也不同（本条读 `asset_contents`，不碰腾讯）。
 
 ---
 
@@ -455,8 +486,8 @@ spec 管住了「谁能**导出**」，没管「导出后谁能**看**」。资�
 | 独立账号登录 | US-3.4 | D1，明确不做企微登录 |
 | 运维账号增删 | US-3.5 | §2 只有「数据管理员」一个角色，只读角色是 §11 缺口 |
 | 三栈规则引擎 · 影响预览 | US-2.1 / US-2.2 的控制台形态 | 阶段 3 R1/R2，语义会改写现有 `policy/` |
-| 逐会议 × 逐程序授权 | — | **无对应故事**：控制台把「谁能取」从策略表达式换成了逐条授权，这是 US-2.1 之外的新需求，尚未写成故事 |
-| 内容预览（六类纪要 + 转写） | — | **无对应故事**：§4.4 的看正文能力在 P1–P4 时代不存在 |
+| 逐会议 × 逐程序授权 | **US-2.7** | ~~无对应故事~~ **已于 2026-08-27 补登记**。控制台把「谁能取」从策略表达式换成了逐条授权，这是 US-2.1 之外的新需求 |
+| 内容预览（六类纪要 + 转写） | **US-4.8** | ~~无对应故事~~ **已于 2026-08-27 补登记**。§4.4 的看正文能力在 P1–P4 时代不存在 |
 | 操作审计读侧（人 + 程序同流） | US-6.1 的读侧 | US-6.1 只要求「查得到」，没要求「人和程序混在一条流里」 |
 
 ### 9.2 反向检查：有能力无故事？
@@ -467,62 +498,82 @@ spec 管住了「谁能**导出**」，没管「导出后谁能**看**」。资�
 
 全部故事均可追溯到 spec 章节。**Q2 / Q3 / Q6 属于需求未定，不是设计缺失**——机制已具备，缺的是业务口径。
 
-### 9.4 实现覆盖状态（2026-08-25）
+### 9.4 实现覆盖状态（2026-08-27 复核）
 
 前三节回答「设计有没有覆盖需求」，本节回答**「代码有没有把需求做出来」**。状态口径：
 
-`✅ 已实现` 端到端能用 · `◐ 部分` 底层成立但还没有人能用上（缺 API 或缺界面） · `⬜ 未实现` 没有代码路径 · `⏸ 已推迟` 所属子项目挂起 · `— 不适用` 当前部署形态下该验收不需要发生
+`✅ 已实现` 端到端能用 · `◐ 部分` 底层成立但还没有人能用上（缺 API 或缺界面） ·
+`⬜ 未实现` 没有代码路径 · `⏸ 已推迟` 所属子项目挂起 · `— 不适用` 当前部署形态下该验收不需要发生
 
-已合并 master 的里程碑：M1 网关加固（2026-07-22）· M3 引擎/CLI（2026-07-23）· **M3.5 真实环境联调（2026-08-21～08-22，见 §9.6）** · M6 阶段 1 引擎复用 + F1 前端骨架（2026-08-23～08-24）· M6 阶段 2 归档流水线与管理员认证（2026-08-24）。
+> **本表的 ✅ 只到「代码成立」为止，不等于「真实环境验证过」。** 这两件事在本项目里
+> 反复被混为一谈，代价见 §9.7——那一节单独列出哪些 ✅ 目前只由替身证明。
+
+**本次复核的方法**：五路并行、逐条读验收标准、逐条对着代码走，**两个方向都查**
+（标 ✅ 的验证它真成立，标 ◐ / ⬜ 的查是不是已经补上了）。上一版是 2026-08-25，
+其后完成了阶段 3（规则与授权）· 阶段 4（控制台后端，**51 条路由**）· 阶段 5（控制台前端，**8 个页面**）。
 
 | 故事 | 状态 | 证据 | 缺口 |
 | --- | --- | --- | --- |
-| US-1.1 确认接入条件 | ✅ | `scripts/preflight.ts` | — |
-| US-1.2 部署与凭证配置 | ✅ | `src/config.ts` · `docs/deploy.md` · `tests/config.test.ts` | — |
-| US-1.3 STS-Token 自动续期 | ✅ | `src/sts/manager.ts` · `tests/sts/manager.test.ts` | — |
-| US-1.4 身份映射可用 | — | `src/auth/identity.ts` · `tests/auth/identity.test.ts`（三种策略都有实现与用例） | **当前部署形态下不适用**：M3.5 决定不建企微自建应用，只走服务账号，不经过企微 → 腾讯的 userid 映射（`f4adb3c`：企微未配置是合法状态，设备流程路由返 501）。`preflight --sample-user` 没跑也不需要跑。启用企微登录时本条回到「待实测」 |
-| US-2.1 限定可导出范围 | ✅ | `src/policy/{conds,stacks,access}.ts` · `tests/policy/{conds,stacks,access}.test.ts` | **语义已按阶段 3 的三栈引擎改写完（2026-08-25，R1）**：条件表示法换成 `{join, conds:[{f,op,v}]}`；priority 改为**降序**取第一条、同优先级按 id 升序；**主体从人换成采集程序**（`service_accounts.id`）——企微用户走到采集权限栈一律被显式拒绝。旧规则（生产库 1 行）已搬进 `policy_rules_legacy`，规则集需按新语义重建 |
-| US-2.2 管控无法被绕过 | ✅ | `tests/policy/` · `tests/http/meetings.test.ts` | — |
-| US-2.3 签发与吊销自动化凭证 | ✅ | `src/auth/service.ts` · `tests/auth/service.test.ts` | — |
-| US-2.4 看清卡在哪一段 | ◐ | `src/worker/archive.ts` · `src/store/archives.ts` · `tests/worker/archive.test.ts` | 记录层成立了，但**查询 API（A2）与会议记录页（F2）都没做**，管理员现在看不到任何一段状态 |
-| US-2.5 撤销归档 | ⬜ | 无 | **全仓库没有撤销路径**——既没有函数也没有接口。阶段 2 的映射表把它挂在 Task 7 名下，交付里没有，见 §9.5 |
-| US-2.6 延长本地保留 | ◐ | `ArchivesStore.extendRetention`（加在既有到期时间上，语义正确） | 无 API、无界面、无批量。只有 worker 内部调得到 |
-| US-3.1 扫码登录 | ✅（P1 侧，当前未启用） | `src/auth/device.ts` · `src/http/handlers/device.ts` · `tests/auth/device.test.ts` · `tests/http/wecomDisabled.test.ts` | 代码完整，但**当前部署没配企微**，四条设备流程路由返 501（`f4adb3c`）。P4 桌面端已推迟；控制台明确不用它（D1） |
-| US-3.2 CLI 服务账号认证 | ✅ | `client/` · `client/tests/gateway/client.test.ts` | **M3.5 已对真实网关验证过**（2026-08-21，见 §9.6）——这一轮正是靠真实响应改掉了 `asset_type` 词汇表（`ae5d7c9`）等一批推断错误 |
-| US-3.3 保持登录与主动登出 | ✅（P1 侧） | `src/auth/tokens.ts` · `tests/auth/tokens.test.ts` | 只对交互式登录成立 |
-| US-3.4 独立账号登录控制台 | ✅ | `src/auth/admin.ts` · `src/store/admin.ts` · `src/http/handlers/console/auth.ts` · `console/src/pages/Login`；`tests/auth/admin.test.ts` · `tests/http/console/auth.test.ts` · `console/tests/pages/Login.test.tsx` | 登录页「记住此设备 30 天」是硬编码文案，与 `ADMIN_SESSION_REMEMBER_DAYS` 没有联动——改常量文案不会跟着改 |
-| US-3.5 管理运维账号 | ◐ | 6 条 `/api/v1/admin/*` 路由 · `scripts/admin-bootstrap.ts`；`tests/store/admin.test.ts` · `tests/scripts/admin-bootstrap.test.ts` | 后端齐全（含级联撤销会话、最后一个账号拒删），但**控制台里没有账号管理页**（F7 的「账号设置」缺口），现在只能直接打 API |
-| US-4.1 浏览时间范围内的会议 | ✅（P1/P2 侧） | `src/catalog/` · `packages/engine/src/discovery/` | 控制台的会议查询 API（A2）未做 |
-| US-4.2 导出指定某一场会议 | ✅ | `tests/http/meetings.test.ts` · `client/tests/e2e/flow.test.ts` | — |
-| US-4.3 取回一场会议的资产 | ✅ | `packages/engine/src/executor/` + 同名测试 | M3.5 真实链路跑通并回改了三处：`asset_type` 词汇表（`ae5d7c9`）、多格式资产唯一键加 `file_type`（`90ad4ca`）、扩展名归一化 `docs→docx`（`e02b0aa`） |
-| US-4.4 只导出需要的资产类型 | ✅ | `client/tests/cli/parse.test.ts` | — |
-| US-4.5 中断后继续而非重来 | ✅ | `packages/engine/src/downloader/` + 同名测试 | — |
-| US-4.6 知道进度与失败原因 | ✅ | `mde status` · `packages/engine/tests/store/index.test.ts` | 控制台侧的任务页（F5）未做 |
-| US-4.7 等待延迟生成的 AI 纪要 | ✅ | `packages/engine/src/domain/readiness.ts` + 同名测试 | Q5 的桌面侧表达仍开放（桌面端已推迟，问题实际作废） |
-| US-5.1 定时自动归档 | ◐ | CLI 侧完全成立；服务端 `archivePendingMeetings` 可跑，`tests/worker/e2e.test.ts` | **服务端调度器（A4）未做**，现在只能靠外部 cron 调。「失败项不静默丢弃」的重试与展示随 A4 一起 |
-| US-5.2 导出到企业存储 | ◐ | `packages/engine/src/storage/nas.ts` · `packages/engine/tests/storage/nas.test.ts`（含断连/超时） | **只做了 NAS**。阿里云 OSS 无需求方，M4 已收敛。「切换目标不需要迁移已有记录」这条没有验证过 |
-| US-5.4 NAS 挂载与容量状态 | ◐ | `src/worker/nas-probe.ts` · `tests/worker/nas-probe.test.ts`（不可达时有限时间内返回降级结果） | 无 API、无归档存储页（F5） |
-| US-5.5 配置默认保留天数 | ◐ | `system_settings.default_retention_days`，`src/worker/archive.ts` 的 `archiveMeeting` 读取（`getSetting('default_retention_days')`），缺省 30 | 无 API、无设置入口，改值只能直接写库 |
-| US-5.6 立即清理已到期文件 | ◐ | `previewCleanup` / `executeCleanup(confirm: true)` · 删前 `verifyNasCopies` 哈希重校验 · `cleanup_paused` 持久化开关；`tests/worker/retention.test.ts` | 无 API、无界面。**「二次确认」目前只是函数签名上的 `confirm: true`，真正的人机确认要等 F5** |
-| US-6.1 核查数据导出记录 | ◐ | 写侧 `src/audit/recorder.ts` · `tests/audit/recorder.test.ts` | **读侧（A5）未做**——记录写进去了但查不出来。操作审计页（F5）同样未做 |
-| US-6.2 归档结果可脱离系统理解 | ✅ | 格式：`packages/engine/src/domain/manifest.ts`（本地版 + NAS 版 `extends` 同一套类型）。本地归档区：`packages/engine/src/manifest/`，worker 与 mde CLI 一轮结束后各按会议调一次。NAS：`src/worker/archive.ts` 的 `writeNasSidecars`，在「整场会议归档完成」那一处判定里独立生成。测试：`packages/engine/tests/manifest/index.test.ts` · `tests/worker/archive.test.ts`（sidecar①–⑦）· `tests/worker/e2e.test.ts`（真 MySQL + 真磁盘，本地与 NAS 两份都断言） | 三条验收标准在**本地归档区与 NAS 两侧都成立**：元数据文件 + 资产清单；每项资产带原始 ID、大小（取被校验过的 `bytes_expected`）、校验值（本地 `sha256`，视频音频如实为 null；NAS 侧另有恒有值的 `nasHash`）；`missing[]` 显式标注 `skipped`/`dead` 的原因。三处已知边界，都不影响三条标准本身：① NAS 那份只在会议**整体归档完成**时写（没归完的会议本地副本也不会被清理，「只剩 NAS」的处境还不成立）；② 本次改动**之前**已归档完的会议不会被回填（空转重跑不重写 sidecar），当前无生产数据，故未做迁移；③ 归档目录按**归档时刻**的年/月分，跨月才补齐的会议其早先那批文件留在上个月的目录里、那个目录没有清单（清单按各自真实的 `nasPath` 记录，仍找得到；`writeNasSidecars` 每次都 warn 留痕） |
-| US-7.1 无需安装依赖即可使用 | ⏸ | — | M5 桌面端无限期推迟（2026-08-23，D2） |
-| US-7.2 可视化查看与操作任务 | ⏸ | 形态改由 M6 控制台承接（`console/`，F1 骨架已完成） | 桌面端本身推迟；控制台的任务页（F5）未做 |
+| US-1.1 确认接入条件 | ✅ | `scripts/preflight.ts:302-333`（`/v1/records` 成败推出账号版本，PASS/FAIL/SKIP 三态各有话说）· `:280-289` 按 error_code 给具体修复动作 | — |
+| US-1.2 部署与凭证配置 | ✅ | `src/config.ts:45` 逐项点名缺哪个 key · `tests/config.test.ts`(28) · STS 落库 AES-256-GCM（`src/sts/cipher.ts:20-40`）· 服务账号只存 argon2id（`src/auth/service.ts:33-38`） | 「哪项权限」不在启动期，要靠 `bun run preflight` 第 3 项。STS 落库加密非 KMS 托管（`docs/deploy.md:572-577` 自记为后续项） |
+| US-1.3 STS-Token 自动续期 | **◐**（本次由 ✅ 降级） | 续期 `src/sts/manager.ts:81-97`（剩余 <1/3 提前 + 在途去重）· 5 分钟一轮 `src/index.ts:283-296` · 验签一律 401 `manager.ts:113-116` · 影响范围行为侧成立 `src/catalog/index.ts:103-110` | **第 2 条验收「回调超时未收到 Token 时告警」零实现**：`src/store/sts.ts:78-86` 把超 1 小时的 pending 静默改成 `expired`，返回的条数在 `src/index.ts:291-293` 被丢弃。全仓库没有任何位置说出「AI 纪要不可用，录制与逐字稿不受影响」。管理员唯一可察觉的信号是客户端的 503，既不定向、也不含影响范围 |
+| US-1.4 身份映射可用 | — | `identityMapper` 唯一消费点是 `src/http/handlers/auth.ts:99`（wecomCallback）· `tests/http/wecomDisabled.test.ts`(8) | 当前部署不经过 userid 映射。**阶段 3 之后多了一条更硬的理由**：allow 栈主体已从人换成 `service_accounts.id`（`src/policy/access.ts:33-40`），企微用户走到判定层被 `notAProgram` 显式短路（`:215-232`）——**故事正文那句「若无法可靠对应，US-2.1 不成立」在当前代码下已经是假的**，就算将来打开企微登录，US-2.1 也不再依赖它 |
+| US-2.1 限定可导出范围 | ✅ | 引擎 `src/policy/stacks.ts:187`（兜底 deny）· `:198-214`（priority 降序、同级 id 升序、脏值排最后）· `:504-510`（首个命中即止）· `:534-545`（判不出来也落安全侧）；入口 7 条 rules 路由 + `console/src/pages/Rules/`；测试 `tests/http/console-rules.test.ts`(40) · `console/tests/pages/Rules.test.tsx`(37) | **验收里的「按部门」永久做不到**：`src/policy/conds.ts:281-297` 的 `dept` 是 `available:false`（R0 已定不接企微通讯录），编辑器画成可见但禁用。**另：「未配置任何规则默认拒绝」只对 allow 栈成立**——fetch 栈一条启用规则都没有时会顶上一条合成的「时间窗内全拉」（`src/policy/fetch-compat.ts:46-69`）。出境闸门仍是默认拒绝，所以判 ✅，但故事正文那句话需要限定语 |
+| US-2.2 管控无法被绕过 | ✅ | 每次用当前 Meeting 重判、缓存未命中与 deny 统一 403（`src/http/handlers/meetings.ts:273-325`）· 两条 deny 路径都写 `audit_log` 含 reason · **读侧也有了**（审计页「只看被拒绝的」）· **阶段 5 补的一条**：`src/policy/access.ts:245` 在读规则**和读人工改写之前**问 `isProgramEnabled`（`tests/policy/access.test.ts:383-470` 含「停用压过人工改写」） | — |
+| US-2.3 签发与吊销自动化凭证 | ✅ | 绝对过期 `src/auth/service.ts:70-74` · 吊销即时（`PATCH /programs/:id` → 每次取数都查）· 轮换 `POST /:id/rotate-secret` 只改 `secret_hash` · 明文只展示一次且审计里不出现（`tests/http/console-grants.test.ts:432`）· 界面 `console/src/pages/Consumers/`(46 条测试) | 没有硬删除路径，「吊销」= 停用（可逆、不连带删授权） |
+| US-2.4 看清卡在哪一段 | ✅（原 ◐） | 三条查询路由 `src/http/router.ts:286-288` · 四段抽屉 `console/src/pages/Meetings/MeetingDetail.tsx:114-148`，**每段理由由后端下发、前端不编** · 测试 `console/tests/meetings.test.tsx:747`（四段齐、每段带理由）· `:506`（理由缺失显示「理由缺失」） | **归档失败的真实原因没进抽屉**：`why.archive` 的 failed 分支是「6 小时没归成」的时间启发式（`src/store/console-meetings.ts:344`），而真原因早已落库在 `job_failures` 却只在定时任务页显示。`migrations/008` 为「让详情抽屉按会议反查」单列了 `meeting_id`/`sub_meeting_id` 并建了索引，抽屉却没 join——**这是「判定理由必须可回溯」在本条上唯一没兑现的一格**，详见 §9.8 |
+| US-2.5 撤销归档 | ⬜ | 语义已拍板（`docs/console/spec.md:199-209`：只撤记录、NAS 副本保留、可逆、不需二次确认）；界面刻意留白并标注（`MeetingDetail.tsx:313-322` 的 `undo-archive-gap`），测试钉住「不许放一个名字对、动作不对的按钮」（`console/tests/meetings.test.tsx:776`） | 缺**全部**：`ArchivesStore` 无方法、51 条路由里没有、界面无按钮。性质是**已定案、刻意留白**，不是「没人碰过」 |
+| US-2.6 延长本地保留 | ✅（原 ◐） | `POST /meetings/:meetingId/extend`（`router.ts:265`）· **加在既有到期时间上**：`src/store/archives.ts:485-493`（`extended_days = extended_days + ?`）· 行内「＋30 天」+ 抽屉 + 批量条 · `tests/http/console-storage.test.ts:628` | 批量是前端 `Promise.allSettled` **逐场打单场端点**，没有批量端点，部分失败只汇总成「2 场成功 1 场失败」 |
+| US-2.7 逐会议逐程序授权 | ✅ | `POST/DELETE /api/v1/admin/meetings/:meetingId/grants`（`router.ts:256-257`）· `GET /programs/:id/inventory`（三层求交的实际结果，不是配置值）· `console/src/pages/Consumers/` | 事后补登记的故事，验收标准从已实现行为反推（见故事正文的说明） |
+| US-3.1 扫码登录 | ✅（P1 侧） | 身份一致 / 「账号未开通」与「无权限」分开 / `state` 一次性，三条各有落点（`src/http/handlers/auth.ts:75-134`）· `tests/http/wecomDisabled.test.ts` | **「四条路由返 501」这个前提在当前部署下不成立**：`.env` 里企微三项填的是**非空占位符**，而 `src/config.ts:98-114` 只把 `undefined`/空串当没配 → `config.wecom !== null` → 守卫永不触发。真实表现是 `POST /device/code` 照发一个永远走不完的 `device_code`，正是 `f4adb3c` 要消灭的形态。修法：把那三项清空 |
+| US-3.2 CLI 服务账号认证 | ✅ | 非交互读环境变量 · 令牌只在进程内存（`client/src/gateway/client.ts:16` 一个闭包，全文件无落盘）· 提前 30 秒换 + 401 透明重试 · 服务端账号维度限流、不做账号存在性预言机 | — |
+| US-3.3 保持登录与主动登出 | ✅（P1 侧） | 7 天 `src/auth/tokens.ts:5` · 刷新即轮换 + 重放连坐 `revokeFamily` · 登出幂等吊销整条链 | 与 US-3.1 同一个前提问题：这条链上的 token 只能由设备流程产生 |
+| US-3.4 独立账号登录控制台 | ✅ | 统一文案 + **耗时不可区分**（账号不存在也跑一次 `Bun.password.verify`，`src/auth/admin.ts:66-69`）· 长短会话真的不同（30 天 vs 12 小时，`tests/auth/admin.test.ts:182,191`）· 滑动续期只对长会话生效 | 「记住此设备 30 天」仍是硬编码文案（`console/src/pages/Login/index.tsx:81`），`console/` 无一处 import `ADMIN_SESSION_REMEMBER_DAYS`，**测试也把 30 抄成字面量**，改常量文案不跟着改且测试不会红。另：登录响应不下发 `role`，前端读不到就折成 `readonly`（安全方向对），今天没出事只因为登录页把返回值丢掉、真身份来自 `/auth/me` |
+| US-3.5 管理运维账号 | ◐ | 后端三条端点齐全 · 级联撤销会话 · 只读角色端到端成立（迁移 009 + 白名单式守卫 `src/http/middleware.ts:128-148` + 遍历路由表的回归网 `tests/http/console-readonly.test.ts` 18 挡 / 3 放 + 键盘绕过已修） | **阶段 5 没有做出账号管理界面**：`console/src` 对 `/admin/accounts` 三条端点的调用数是 **0**。且 `docs/console/spec.md` 的页面清单里从来就没有这一页——不是排期没排到，是规格里就没有。**两个此前无人记过的洞**：① 角色只能建号时定，`src/store/admin.ts` 无 `updateRole`，403 里那句「请让管理员把角色改成 admin」没有任何路径能执行；② 「至少保留一个账号」数的是 `COUNT(*)` 不分角色（`admin.ts:131-134`），1 admin + 1 readonly 时 admin 删掉自己是放行的，此后没人能写、没人能建号、bootstrap 也因表非空拒跑——**正是这条验收要防的「把自己锁在外面」** |
+| US-4.1 浏览时间范围内的会议 | ✅（P1/P2 侧） | 31 天切分 `packages/engine/src/domain/window.ts` · 只列策略允许的 `filterVisibleMeetings` · 控制台侧 A2 已做 | ① `mde list` **不打主持人**（验收点名三个字段少一个）；② 控制台**没有时间范围筛选**（`GET /admin/meetings` 只收 search/triage/hasGrant/hasOverride/inRetention/limit/offset） |
+| US-4.2 导出指定某一场会议 | ✅ | 命中多场返回数组不擅自择一（`src/http/handlers/meetings.ts:96-144`）· CLI 选择器 · 资产粒度唯一键 · **真实环境幂等已验**（M3.5 §4.2，第二遍 `completed=0`） | **CLI 把「可扩大时间范围」那句提示吞了**：`client/src/gateway/client.ts:8-10` 构造时写死 `'meeting not found in range'`，`:44` 只读 `body.error` 丢掉 `body.message`。终端里看到的是一句笼统的「未找到」，正是验收第 3 条要防的 |
+| US-4.3 取回一场会议的资产 | ✅ | 默认四类 + 纪要 opt-in · 四种缺失原因落进 `_manifest.json` 的 `missing[]` · 控制台侧另有六态 `availability` + 逐条 reason · **真实链路：M3.5 Stage 8，3 场会议 21 个资产 `completed=21 failed=0`** | 目录名时间是 UTC（2026-08-27 裁定不改，理由见 `docs/m3.5-stage8-9-plan.md` §0.1 第 3 条）。验收写的扩展名 `htm` 被代码归一成 `html`——代码对，文档该改 |
+| US-4.4 只导出需要的资产类型 | ✅ | 未知键报错并列出全部合法键 · 未选中的类型不建任务 · 事后补导不重复（唯一键含 `file_type`） | — |
+| US-4.5 中断后继续而非重来 | ✅ | Range 续传 · 403/410 换链**保留 size** · 416 丢弃重下 · 服务端返 200 时丢弃重下 · 无需恢复命令（`claimStmt` 同时捞 pending 与租约过期的 running）· **真实环境：M3.5 §4.1 `206` + `Content-Range`；§4.3 打断在 7,454,720 字节、续传起点正是打断点；§4.4 租约过期后重新领取完成** | 故事正文写「链接仅 5 分钟有效」，**实测是 21600 秒**——换链逻辑没错，但故事给的理由是错的，这条验收在真实环境从没被触发过 |
+| US-4.6 知道进度与失败原因 | ✅（CLI 侧）· 控制台侧 ◐ | CLI：`mde status` 六态计数 + 逐条 `last_error` · `mde retry` · 租约沉默已修（`client/src/cli/lease-hint.ts`）。控制台：Jobs 页已做，运行摘要 + 失败项表带原因/已重试 `n/5`/影响 · `health` 四态区分 `never_ran`/`overdue` | ① **逐个资产的下载失败刻意不进 `job_failures`**（`src/worker/scheduler.ts:200-206`），控制台的失败项表永远看不到一条卡住的下载；② 控制台没有「重试这一条」，只有整任务「立即运行」；③ `mde status` 打的是原始 `last_error`（`http 403` / `size mismatch: …`），验收要的是「可理解的描述，而非原始错误码」 |
+| US-4.7 等待延迟生成的 AI 纪要 | ✅（真实链路零证据） | `readiness.ts:13-18`（`allow_download=false` 优先，不空等）· 未就绪建探测 · 补齐回路 `runProbes` **已接进三条 CLI 命令与 worker** · 等待上限 6h/48h | **真实环境从没触发过**：M3.5 §4.5 判 ⬜，`asset_probes` 一条记录都没有。**更硬的一条**：`judgeReadiness` 七条单元测试里有三条打的是 `state=3` / `state=1,2` 分支，而**网关线上格式根本不发 `state` 字段**（`src/worker/source-inproc.ts:45` 有明确注释）——那两个分支是永远到不了的死代码，它们贡献的绿色对真实行为零信息量 |
+| US-4.8 在控制台里看会议正文 | ✅ | `GET /meetings/:id/content` 与 `/content/chapters`（`router.ts:294-295`）· 六态 `availability` + 逐条 reason（`handlers/console/content.ts:507-580`）· `console/src/pages/Preview/` | 事后补登记的故事。预览播放器放不了（要一个管理员维度的直链签发端点，见 dev-plan §13.4） |
+| US-5.1 定时自动归档 | ✅（原 ◐） | `src/worker/scheduler.ts`（797 行，独立进程 `bun run scheduler`）· 四任务时间片、重叠保护、不补跑、`markInterrupted` 全有用例（`tests/worker/scheduler.test.ts` 23 条）· 失败项从 `job_failures`（唯一键累加、恢复不删行）一路接到 Jobs 页 | ① 验收第 4 条「非交互遇歧义**直接失败并给出候选**」**没有代码路径**——命中多场时全部 upsert，`mde get --code` 是全都下载，既不失败也不列候选；② 一次性 `bun run worker` 没接 `recordFailure`，只 warn；③ **`docs/deploy.md` 一个字都没提** worker / scheduler 两个进程，也没提 `MDE_ARCHIVE_ROOT` / `MDE_NAS_ROOT` |
+| US-5.2 导出到企业存储 | ◐ | `packages/engine/src/storage/{types,local,nas,fs-timeout}.ts` · 13 条测试含 FIFO 模拟挂载挂起 → `FsTimeoutError` · `.part` + rename 原子性 | ① 仍**只有 NAS**；② **「切换目标不需要迁移已有记录」不是「没验证过」，是不成立**——`src/policy/archive-dir.ts:167` 的 `resolve()` 把**绝对路径**存进 `archived_assets.nas_path` / `meeting_archives.nas_dir`，换 `MDE_NAS_ROOT` 之后老记录全指向旧挂载点，哈希重校验读不到就整场拒删。无迁移脚本、无测试；③ 控制台里 NAS 根只读展示 |
+| US-5.4 NAS 挂载与容量状态 | ✅（原 ◐） | `GET /storage/nas`（`router.ts:261`）· 「其他占用 = 总 − 剩余 − 本系统」钳到 0 · 不可达在有限时间内降级（`withFsTimeout`）· 页面 `console/src/pages/Storage/NasPanel.tsx` | 后端不下发协议，页面按挂载点写法**推断**并在界面上声明这是推断 |
+| US-5.5 配置默认保留天数 | ✅（原 ◐） | `POST /storage/retention`（1..365 校验、审计带新旧值）· 界面「修改默认保留天数」· 归档那一刻把 `retentionDays` 快照进 `meeting_archives`，不回溯 | 改值不再需要写库。残留：绕过 API 直接写库塞非法值会得到 `NaN`，API/页面对此如实报 `defaultDaysSource: 'invalid'` 且明说系统不回落到 30 |
+| US-5.6 立即清理已到期文件 | ✅（原 ◐） | **不带 `confirm` 一律只 preview** · 真正的人机二次确认在 `CleanupSheet.tsx:35-103`（dry-run 结果 → 红色「删除本地文件」，同时说明删什么留什么）· 未挂本地归档区返 503 而不是「没有可清理的」· 删前 `verifyNasCopies` 哈希重校验 | 预览清单只给 `meetingId` 不给标题（故意：拼错的标题会让人以为删的是另一场） |
+| US-6.1 核查数据导出记录 | ✅（原 ◐） | 读侧 `GET /admin/audit` + `GET /meetings/:id/history` · Audit 页 · **人与程序同一条流**：`AUDIT_ACTOR_KIND_BY_TYPE` 把 `service_account→prog`、`admin`/`wecom_user→person` 染进同一张表，前端不许另抄（`console-audit.test.ts:132` 正反两向由同一份数据推出）· 28 条动作登记表 `src/audit/actions.ts`（写未登记动作**编译不过**）· 全仓库无 `UPDATE`/`DELETE audit_log` | ① **控制台管理员的登录/登出不写审计**——`login()` 成功失败都不落行，验收「登录成功与失败同样记录」只在网关侧成立；② **调度器执行的到期清理不写审计**（`scheduler.ts` 里 `audit` 零次出现）——**全系统唯一不可逆的动作，由定时任务做的时候在审计流里查不到** |
+| US-6.2 归档结果可脱离系统理解 | ✅ | `manifestBytes(expected, written)`（`packages/engine/src/manifest/index.ts:237`），本地与 NAS 两份清单共用 · `tests/worker/e2e.test.ts:462` 真 MySQL + 真磁盘断言清单 bytes == `stat().size` · `missing[]` 带 `skipped`/`dead` 与原因 | **08-27 之前那个 ✅ 在真实环境不成立**：旧证据写「大小取被校验过的 `bytes_expected`」，而腾讯对这批资产根本不返回这一列，真实环境里全场为 null；测试当时绿是因为夹具自己喂了这个字段。已于 `91d8840` 修复。**遗留**：改动前完成的行 `bytes_written` 是默认值 0，清单如实写 null 且**没有回填脚本**——2026-08-26 实测归档的那 3 场会议 21 个资产，清单里的 bytes 永远是 null |
+| US-7.1 无需安装依赖即可使用 | ⏸ | 仓库里没有任何桌面端目录，无打包/签名配置 | M5 无限期推迟（D2），判断准确 |
+| US-7.2 可视化查看与操作任务 | ◐（原 ⏸） | 「看」这一半成立：会议记录页逐场两阶段状态 + 判定理由 + 逐类资产计数（认不出的取值一律落「未知」不落「正常」）· Jobs 页 sparkline / 上轮报错 / 失败项 attempts | **「可暂停、继续、重试」在控制台完全没有**——后端只有 `POST /jobs/:name/run` 一条写端点，没有「重试这一条失败项」。暂停只有到期清理那一个，是另一回事。重试只在 CLI 里 |
 
-**一句话小结**：31 条故事里 `✅` 18 条、`◐` 9 条、`⬜` 1 条、`⏸` 2 条、`—` 1 条。其中 3 条标了「✅（P1 侧）」——US-3.1 / US-3.3 / US-4.1 的网关能力是完整的，但它们同时挂着的 `P2` / `P4` / `P5` 那一侧另有说法，看该行的缺口列。
+**统计**：33 条故事里 `✅` **26 条** · `◐` **4 条** · `⬜` **1 条** · `⏸` **1 条** · `—` **1 条**。
 
-**`◐` 集中在同一个原因上**：M6 阶段 2 交出的是**能力**，不是**入口**。归档、保留、清理、探测、账号管理的逻辑都跑得起来、也有测试，但除了登录之外没有一条控制台 API（阶段 4 的 A2–A6），也没有除登录页与会议记录页骨架之外的界面（阶段 5 的 F2–F7）。**在 A2–A6 与 F2–F7 落地之前，这 9 条对使用者来说等于不存在。**
+与上一版（2026-08-25，31 条：✅18 · ◐9 · ⬜1 · ⏸2 · —1）相比：
 
-**唯一那条 `⬜`（US-2.5 撤销归档）的性质**：不是「记过账的债」，而是**计划声称覆盖、交付里没有**，见下。（原先与它并列的 US-6.2 属于前一类——roadmap M3「可带上线的债」第一条——已于 2026-08-25 补齐 NAS 侧 sidecar 后转 `✅`。）
+- **八条转正**：US-2.4 · US-2.6 · US-5.1 · US-5.4 · US-5.5 · US-5.6 · US-6.1（◐→✅）· US-7.2（⏸→◐）。
+  原因高度一致——上一版所有 `◐` 的缺口理由都是「**M6 阶段 2 交出的是能力，不是入口**」，
+  而阶段 4 的 51 条路由与阶段 5 的 8 个页面正是那些入口。
+- **一条降级**：US-1.3（✅→◐）。不是阶段 4/5 改坏了什么，是上一版没查第 2 条验收标准——
+  「告警」从来就没写过。
+- **两条新增**：US-2.7 · US-4.8，都是事后补登记（见各自故事正文），状态 ✅。
+  补它们不是为了把数字做大，而是**分母不全时覆盖率本身是假的**。
+
+**四条 `◐` 现在各有各的原因，不再是同一个**：US-1.3 缺告警 · US-3.5 缺账号管理界面（且规格里就没有这一页）·
+US-5.2 只做了 NAS 且换根目录会废掉旧记录 · US-7.2 只承接了「看」没承接「操作」。
 
 ### 9.5 反向检查：计划说覆盖了、代码里没有
 
 | 编号 | 情况 |
 | --- | --- |
-| **US-2.5 撤销归档** | 阶段 2 计划的映射表写着「Task 7 · US-2.5（撤销归档，仅记录层面，UI 留给 F2 后续任务）」，但 Task 7 交付的 `archives.ts` / `archive.ts` 里没有任何撤销归档的函数，路由层也没有。**这条故事目前 0 覆盖**，且它还带着一个未定问题（撤销是否删 NAS 副本，见故事正文）。 |
+| **US-2.5 撤销归档** | 阶段 2 计划的映射表写着「Task 7 · US-2.5（撤销归档，仅记录层面，UI 留给 F2 后续任务）」，但 Task 7 交付的 `archives.ts` / `archive.ts` 里没有任何撤销归档的函数，路由层也没有。**这条故事目前 0 覆盖。** <br>**2026-08-27 补正**：性质比上一版记的更准确一点——它是**已定案、刻意留白并标注**，不是「没人碰过」。语义已在 `docs/console/spec.md:199-209` 拍板（只撤记录、NAS 副本保留、可逆、不需二次确认），控制台在归档段放了一段说明这条缺口的文字（`MeetingDetail.tsx:313-322` 的 `undo-archive-gap`），还有一条测试钉住「不许放一个名字对、动作不对的按钮」（`console/tests/meetings.test.tsx:776`）。缺的是实现，不是决定。 |
+| **US-1.3 的「告警」** | **2026-08-27 新查出。** 上一版把 US-1.3 整条标 ✅、缺口写 `—`，但它的第 2 条验收标准（「回调超时未收到 Token 时告警」）**零实现**：`src/store/sts.ts:78-86` 把超时的 pending 静默改成 `expired`，`src/index.ts:291-293` 把返回的条数直接丢弃，只有 catch 分支才打日志。这与 US-2.5 同一类——**声称覆盖、代码里没有**——只是它藏在一条已经标绿的故事里，比整条空着更难发现。 |
 | **US-5.3** | 编号空缺，从未使用。P5 故事按 US-5.4 起编是为了和阶段 2 计划、`migrations/003` 注释里已经写死的编号对齐，不是漏了一条。 |
 
-另有**两处控制台能力至今没有对应故事**（见 §9.1 的第二张表）：逐会议 × 逐程序授权、内容预览。它们都是控制台把产品模型从「按需导出」推进到「持续归档 + 授权取用」之后才出现的新需求，P1–P4 时代不存在。要不要补成正式故事，取决于阶段 3 / 阶段 4 开工前是否需要它们的验收标准。
+~~另有两处控制台能力至今没有对应故事~~ → **已于 2026-08-27 补成 US-2.7（逐会议 × 逐程序授权）与 US-4.8（内容预览）。**
+补的理由不是「把数字做大」，恰恰相反：**这两条能力已经完整上线，却不在故事表里，分母不全时覆盖率本身就是假的。**
+两条都如实标注了「事后补登记、验收标准从已实现行为反推」——先有实现后有标准这个顺序，读的人必须知道。
 
 ### 9.6 反向检查二：代码做了、文档没记（M3.5）
 
@@ -555,6 +606,64 @@ Stage 6（列资产）· Stage 7（下载与扩展名）都有对应修复；**S
 > **只剩 §4.5 AI 纪要延迟探测未验**。实测判据见
 > [`docs/m3.5-stage8-9-plan.md`](../../m3.5-stage8-9-plan.md) §0.1。
 
+### 9.7 反向检查三：哪些 ✅ 只由替身证明
+
+§9.4 的 `✅` 一律只到**「代码成立」**为止。本节单列出哪些还差**「真实环境验证过」**。
+分开写不是谨慎过头——这个仓库已经三次为「测试全绿但真实依赖不宽容」付过代价：
+子项目 1 的设备登录 26 个测试全绿却在真实 MySQL 下完全不可用；M3 的 `openDb` 42 个
+测试全绿却在真实文件路径下必崩（单测全用 `:memory:`）；M3.5 联调当场撞见 `asset_type`
+词汇表推断错误，而且因为**只有 video/audio 两项不同**，故障伪装成了「视频资产没产出」。
+
+按证据强度从弱到强：
+
+| # | 范围 | 现状 |
+| --- | --- | --- |
+| 1 | **控制台前端整体**（US-6.1 的界面 · US-5.1 的 Jobs 页 · US-7.2 · US-2.4 · US-2.6 · US-5.4/5.5/5.6 · US-2.7 · US-4.8 的界面侧） | 8 个页面、几百条前端测试，但 **`Dockerfile` 不 `COPY console/`，网关不 serve 任何静态文件，`docs/deploy.md` 没有一句控制台部署**。也就是说这些页面**在任何真实环境里都没有被人打开过，而且仓库里不存在让它被打开的路径**。见 §9.9 |
+| 2 | **服务端 worker 与 scheduler**（US-5.1 · US-5.2 与 US-6.2 的写侧） | `bun run scheduler` **从未在任何环境跑起来过，包括开发机**。比「没启动」更深一层：**`Dockerfile` 只 `COPY src scripts migrations package.json`，`packages/` 不在镜像里**，而 `src/worker/*.ts` 全都 import `@yaowu/mde-engine`——两个进程在生产镜像里**连 import 都做不到**。连带后果：`job_runs` / `job_failures` / `meeting_asset_probes` 这几张表在生产上根本不存在 |
+| 3 | **US-4.7 延迟探测** | `asset_probes` 至今零行（M3.5 §4.5 判 ⬜）。更硬的一条：`judgeReadiness` 七条单元测试里有三条打的是 `state=3` / `state=1,2` 分支，而**网关线上格式根本不发 `state` 字段**（`src/worker/source-inproc.ts:45` 有明确注释）——那两个分支是永远到不了的死代码，它们贡献的绿色对真实行为零信息量。只差一场刚结束、纪要还没生成的会议 |
+| 4 | **US-4.3 的四条 skip 路径** | M3.5 那轮 21 个资产 `failed=0 skipped=0`，所以 `download_not_allowed` / `upstream_timeout` / `disk_full` / `size mismatch` 一条都没被真实数据走过。「缺失原因可查」这条验收在真实链路上是零样本 |
+| 5 | **US-6.2 的 bytes 修复** | 修复（`91d8840`，08-27）晚于最后一次真实联调（08-26）15 小时。测试很扎实（真 MySQL + 真磁盘 + 两个宿主 + 两份清单），但**没有一份真实的 `_manifest.json` 里带过非 null 的 bytes**；反过来说，那 21 个真实资产的清单里那一列**确定是 null，而且不会被回填** |
+
+**已经有真实证据的**（2026-08-21～22 与 08-26 两轮，见 §9.6 与 `docs/m3.5-stage8-9-plan.md` §0.1）：
+US-3.2（对真实网关）· US-4.2（幂等）· US-4.3（3 场会议 21 个资产端到端）· **US-4.5**（Range 206 + 断点续传 + 崩溃恢复）。
+
+### 9.8 反向检查四：代码里说的和事实对不上
+
+本次复核撞见的、**会误导人**的过期文本。前两条最要紧——它们不是注释脏，是**原样上屏给管理员看**：
+
+| # | 位置 | 说了什么 | 事实 |
+| --- | --- | --- | --- |
+| 1 | `src/http/handlers/console/meetings.ts:443` | 告诉管理员「真正的失败原因目前不落库（只走 worker 的 console.error），要等 A4 建 `job_failures` 才查得到」 | `job_failures` 早已建成并接线：`migrations/008` + `src/worker/archive.ts` 的 `recordFailure` + `src/store/jobs.ts` 的 `listFailures`（**支持按 `meetingId` 反查，还专门建了 `idx_job_failure_meeting`**）+ Jobs 页已在显示 `reason`。`migrations/008` 表头自述这两列「是为了让详情抽屉能按会议反查」——抽屉本来就该 join 它。管理员看到的是一句假话：一个已经查得到的原因，界面告诉他查不到 |
+| 2 | `console/src/pages/Consumers/Wizard.tsx:42,77` | 「轮换端点这一轮还没有」 | `POST /api/v1/admin/programs/:id/rotate-secret` 阶段 5 已做，**同目录的 `ProgramActions.tsx` 就在调它** |
+| 3 | `src/http/handlers/console/audit.ts:85` | 「`system` / `scheduler` 由 A4 的定时任务产生（T11）——后两者尚未落地，先在表里留好位置」 | T11 已落地，但 `scheduler.ts` 里 `audit` 出现零次。那两个槽位不是「等着被填」，是**永远空的** |
+| 4 | `src/http/handlers/console/auth.ts:113,133` | 两次引用「spec §4.11 的账号表」 | `docs/console/spec.md` 的 §4 到 §4.10 就结束了，**没有 §4.11** |
+| 5 | `scripts/admin-bootstrap.ts:50` | 拒绝重复引导时告诉运维「Use the console's 添加运维人员 to add more accounts」 | `console/src` 全文搜不到「添加运维人员」这六个字。**在建号失败的现场把人指向一个不存在的按钮** |
+| 6 | `console/vite.config.ts:20` | 「生产部署是反向代理把前端静态文件与网关挂在同一个源下（docs/deploy.md §1）」 | `docs/deploy.md` 里「控制台」三个字只出现在「阿里云控制台 / 腾讯后台」的语境里，**没有任何一句关于控制台前端的部署** |
+| 7 | `console/src/pages/Meetings/index.tsx:44-46` | 「时间范围筛选删掉了……这条记为后端缺口」 | `docs/console/spec.md` §11 现在的原话是「五条现在都不再是缺口了」「已知缺口名单清零」，阶段 5 的欠账清单里也没有它。**这条缺口只活在这一行代码注释里** |
+| 8 | `docs/console/spec.md:395-403` vs `src/policy/conds.ts:281-297` | 前者说「按部门」要立成阶段 3 前置任务 **R0**；后者写着「**R0 已定为不做**」（不接企微通讯录） | 两份文档对同一个 R0 的结论方向相反。代码是执行了的那一版：`dept` 是 `available:false`，编辑器画成可见但禁用 |
+| 9 | `docs/console/spec.md` §11 | 宣布五条缺口全部清零 | **缺口 5「账号设置 / 修改密码」只做了一半**：改密码做了，「账号设置」（增删运维人员、看角色表）一个字没做。名单却已经清零了 |
+| 10 | `.env`（不在 git 里，仅对本 checkout 成立） | 注释自述「先填占位符让 loadConfig 过关」 | 那是 `f4adb3c` **之前**的做法。三项填成非空占位符 → `src/config.ts` 只把空串/未定义当没配 → `config.wecom !== null` → `WECOM_ROUTES` 那道 501 守卫**一次也不会触发**，`POST /device/code` 照发一个永远走不完的 `device_code`。**部署没有处在文档说的「干净地停用」，而是「半启用 + 垃圾凭证」**——正是那个提交点名要消灭的形态。修法：把三项清空，清空后 preflight 判 skip 而不是 fail |
+
+### 9.9 本次复核最重的一条：部署产物不含这些代码
+
+上面 §9.7 第 1、2 行同源，值得单独说清楚，因为它改变的是**下一步该做什么**：
+
+```
+Dockerfile 的 COPY 行：  src  scripts  migrations  package.json
+镜像里没有：             packages/        console/
+```
+
+- `src/worker/*.ts` 全部 `import ... from '@yaowu/mde-engine'` → **worker 与 scheduler 在生产镜像里连 import 都做不到**
+- 网关不 serve 静态文件，Dockerfile 不带前端 → **控制台无法被访问**
+
+配套事实（2026-08-26 在生产上查实）：`/home/ubuntu/mde/app` 只有网关，无 `packages/`、
+无 worker 进程、无 crontab，`migrations/` 只有 `001` 而库里的表到 003。
+
+**结论**：阶段 2–5 交付的全部东西——归档流水线、保留窗口、到期清理、规则引擎的控制台形态、
+授权、审计读侧、8 个页面——**在生产上一行都没有执行过，而且以当前的部署产物形态，也执行不了**。
+这不是「还没启动」，是「没打包进去」。**M3.5 收尾之后真正的下一步是部署，不是继续写功能。**
+
+
 ---
 
 ## 10. 变更记录
@@ -566,3 +675,4 @@ Stage 6（列资产）· Stage 7（下载与扩展名）都有对应修复；**S
 | 2026-07-23 | 按 M3 客户端 spec 同步 P2 故事：**US-3.2** 由「命令行扫码登录」改写为「CLI 服务账号无状态认证」（设备流程移出 M3、保留为未来能力）；**US-4.3** 默认资产集收敛为 ①②③④、AI 会议纪要转 `--assets` opt-in、时间轴不单列；**US-4.4** 补 `--assets` 键表；标注 **Q4**（由 M3 客户端回答）、**Q5**（CLI 侧由 M3 回答，桌面侧 P4 仍开放） |
 | 2026-08-25 | 按 M6 控制台补登记 **8 条 P5 故事**（US-2.4 / US-2.5 / US-2.6 / US-3.4 / US-3.5 / US-5.4 / US-5.5 / US-5.6）——此前只以草稿形态存在于阶段 2 实现计划的映射表里，代码与 `migrations/003` 已在引用这些编号；`P3` 收敛为「只做 NAS」、`P4` 标记全部挂起；§9.1 增加控制台能力 → 故事对照表；新增 **§9.4 实现覆盖状态**（31 条逐条标状态与证据）与 **§9.5 反向检查**（查出 US-2.5 计划声称覆盖但 0 实现） |
 | 2026-08-25（二次核验） | 订正 §9.4 的一处错判：**M3.5 已在 2026-08-21 实际执行**，不是「从未开工」，证据与覆盖边界列入新增的 **§9.6**。连带订正四行：**US-1.4** 改判「不适用」（不建企微自建应用 → 只走服务账号 → 不经过 userid 映射）、**US-3.1** 补「代码完整但当前未启用，路由返 501」、**US-3.2** 撤掉「只对假网关验证过」、**US-4.3** 补三处真实链路回改。统计随之改为 ✅17 · ◐9 · ⬜2 · ⏸2 · —1 |
+| **2026-08-27（三次核验）** | **五路并行逐条对着代码复核 §9.4**，两个方向都查（标 ✅ 的验真、标 ◐/⬜ 的查是否已补上）。结果：**八条转正**（US-2.4 · US-2.6 · US-5.1 · US-5.4 · US-5.5 · US-5.6 · US-6.1 由 ◐→✅，US-7.2 由 ⏸→◐）——上一版所有 ◐ 的理由都是「交出的是能力不是入口」，而阶段 4 的 51 条路由与阶段 5 的 8 个页面正是那些入口；**一条降级**（US-1.3 ✅→◐，第 2 条验收「回调超时告警」零实现，上一版没查这一条）；**新增两条事后补登记的故事**（US-2.7 逐会议 × 逐程序授权、US-4.8 控制台看正文）——它们的能力早已上线却不在表里，分母不全时覆盖率本身是假的。统计由 31 条 ✅18·◐9·⬜1·⏸2·—1 变为 **33 条 ✅26·◐4·⬜1·⏸1·—1**。新增 **§9.7**（哪些 ✅ 只由替身证明）· **§9.8**（代码里说的和事实对不上，10 条，其中 2 条会原样上屏给管理员看）· **§9.9**（`Dockerfile` 不含 `packages/` 与 `console/`，阶段 2–5 的交付在生产上执行不了）
