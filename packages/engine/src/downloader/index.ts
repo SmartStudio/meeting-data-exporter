@@ -2,7 +2,18 @@ import type { Storage } from '../storage/types'
 import type { AssetSource } from '../source/types'
 
 export interface DownloadTask { assetId: string; relPath: string; bytesExpected: number | null; isText: boolean }
-export type DownloadResult = { status: 'completed'; contentHash: string | null } | { status: 'failed'; error: string }
+/**
+ * `bytesWritten` 是**盘上那个文件的真实字节数**，不是进度检查点：它是逐 chunk 累加
+ * 出来的，且刚刚通过了下面 `written !== bytesExpected → failed` 那道校验。
+ *
+ * 为什么非要把它带出去：真实环境里平台**不返回 `bytes_expected`**（2026-08-26 联调
+ * 实测，见 docs/m3.5-stage8-9-plan.md §0.1 第 2 条），而进度回调每 8MB 才触发一次、
+ * 结束时不补最后一次。也就是说「这个文件多大」这个事实，全流程只有这里知道；
+ * 这里不交出去，它就随着这个函数返回而永久消失，清单里的 bytes 只能是 null。
+ */
+export type DownloadResult =
+  | { status: 'completed'; contentHash: string | null; bytesWritten: number }
+  | { status: 'failed'; error: string }
 export interface DownloadDeps { storage: Storage; gw: Pick<AssetSource, 'getDownloadUrl'>; onProgress?: (bytes: number) => void }
 
 const PROGRESS_INTERVAL = 8 * 1024 * 1024
@@ -33,7 +44,7 @@ export async function downloadAsset(deps: DownloadDeps, task: DownloadTask, _now
       if (task.bytesExpected != null && written !== task.bytesExpected) return { status: 'failed', error: `size mismatch: ${written} != ${task.bytesExpected}` }
       const hash = task.isText ? await hashFile(deps.storage, task.relPath) : null
       await deps.storage.finalize(task.relPath)
-      return { status: 'completed', contentHash: hash }
+      return { status: 'completed', contentHash: hash, bytesWritten: written }
     }
     return { status: 'failed', error: 'too many link renewals' }
   } catch (err) { return { status: 'failed', error: err instanceof Error ? err.message : String(err) } }

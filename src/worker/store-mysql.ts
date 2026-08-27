@@ -107,10 +107,13 @@ export function createMysqlStore(pool: Pool): Store {
       }
     },
 
-    async markCompleted(id, h, now) {
+    // bytes_written 写的是 downloader 报回的真实文件大小，覆盖掉 touchProgress 留下的
+    // 进度检查点——与 SQLite 版逐字一致。**两处必须一起改**：只改一处的话服务端会
+    // 静默失效（下载照常成功、清单照常写出，只是 bytes 永远是 null，没有任何报错）。
+    async markCompleted(id, h, bytes, now) {
       await pool.query(
-        `UPDATE meeting_assets SET status='completed', content_hash=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
-        [h, now, now, id],
+        `UPDATE meeting_assets SET status='completed', content_hash=?, bytes_written=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
+        [h, bytes, now, now, id],
       )
     },
     async markFailed(id, e, now) {
@@ -139,12 +142,16 @@ export function createMysqlStore(pool: Pool): Store {
         [e, now, id],
       )
     },
-    // 刻意不加 `AND status='running'`：SQLite 版没加，加了两个宿主就分叉。
-    // （不 await 的 touchProgress 可能落在 markCompleted 之后、把字段写回一条
-    // 已 completed 的行，这是已知的脏数据问题，根治是逻辑改动，另开任务。）
+    // `AND status='running'`：**两个宿主一起加的**，不是这一侧的分叉（SQLite 版
+    // 同一条判定，见 packages/engine/src/store/index.ts）。这里曾经刻意不加，代价
+    // 只是「已 completed 的行上有个脏的进度数」——没人读那一列，就先欠着。
+    // 现在读它的人有了：`markCompleted` 把**真实文件大小**写进这一列，而清单在平台
+    // 不给 bytes_expected 时（真实环境的常态）就取它，还会写进永久留在 NAS 上的那份。
+    // 进度回写在 executor 里不 await，池化连接上一次慢的 UPDATE 完全可以落在
+    // markCompleted 之后——那时脏数据就变成了一份撒谎的清单。终态行不再接受回写。
     async touchProgress(id, bytes, now, leaseSec) {
       await pool.query(
-        `UPDATE meeting_assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=?`,
+        `UPDATE meeting_assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running'`,
         [bytes, now + leaseSec, now, id],
       )
     },

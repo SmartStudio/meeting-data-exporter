@@ -54,6 +54,14 @@ test('writeMeta 写元数据文件，直接落正式名（不经过 .part）', a
   await rm(root, { recursive: true, force: true })
 })
 
+test('readMeta 读回 writeMeta 写下的内容；文件不存在时给 null', async () => {
+  const root = await tmp(); const s = createNasStorage(root)
+  await s.writeMeta('meeting.json', { subject: 'x' })
+  expect(await s.readMeta('meeting.json')).toEqual({ subject: 'x' })
+  expect(await s.readMeta('nope.json')).toBeNull()
+  await rm(root, { recursive: true, force: true })
+})
+
 test('ensureFreeSpace 对真实可用空间返回 true', async () => {
   const root = await tmp(); const s = createNasStorage(root)
   expect(await s.ensureFreeSpace(1)).toBe(true)
@@ -135,6 +143,28 @@ test('readPart 遇到挂起的挂载（FIFO 模拟无写者管道）在超时后
 
     const s = createNasStorage(root, 50)
     const err = await s.readPart('f.bin').then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).name).toBe('FsTimeoutError')
+    expect((err as Error).message).toContain('timed out after 50ms')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('readMeta 遇到挂起的挂载（FIFO 模拟无写者管道）在超时后抛出 FsTimeoutError，而不是永久挂起', async () => {
+  // sidecar 的「内容没变就不重写」每轮每场会议都要调 readMeta 两次。这里没有超时
+  // 的话，NAS 一挂就是整轮收尾无声卡死——与 readPart 那条同一种失效形态。
+  const root = await tmp()
+  try {
+    const fifo = join(root, '_manifest.json') // 与 readMeta 内部 abs(rel) 算出的路径完全一致
+    const mkfifo = Bun.spawnSync(['mkfifo', fifo])
+    expect(mkfifo.exitCode).toBe(0) // 造不出 FIFO 就别假装测过了
+
+    const s = createNasStorage(root, 50)
+    const err = await s.readMeta('_manifest.json').then(
       () => null,
       (e: unknown) => e,
     )

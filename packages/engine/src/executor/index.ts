@@ -39,7 +39,9 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   const res = await deps.download({ assetId: row.asset_id ?? assetId(row), relPath, bytesExpected: row.bytes_expected, isText }, (b) => {
     deps.store.touchProgress(row.id, b, now(), leaseSec).catch((e) => console.warn(`progress write failed: ${e}`))
   })
-  if (res.status === 'completed') { await deps.store.markCompleted(row.id, res.contentHash, now()); result.completed++; return }
+  // markCompleted 顺手把 downloader 报回的真实字节数落库：平台常常不给 bytes_expected，
+  // 那时这就是「这个文件多大」唯一的事实来源（见 domain/manifest.ts 的 bytes 字段注释）
+  if (res.status === 'completed') { await deps.store.markCompleted(row.id, res.contentHash, res.bytesWritten, now()); result.completed++; return }
   if (row.attempts >= MAX_ATTEMPTS) { await deps.store.markDead(row.id, res.error, now()); result.failed++; return }
   await deps.store.markFailed(row.id, res.error, now()); result.failed++
 }

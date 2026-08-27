@@ -260,7 +260,7 @@ describe('createMysqlStore', () => {
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'b', fileType: 'mp4' }, 100)
       const done = (await s.claimNext(200, 60))!
-      await s.markCompleted(done.id, 'hash', 210)
+      await s.markCompleted(done.id, 'hash', 12, 210)
       await s.markSkippedByKey({ meetingId: 'm1', subMeetingId: '', assetType: 'video' }, 'no', 220)
       const c = await s.counts()
       expect(c.completed).toBe(1)
@@ -327,6 +327,43 @@ describe('createMysqlStore', () => {
       expect(rows[0]!.lease_expires_at).toBe(290) // 230 + 60，续租
       expect(rows[0]!.target_path).toBe('a/b/video.mp4')
       expect(rows[0]!.file_type).toBe('mp4')
+    })
+  })
+
+  // 与 SQLite 版配对：不 await 的 touchProgress 可能落在 markCompleted 之后。
+  // MySQL 宿主下这条路是池化连接上的高频 UPDATE，最现实的正是它。
+  test('touchProgress 不回写终态的行：迟到的检查点不许盖掉真实文件大小', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
+      const row = (await s.claimNext(200, 60))!
+      await s.markCompleted(row.id, 'h', 12_345, 210)
+      await s.touchProgress(row.id, 8 * 1024 * 1024, 220, 60)   // 迟到的那一次
+
+      const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM meeting_assets WHERE id=?', [row.id])
+      expect(Number(rows[0]!.bytes_written)).toBe(12_345)
+      expect(rows[0]!.status).toBe('completed')
+      expect(rows[0]!.lease_expires_at).toBeNull()
+    })
+  })
+
+  // 与 packages/engine/tests/store/index.test.ts 里同名的 SQLite 用例配对。
+  // 两个宿主各有一份 markCompleted 实现，只改一处的话服务端会**静默**失效：
+  // 下载照样成功、清单照样写出来，只是 bytes 永远是 null，没有任何报错。
+  test('markCompleted 用真实文件大小覆盖 touchProgress 留下的进度检查点', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
+      const row = (await s.claimNext(200, 60))!
+      await s.touchProgress(row.id, 8 * 1024 * 1024, 210, 60)      // 最后一次 8MB 检查点
+      await s.markCompleted(row.id, 'h', 8 * 1024 * 1024 + 4242, 220)
+
+      const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM meeting_assets WHERE id=?', [row.id])
+      expect(rows[0]!.status).toBe('completed')
+      expect(Number(rows[0]!.bytes_written)).toBe(8 * 1024 * 1024 + 4242)
+      expect(rows[0]!.lease_expires_at).toBeNull()
     })
   })
 
@@ -459,7 +496,7 @@ describe('createMysqlStore', () => {
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: 's1', assetType: 'video', remoteId: 'r3' }, 100)
       await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r4' }, 100)
       const first = (await s.claimNext(200, 60))!
-      await s.markCompleted(first.id, 'h', 200)
+      await s.markCompleted(first.id, 'h', 12, 200)
 
       const rows = await s.assetsForMeeting('m1', '')
       expect(rows.map((r) => r.remote_id)).toEqual(['r1', 'r2'])

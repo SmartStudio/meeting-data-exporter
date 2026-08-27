@@ -9,7 +9,7 @@ test('并发池领任务并下载，全部 completed；幂等重跑零下载', a
   await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
   for (const rid of ['r1', 'r2', 'r3']) await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: rid, bytesExpected: 10, fileType: 'mp4' }, 1)
   let downloads = 0
-  const fakeDownload = async () => { downloads++; return { status: 'completed' as const, contentHash: null } }
+  const fakeDownload = async () => { downloads++; return { status: 'completed' as const, contentHash: null, bytesWritten: 10 } }
   const deps: any = { store, download: fakeDownload, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
   const r1 = await runExecutor(deps, { concurrency: 2, leaseSec: 300 }, () => 1000)
   expect(r1.completed).toBe(3)
@@ -23,7 +23,7 @@ test('磁盘不足 → 该任务 skipped(disk_full)，不写半截', async () =>
   const store = createStore(openDb(':memory:'))
   await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1', bytesExpected: 10, fileType: 'mp4' }, 1)
-  const deps: any = { store, download: async () => ({ status: 'completed', contentHash: null }), gw: {}, storage: { ensureFreeSpace: async () => false }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
+  const deps: any = { store, download: async () => ({ status: 'completed', contentHash: null, bytesWritten: 10 }), gw: {}, storage: { ensureFreeSpace: async () => false }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
   const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
   expect(r.skipped).toBe(1)
 })
@@ -33,7 +33,7 @@ test('同一会议同类多段文本 → 输出路径不碰撞', async () => {
   await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
   for (const rid of ['rf1', 'rf2']) await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: rid, fileType: 'pdf' }, 1)
   const paths: string[] = []
-  const deps: any = { store, download: async (t: any) => { paths.push(t.relPath); return { status: 'completed', contentHash: null } }, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
+  const deps: any = { store, download: async (t: any) => { paths.push(t.relPath); return { status: 'completed', contentHash: null, bytesWritten: 7 } }, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
   const r = await runExecutor(deps, { concurrency: 2, leaseSec: 300 }, () => 1000)
   expect(r.completed).toBe(2)
   expect(new Set(paths).size).toBe(2)                        // 两个路径不同 —— 不碰撞
@@ -62,7 +62,7 @@ test('touchProgress 写库失败不中断下载，但错误会被 console.warn �
       download: async (_task: any, onProgress: any) => {
         onProgress(5)               // 触发 touchProgress，其 rejection 由 .catch 接住
         await Promise.resolve()     // 让上面那个 microtask（console.warn）先跑完，再往下断言
-        return { status: 'completed', contentHash: null }
+        return { status: 'completed', contentHash: null, bytesWritten: 5 }
       },
       gw: {},
       storage: { ensureFreeSpace: async () => true },
@@ -74,5 +74,40 @@ test('touchProgress 写库失败不中断下载，但错误会被 console.warn �
   } finally {
     warnSpy.mockRestore()
   }
+})
+
+// ---------------------------------------------------------------------------
+// completed 那一刻把**真实文件大小**落库。
+//
+// 真实环境里平台不给 bytes_expected（2026-08-26 联调实测），而 touchProgress 写进
+// bytes_written 的是每 8MB 一次的进度检查点——最后一次检查点与文件真实大小之间
+// 永远差着最后那不足 8MB 的一截。markCompleted 必须用下载器报回来的累加值覆盖它，
+// 否则「这个文件多大」这个事实全流程无人知道。
+// ---------------------------------------------------------------------------
+test('markCompleted 把下载器报的真实字节数写进 bytes_written，覆盖掉进度检查点', async () => {
+  const store = createStore(openDb(':memory:'))
+  await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
+  // 平台没声明大小——真实环境的形态
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1', fileType: 'mp4' }, 1)
+
+  const CHECKPOINT = 8 * 1024 * 1024        // 最后一次 8MB 进度回调
+  const REAL = CHECKPOINT + 12_345          // 真实文件大小：检查点之后还写了不到 8MB
+  const deps: any = {
+    store,
+    download: async (_t: any, onProgress: any) => {
+      onProgress(CHECKPOINT)                // 先让检查点落库
+      await Promise.resolve()
+      return { status: 'completed', contentHash: null, bytesWritten: REAL }
+    },
+    gw: {},
+    storage: { ensureFreeSpace: async () => true },
+    meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]),
+  }
+  const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
+
+  expect(r.completed).toBe(1)
+  const row = (await store.assetsForMeeting('m1', ''))[0]!
+  expect(row.status).toBe('completed')
+  expect(row.bytes_written).toBe(REAL)      // 不是 CHECKPOINT
 })
 

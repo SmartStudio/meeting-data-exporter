@@ -16,13 +16,16 @@ export interface CompletedAssetRow {
   remoteId: string
   fileType: string
   targetPath: string
-  bytesWritten: number
   /**
-   * 平台声明的字节数。写进 NAS sidecar 的 `bytes` 取的是它，**不是** `bytesWritten`
-   * ——后者是 downloader 每 8MB 一次的**进度检查点**，对小文件恒为 0、对大文件停在
-   * 最后一个 8MB 边界上，把它当文件大小写进清单等于写假数据。完整推理见
-   * `packages/engine/src/domain/manifest.ts` 里 `bytes` 字段的注释。
+   * **这一行是 completed，所以这一列是落盘的真实字节数**（`markCompleted` 用
+   * downloader 完成那一刻累加出来的值写的），不是进度检查点——检查点那个说法只对
+   * 非终态的行成立。NAS sidecar 的 `bytes` 在平台没声明大小时回落到它。
+   * 0 是唯一说不清的值（空文件？还是这条回落上线之前完成的旧行？），按不知道处理。
+   * 完整推理见 `packages/engine/src/domain/manifest.ts` 里 `bytes` 字段的注释。
    */
+  bytesWritten: number
+  /** 平台声明的字节数。写进 NAS sidecar 的 `bytes` 优先取它——它被 downloader
+   *  的尺寸校验钉过。但真实环境里平台常常一个都不给，那时才回落到 `bytesWritten`。 */
   bytesExpected: number | null
   /** 下载器在**本地**算出的整文件 sha256；视频/音频恒为 null（不整读，会吃爆内存）。
    *  与归档记下的 `nas_hash` 是两个值、两种含义，见 domain/manifest.ts。 */

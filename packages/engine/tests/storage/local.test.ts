@@ -29,3 +29,24 @@ test('discardPart 删除 .part（416/200 时重下）', async () => {
   expect(await s.writtenSize('f.bin')).toBe(0)
   await rm(root, { recursive: true, force: true })
 })
+
+// readMeta：sidecar 的「内容没变就别重写」要先把已有的那份读回来比一比。
+// 三种结局必须分得清清楚楚——读到了 / 确实没有 / 读不了，第三种绝不能伪装成第二种。
+test('readMeta 读回 writeMeta 写下的内容', async () => {
+  const root = await tmp(); const s = createLocalStorage(root)
+  await s.writeMeta('d/meeting.json', { subject: 'x', generatedAt: 5000 })
+  expect(await s.readMeta('d/meeting.json')).toEqual({ subject: 'x', generatedAt: 5000 })
+  await rm(root, { recursive: true, force: true })
+})
+test('readMeta 对不存在的文件返回 null（"还没有"，不是错误）', async () => {
+  const root = await tmp(); const s = createLocalStorage(root)
+  expect(await s.readMeta('d/_manifest.json')).toBeNull()
+  await rm(root, { recursive: true, force: true })
+})
+test('readMeta 遇到坏 JSON 原样抛出，不静默当成"没有"', async () => {
+  const root = await tmp(); const s = createLocalStorage(root)
+  await Bun.write(join(root, 'broken.json'), '{ not json')
+  const err = await s.readMeta('broken.json').then(() => null, (e: unknown) => e)
+  expect(err).toBeInstanceOf(Error)   // 静默返回 null 会让这个文件被无声覆盖掉
+  await rm(root, { recursive: true, force: true })
+})

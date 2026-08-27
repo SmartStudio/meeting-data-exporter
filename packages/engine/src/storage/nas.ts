@@ -38,6 +38,13 @@ export function createNasStorage(root: string, timeoutMs: number = NAS_TIMEOUT_M
       await wrap(mkdir(dirname(abs(rel)), { recursive: true }), `mkdir(${dirname(abs(rel))})`)
       await wrap(Bun.write(abs(rel), JSON.stringify(data, null, 2)), `write(${abs(rel)})`)
     },
+    async readMeta(rel) {
+      // 与 readPart 同一种失效形态：挂住的挂载上这一步会永久阻塞，所以两段都要 wrap。
+      // exists() 走 stat（FIFO 上都是瞬间返回），真正会挂住的是下面的 text()。
+      const f = Bun.file(abs(rel))
+      if (!(await wrap(f.exists(), `exists(${abs(rel)})`))) return null
+      return JSON.parse(await wrap(f.text(), `readMeta(${abs(rel)})`)) as unknown
+    },
     async ensureFreeSpace(bytes) {
       try {
         const s = await wrap(statfsAsync(root), `statfs(${root})`)

@@ -62,3 +62,32 @@ test('文本类：完成后返回 content_hash', async () => {
   if (r.status === 'completed') expect(r.contentHash).toMatch(/^[0-9a-f]{64}$/)
   s.server.stop(); await rm(root, { recursive: true, force: true })
 })
+
+// ---------------------------------------------------------------------------
+// 真实环境的形态：腾讯对这批资产**不返回 bytes_expected**（2026-08-26 联调实测，
+// 见 docs/m3.5-stage8-9-plan.md §0.1 的第 2 条）。于是「文件多大」这个事实，
+// 全流程里只有下载器完成那一刻的累加值知道——它必须被带出去，
+// 否则 downloadAsset 一返回就永久丢了，清单里的 bytes 只能是 null。
+// ---------------------------------------------------------------------------
+
+test('平台不给 bytes_expected 时，completed 仍带回磁盘上的真实字节数', async () => {
+  const s = serve(); const root = await tmp(); const storage = createLocalStorage(root)
+  const gw = { getDownloadUrl: async () => ({ url: `${s.base}/f?v=2`, expiresAt: 9e9, fileType: 'mp4', bytesExpected: null }) } as any
+  const r = await downloadAsset({ storage, gw }, { assetId: 'a', relPath: 'd/f.mp4', bytesExpected: null, isText: false }, () => 1)
+  expect(r.status).toBe('completed')
+  // 与**盘上那个文件**比，不是与 BODY.length 比：要钉住的是「返回值 = 落盘字节数」
+  const onDisk = (await Bun.file(join(root, 'd/f.mp4')).arrayBuffer()).byteLength
+  if (r.status === 'completed') expect(r.bytesWritten).toBe(onDisk)
+  s.server.stop(); await rm(root, { recursive: true, force: true })
+})
+
+test('续传完成时带回的是文件总长，不是本轮追加的那一段', async () => {
+  const root = await tmp(); const storage = createLocalStorage(root)
+  await storage.appendChunk('f.bin', 0, BODY.slice(0, 400))    // 上一轮下到 400 字节就断了
+  const s = serve()
+  const gw = { getDownloadUrl: async () => ({ url: `${s.base}/f?v=2`, expiresAt: 9e9, fileType: null, bytesExpected: null }) } as any
+  const r = await downloadAsset({ storage, gw }, { assetId: 'a', relPath: 'f.bin', bytesExpected: null, isText: false }, () => 1)
+  expect(r.status).toBe('completed')
+  if (r.status === 'completed') expect(r.bytesWritten).toBe(BODY.length)   // 1000，不是本轮追加的 600
+  s.server.stop(); await rm(root, { recursive: true, force: true })
+})

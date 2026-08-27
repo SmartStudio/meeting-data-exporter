@@ -44,7 +44,7 @@ test('markSkippedByKey 不回退已完成的同类资产，只跳过未完成的
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'seg1', bytesExpected: 1 }, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'seg2', bytesExpected: 1 }, 1)
   const c1 = (await s.claimNext(100, 300))!          // 领到 seg1（id 最小）
-  await s.markCompleted(c1.id, 'hash', 100)        // seg1 → completed
+  await s.markCompleted(c1.id, 'hash', 1, 100)     // seg1 → completed
   await s.markSkippedByKey({ meetingId: 'm1', subMeetingId: '', assetType: 'video' }, 'download_not_allowed', 200)
   const cnt = await s.counts()
   expect(cnt.completed).toBe(1)              // seg1 未被回退
@@ -141,10 +141,39 @@ test('assetsForMeeting 只给本场次的行、按 id 升序，各状态一并�
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'sub2', assetType: 'video', remoteId: 'r3' }, 1)
   await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r4' }, 1)
   const first = (await s.claimNext(100, 300))!
-  await s.markCompleted(first.id, 'h', 100)
+  await s.markCompleted(first.id, 'h', 11, 100)
 
   const rows = await s.assetsForMeeting('m1', '')
   expect(rows.map((r) => r.remote_id)).toEqual(['r1', 'r2'])            // 兄弟场次与别的会议都不在内
   expect(rows.map((r) => r.status)).toEqual(['completed', 'pending'])   // 状态不过滤，交给调用方分类
   expect(await s.assetsForMeeting('m1', 'sub2')).toHaveLength(1)
+})
+
+// 进度回写是**不 await 的**（executor 的 onProgress），所以一次慢的 touchProgress
+// 完全可能落在 markCompleted 之后。在 bytes_written 只是进度检查点的年代那只是脏数据；
+// 现在这一列是 completed 行的文件大小、并且会被写进永久留在 NAS 上的清单，
+// 一次迟到的回写就是一份撒谎的清单。终态行一律不接受进度回写。
+test('touchProgress 不回写终态的行：迟到的检查点不许盖掉真实文件大小', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const row = (await s.claimNext(100, 300))!
+  await s.markCompleted(row.id, 'h', 12_345, 120)
+  await s.touchProgress(row.id, 8 * 1024 * 1024, 130, 300)    // 迟到的那一次
+
+  const done = (await s.assetsForMeeting('m1', ''))[0]!
+  expect(done.bytes_written).toBe(12_345)
+  expect(done.status).toBe('completed')
+  expect(done.lease_expires_at).toBeNull()                     // 也没有把租约续回来
+})
+
+test('markCompleted 用真实文件大小覆盖 touchProgress 留下的进度检查点', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const row = (await s.claimNext(100, 300))!
+  await s.touchProgress(row.id, 8 * 1024 * 1024, 110, 300)   // 最后一次 8MB 检查点
+  await s.markCompleted(row.id, 'h', 8 * 1024 * 1024 + 4242, 120)
+
+  const done = (await s.assetsForMeeting('m1', ''))[0]!
+  expect(done.status).toBe('completed')
+  expect(done.bytes_written).toBe(8 * 1024 * 1024 + 4242)    // completed 行上这一列是真实大小
 })
