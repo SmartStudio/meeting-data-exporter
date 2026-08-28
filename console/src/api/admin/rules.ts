@@ -108,6 +108,23 @@ export interface Rule {
    * 「建完就静默失效」的规则靠它在列表里看得见——**原样显示，不要挑一条当摘要**。
    */
   issues: string[]
+  /**
+   * 这条规则**自身条件**命中的场次（`GET /rules` 改版新增，见后端 `withMatchCounts`）。
+   *
+   * 口径与 `ruleMatches()` 完全一致：命中 = 这条规则的 conds 匹配，不是整栈求值的结果，
+   * 停用的规则也算得出来。
+   *
+   * `null` = **读不出来**，不是「命中 0 场」——字段缺失（旧后端 / 契约不对）、
+   * 类型不对，或者后端那次统计里会议全集本身取不到（库不可达），三种情况都归到
+   * 这一个值，页面把它显示成"—"。**绝不把这些情况兜成 0**：0 是一个具体的答案，
+   * 管理员会照着它去删一条其实好好的规则；"读不出来"不该长得像"算出来是 0"。
+   */
+  matchCount: number | null
+  /**
+   * 这次统计实际考察了多少场会议——`matchCount` 要配着它读，"8 / matchScanned"
+   * 才回答得出"8 是多是少"。宽读规则与 `matchCount` 相同，见上面那条注释。
+   */
+  matchScanned: number | null
 }
 
 /* ── 条件字段与运算符的清单（GET /rules/schema）─────────────── */
@@ -397,6 +414,18 @@ function readConds(raw: unknown): { conds: Array<RuleCondition | null>; malforme
   return { conds, malformed: false }
 }
 
+/**
+ * `matchCount` / `matchScanned` 的宽读：**缺失与类型不对都归到同一个"读不出来"**，
+ * 不用 `FieldReader.numOrNull`——那一个对"键缺失"是抛 `ApiShapeError` 的（它的契约是
+ * "有就必须是 number | null，没有就是没接对契约"），而这两个字段是后来才加的，
+ * 旧后端 / mock 装载早于这次改动时响应里根本没有这两个键，那不该让整页打不开。
+ * 与文件头第二节同一个原则：坏数据 / 缺字段不抛，抛了整页就打不开。
+ */
+function readMatchStat(o: Record<string, unknown>, key: string): number | null {
+  const v = o[key]
+  return typeof v === 'number' && !Number.isNaN(v) ? v : null
+}
+
 function readRule(r: FieldReader, raw: unknown, where: string): Rule {
   const o = r.object(raw, where)
   const { conds, malformed } = readConds(o.conds)
@@ -417,6 +446,8 @@ function readRule(r: FieldReader, raw: unknown, where: string): Rule {
     createdAt: r.num(o, 'createdAt', where),
     updatedAt: r.num(o, 'updatedAt', where),
     issues: r.strList(o, 'issues', where),
+    matchCount: readMatchStat(o, 'matchCount'),
+    matchScanned: readMatchStat(o, 'matchScanned'),
   }
 }
 

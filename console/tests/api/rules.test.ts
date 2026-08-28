@@ -133,6 +133,38 @@ describe('listRules', () => {
     expect(rules[0]!.conds[0]).toEqual({ f: 'arch', op: 'isarch', v: undefined })
   })
 
+  test('matchCount / matchScanned 正常读出', async () => {
+    install(200, { rules: [{ ...RULE, matchCount: 8, matchScanned: 42 }] })
+    const rules = await listRules()
+    expect(rules[0]!.matchCount).toBe(8)
+    expect(rules[0]!.matchScanned).toBe(42)
+  })
+
+  test(
+    'matchCount / matchScanned 缺失时宽读成 null（不整页崩，不当成 0）——' +
+      '这两个字段是后加的，旧后端 / 装载早于这次改动的 mock 响应里根本没有这两个键',
+    async () => {
+      install(200, { rules: [RULE] })
+      const rules = await listRules()
+      expect(rules[0]!.matchCount).toBeNull()
+      expect(rules[0]!.matchScanned).toBeNull()
+    },
+  )
+
+  test('matchCount / matchScanned 类型不对时也宽读成 null，不是 0——0 是一个具体答案，不能顶替"读不出来"', async () => {
+    install(200, { rules: [{ ...RULE, matchCount: '8', matchScanned: {} }] })
+    const rules = await listRules()
+    expect(rules[0]!.matchCount).toBeNull()
+    expect(rules[0]!.matchScanned).toBeNull()
+  })
+
+  test('matchCount / matchScanned 显式为 null（后端那次统计里会议全集取不到）时原样透传', async () => {
+    install(200, { rules: [{ ...RULE, matchCount: null, matchScanned: null }] })
+    const rules = await listRules()
+    expect(rules[0]!.matchCount).toBeNull()
+    expect(rules[0]!.matchScanned).toBeNull()
+  })
+
   test('必填字段缺了就抛 ApiShapeError，报错里带端点名与字段路径', async () => {
     install(200, { rules: [{ ...RULE, priority: undefined }] })
     await expect(listRules()).rejects.toBeInstanceOf(ApiShapeError)

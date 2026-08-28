@@ -919,6 +919,139 @@ test('命中列表：停用的规则照样能看命中哪几场——它开回�
   expect((await bodyOf(res)).matches).toHaveLength(1)
 })
 
+// ── 列表的 matchCount / matchScanned（改版：命中数直接进列表，不必再点开 /matches）───
+
+/** `list` / `getMeetings` 各自被调用了几次——证明列表端点只扫一遍会议全集 */
+function countingConsoleMeetings(specs: MeetingSpec[]): {
+  store: ConsoleMeetingsStore
+  calls: { list: number; getMeetings: number }
+} {
+  const base = fakeConsoleMeetings(specs)
+  const calls = { list: 0, getMeetings: 0 }
+  return {
+    calls,
+    store: {
+      ...base,
+      async list(q) {
+        calls.list += 1
+        return base.list(q)
+      },
+      async getMeetings(keys) {
+        calls.getMeetings += 1
+        return base.getMeetings(keys)
+      },
+    },
+  }
+}
+
+/** 会议全集怎么问都问不到——模拟库不可达 */
+function unreachableConsoleMeetings(): ConsoleMeetingsStore {
+  return {
+    async list() {
+      throw new Error('meetings store unreachable')
+    },
+    async triage() {
+      throw new Error('triage 不该被规则 API 调用')
+    },
+    async get() {
+      throw new Error('get 不该被规则 API 调用')
+    },
+    async getMeetings() {
+      throw new Error('meetings store unreachable')
+    },
+  }
+}
+
+test('列表：停用的规则也算得出 matchCount——不按 enabled 过滤', async () => {
+  const rows: AdminRule[] = [allowRule({ id: 1, enabled: true }), allowRule({ id: 2, enabled: false })]
+  const policy = fakePolicyStore({ listAllRules: async () => rows })
+  const res = await listRules(
+    req('GET'),
+    ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+  )
+  expect(res.status).toBe(200)
+  const list = (await bodyOf(res)).rules as Array<AdminRule & { matchCount: number; matchScanned: number }>
+  // allowRule() 的默认 conds 是「title has 财务」，只有 FINANCE 命中
+  expect(list[0]!).toMatchObject({ id: 1, matchCount: 1, matchScanned: 2 })
+  expect(list[1]!).toMatchObject({ id: 2, enabled: false, matchCount: 1, matchScanned: 2 })
+})
+
+test(
+  '列表：conds 是合法空数组的规则——evaluateRule 判"没有条件，匹配全部"，' +
+    'matchCount 必须等于 matchScanned（如实反映沉默放行的危险信号，不许因为"不合理"就改成 0）',
+  async () => {
+    const rows: AdminRule[] = [rule({ id: 3, conds: [] })]
+    const policy = fakePolicyStore({ listAllRules: async () => rows })
+    const res = await listRules(
+      req('GET'),
+      ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+    )
+    const list = (await bodyOf(res)).rules as Array<{ matchCount: number; matchScanned: number }>
+    expect(list[0]!.matchCount).toBe(2)
+    expect(list[0]!.matchScanned).toBe(2)
+    expect(list[0]!.matchCount).toBe(list[0]!.matchScanned)
+  },
+)
+
+test(
+  '列表：conds 不是数组（JSON 列解析失败）的规则——store 的 CONDS_UNPARSABLE 兜底' +
+    '不是数组，evaluateRule 判 matched:false，matchCount 是 0。' +
+    '这与 GET /:id/matches 对同一条规则给出的空列表是同一件事，口径必须一致',
+  async () => {
+    const broken = rule({ id: 4, conds: 'oops' as unknown as RuleCond[] })
+    const policy = fakePolicyStore({
+      listAllRules: async () => [broken],
+      getRule: async () => broken,
+    })
+    const meetings = fakeConsoleMeetings([FINANCE, TECH])
+
+    const listRes = await listRules(req('GET'), ctxOf({ policy: policy.store, meetings }))
+    const list = (await bodyOf(listRes)).rules as Array<{ matchCount: number; matchScanned: number }>
+    expect(list[0]!.matchCount).toBe(0)
+    expect(list[0]!.matchScanned).toBe(2)
+
+    const matchesRes = await ruleMatches(
+      req('GET'),
+      ctxOf({ policy: policy.store, meetings, params: { id: '4' } }),
+    )
+    expect((await bodyOf(matchesRes)).matches).toEqual([])
+  },
+)
+
+test('列表：12 条规则只扫一遍会议全集，不是 12 次数据库往返', async () => {
+  const rows: AdminRule[] = Array.from({ length: 12 }, (_, i) => allowRule({ id: i + 1 }))
+  const policy = fakePolicyStore({ listAllRules: async () => rows })
+  const meetings = countingConsoleMeetings([FINANCE, TECH])
+  const res = await listRules(req('GET'), ctxOf({ policy: policy.store, meetings: meetings.store }))
+  expect(res.status).toBe(200)
+  const list = (await bodyOf(res)).rules as unknown[]
+  expect(list).toHaveLength(12)
+  // scanMeetings 内部发两条查询（列一页 + 批量取元数据），与规则条数无关——
+  // 12 条规则算完命中数，这两条各自也还是只被调用一次
+  expect(meetings.calls.list).toBe(1)
+  expect(meetings.calls.getMeetings).toBe(1)
+})
+
+test(
+  '列表：会议全集取不到时（库不可达）规则列表本身照常返回，' +
+    'matchCount / matchScanned 一律是 null，不是 0——0 会被当成"真的一场没命中"去删规则',
+  async () => {
+    const rows: AdminRule[] = [allowRule({ id: 1 }), allowRule({ id: 2, enabled: false })]
+    const policy = fakePolicyStore({ listAllRules: async () => rows })
+    const res = await listRules(
+      req('GET'),
+      ctxOf({ policy: policy.store, meetings: unreachableConsoleMeetings() }),
+    )
+    expect(res.status).toBe(200)
+    const list = (await bodyOf(res)).rules as Array<{ matchCount: number | null; matchScanned: number | null }>
+    expect(list).toHaveLength(2)
+    for (const r of list) {
+      expect(r.matchCount).toBeNull()
+      expect(r.matchScanned).toBeNull()
+    }
+  },
+)
+
 // ── 路由 ─────────────────────────────────────────────────────────────────
 
 test('六条路由真的挂在 router 上：派发得到 handler（401），而不是掉进 404', async () => {

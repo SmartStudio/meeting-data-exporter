@@ -2,7 +2,7 @@
  * 规则 API + 影响预览（阶段 4 · T6，A3 的一部分）。
  *
  * ```
- * GET    /api/v1/admin/rules              列出三栈（含 disabled）
+ * GET    /api/v1/admin/rules              列出三栈（含 disabled；每条带 matchCount / matchScanned）
  * POST   /api/v1/admin/rules              新建
  * PATCH  /api/v1/admin/rules/:id          改（含启用 / 停用）
  * DELETE /api/v1/admin/rules/:id          删
@@ -406,7 +406,9 @@ export async function listRules(req: Request, ctx: RouteCtx): Promise<Response> 
   // `listAllRules` 含 disabled 的规则，位置就在它启用时会站的那一格：
   // 停用一条之后它必须还在界面上，否则再也开不回来
   const rules = await ctx.deps.policyStore.listAllRules(kind)
-  return json(200, { rules })
+  // matchCount / matchScanned 的口径与算法见下面「会议全集」一节的 `withMatchCounts`：
+  // 复用 `ruleMatches` 用的同一个 `matchesRule`，会议全集只扫一次
+  return json(200, { rules: await withMatchCounts(ctx, rules) })
 }
 
 // ── 端点：写 ──────────────────────────────────────────────────────────────
@@ -601,6 +603,57 @@ async function scanMeetings(ctx: RouteCtx, limit: number): Promise<MeetingScan> 
     meetings.push({ row, facts: meetingFacts(meta, row.keep.archivedAt !== null) })
   }
   return { meetings, total }
+}
+
+/**
+ * 给规则列表的每一条补上 `matchCount` / `matchScanned`（§4.7 改版：命中数直接进列表，
+ * 不必再点开 `/:id/matches` 才看得见——那颗「?」按钮改版之前就是这么用的）。
+ *
+ * ## 口径：与 `ruleMatches`（见本文件「命中的会议」一节）complete 复用同一份实现
+ *
+ * 命中 = `matchesRule`，即这条规则**自身**的 conds 匹配，不是整栈求值的结果。
+ * 这里不是重新判一遍「匹配」是什么，是把同一个 `matchesRule` 换一种循环方式
+ * （规则在外层、会议在内层）再跑一次——两处必须是同一件事，否则列表里的命中数
+ * 和点开 `/:id/matches` 看到的场次数对不上，管理员会先怀疑是不是刚点开那一下漏了几场。
+ *
+ * - **停用的规则一样算**：不按 `enabled` 过滤——`matchesRule` 本来就不看这个字段，
+ *   与 `ruleMatches` 同理，管理员要先看得见「把它开回来会命中什么」。
+ * - **conds 写坏的规则，如实交给 `matchesRule` 判，不特殊处理**：`evaluateRule`
+ *   对非数组 conds 给 `matched: false`（`store/policy.ts` 的 `CONDS_UNPARSABLE` 那段
+ *   注释：这是为了不让一条 JSON 解析失败的规则变成「放行全部会议」的兜底），
+ *   所以那种规则的 `matchCount` 会是 0——与点开它的 `/:id/matches` 看到空列表
+ *   是同一件事，不是漏算。真正「无条件、命中全部」的危险状态是 conds 被解析成了
+ *   **合法的空数组**：`evaluateRule` 对空数组显式判 `matched: true`（`conds.length
+ *   === 0` 那一支），这才是这两个字段要帮管理员看见的沉默放行——`matchCount`
+ *   会等于 `matchScanned`，如实反映，不因为「看起来不合理」就改写成 0。
+ * - **一次扫描，不是 N 次**：`scanMeetings` 在这里只调用一次；`matchesRule`
+ *   对着同一份 `scan.meetings` 循环 `rules.length` 次，而不是反过来对每条规则
+ *   各自扫一遍会议全集（12 条规则不该有 12 次数据库往返）。
+ * - **会议全集取不到时**（库不可达等），两个字段一律给 `null`，不给 `0`：
+ *   规则列表本身仍然照常返回（这个子查询失败不该拖垮整条端点），但 `0` 会被
+ *   管理员读成「真的一场都没命中」进而去删一条其实好好的规则，`null` 说的是
+ *   「这次真的算不出来」——两者不是一回事。
+ */
+async function withMatchCounts(
+  ctx: RouteCtx,
+  rules: readonly AdminRule[],
+): Promise<Array<AdminRule & { matchCount: number | null; matchScanned: number | null }>> {
+  let scan: MeetingScan | null
+  try {
+    scan = await scanMeetings(ctx, MEETING_SCAN_LIMIT)
+  } catch {
+    scan = null
+  }
+  if (scan === null) {
+    return rules.map((r) => ({ ...r, matchCount: null, matchScanned: null }))
+  }
+  const now = ctx.deps.now()
+  const matchScanned = scan.meetings.length
+  return rules.map((r) => ({
+    ...r,
+    matchCount: scan.meetings.filter((m) => matchesRule(r, m.facts, now)).length,
+    matchScanned,
+  }))
 }
 
 // ── 影响预览 ──────────────────────────────────────────────────────────────
