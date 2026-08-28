@@ -67,6 +67,56 @@
   line-height: 1.5;
 }
 
+/* 主题三选，从 GlobalBar 搬来的（见 UserMenu.tsx 的 ThemeGroup）。跟 .who
+   一样起一条底边，视觉上是菜单里独立的一节，不是跟着「修改密码/退出登录」
+   混在一起的第三个按钮。 */
+.themeSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border-bottom: var(--s-px) solid var(--line);
+}
+
+.sectionLabel {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.themeGroup {
+  display: flex;
+  gap: var(--s-0);
+  background: var(--surface-2);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s-0);
+}
+
+.themeBtn {
+  flex: 1;
+  /* `flex: 1` 的基准是 0，于是每个按钮收缩到 min-content 宽。中文允许在字与字
+     之间断行，min-content 因此只有**一个字**宽——实测「浅色」被压成 28×86，
+     两个字竖着摞起来。拉丁文案不会暴露这个，中文界面必写。 */
+  white-space: nowrap;
+  font: inherit;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  background: none;
+  border: 0;
+  padding: var(--s-2) var(--s-3);
+  min-height: var(--tap-min);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.themeBtnActive {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  /* 原型同款分段控件选中态内投影 */
+  box-shadow: 0 var(--s-px) var(--s-0) var(--inset);
+}
+
 .acts {
   display: flex;
   flex-direction: column;

@@ -1,7 +1,12 @@
+/* 左栏是一条暗带，主区是纸面（tokens.css 里 --nav 系列的注释）。整屏材质只有
+   一层亮面（主区）+ 一层暗带（这里），眼睛的第一落点从此固定在这条暗带上——
+   而不是像改版前那样，左栏用 --rail（浅灰）配深字，跟主区几乎同一个亮度层，
+   整屏没有第一落点。--rail 仍然存在，但只留给骨架屏与审计页的填充块，
+   这里不再引用它。 */
 .rail {
   width: var(--rail-w);
-  background: var(--rail);
-  border-right: var(--s-px) solid var(--line);
+  background: var(--nav);
+  border-right: var(--s-px) solid var(--nav-line);
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -11,7 +16,7 @@
 
 .brand {
   padding: var(--s-5);
-  border-bottom: var(--s-px) solid var(--line-soft);
+  border-bottom: var(--s-px) solid var(--nav-line);
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -35,15 +40,13 @@
   font-weight: 700;
   margin: 0;
   line-height: 1.25;
-  color: var(--ink);
+  color: var(--nav-ink);
 }
 
-/* 左栏底色比内容区暗一档（导航本就该退后），代价是三级文字在它上面对比度
-   会掉——不调亮底色，改把左栏文字提到二级墨色（原型同款取舍）。 */
 .brandSub {
   margin: 0;
   font-size: var(--t-2xs);
-  color: var(--ink-2);
+  color: var(--nav-ink-2);
   line-height: 1.3;
 }
 
@@ -63,40 +66,56 @@
   padding: var(--s-3);
   border-radius: var(--r-sm);
   font-size: var(--t-md);
-  color: var(--ink-2);
+  color: var(--nav-ink-2);
   text-decoration: none;
   cursor: pointer;
 }
 
+.navLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .navItem:hover {
-  background: color-mix(in oklab, var(--ink) 6%, transparent);
-  color: var(--ink);
+  background: color-mix(in oklab, var(--nav-ink) 8%, transparent);
+  color: var(--nav-ink);
 }
 
 .navItem:active {
-  background: color-mix(in oklab, var(--ink) 11%, transparent);
+  background: color-mix(in oklab, var(--nav-ink) 14%, transparent);
 }
 
+/* 选中态：--nav-2 底 + 左侧 2px 色条（inset box-shadow），不是浅蓝填充圆角块——
+   那种填充块的语言属于卡片化的主区，暗带这边只用色条标出「你在哪」。
+   2px 走 --s-0（间距标尺上 2px 那一档），不是裸像素。 */
 .navItemActive {
-  background: var(--surface);
-  color: var(--ink);
+  background: var(--nav-2);
+  color: var(--nav-ink);
   font-weight: 600;
-  box-shadow: inset 0 0 0 var(--s-px) var(--line);
+  box-shadow: inset var(--s-0) 0 0 var(--nav-ink);
 }
 
 .navIco {
   display: inline-flex;
   flex: none;
-  color: var(--ink-3);
+  color: var(--nav-ink-3);
 }
 
 .navItemActive .navIco {
-  color: var(--brand);
+  color: var(--nav-ink);
+}
+
+.navBadge {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .railFoot {
   padding: var(--s-4);
-  border-top: var(--s-px) solid var(--line-soft);
+  border-top: var(--s-px) solid var(--nav-line);
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -107,20 +126,18 @@
   height: var(--s-3);
   border-radius: var(--r-pill);
   flex: none;
-  background: var(--ink-4);
+  background: var(--nav-ink-3);
 }
 
-/* 原型的光晕半径是 3px，不在 4pt 间距标尺上（--s-0 是 2px，--s-1 是 4px）；
-   取最接近的 --s-1，视觉上跟原型的差异可忽略——不为这一个装饰性细节单独
-   开一个新令牌。 */
+/* warn/fail 不再套原型那圈浅色光晕：--warn-soft / --fail-soft 是给白卡底调的
+   浅底色，糊在暗带上会变成一团突兀的亮斑。暗带上靠 --warn / --fail 实心圆点
+   本身 + 旁边的文字（.statTitle 已经用 --nav-ink，权重够）来分级。 */
 .statDot[data-s='warn'] {
   background: var(--warn);
-  box-shadow: 0 0 0 var(--s-1) var(--warn-soft);
 }
 
 .statDot[data-s='fail'] {
   background: var(--fail);
-  box-shadow: 0 0 0 var(--s-1) var(--fail-soft);
 }
 
 .statText {
@@ -133,12 +150,12 @@
   font-size: var(--t-sm);
   font-weight: 500;
   line-height: 1.35;
-  color: var(--ink);
+  color: var(--nav-ink);
 }
 
 .statSub {
   font-size: var(--t-2xs);
-  color: var(--ink-2);
+  color: var(--nav-ink-2);
   line-height: 1.3;
 }
 
@@ -153,7 +170,7 @@
     height: auto;
     position: static;
     border-right: 0;
-    border-bottom: var(--s-px) solid var(--line);
+    border-bottom: var(--s-px) solid var(--nav-line);
   }
 
   .brand {

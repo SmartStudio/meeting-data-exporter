@@ -6,22 +6,60 @@ import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
 import { Popover } from '@/ui/Popover'
 import { Sheet } from '@/ui/Sheet'
+import { useTheme, type Theme } from '@/theme/useTheme'
 import { ROLE_LINE, useSession } from './session'
 import styles from './UserMenu.module.css'
+
+const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+  { value: 'system', label: '跟随系统' },
+]
+
+/**
+ * 主题三选（浅色 / 深色 / 跟随系统）。原来钉在顶栏最贵的右上角——一个一年
+ * 点一次的设置占着页面标题和主操作都没有的位置。它跟"你是谁""改密码""退出
+ * 登录"是同一类事：都是关于这个账号在这台机器上怎么用这个界面，所以搬进
+ * 这个菜单，跟那几件事放在一起，不再单独占顶栏一块。
+ */
+function ThemeGroup() {
+  const { theme, setTheme } = useTheme()
+  return (
+    <div className={styles.themeSection}>
+      <span className={styles.sectionLabel}>主题</span>
+      <div className={styles.themeGroup} role="group" aria-label="主题切换">
+        {THEME_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            className={theme === opt.value ? `${styles.themeBtn} ${styles.themeBtnActive}` : styles.themeBtn}
+            aria-pressed={theme === opt.value}
+            onClick={() => setTheme(opt.value)}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 /**
  * 用户菜单（spec §11 缺口 5：「账号设置 / 修改密码」的入口原来是空的）。
  *
- * 菜单里三样东西：
+ * 菜单里四样东西：
  *
  * 1. **当前账号是谁** —— 从 `GET /auth/me` 来，不是写死的「陈运维」。
  * 2. **当前是什么角色** —— spec §2 点名了这一行：原型里写死「数据管理员 ·
  *    可改规则与授权」，而系统里当时只有这一个角色。现在它随 `role` 变
  *    （`ROLE_LINE`），因为一个只读账号看到「可改规则与授权」就是在骗人。
- * 3. **改密码 / 退出登录**。
+ * 3. **主题三选**（`ThemeGroup`，从顶栏搬来的）。
+ * 4. **改密码 / 退出登录**。
  *
  * 会话读不到时（没有 `SessionProvider`）整块不渲染：这时连"你是谁"都答不出，
- * 摆一个空菜单不如没有。
+ * 摆一个空菜单不如没有。主题三选不受这条限制——它跟账号是谁无关——但挂在
+ * 这个触发按钮下面，账号读不到时触发按钮本身也不在了，一并不渲染是这个
+ * 组件早已有的行为，不是新引入的限制。
  */
 export default function UserMenu() {
   const identity = useSession()
@@ -69,6 +107,7 @@ export default function UserMenu() {
             {ROLE_LINE[identity.role]}
           </span>
         </div>
+        <ThemeGroup />
         <div className={styles.acts}>
           <button
             type="button"

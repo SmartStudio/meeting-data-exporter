@@ -187,3 +187,64 @@ describe('修改密码', () => {
     expect(screen.getByRole('button', { name: '改密码' })).toBeEnabled()
   })
 })
+
+/**
+ * 主题三选，从顶栏（`GlobalBar.tsx`）搬进了这个菜单——顶栏最贵的右上角以前
+ * 摆着一个一年点一次的设置，现在跟"你是谁""改密码""退出登录"放在一起。
+ *
+ * 这几条覆盖的是 `tests/theme.test.tsx` 没管的那一半：那个文件只测
+ * `useTheme` 这个 hook 本身（读写 localStorage、写 `data-theme` 属性），
+ * 从来没有一条测试真的点过界面上的「浅色/深色/跟随系统」按钮——搬家之前
+ * 顶栏那三颗按钮也没人这样测过。所以这不是「弱化」，是把入口搬过来的同时
+ * 顺带补上一直没有的 UI 级覆盖：真的点按钮，真的看 `<html data-theme>`
+ * 变没变。
+ */
+describe('主题三选（从顶栏搬进头像菜单）', () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute('data-theme')
+    localStorage.clear()
+  })
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-theme')
+    localStorage.clear()
+  })
+
+  test('菜单里有一组「主题切换」，默认选中跟随系统', async () => {
+    await openMenu()
+    const group = screen.getByRole('group', { name: '主题切换' })
+    const system = within(group).getByRole('button', { name: '跟随系统' })
+    expect(system).toHaveAttribute('aria-pressed', 'true')
+    expect(within(group).getByRole('button', { name: '浅色' })).toHaveAttribute('aria-pressed', 'false')
+    expect(within(group).getByRole('button', { name: '深色' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  test('点「深色」写 data-theme="dark"；点「跟随系统」清掉属性', async () => {
+    await openMenu()
+    const group = screen.getByRole('group', { name: '主题切换' })
+
+    await userEvent.click(within(group).getByRole('button', { name: '深色' }))
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(within(group).getByRole('button', { name: '深色' })).toHaveAttribute('aria-pressed', 'true')
+
+    await userEvent.click(within(group).getByRole('button', { name: '跟随系统' }))
+    expect(document.documentElement.hasAttribute('data-theme')).toBe(false)
+  })
+
+  test('选择被记住：重新挂载菜单后仍是上次选的那个', async () => {
+    // 不用 openMenu() 这个 helper：它内部 mount() 但不回传 RenderResult，
+    // 这条测试要真的卸载再重新挂载（模拟换页再回来），所以直接调用同文件里
+    // 的 mount()，自己管生命周期。
+    const first = mount('admin')
+    await userEvent.click(screen.getByRole('button', { name: /测试/ }))
+    await userEvent.click(
+      within(screen.getByRole('group', { name: '主题切换' })).getByRole('button', { name: '浅色' }),
+    )
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    first.unmount()
+
+    mount('admin')
+    await userEvent.click(screen.getByRole('button', { name: /测试/ }))
+    const group = screen.getByRole('group', { name: '主题切换' })
+    expect(within(group).getByRole('button', { name: '浅色' })).toHaveAttribute('aria-pressed', 'true')
+  })
+})

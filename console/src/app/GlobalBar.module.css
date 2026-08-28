@@ -11,6 +11,51 @@
   border-bottom: var(--s-px) solid var(--line);
 }
 
+/* 页面标题 + 一句话计数。标题从路由派生（`titleForPath()`），计数来自页面
+   经 `useTopBarSlot()` 交上来的 `subtitle`——两者都可能缺席（路由没对上任何
+   一页、页面没调这个 hook），所以两个子元素各自按存在与否渲染，`.heading`
+   本身不需要为「空」单独处理：留空就是一段空的 flex 容器，不会把 `.gbar`
+   的高度也带塌（高度锁在 --gbar-h 上，跟内容多少无关）。 */
+.heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subtitle {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* 原型工具（「原型 · 全部数字为示例」标记 + 系统状态模拟下拉）只在 ?proto=1
+   下渲染，紧挨着用户菜单，不再单独占顶栏最左端——那两个位置合起来读作
+   "你正在一个演示环境里"这一件事，不是两句分开摆在页面两端的话。 */
+.protoGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
 .protoTag {
   font-family: var(--mono);
   font-size: var(--t-2xs);
@@ -33,37 +78,14 @@
   cursor: pointer;
 }
 
-.spacer {
-  flex: 1;
-}
-
-
-.themeGroup {
+/* 页面主操作插槽（`useTopBarSlot()` 的 `actions`）。没有页面往里塞东西时
+   这个 div 根本不渲染（`GlobalBar.tsx` 用 `actions !== undefined` 判断），
+   不是渲染一个空 div 占位——空 flex 子项不会撑开也不会塌陷，但没有就是
+   没有，没必要留一个空节点在 DOM 里。 */
+.actions {
   display: flex;
-  gap: var(--s-0);
-  background: var(--surface-2);
-  border: var(--s-px) solid var(--line);
-  border-radius: var(--r);
-  padding: var(--s-0);
-}
-
-.themeBtn {
-  font: inherit;
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-  background: none;
-  border: 0;
-  padding: var(--s-1) var(--s-3);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-}
-
-.themeBtnActive {
-  background: var(--surface);
-  color: var(--ink);
-  font-weight: 600;
-  /* 原型同款分段控件选中态内投影，两个尺寸换成对应的 --s-px / --s-0 */
-  box-shadow: 0 var(--s-px) var(--s-0) var(--inset);
+  align-items: center;
+  gap: var(--s-3);
 }
 
 .sep {
@@ -74,7 +96,9 @@
 }
 
 /* .user / .avatar 跟着用户菜单搬去了 UserMenu.module.css——那两条样式
-   现在只服务那一个组件，留在顶栏里就是两处各写一份的开始。 */
+   现在只服务那一个组件，留在顶栏里就是两处各写一份的开始。
+   .themeGroup / .themeBtn 也搬走了：主题三选收进了头像菜单，见
+   UserMenu.module.css。 */
 
 /* ── 窄屏（≤56em）：一行放不下就换行 ──────────────────────────────
    这一条是 spec §11 缺口 2 里**真正够不着**的那一半：定高 48px + 不换行的
@@ -99,9 +123,7 @@
     display: none;
   }
 
-
-  .themeBtn {
-    min-height: var(--tap-min);
-    padding: var(--s-1) var(--s-4);
+  .heading {
+    flex-basis: 100%;
   }
 }

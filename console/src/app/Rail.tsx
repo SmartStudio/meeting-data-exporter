@@ -1,14 +1,19 @@
 import type { ReactElement } from 'react'
 import { NavLink } from 'react-router-dom'
 import { fetchStreakText } from '@/api/admin/health'
+import { Pill } from '@/ui/Pill'
 import { useSystemStatusView } from './SystemStatus'
 import styles from './Rail.module.css'
 
 /**
  * 左栏七项——不对，是六项。`spec.md` §3 明确写着「内容预览」不占导航，
  * 从会议记录点标题进入。左栏真正可点的是这六项，逐字对应 §3 的页面名。
+ *
+ * **导出而不是只在本文件用**：`GlobalBar.tsx` 的顶栏标题要和这里同一份文案
+ * （不要两份），从路由派生标题时直接读这张表的 `to`/`label`，不再另抄一遍
+ * 六个字符串。
  */
-const NAV_ITEMS: Array<{ to: string; label: string; icon: ReactElement }> = [
+export const NAV_ITEMS: Array<{ to: string; label: string; icon: ReactElement }> = [
   {
     to: '/meetings',
     label: '会议记录',
@@ -133,6 +138,36 @@ function RailStatus() {
   )
 }
 
+/**
+ * 「定时任务」导航项右侧的红色计数徽标。
+ *
+ * 会议数 / 程序数 / 规则数（简报点名的另外三个）**没有加**：左栏是全局挂载的
+ * 壳组件，能读到的只有 `useSystemStatusView()`（NAS/任务健康）与会话身份——
+ * 没有一条共享的「当前有几场会议 / 几个程序 / 几条规则」数据源，六个页面各自
+ * 拉自己的列表，壳层拿不到。拿不到就不显示，不编一个数字出来（简报原话）。
+ *
+ * 这一项能加，是因为 `openFailures` 恰好是共享数据：`fetchSystemHealth()`
+ * 读的是 `GET /admin/jobs` 的顶层 `failuresTotal`——逐字对应「定时任务」这一页
+ * 要管的东西，不是东拼西凑出来的近似值。颜色用 `--fail` 实底 + `--on-fail`
+ * 字（`ui/Pill` 的 `solid` 变体），不是把 `--fail` 直接当文字色压在 `--nav`
+ * 上——那样浅色主题下只有 2.98:1，过不了图形最低的 3:1，文字口径的 4.5:1
+ * 更够不着。
+ *
+ * `aria-hidden`：数字本身不单独读出来，读屏使用者已经从下面 `RailStatus`
+ * 的「N 项需要处理」那句里听到了同一个事实，这里再读一遍是重复。
+ */
+function JobsBadge() {
+  const { openFailures } = useSystemStatusView()
+  if (openFailures === null || openFailures <= 0) return null
+  return (
+    <span className={styles.navBadge} aria-hidden="true">
+      <Pill tone="fail" solid>
+        {openFailures}
+      </Pill>
+    </span>
+  )
+}
+
 export default function Rail() {
   return (
     <aside className={styles.rail}>
@@ -154,7 +189,8 @@ export default function Rail() {
             className={({ isActive }) => (isActive ? `${styles.navItem} ${styles.navItemActive}` : styles.navItem)}
           >
             <span className={styles.navIco}>{item.icon}</span>
-            {item.label}
+            <span className={styles.navLabel}>{item.label}</span>
+            {item.to === '/jobs' && <JobsBadge />}
           </NavLink>
         ))}
       </nav>

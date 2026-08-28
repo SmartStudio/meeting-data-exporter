@@ -370,6 +370,75 @@ describe('AppShell · 顶栏', () => {
   })
 })
 
+/**
+ * 顶栏归位（简报「二」）：标题从路由派生，跟左栏导航同一份文案，不再是
+ * 一句空话；「浅色/深色/跟随系统」搬进了头像菜单——那半条断言现在在
+ * `tests/userMenu.test.tsx` 里（入口换了地方，覆盖跟着搬，不是被删掉）。
+ */
+describe('AppShell · 顶栏标题从路由派生', () => {
+  test('顶栏标题跟左栏导航同一份文案，切路由跟着换', async () => {
+    const user = userEvent.setup()
+    renderApp('/meetings')
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
+    expect(screen.getByTestId('topbar-title')).toHaveTextContent('会议记录')
+
+    await user.click(screen.getByRole('link', { name: '采集授权' }))
+    await waitFor(() => expect(screen.getByTestId('topbar-title')).toHaveTextContent('采集授权'))
+  })
+
+  test('内容预览页不占左栏导航（spec §3），顶栏标题仍然对得上', async () => {
+    const { unmount } = renderApp('/preview/m1')
+    await waitFor(() => expect(screen.getByTestId('topbar-title')).toHaveTextContent('内容预览'))
+    unmount()
+  })
+})
+
+/**
+ * 简报「一」的计数徽标：只加得出「定时任务」这一项，因为壳层唯一能读到的
+ * 共享数字是 `useSystemStatusView().openFailures`（逐字来自 `GET /admin/jobs`
+ * 的 `failuresTotal`）。会议数 / 程序数 / 规则数壳层拿不到真实数据，
+ * 按简报「拿不到就不显示，不要编」的口径没有加——这条测试盯的正是这两半：
+ * 有数据时显示，且颜色语义正确；默认（没有失败项）时不显示。
+ */
+describe('AppShell · 左栏「定时任务」计数徽标', () => {
+  test('没有失败项时不显示徽标', async () => {
+    renderApp('/meetings')
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
+    const jobsLink = screen.getByRole('link', { name: '定时任务' })
+    expect(within(jobsLink).queryByText(/^\d+$/)).not.toBeInTheDocument()
+  })
+
+  test('有失败项时显示红色徽标，数字就是 jobs 端点的 failuresTotal', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input)
+        const json = (body: unknown): Response =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        if (url.endsWith('/api/v1/admin/auth/me')) {
+          return json({ adminId: 'admin-1', username: 'chen.yw', role: 'admin' })
+        }
+        if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
+        if (url.endsWith('/api/v1/admin/jobs')) {
+          return json({ ...(healthyJobs() as Record<string, unknown>), failuresTotal: 2 })
+        }
+        if (url.includes('/api/v1/admin/meetings/triage')) return json(TRIAGE)
+        if (url.includes('/api/v1/admin/meetings')) {
+          return json({ rows: [SHELL_MEETING], total: 1, limit: 10, offset: 0 })
+        }
+        throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
+      }),
+    )
+    renderApp('/meetings')
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
+    const jobsLink = await screen.findByRole('link', { name: '定时任务' })
+    await waitFor(() => expect(within(jobsLink).getByText('2')).toBeInTheDocument())
+  })
+})
+
 describe('SystemStatus · NAS 断连：横幅是前端的活，数据不是', () => {
   // 这几条借顶栏那个状态下拉来切换形态，而它默认不渲染
   // （见 src/app/GlobalBar.tsx 的 useProtoControls），所以要先把标志打开。

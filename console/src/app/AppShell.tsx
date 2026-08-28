@@ -5,7 +5,7 @@ import { setUnauthorizedHandler } from '@/api/client'
 import { useResource } from '@/lib/useResource'
 import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
-import GlobalBar from './GlobalBar'
+import GlobalBar, { TopBarSlotProvider } from './GlobalBar'
 import Rail from './Rail'
 import { SessionProvider } from './session'
 import ShortcutBar, { shortcutsFor } from './ShortcutBar'
@@ -97,13 +97,19 @@ export default function AppShell() {
         <div className={styles.shell}>
           <Rail />
           <div className={styles.main}>
-            <GlobalBar />
-            <SystemStatus />
-            {/* 唯一的 <main>：一页只能有一个，所以它在外壳这一层，
-                页面自己用 PageShell 的 <section aria-labelledby> */}
-            <main className={hasShortcuts ? `${styles.view} ${styles.viewWithBar}` : styles.view}>
-              <Outlet />
-            </main>
+            {/* 顶栏插槽（页面标题旁边的一句话计数 + 主操作）：`GlobalBar`
+                在这一层读，`<Outlet />` 底下的页面组件用 `useTopBarSlot()`
+                在这一层写，两者是兄弟，所以 Provider 包在两者共同的父节点上
+                （见 `GlobalBar.tsx` 顶部关于两层 Context 的说明）。 */}
+            <TopBarSlotProvider>
+              <GlobalBar />
+              <SystemStatus />
+              {/* 唯一的 <main>：一页只能有一个，所以它在外壳这一层，
+                  页面自己用 PageShell 的 <section aria-labelledby> */}
+              <main className={hasShortcuts ? `${styles.view} ${styles.viewWithBar}` : styles.view}>
+                <Outlet />
+              </main>
+            </TopBarSlotProvider>
           </div>
           <ShortcutBar />
         </div>
