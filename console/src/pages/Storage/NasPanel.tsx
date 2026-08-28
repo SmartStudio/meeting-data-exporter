@@ -1,7 +1,8 @@
 import { Pill } from '@/ui/Pill'
+import { ProgressBar } from '@/ui/ProgressBar'
 import { fmtBytes, fmtDateTime } from '@/lib/format'
 import type { NasArchive } from '@/api/admin/storage'
-import { Stat } from './Stat'
+import { Hint, Stat } from './Stat'
 import styles from './Storage.module.css'
 
 /**
@@ -13,14 +14,26 @@ import styles from './Storage.module.css'
  *
  * - `//host/share` 或 `\\host\share` 是 UNC 写法，那种形式只有 SMB/CIFS 用；
  * - 其余（`/mnt/nas` 这类）是一个已经挂好的本地路径，**从这一侧看不出**
- *   它底下挂的是 NFS、SMB 还是一块本地盘。看不出就说看不出。
+ *   它底下挂的是 NFS、SMB 还是一块本地盘。
+ *
+ * **`text === null` 的那一支不再当主文案**：一句"协议未知 —— 后端只下发挂载点"
+ * 占的是管理员本来想看信息的位置，讲的却是"系统不知道某件事"。它降级成挂载点
+ * 旁边的一个 ⓘ：想查的人查得到，不想查的人不必先读完它才看到别的。
  */
-export function protocolOf(root: string | null): string {
-  if (root === null) return '协议未知 —— 挂载点还没配'
-  if (root.startsWith('//') || root.startsWith('\\\\')) {
-    return 'SMB / CIFS（按挂载点写法推断，后端没有下发协议）'
+export function protocolOf(root: string | null): { text: string | null; hint: string } {
+  if (root === null) {
+    return { text: null, hint: '协议未知：挂载点还没配，无从判断。' }
   }
-  return '协议未知 —— 后端只下发挂载点，从这一侧看不出它挂的是什么'
+  if (root.startsWith('//') || root.startsWith('\\\\')) {
+    return {
+      text: 'SMB / CIFS',
+      hint: '按挂载点的 UNC 写法推断——后端只下发挂载点，没有下发协议。',
+    }
+  }
+  return {
+    text: null,
+    hint: '协议未知：后端只下发挂载点，从这一侧看不出它挂的是 NFS、SMB 还是一块本地盘。',
+  }
 }
 
 export interface NasPanelProps {
@@ -28,7 +41,7 @@ export interface NasPanelProps {
 }
 
 /**
- * NAS 归档（spec §4.9 的第一块）：挂载点、协议、连通状态、最近检测时间、
+ * NAS 归档（spec §4.9 的第一块）：挂载点、连通状态、最近检测时间、
  * 容量三分、归档三态。
  *
  * **不可达不是错误态**：`nas.reachable === false` 时后端仍返回 200，这一块
@@ -37,6 +50,7 @@ export interface NasPanelProps {
  */
 export function NasPanel({ nas }: NasPanelProps) {
   const hasCapacity = nas.totalBytes !== null && nas.availableBytes !== null
+  const proto = protocolOf(nas.root)
 
   return (
     <section className={styles.panel} aria-labelledby="storage-nas-title">
@@ -45,16 +59,18 @@ export function NasPanel({ nas }: NasPanelProps) {
           <h2 id="storage-nas-title" className={styles.panelTitle}>
             NAS 归档
           </h2>
-          <p className={styles.path}>{nas.root ?? '未配置挂载点（MDE_NAS_ROOT 没设）'}</p>
+          <p className={styles.path}>
+            <span>{nas.root ?? '未配置挂载点'}</span>
+            <span className={styles.protocol} data-testid="nas-protocol">
+              {proto.text !== null && <span className={styles.protocolText}>{proto.text}</span>}
+              <Hint text={proto.hint} />
+            </span>
+          </p>
         </div>
         <Pill tone={nas.reachable ? 'brand' : 'fail'}>{nas.reachable ? '连通正常' : '无法连通'}</Pill>
       </div>
 
       <p className={styles.meta}>
-        <span data-testid="nas-protocol">{protocolOf(nas.root)}</span>
-        <span className={styles.metaSep} aria-hidden="true">
-          ·
-        </span>
         最近检测 {fmtDateTime(nas.checkedAt)}
         {nas.latencyMs !== null && `（耗时 ${nas.latencyMs} ms）`}
       </p>
@@ -74,55 +90,49 @@ export function NasPanel({ nas }: NasPanelProps) {
               <span className={styles.capKeyItem}>
                 <i className={`${styles.swatch} ${styles.swatchUs}`} aria-hidden="true" />
                 本系统归档 {fmtBytes(nas.usedByUsBytes)}
+                <Hint text="本系统自己的记账（已归档资产声明的字节数之和），与 NAS 上的真实占用可能对不齐；旁边的已用与剩余则是挂载点报上来的读数。" />
               </span>
               <span className={styles.capKeyItem}>
                 <i className={`${styles.swatch} ${styles.swatchOthers}`} aria-hidden="true" />
                 其他占用 {fmtBytes(nas.usedByOthersBytes)}
               </span>
-              <span className={styles.capRest}>
-                总容量 {fmtBytes(nas.totalBytes)} · 剩余 {fmtBytes(nas.availableBytes)}
+              <span className={styles.capKeyItem}>
+                <i className={`${styles.swatch} ${styles.swatchFree}`} aria-hidden="true" />
+                剩余 {fmtBytes(nas.availableBytes)}
               </span>
+              <span className={styles.capRest}>总容量 {fmtBytes(nas.totalBytes)}</span>
             </div>
-            <p className={styles.statNote}>
-              「本系统归档」是我们自己的记账（已归档资产声明的字节数之和），与 NAS
-              上的真实占用可能对不齐；「已用 / 剩余」两个数照 statfs 原样透出。
-            </p>
           </>
         ) : (
           <p className={styles.note}>
-            容量暂不可得：{nas.reachable ? '这一轮探测没有拿到 statfs 的读数。' : 'NAS 不可达时探测拿不到容量。'}
-            本系统自己记账的归档量是 {fmtBytes(nas.usedByUsBytes)}，但它不能回答"NAS 还剩多少"。
+            容量暂不可得
+            {nas.reachable ? '：这一轮探测没有拿到读数。' : '：NAS 不可达时探测拿不到容量。'}
+            本系统记账的归档量是 {fmtBytes(nas.usedByUsBytes)}。
           </p>
         )}
       </div>
 
       <div className={styles.stats}>
         <Stat id="archived" label="已归档会议" value={nas.archivedMeetings} />
+        {/* 「等待归档」与「归档报错」的名字是有来历的，见文件末尾那段注释。 */}
         <Stat
           id="pending"
-          label="尚未归档完成"
+          label="等待归档"
           value={nas.pendingMeetings}
-          note={
-            // 这一格从来不是纯粹的"排队中"。后端接上 job_failures 之前，
-            // "一直归档不成功"的那些在库里与"还没轮到"长得一模一样；接上之后
-            // 两个数**有意重叠**——一场归档不上的会议两边各算一次。
-            nas.failedMeetings === null
-              ? '含还没轮到的和一直归档不成功的两种——后者现在还没有单独的数（见右边那一格）。'
-              : '含还没轮到的和一直归档不成功的两种，与右边的「归档失败」有意重叠：一场归档不上的会议两边各算一次。'
-          }
+          hint="资产已经下载完、但还没有全部写进 NAS 的场次。含还没轮到的和一直归不上去的两种。"
         />
         <Stat
           id="archive-failed"
-          label="归档失败"
+          label="归档报错"
           value={nas.failedMeetings}
-          // 0 不该是红的——那是"确实没有失败"，是好消息
+          // 0 不该是红的——那是"确实没有报错"，是好消息
           tone={nas.failedMeetings !== null && nas.failedMeetings > 0 ? 'fail' : 'plain'}
           missingText="暂不可得"
-          note={
+          hint={
             nas.failedMeetings === null
-              ? (nas.failedMeetingsNote ??
-                '后端没有给出这个数，也没说为什么。在它给出之前，这里不编一个数。')
-              : undefined
+              ? (nas.failedMeetingsNote ?? '后端没有给出这个数，也没说为什么。在它给出之前，这里不编一个数。')
+              : '归档任务自己记下的报错、至今没有恢复的场次，一场会议一条。它是「等待归档」里已经报过错的那一部分；' +
+                '会议记录页的「归档失败」数的是另一件事——超过 6 小时还没归上去的场次，不要求两个数相等。'
           }
         />
       </div>
@@ -133,26 +143,48 @@ export function NasPanel({ nas }: NasPanelProps) {
 /**
  * 容量条。三段：本系统 / 其他 / 剩余（剩余就是轨道底色）。
  *
- * `role="img"` + 一句把三个数都念出来的 `aria-label`：颜色不能是唯一的信息
- * 载体，读屏用户没有视觉宽度可看。宽度用百分比，不写死像素。
+ * **为什么还是一条条**：真实数据上本系统只占 0.53%（4.93 GB / 926 GB），
+ * 条形确实表达不了这个量级——但这条条回答的主要问题不是"我们占了多少"，
+ * 而是"这块卷还剩多少空间"（39% 剩余），那是一个不折不扣的比例问题，条形是
+ * 对的载体。本系统那一份留在条上是因为它回答第二个问题："卷要满了的时候，
+ * 是不是我们撑的"——答案在这里是一眼可见的"不是"。它的真实字节数由图例给出，
+ * 不靠宽度读。
+ *
+ * `role="img"` + 一句把三个数都念出来的 `aria-label`（由 ProgressBar 渲染）：
+ * 颜色不能是唯一的信息载体，读屏用户没有视觉宽度可看。
  */
 function CapacityBar({ nas, total, available }: { nas: NasArchive; total: number; available: number }) {
-  const pct = (n: number): number => (total > 0 ? Math.max(0, Math.min(100, (n / total) * 100)) : 0)
-  const usPct = pct(nas.usedByUsBytes)
-  const othersPct = pct(nas.usedByOthersBytes ?? 0)
-
   return (
-    <div
+    <ProgressBar
       className={styles.cap}
-      role="img"
-      aria-label={
+      max={total}
+      segments={[
+        { id: 'us', value: nas.usedByUsBytes, tone: 'brand' },
+        { id: 'others', value: nas.usedByOthersBytes ?? 0, tone: 'neutral' },
+      ]}
+      label={
         `容量占用：本系统归档 ${fmtBytes(nas.usedByUsBytes)}，` +
         `其他占用 ${fmtBytes(nas.usedByOthersBytes)}，` +
         `剩余 ${fmtBytes(available)}，总容量 ${fmtBytes(total)}`
       }
-    >
-      <i className={styles.capUs} style={{ width: `${usPct}%` }} />
-      <i className={styles.capOthers} style={{ width: `${othersPct}%` }} />
-    </div>
+    />
   )
 }
+
+/* ── 「等待归档」/「归档报错」这两个名字 ─────────────────────────────
+ *
+ * 这两格从前叫「尚未归档完成」和「归档失败」，各配一段正文解释它们为什么
+ * 对不上。改名而不是改文案，理由有两条：
+ *
+ * 1. **「归档失败」这个词在两个页面上是两个数**。会议记录页分诊条的「归档失败」
+ *    数的是 `console-meetings.ts` 那条时间判据——最后一个资产下载完 6 小时后
+ *    仍然没进 `meeting_archives`；这一页数的是归档任务记下来、还没恢复的报错行。
+ *    真实数据上前者是 1、后者是 0：那一场会议压根没轮到归档轮跑，所以没人替它
+ *    记过错。**两个口径都对，是同一个词不该同时指两件事**。这一页让出这个词。
+ * 2. 从前那段"与右边的「归档失败」有意重叠"的正文，是作者知道两个数会打架、
+ *    却选择写一段话而不是改设计。名字互斥之后那段话就没有必要了。
+ *
+ * 后端的两个口径**不是 bug，也不要去"对齐"**——`src/store/console-meetings.ts`
+ * 的 `ARCHIVE_GRACE_SEC` 注释里逐条写了为什么两条判据都得留着：`job_failures`
+ * 里没有行不等于归档没出事（还没轮到、或者进程在记账之前就断了）。
+ */

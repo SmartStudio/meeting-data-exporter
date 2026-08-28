@@ -19,6 +19,11 @@ import { fmtBytes, fmtDateTime } from '../../src/lib/format'
  *   - `failedMeetings` 拿不到时显示"暂不可得"，不是 0——0 的意思是"确实没有"
  *   - `defaultDaysSource` 的三个取值在界面上分得开，尤其 `invalid`
  *
+ * 另外这一页的口径说明**一律挂在 ⓘ 的 title / aria-label 上，不在正文里**
+ * （原先 13 处说明性散文占了全页可见文字的 48%）。所以下面凡是断言"这一格
+ * 说清了口径"的测试，查的是那个提示标记的可及名，而不是 textContent——
+ * 把它改回 toHaveTextContent 就等于把散文放回页面上。
+ *
  * 另外，系统状态横幅上的「暂停到期清理」现在链到 `/storage`（见 F0 报告 §2.2），
  * 所以「暂停/恢复到期清理」这个动作必须在这一页上真的做得成。
  */
@@ -175,15 +180,81 @@ describe('NAS 归档', () => {
     expect(within(cap).getByRole('img')).toHaveAccessibleName(/本系统/)
   })
 
-  test('归档三态：已归档 / 尚未归档完成 / 归档失败', async () => {
+  test('容量条三段是三个不同的填充，不是"最大的两段同一个灰"', async () => {
+    // 真实数据上本系统只占 0.53%，而「其他占用」与「剩余」是条上最大的两段。
+    // 它们从前都是浅灰（--ink-4 opacity .4 与轨道底色），肉眼分不开。现在
+    // 自有=--brand、他人=--ink-4 实色、剩余=轨道底色，三段两两可辨。
+    await renderReady()
+    const bar = within(screen.getByTestId('nas-capacity')).getByRole('img')
+    const segs = Array.from(bar.querySelectorAll('[data-seg]'))
+    expect(segs.map((e) => e.getAttribute('data-seg'))).toEqual(['us', 'others'])
+    // 各段的类名互不相同：同一个类就是同一个颜色
+    const tone = (e: Element): string =>
+      (e.getAttribute('class') ?? '').split(' ').find((c) => c.includes('brand') || c.includes('neutral')) ?? ''
+    expect(tone(segs[0]!)).not.toBe(tone(segs[1]!))
+    expect(tone(segs[0]!)).not.toBe('')
+    expect(tone(segs[1]!)).not.toBe('')
+  })
+
+  test('占比极小的那一段仍然看得见——0.53% 不许缩成 0 像素', async () => {
+    // 4.93 GB / 926 GB 的真实比例。宽度百分比照实算，但非零的段带一个最小
+    // 渲染宽度类，否则 375px 下它不足 2px。
+    answer(
+      '/api/v1/admin/storage',
+      ok(
+        storagePayload({
+          nas: { totalBytes: 994610155520, availableBytes: 385991004160, usedByUsBytes: 5292594122, usedByOthersBytes: 603326557238 },
+        }),
+      ),
+    )
+    await renderReady()
+    const bar = within(screen.getByTestId('nas-capacity')).getByRole('img')
+    const us = bar.querySelector('[data-seg="us"]')!
+    expect(Number(us.getAttribute('data-pct'))).toBeCloseTo(0.53, 1)
+    expect(us.getAttribute('class')).toMatch(/segMin/)
+  })
+
+  test('容量口径不再是正文——"我们的记账可能对不齐"挂在图例的 ⓘ 上', async () => {
+    // 从前这里有一段话，里面还带着 statfs 这个 syscall 名。技术名词不上屏，
+    // 口径进悬停：删掉它管理员不会做错事，但要查得到。
+    await renderReady()
+    const cap = screen.getByTestId('nas-capacity')
+    expect(cap).not.toHaveTextContent(/statfs/)
+    const hint = within(cap).getByRole('note', { name: /记账/ })
+    // title 与 aria-label 是同一句：鼠标和读屏读到的必须一致
+    expect(hint.getAttribute('title')).toBe(hint.getAttribute('aria-label'))
+    expect(hint).toHaveAccessibleName(/对不齐/)
+  })
+
+  test('归档三态：已归档 / 等待归档 / 归档报错', async () => {
     await renderReady()
     expect(stat('archived')).toHaveTextContent('71')
     expect(stat('pending')).toHaveTextContent('2')
+    expect(stat('archived')).toHaveTextContent('已归档会议')
+    expect(stat('pending')).toHaveTextContent('等待归档')
   })
 
-  test('「尚未归档完成」不能说成纯粹的等待——它同时含着一直归档不成功的那些', async () => {
+  test('这一页不再出现「归档失败」这个词——它在会议记录页数的是另一件事', async () => {
+    // 会议记录页 KPI 的「归档失败」走 console-meetings.ts 那条时间判据（最后
+    // 一个资产下载完 6 小时后仍未进 meeting_archives）；这一页数的是
+    // job_failures 里未恢复的报错行。两个口径都对，但同一个词不能指两件事。
+    // 真实数据上前者 1、后者 0，界面上从前没有任何地方解释得了这个差。
+    answer('/api/v1/admin/storage', ok(storagePayload({ nas: { failedMeetings: 0, failedMeetingsNote: undefined } })))
     await renderReady()
-    expect(stat('pending')).toHaveTextContent(/还没轮到|没成功/)
+    expect(panel('NAS 归档').textContent ?? '').not.toContain('归档失败')
+    expect(stat('archive-failed')).toHaveTextContent('归档报错')
+  })
+
+  test('两格的口径写在各自的 ⓘ 上，不在正文里——三张卡是同一个形状', async () => {
+    answer('/api/v1/admin/storage', ok(storagePayload({ nas: { failedMeetings: 0, failedMeetingsNote: undefined } })))
+    await renderReady()
+    // 「等待归档」含着"还没轮到"和"一直归不上去"两种，这件事不能丢，只是不上正文
+    expect(within(stat('pending')).getByRole('note')).toHaveAccessibleName(/还没轮到/)
+    // 「归档报错」说得出自己与会议记录页那个数的关系
+    expect(within(stat('archive-failed')).getByRole('note')).toHaveAccessibleName(/归档失败/)
+    // 正文一句都没有：卡片解剖是「标签(+ⓘ) + 一个数」，没有第三种长相
+    expect(stat('pending').textContent?.replace(/[\sⓘ]/g, '')).toBe('等待归档2')
+    expect(stat('archived').textContent?.replace(/[\sⓘ]/g, '')).toBe('已归档会议71')
   })
 
   test('failedMeetings 为 null 时显示「暂不可得」并给出原因，不显示成 0', async () => {
@@ -191,7 +262,8 @@ describe('NAS 归档', () => {
     const failed = stat('archive-failed')
     expect(failed).toHaveTextContent('暂不可得')
     expect(failed).not.toHaveTextContent(/(^|\D)0(\D|$)/)
-    expect(failed).toHaveTextContent(/尚未落库/)
+    // 拿不到的原因还在，只是挂在 ⓘ 上而不是印成一行小字
+    expect(within(failed).getByRole('note')).toHaveAccessibleName(/尚未落库/)
   })
 
   test('A8 接上 job_failures 之后，同一格显示真实数字', async () => {
@@ -237,18 +309,26 @@ describe('NAS 归档', () => {
     expect(panel('NAS 归档')).toHaveTextContent('未配置')
   })
 
-  test('协议是从挂载点形式推断的，界面上要说明这一点', async () => {
+  test('协议是从挂载点形式推断的，"是推断"这件事说在 ⓘ 上', async () => {
     // 后端没有下发协议字段（只有挂载点）。写死一句"SMB 协议"是替一个我们
-    // 没有的探测下结论；这里只说观察到的形式，并标明是推断。
+    // 没有的探测下结论；这里只说观察到的形式，把"是推断"放进悬停。
     answer('/api/v1/admin/storage', ok(storagePayload({ nas: { root: '//nas01.internal/meetings' } })))
     await renderReady()
-    expect(screen.getByTestId('nas-protocol')).toHaveTextContent(/SMB/)
-    expect(screen.getByTestId('nas-protocol')).toHaveTextContent(/推断/)
+    const proto = screen.getByTestId('nas-protocol')
+    expect(proto).toHaveTextContent(/SMB/)
+    expect(within(proto).getByRole('note')).toHaveAccessibleName(/推断/)
   })
 
-  test('挂载点是本地路径时协议未知——不猜一个出来', async () => {
+  test('挂载点是本地路径时不猜协议，而且"不知道"不占主文案的位置', async () => {
+    // 从前这里是一句主文案：「协议未知 —— 后端只下发挂载点，从这一侧看不出
+    // 它挂的是什么」。它诚实，但占的是管理员本来想看信息的位置，讲的却是
+    // 系统不知道某件事。降级成 ⓘ：查得到，但不再挡着别的。
     await renderReady()
-    expect(screen.getByTestId('nas-protocol')).toHaveTextContent(/未知/)
+    const proto = screen.getByTestId('nas-protocol')
+    expect(proto).not.toHaveTextContent(/未知/)
+    expect(within(proto).getByRole('note')).toHaveAccessibleName(/协议未知/)
+    // 猜一个协议出来仍然是不许的
+    expect(panel('NAS 归档')).not.toHaveTextContent(/SMB|NFS 协议/)
   })
 })
 
@@ -268,9 +348,27 @@ describe('本地保留窗口', () => {
     const src = screen.getByTestId('retention-default')
     expect(src).toHaveTextContent('30 天')
     expect(src).not.toHaveTextContent(/未配置|非法/)
+    // 「默认保留天数」这个事实在这一页上只说一遍：徽标。旁边不再跟一段正文。
+    expect(screen.queryByTestId('retention-alert')).toBeNull()
   })
 
-  test('defaultDaysSource=fallback：说明是没配过、用的内置默认', async () => {
+  test('天数一律来自接口，页面上没有写死的 30', async () => {
+    // 管理员把它改成 60 之后，这一页不许还在说 30。
+    answer(
+      '/api/v1/admin/storage',
+      ok(storagePayload({ retention: { defaultDays: 60, defaultDaysRaw: '60' } })),
+    )
+    await renderReady()
+    const src = screen.getByTestId('retention-default')
+    expect(src).toHaveTextContent('60 天')
+    expect(panel('本地保留窗口')).not.toHaveTextContent('30 天')
+    expect(within(src).getByRole('note')).toHaveAccessibleName(/60 天/)
+  })
+
+  test('defaultDaysSource=fallback：天数照给，"没配过"降级到 ⓘ 上', async () => {
+    // 从前这里是一段正文，里面还带着 default_retention_days 这个数据库列名。
+    // 判据："删掉它管理员会不会做错事"——不会：天数就在徽标上，改它的按钮
+    // 就在下面，"这个 30 是配出来的还是兜底的"不改变任何一次操作。
     answer(
       '/api/v1/admin/storage',
       ok(storagePayload({ retention: { defaultDaysSource: 'fallback', defaultDaysRaw: null } })),
@@ -278,7 +376,9 @@ describe('本地保留窗口', () => {
     await renderReady()
     const src = screen.getByTestId('retention-default')
     expect(src).toHaveTextContent('30 天')
-    expect(src).toHaveTextContent(/没有配过|未配置/)
+    expect(screen.queryByTestId('retention-alert')).toBeNull()
+    expect(panel('本地保留窗口')).not.toHaveTextContent('default_retention_days')
+    expect(within(src).getByRole('note')).toHaveAccessibleName(/没有被设定过/)
   })
 
   test('defaultDaysSource=invalid：脏值原样摆出来，且不谎称系统在用 30 兜底', async () => {
@@ -296,8 +396,12 @@ describe('本地保留窗口', () => {
     await renderReady()
     const src = screen.getByTestId('retention-default')
     expect(src).toHaveTextContent('非法')
-    expect(src).toHaveTextContent('abc')
     expect(src).not.toHaveTextContent('30 天')
+    // 这一支**留正文**：删掉它管理员就不会去修，而坏掉的配置会让此后新归档的
+    // 会议拿到一个算不出到期日的保留期。脏值原样摆出来。
+    const alert = screen.getByTestId('retention-alert')
+    expect(alert).toHaveTextContent('abc')
+    expect(alert).toHaveTextContent(/1–365/)
   })
 
   test('来源是个没见过的取值时说"未知"，不折成其中一种', async () => {
@@ -307,7 +411,7 @@ describe('本地保留窗口', () => {
     )
     await renderReady()
     expect(screen.getByTestId('retention-default')).toHaveTextContent(/未知/)
-    expect(screen.getByTestId('retention-default')).toHaveTextContent('env')
+    expect(screen.getByTestId('retention-alert')).toHaveTextContent('env')
   })
 
   test('页面底部那段话逐字留着——它是产品模型的复述，不是装饰', async () => {

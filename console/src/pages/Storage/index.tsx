@@ -32,8 +32,8 @@ import styles from './Storage.module.css'
  * 1. **写完重取，不做乐观更新**（计划 G-c）。每个动作都是"发请求 → 拿后端
  *    的回显 → 重新 `fetchStorage()`"。尤其暂停开关：后端是写后重读，
  *    回显的是库里此刻的真值，跟请求体不一定一样（别人可能同时改过）。
- * 2. **拿不到的数不显示成 0**。`failedMeetings` 现在恒为 null（A8 才接上
- *    `job_failures`），显示"暂不可得"并附上后端给的原因。
+ * 2. **拿不到的数不显示成 0**。`failedMeetings` 在老网关上是 null，显示
+ *    "暂不可得"并把后端给的原因挂在那一格的 ⓘ 上——0 的意思是"确实没有"。
  * 3. **NAS 不可达不是错误态**。后端仍返回 200，这一页照常渲染——把它折成
  *    "读取失败"会把最该被看到的东西（还有几场没归档、清理停没停）藏起来。
  */
@@ -186,12 +186,12 @@ export default function StoragePage() {
 
   /* ── 渲染 ─────────────────────────────────────────────────── */
 
-  const description =
-    'NAS 是长期唯一存放地；本地只是一个到期就会清空的取用窗口。这一页回答：归档到哪儿去了、' +
-    '还剩多少空间、哪些会议还取得到、什么时候会被删。'
-
+  // 页头不给导语。原先那两行（"NAS 是长期唯一存放地……这一页回答：……"）
+  // 是一段目录——下面两块面板的标题「NAS 归档」「本地保留窗口」已经把它逐条
+  // 说完了，而"到期就会清空"这件事在底下那段产品模型里讲得比它准。判据是
+  // "删掉它，用户会不会做错事"：不会，所以删。PageShell 的 description 是选填的。
   return (
-    <PageShell title="归档存储" description={description}>
+    <PageShell title="归档存储">
       {data === null && res.state === 'loading' && (
         <div className={styles.skeletons} data-testid="storage-loading">
           <Skeleton width="40%" />

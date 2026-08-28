@@ -70,7 +70,7 @@ export function RetentionDaysSheet(props: RetentionDaysSheetProps) {
 
       <p className={styles.note}>
         只影响<b>此后新归档</b>的会议。已经归档的会议按它归档那一刻记下的天数继续计时，
-        改这里不会追溯——要给某一场续命，用会议详情里的「延长 30 天」。
+        改这里不会追溯——要给某一场续命，用会议记录页那一行上的「＋30 天」。
       </p>
       <p className={styles.note}>
         改小意味着一批会议会提前到期，下一轮清理就会删掉它们的本地文件（NAS 上的副本与

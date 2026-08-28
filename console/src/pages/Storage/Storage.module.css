@@ -34,13 +34,69 @@
   color: var(--ink);
 }
 
-/* 挂载点这类路径用等宽字体：中文正文里混一段路径，比例字体会让它糊成一团。 */
+/* 挂载点这类路径用等宽字体：中文正文里混一段路径，比例字体会让它糊成一团。
+   协议那一小块跟在同一行里，靠 flex-wrap 在窄屏换行而不是把路径撑出去。 */
 .path {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
   margin: var(--s-1) 0 0;
   font-family: var(--mono);
   font-size: var(--t-xs);
   color: var(--ink-2);
   overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.path > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.protocol {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  flex: none;
+}
+
+.protocolText {
+  font-family: var(--sans);
+  color: var(--ink-3);
+}
+
+/* 口径说明的 ⓘ。它是一个可聚焦的提示标记，不是文字内容——所以用 --ink-4
+   （图形专用），并且始终 flex: none，不参与折行。 */
+.hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  margin-left: var(--s-1);
+  font-family: var(--sans);
+  font-size: var(--t-xs);
+  line-height: 1;
+  color: var(--ink-4);
+  cursor: help;
+  border-radius: var(--r-pill);
+}
+
+.hint:hover,
+.hint:focus-visible {
+  color: var(--ink-2);
+}
+
+.hint:focus-visible {
+  outline: var(--s-0) solid var(--brand);
+  outline-offset: var(--s-px);
+}
+
+/* 徽标 + 它的 ⓘ。徽标基元不收 title，所以提示标记挂在外面这一层。 */
+.pillHint {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
 }
 
 .meta {
@@ -93,23 +149,10 @@
 
 /* ── 容量条 ───────────────────────────────────────────────────── */
 
+/* 轨道本身（高度/圆角/底色/裁剪）由 ProgressBar 基元管，这里只管它在页面上
+   的位置。三段的填充色也在基元里：--brand / --ink-4 / 轨道底色 --line。 */
 .cap {
-  display: flex;
-  height: var(--s-3);
   margin: var(--s-5) 0 0;
-  border-radius: var(--r-pill);
-  background: var(--rail);
-  overflow: hidden;
-}
-
-.capUs {
-  background: var(--brand);
-}
-
-/* --ink-4 是图形专用令牌（描边/分隔/填充），这里正是"填充"，不是文字。 */
-.capOthers {
-  background: var(--ink-4);
-  opacity: 0.4;
 }
 
 .capKey {
@@ -138,9 +181,17 @@
   background: var(--brand);
 }
 
+/* --ink-4 是图形专用令牌（描边/分隔/填充），这里正是"填充"，不是文字。
+   **不要加 opacity**：压出来的灰与轨道底色几乎同色，一条容量条上最大的
+   两段（其他占用 / 剩余）就此肉眼分不开——这正是这一轮要修的毛病。 */
 .swatchOthers {
   background: var(--ink-4);
-  opacity: 0.4;
+}
+
+/* 剩余那一段在条上就是轨道底色，图例里也用同一个值，两边对得上。
+   它比表面底色深，白底上分得出来。 */
+.swatchFree {
+  background: var(--line);
 }
 
 .capRest {
@@ -169,6 +220,8 @@
 }
 
 .statK {
+  display: flex;
+  align-items: center;
   font-size: var(--t-xs);
   color: var(--ink-3);
 }
@@ -192,13 +245,6 @@
 .statVFail {
   composes: statV;
   color: var(--fail);
-}
-
-.statNote {
-  margin-top: var(--s-2);
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-  line-height: 1.7;
 }
 
 /* ── 动作区 ───────────────────────────────────────────────────── */

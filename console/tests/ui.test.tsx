@@ -290,6 +290,76 @@ describe('ProgressBar', () => {
     const fillRule = ruleBody(progressCss, '.fill {')
     expect(fillRule).not.toMatch(/border-radius/)
   })
+
+  /* ── 多段（容量条）───────────────────────────────────────────── */
+
+  test('多段模式渲染成 role=img，不是 progressbar——一条被三方分掉的条没有单一 valuenow', () => {
+    render(
+      <ProgressBar
+        max={1000}
+        label="容量占用：本系统 5，其他 600，剩余 395"
+        segments={[
+          { id: 'us', value: 5, tone: 'brand' },
+          { id: 'others', value: 600, tone: 'neutral' },
+        ]}
+      />,
+    )
+    expect(screen.getByRole('img', { name: /本系统/ })).toBeInTheDocument()
+    expect(screen.queryByRole('progressbar')).toBeNull()
+  })
+
+  test('各段宽度按 value/max 算，剩下的部分不画元素——露出轨道底色', () => {
+    const { container } = render(
+      <ProgressBar
+        max={1000}
+        label="容量"
+        segments={[
+          { id: 'us', value: 5, tone: 'brand' },
+          { id: 'others', value: 600, tone: 'neutral' },
+        ]}
+      />,
+    )
+    const segs = Array.from(container.querySelectorAll('[data-seg]')) as HTMLElement[]
+    expect(segs).toHaveLength(2)
+    expect(segs[0]!.style.width).toBe('0.5%')
+    expect(segs[1]!.style.width).toBe('60%')
+    // 三段三个不同的实色：brand / ink-4 / 轨道底色。任何一个 tone 类都不许带
+    // opacity——压出来的灰与轨道底色几乎同色，最大的两段就此分不开。
+    expect(ruleBody(progressCss, '.neutral {')).not.toMatch(/opacity/)
+    expect(ruleBody(progressCss, '.neutral {')).toMatch(/var\(--ink-4\)/)
+    expect(ruleBody(progressCss, '.track {')).toMatch(/var\(--line\)/)
+  })
+
+  test('非零但极小的段有最小可见宽度——0.5% 在窄屏下不许缩成 0 像素', () => {
+    const { container } = render(
+      <ProgressBar
+        max={1000}
+        label="容量"
+        segments={[
+          { id: 'tiny', value: 5, tone: 'brand' },
+          { id: 'zero', value: 0, tone: 'neutral' },
+        ]}
+      />,
+    )
+    const segs = Array.from(container.querySelectorAll('[data-seg]'))
+    expect(segs[0]!.getAttribute('class')).toMatch(/segMin/)
+    // 真的是 0 的段不该被撑出一个最小宽度——那会凭空画出一份并不存在的占用
+    expect(segs[1]!.getAttribute('class')).not.toMatch(/segMin/)
+    expect(ruleBody(progressCss, '.segMin {')).toMatch(/min-width:\s*var\(--s-1\)/)
+  })
+
+  test('段宽是数据算出来的，不许被 flex 收缩改写', () => {
+    expect(ruleBody(progressCss, '.seg {')).toMatch(/flex:\s*none/)
+  })
+
+  test('单段用法一个字没改——会议记录页的保留期条照旧', () => {
+    // 归档存储页为容量条给这个基元加了多段支持，Meetings 那边的调用不能被带坏。
+    render(<ProgressBar value={40} max={100} tone="warn" size="sm" label="本地保留期已用 40%" />)
+    const bar = screen.getByRole('progressbar', { name: '本地保留期已用 40%' })
+    expect(bar).toHaveAttribute('aria-valuenow', '40')
+    expect(bar.querySelector('[data-seg]')).toBeNull()
+    expect((bar.firstElementChild as HTMLElement).style.transform).toBe('scaleX(0.4)')
+  })
 })
 
 describe('Skeleton', () => {
