@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { installProtoApi, resetProtoWorld, setProtoSystemState } from '../src/api/mock/install'
-import { MEETINGS } from '../src/api/mock/meetings'
+import { MEETINGS, MOCK_NOW } from '../src/api/mock/meetings'
+import { buildRules, ruleHits } from '../src/api/mock/rules'
 import { listMeetings, fetchTriage, getMeeting } from '../src/api/admin/meetings'
 import { listPrograms } from '../src/api/admin/grants'
 
@@ -155,6 +156,93 @@ describe('原型模式的假后端', () => {
     const body = (await res.json()) as { error: string; detail: string }
     expect(body.error).toBe('proto_not_implemented')
     expect(body.detail).toContain('api/mock/install.ts')
+  })
+
+  /**
+   * 假后端对「坏 conds」的判法，必须与真实后端逐字一致。
+   *
+   * 这一层原来把「conds 不是数组」和「conds 是空数组」都当成"无条件 → 命中全部"，
+   * 于是 `?proto=1` 下那条种子坏规则（#320）显示「命中全部 9 场」、文案写着
+   * "它会命中全部会议"；而 `src/policy/conds.ts` 的 `evaluateRule` 对非数组 conds
+   * 判的是 `matched: false`，`describeRuleIssues` 报的是"这条规则不会命中任何会议"
+   * ——**方向正好相反**，而且反在数据出境的那道闸门上。
+   *
+   * 它能反着写还活下来，是因为没有任何一条测试钉住这个口径。补上。
+   * 这两条断言里的字符串来自 `src/policy/conds.ts:613` 与 `src/store/policy.ts:333`，
+   * 后端改了这句话，这里就该红。
+   */
+  test('坏 conds 的判法与真实后端一致：非数组命中 0，空数组命中全部', () => {
+    const all = MEETINGS.length
+    expect(all).toBeGreaterThan(0)
+
+    // conds 不是数组 → 规则读不出来 → 不参与匹配 → 0 场
+    // （src/store/policy.ts 的 CONDS_UNPARSABLE：兜底值绝不能是 []，
+    //   "那等于让一条坏掉的规则放行全部会议"）
+    expect(ruleHits({ conds: { title: '复盘' } }, MEETINGS)).toHaveLength(0)
+    expect(ruleHits({ conds: 'nope' }, MEETINGS)).toHaveLength(0)
+    expect(ruleHits({ conds: null }, MEETINGS)).toHaveLength(0)
+
+    // conds 是**合法的空数组** → "规则没有条件，匹配全部会议" → 全部
+    // （src/policy/conds.ts 的 evaluateRule 对 length === 0 显式判 matched: true）
+    expect(ruleHits({ conds: [] }, MEETINGS)).toHaveLength(all)
+  })
+
+  test('种子里那条坏规则的文案与后端 describeRuleIssues 说的是同一件事', () => {
+    const broken = buildRules(MOCK_NOW).find((r) => r.id === 320)
+    expect(broken).toBeDefined()
+    // 后端两处原话（src/policy/conds.ts:613、src/store/policy.ts:333）都是这一句
+    expect(broken!.issues.join(' ')).toContain('conds 不是数组，这条规则不会命中任何会议')
+    // 反向断言：不许再出现原来那句相反的话
+    expect(broken!.issues.join(' ')).not.toContain('会命中全部会议')
+    expect(broken!.matchCount).toBe(0)
+    expect(broken!.matchScanned).toBe(MEETINGS.length)
+
+    // 归档兜底那条是**合法的空数组**，它才是真的命中全部——两者别再混为一谈
+    const catchAll = buildRules(MOCK_NOW).find((r) => r.id === 210)
+    expect(catchAll!.conds).toEqual([])
+    expect(catchAll!.matchCount).toBe(MEETINGS.length)
+  })
+
+  /**
+   * `GET /rules` 的命中数是**现算**的，不是装载那一刻的快照。
+   *
+   * 快照版本的后果：`PATCH /rules/:id` 改完条件回到列表页，数字还是改之前的；
+   * 而规则编辑器的实时预览（`POST /rules/preview`）走的是真算——同一页上两个数
+   * 对不上，正是这一页最不该出现的那种不一致。
+   */
+  test('改完规则条件，列表里的命中数跟着变；新建的规则也有数字', async () => {
+    const read = async (id: number): Promise<{ matchCount?: number; matchScanned?: number }> => {
+      const res = await fetch('/api/v1/admin/rules')
+      const body = (await res.json()) as { rules: Array<{ id: number; matchCount?: number; matchScanned?: number }> }
+      const row = body.rules.find((r) => r.id === id)
+      expect(row).toBeDefined()
+      return row!
+    }
+
+    // #310「标题含『大会』」，种子里只有一场全员大会
+    expect((await read(310)).matchCount).toBe(1)
+
+    // 把条件改成「标题含『复盘』」。期望值从种子里数出来，不写死——
+    // 种子会议改了这条测试该跟着变，而不是留一个恰好对不上的常量
+    const expected = MEETINGS.filter((m) => m.title.includes('复盘')).length
+    expect(expected).toBeGreaterThan(1)
+    const patched = await fetch('/api/v1/admin/rules/310', {
+      method: 'PATCH',
+      body: JSON.stringify({ conds: [{ f: 'title', op: 'has', v: '复盘' }], reason: '测试' }),
+    })
+    expect(patched.status).toBe(200)
+    const after = await read(310)
+    expect(after.matchCount).toBe(expected)
+    expect(after.matchScanned).toBe(MEETINGS.length)
+
+    // 新建的规则不再永远显示"—"
+    const created = await fetch('/api/v1/admin/rules', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'allow', priority: 10, conds: [], effect: 'deny', reason: '测试' }),
+    })
+    const { rule } = (await created.json()) as { rule: { id: number } }
+    // conds 是合法空数组 → 匹配全部（与 evaluateRule 一致）
+    expect((await read(rule.id)).matchCount).toBe(MEETINGS.length)
   })
 
   test('不打向 admin 的请求原样交给底层 fetch，不被拦下', async () => {

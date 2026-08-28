@@ -11,6 +11,7 @@ import {
   buildRulesSchema,
   byPrecedence,
   type ProtoRule,
+  ruleHits,
 } from './rules'
 import { buildStorage, cleanupItem, expiredNotPurged, initialRetention, type RetentionConfig } from './storage'
 import { applyNasDown } from './system'
@@ -311,7 +312,23 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
     const kind = url.searchParams.get('kind')
     const hits = kind === null || kind === '' ? rules : rules.filter((r) => r.kind === kind)
     // 含停用的规则：停用一条之后它必须还在界面上，否则再也开不回来
-    return json({ rules: [...hits].sort(byPrecedence) })
+    //
+    // 命中数**在这里现算**，不用 `buildRules()` 装载时那一份快照。快照会让
+    // `PATCH /rules/:id` 改完条件之后回到列表页，数字还是改之前的——而规则编辑器
+    // 的实时预览（`POST /rules/preview`）走的是真算，两处于是对不上，正是这一页
+    // 最不该出现的那种不一致。同理 `POST /rules` 新建的那条也在这里补上数字，
+    // 不再永远显示"—"。
+    //
+    // 口径与后端 `withMatchCounts` 一致：`ruleHits` 只判"这条规则自己的条件匹配上
+    // 了吗"，不算整栈求值、不算优先级顶替。会议全集取的是 `snapshot()`（当前世界，
+    // 含原型模式里改过的那些），不是原始种子。
+    const world = snapshot()
+    const counted = hits.map((r) => ({
+      ...r,
+      matchScanned: world.length,
+      matchCount: ruleHits(r, world).length,
+    }))
+    return json({ rules: counted.sort(byPrecedence) })
   }
 
   if (path === `${PREFIX}/rules` && method === 'POST') {

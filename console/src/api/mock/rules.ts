@@ -1,5 +1,5 @@
 import type { Meeting } from '../types'
-import { MOCK_NOW } from './meetings'
+import { MEETINGS, MOCK_NOW } from './meetings'
 
 /**
  * 三栈规则的种子 + 一个够用的判定引擎（原型模式）。
@@ -46,6 +46,21 @@ export interface ProtoRule {
   updatedAt: number
   /** 后端 `describeStackRuleIssues` 给的静态问题。**建完就静默失效的规则靠它看得见**。 */
   issues: string[]
+  /**
+   * 这条规则命中的场次（`GET /rules` 改版新增）。**用 `ruleHits()` 算，不是另一份
+   * 判法**——与 `buildMatches()` / `buildPreview()` 是同一个函数。种子里那条
+   * 「conds 不是数组」的坏规则（#320）命中 **0** 场，不是全部：见 `ruleHits()`
+   * 里那段注释，真实后端就是这个语义。
+   *
+   * **可选**是刻意的：`install.ts` 的 `POST /rules` 直接手写一份 `ProtoRule` 字面量
+   * （不经过这个文件的 `buildRules()`），不会补这两个字段——那条端点不在这次改动
+   * 范围内，我不能改它去调用 `ruleHits()`。装载时种子里的 12 条规则一定有这两个
+   * 字段；原型模式下现建的一条暂时没有，前端的宽读会把它显示成"—"，
+   * 而不是编一个假的 0（`api/admin/rules.ts` 的 `readMatchStat` 就是为这个写的）。
+   */
+  matchCount?: number
+  /** 这次统计考察了多少场会议。种子里恒为 `MEETINGS.length`（9 场）；同上，可选。 */
+  matchScanned?: number
 }
 
 const DAY = 86_400
@@ -56,7 +71,7 @@ const DAY = 86_400
  */
 export function buildRules(nowSec: number): ProtoRule[] {
   const made = (days: number): number => nowSec - days * DAY
-  return [
+  const base: Array<Omit<ProtoRule, 'matchCount' | 'matchScanned'>> = [
     /* ── 一、拉取 ─────────────────────────────────────────────── */
     {
       id: 100,
@@ -145,6 +160,14 @@ export function buildRules(nowSec: number): ProtoRule[] {
       createdBy: '陈运维',
       createdAt: made(120),
       updatedAt: made(120),
+      // `issues` 这里**留空是对的**，不是漏了。真实后端的读侧
+      // （`src/policy/conds.ts` 的 `describeRuleIssues`）对空数组 conds 一句话都不说——
+      // 只有写侧 `validateDraft` 拒绝它。假后端要说的话必须与真实后端一样多，
+      // 多说一句同样是分叉，只是方向反过来。
+      //
+      // 「这条规则没有条件、会命中全部」这件事由规则页自己从 conds 判并挂号
+      // （allow 栈 fail / 其余 warn），不依赖这个数组——真实后端不下发它，
+      // 依赖它就等于原型下看得见、真实环境里看不见。
       issues: [],
     },
     {
@@ -242,7 +265,7 @@ export function buildRules(nowSec: number): ProtoRule[] {
       createdAt: made(52),
       updatedAt: made(52),
       issues: [
-        'conds 不是数组，这条规则的条件读不出来——它现在等于一条无条件规则，会命中全部会议。',
+        'conds 不是数组，这条规则不会命中任何会议——它读不出来，等于没建。管理员以为配了一道闸门，其实没有。',
       ],
     },
     {
@@ -281,6 +304,28 @@ export function buildRules(nowSec: number): ProtoRule[] {
       issues: [],
     },
   ]
+
+  // matchCount / matchScanned 按种子会议真算一遍——不是常量，理由与影响预览的数字
+  // 是真算的同一条（文件头第一节）：条件改成什么，命中数就得跟着变，界面上才不是
+  // 一块贴纸。**必须用 `MEETINGS`（原始种子），不是运行时那份可变的 `world`**：
+  // `buildRules()` 只在 `resetProtoWorld()`（`install.ts`）里被调用一次，调用的
+  // 那一刻 `world` 恰好被重置成 `structuredClone(MEETINGS)`，两者是同一份数据，
+  // 这里直接读常量省得给这个文件多开一个"读当前世界"的口子。
+  //
+  // 代价：这两个字段是装载那一刻算的快照，往后会话里如果改了某条规则的 conds
+  // （`PATCH /rules/:id`，在 `install.ts` 里，不在这个文件），矩阵不会跟着重算——
+  // `install.ts` 的 `POST` / `PATCH /rules/:id` 都不在这次改动范围内。这与
+  // `ProtoRule.matchCount` 那条注释是同一件事，我只能在这里把口子留出来。
+  //
+  // `ruleHits()` 不传 nowSec 时默认取 `MOCK_NOW`——种子会议的时间戳本来就是拿
+  // `MOCK_NOW` 当"今天"写的（文件头「时间在种子空间里」一节），装载时的 `nowSec`
+  // 参数（真实墙钟时间，只用来算 `createdAt` / `updatedAt` 那类展示用的时间戳）
+  // 与这里无关，不能拿来传。
+  return base.map((r) => ({
+    ...r,
+    matchScanned: MEETINGS.length,
+    matchCount: ruleHits(r, MEETINGS).length,
+  }))
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -363,8 +408,16 @@ export function ruleHits(
 ): Meeting[] {
   const { conds, malformed } = readConds(rule.conds)
   const live = conds.filter((c): c is Cond => c !== null)
-  // 写坏的 conds 与空 conds 都是"无条件"——这正是那条坏规则最危险的地方
-  if (malformed || live.length === 0) return [...meetings]
+  // **这两件事是相反的，别再合并。** 真实后端 `src/policy/conds.ts` 的 `evaluateRule`：
+  //   - conds **不是数组** → `matched: false`，这条规则**不命中任何会议**。
+  //     `src/store/policy.ts` 的 `CONDS_UNPARSABLE` 注释写死了原因：兜底值绝不能是
+  //     `[]`，"那等于让一条坏掉的规则放行全部会议——授权中枢里最不该出现的那种静默放行"。
+  //   - conds 是**合法的空数组** → `matched: true`，"规则没有条件，匹配全部会议"。
+  // 这个假后端原来把两者都当"无条件 → 命中全部"，于是 `?proto=1` 下那条种子坏规则
+  // （#320）显示"命中全部 9 场"，而同一条规则在真实系统里命中 0 场。替身比真实依赖
+  // **宽容**，而且宽容的方向恰好在数据出境的那道闸门上——这个仓库栽过的同一个坑。
+  if (malformed) return []
+  if (live.length === 0) return [...meetings]
   const or = rule.join === 'or'
   return meetings.filter((m) =>
     or ? live.some((c) => condHits(c, m, nowSec)) : live.every((c) => condHits(c, m, nowSec)),
@@ -378,7 +431,7 @@ export function ruleHits(
 export function candidateIssues(rule: { conds: unknown }): string[] {
   const { conds, malformed } = readConds(rule.conds)
   const out: string[] = []
-  if (malformed) out.push('conds 不是数组，这条规则的条件读不出来——它会命中全部会议。')
+  if (malformed) out.push('conds 不是数组，这条规则不会命中任何会议——它读不出来，等于没建。')
   conds.forEach((c, i) => {
     if (c === null) {
       out.push(`第 ${i + 1} 个条件写坏了（不是 { f, op, v } 形式的对象），求值时会被跳过。`)
