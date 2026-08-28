@@ -117,7 +117,7 @@ afterEach(() => {
 /* ───────────────────────── 列表本身的三态 ───────────────────────── */
 
 describe('程序列表', () => {
-  test('每个外部程序一张卡片，卡片上是名字与 id', async () => {
+  test('每个外部程序一行，行上是名字与 id（三个程序是同构对象，一张表才给得了对比）', async () => {
     respond(/GET .*\/admin\/programs$/, () => [200, [KB, DIGEST]])
     respond(/GET .*\/inventory$/, () => [200, inventory()])
     renderPage()
@@ -125,6 +125,36 @@ describe('程序列表', () => {
     expect(await screen.findByRole('heading', { name: '知识库索引器', level: 2 })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '简报机器人', level: 2 })).toBeInTheDocument()
     expect(screen.getByText('kb-indexer')).toBeInTheDocument()
+
+    // 一张真实的表：六列表头 + 一行一个程序，不是卡片网格
+    const table = screen.getByRole('table')
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual([
+      '程序',
+      '现在能取',
+      '取不到',
+      '操作者身份',
+      '接入时间',
+      '操作',
+    ])
+    // 表头一行 + 两个程序两行
+    expect(within(table).getAllByRole('row')).toHaveLength(3)
+  })
+
+  test('第四个程序接进来只是多一行，不会把版式撑坏（原来的等高卡片会）', async () => {
+    const FOURTH = { ...KB, id: 'archive-bot', name: '归档机器人', tmUserId: 'tm-004' }
+    respond(/GET .*\/admin\/programs$/, () => [200, [KB, DIGEST, { ...KB, id: 'dw-sync', name: '数据仓库同步' }, FOURTH]])
+    respond(/GET .*\/inventory$/, () => [200, inventory({ fetchableCount: 1, assetTypes: ['ai_minutes'] })])
+    renderPage()
+
+    // 四个程序都渲染出来，且各自的「现在能取」还是各自程序 id 下的那一份
+    expect(await screen.findByRole('heading', { name: '归档机器人', level: 2 })).toBeInTheDocument()
+    for (const id of ['kb-indexer', 'daily-digest', 'dw-sync', 'archive-bot']) {
+      expect(await screen.findByTestId(`reach-${id}`)).toHaveTextContent('现在可取走 1 场会议的 AI 纪要')
+    }
+    // 仍然只有一张表、六列表头——不会像卡片网格那样因为奇数个卡片留出空洞
+    const table = screen.getByRole('table')
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(6)
+    expect(within(table).getAllByRole('row')).toHaveLength(5) // 表头 + 四行
   })
 
   test('读列表失败时说清是哪一条端点失败了，并给重试——不显示成"一个程序都没有"', async () => {

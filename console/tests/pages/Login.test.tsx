@@ -248,6 +248,31 @@ describe('登录页：这一页只有一件事要做', () => {
     expect(screen.getByText('忘记密码请联系系统管理员')).toBeInTheDocument()
   })
 
+  test('登录页不再自己压焦点边框——根因已经在 ui/Input 里修掉了', () => {
+    // 双层焦点环的根因是 `ui/Input.module.css` 用了裸 `.input:focus` 刷品牌蓝，
+    // 与 `styles/base.css` 的全局 `:focus-visible` 外圈叠成双线框。它不是登录页
+    // 独有的，每个输入框都这样，所以修在共用组件里（改成
+    // `:focus:not(:focus-visible)`），断言搬去 `tests/ui.test.tsx`。
+    // 这里反过来钉住：登录页**不该**再留那份局部覆盖，否则根因回归了也看不出来。
+    const css = readFileSync(resolve(process.cwd(), 'src/pages/Login/Login.module.css'), 'utf-8')
+    expect(/\.field\s+input:focus\s*\{/.test(css)).toBe(false)
+  })
+
+  test('品牌字距是唯一的装饰动作，标题上没有多加别的花样', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/pages/Login/Login.module.css'), 'utf-8')
+    const block = /\.title\s*\{[^}]*\}/.exec(css)?.[0] ?? ''
+    expect(block).toMatch(/letter-spacing/)
+    // 不使用 uppercase/text-transform——那是拉丁排版手法，这一页刻意只动字距
+    expect(block).not.toMatch(/text-transform/)
+  })
+
+  test('卡片靠居中和留白立住，不再靠边框/阴影画一条边', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/pages/Login/Login.module.css'), 'utf-8')
+    const block = /\.card\s*\{[^}]*\}/.exec(css)?.[0] ?? ''
+    expect(block).not.toMatch(/\bborder:/)
+    expect(block).not.toMatch(/box-shadow/)
+  })
+
   test('报错行排在「登录」之后：常驻占位落到卡片底部，表单内部间距回到一致', async () => {
     // 它原来夹在勾选框和按钮中间，空着也占一行，两侧各再吃一份 16px 的 gap——
     // 勾选框到按钮之间空出 55px，是字段间距的三倍多。它不能改成"有错才渲染"

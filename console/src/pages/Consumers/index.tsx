@@ -5,16 +5,20 @@ import { useResource } from '@/lib/useResource'
 import { Button } from '@/ui/Button'
 import { PageShell } from '@/ui/PageShell'
 import { Skeleton } from '@/ui/Skeleton'
+import { Table } from '@/ui/Table'
 import { ProgramCard } from './ProgramCard'
 import { Wizard } from './Wizard'
 import styles from './Consumers.module.css'
 
+/** 程序 / 现在能取 / 取不到 / 操作者身份 / 接入时间 / 操作。 */
+const COLUMNS = ['程序', '现在能取', '取不到', '操作者身份', '接入时间', '操作']
+
 /**
  * 采集授权页（spec.md §4.5 · §6.4）。
  *
- * 这一页只回答一个问题：**每个外部程序现在实际能取到什么**。spec 说卡片正中间
- * 那句话是「这一页的全部价值」，并且明说它是三个「与」求交之后的**实际结果，
- * 不是配置值**——所以这一页的每一个数字都来自
+ * 这一页只回答一个问题：**每个外部程序现在实际能取到什么**。spec 说「现在
+ * 可取走 N 场会议的 X」这句话是「这一页的全部价值」，并且明说它是三个「与」
+ * 求交之后的**实际结果，不是配置值**——所以这一页的每一个数字都来自
  * `GET /api/v1/admin/programs/:id/inventory`，逐程序一个请求，没有任何一处
  * 是前端算出来的。
  *
@@ -22,15 +26,21 @@ import styles from './Consumers.module.css'
  * 真实的 `GET /admin/programs` 不下发它，mock 里那一份把一个配置值伪装成了
  * 一次实际结果。删掉它连带动了会议记录页的 `GrantPicker` 一行（那一页归 F2）。
  *
- * 这一轮**没有**的两个动作：停用程序、轮换凭据（spec §11 缺口 4）。
- * 端点还不存在，A8 之后由 F7 接。不放假按钮。
+ * ## 卡片 → 表
+ *
+ * 三个采集程序是同构对象（同一组字段，只有值不一样），等高卡片给不了对比，
+ * 还会在只有两三个程序时被网格默认的 `align-items: stretch` 拉出大片空白。
+ * 改成一张表之后每一行只占自己内容需要的高度，第四个程序接进来只是多一行。
+ * 「现在可取走 N 场会议的 X」不再靠一块蓝底撑场面，改用数字自己的字号字重
+ * 把它顶出来——一整块底色摊在表格里比摊在卡片里更抢，14 行一起蓝会是
+ * 操作审计页那个「准许」灰框同一种噪声。
  *
  * ## 三个「与」不再写在导语里
  *
- * 「有授权 ∩ 在保留期内 ∩ 规则允许采集」这件事，卡片自己就在说：`ReachBlock`
- * 报的那个数**就是**求交的结果，取不到时它逐条列出被哪一类判定挡下、去哪一页
- * 改。把同一件事再写成一段导语，等于用文字复述界面已经在做的事——而它占掉了
- * 这一页六成的可见文字。
+ * 「有授权 ∩ 在保留期内 ∩ 规则允许采集」这件事，表格自己就在说：「现在能取」
+ * 那一列报的那个数**就是**求交的结果，「取不到」那一列逐条列出被哪一类判定
+ * 挡下、去哪一页改。把同一件事再写成一段导语，等于用文字复述界面已经在做
+ * 的事——而它占掉了这一页六成的可见文字。
  *
  * ## 「接入新程序」在空态下搬进空态框里
  *
@@ -65,17 +75,40 @@ export default function ConsumersPage() {
       actions={empty ? undefined : addButton}
     >
       {res.state === 'loading' && (
-        <ul className={styles.cards} aria-busy="true" aria-label="正在读取采集程序">
-          {[0, 1, 2].map((i) => (
-            <li key={i} className={styles.card}>
-              <Skeleton width="52%" />
-              <Skeleton width="34%" size="sm" />
-              <div className={styles.reach} data-kind="loading">
-                <Skeleton width="80%" />
-              </div>
-            </li>
-          ))}
-        </ul>
+        <Table className={styles.table} cards aria-busy="true" aria-label="正在读取采集程序">
+          <thead>
+            <tr>
+              {COLUMNS.map((c) => (
+                <th key={c}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[0, 1, 2].map((i) => (
+              <tr key={i}>
+                <td data-label="程序">
+                  <Skeleton width="70%" />
+                  <Skeleton width="40%" size="sm" />
+                </td>
+                <td data-label="现在能取">
+                  <Skeleton width="60%" />
+                </td>
+                <td data-label="取不到">
+                  <Skeleton width="40%" size="sm" />
+                </td>
+                <td data-label="操作者身份">
+                  <Skeleton width="50%" size="sm" />
+                </td>
+                <td data-label="接入时间">
+                  <Skeleton width="60%" size="sm" />
+                </td>
+                <td data-label="操作">
+                  <Skeleton width="60%" size="sm" />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
       )}
 
       {res.state === 'error' && (
@@ -98,11 +131,20 @@ export default function ConsumersPage() {
             {addButton}
           </div>
         ) : (
-          <ul className={styles.cards}>
-            {res.data.map((p) => (
-              <ProgramCard key={p.id} program={p} now={now} onChanged={res.retry} />
-            ))}
-          </ul>
+          <Table className={styles.table} cards>
+            <thead>
+              <tr>
+                {COLUMNS.map((c) => (
+                  <th key={c}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {res.data.map((p) => (
+                <ProgramCard key={p.id} program={p} now={now} onChanged={res.retry} />
+              ))}
+            </tbody>
+          </Table>
         ))}
 
       <Wizard

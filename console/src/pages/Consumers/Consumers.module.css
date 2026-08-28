@@ -1,43 +1,27 @@
-/* 采集授权页：程序卡片栅格 + 卡片正中间那句求交结果。
- * 色值与间距一律走 tokens.css —— 这里不许出现字面色值或魔法间距。 */
+/* 采集授权页：程序表（程序 / 现在能取 / 取不到 / 操作者身份 / 接入时间 / 操作）。
+ * 色值与间距一律走 tokens.css —— 这里不许出现字面色值或魔法间距。
+ *
+ * 原来三张等高卡（`display:grid` 默认 `align-items:stretch`）在只有两三个
+ * 程序时把矮卡拉出 200px 空洞——三个程序是同构对象，卡片给不了对比。改成
+ * 一张表之后这个问题连同"等高"这个概念一起不存在了：每一行只占自己内容
+ * 需要的高度，第四个程序接进来就是多一行，不会撑坏版式。 */
 
-.cards {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  /* auto-fill 而不是 auto-fit：只有两个程序时不要把两张卡拉成半屏宽，
-     那会让"这一页在讲什么"变成一场排版事故。 */
-  grid-template-columns: repeat(auto-fill, minmax(var(--consumer-card-w), 1fr));
-  gap: var(--s-5);
+.table tbody td {
+  vertical-align: top;
 }
 
-.card {
+/* ── 程序（名字 + id + 停用/过期徽标）───────────────────────────── */
+
+.identWrap {
   display: flex;
-  flex-direction: column;
-  gap: var(--s-4);
-  padding: var(--s-5);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow);
-  min-width: 0;
-}
-
-.cardTop {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--s-3);
-}
-
-.ident {
-  min-width: 0;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
 }
 
 .name {
   margin: 0;
-  font-size: var(--t-lg);
+  font-size: var(--t-md);
   font-weight: 600;
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -52,11 +36,28 @@
   overflow-wrap: anywhere;
 }
 
-/* ── 卡片正中间那块 ──────────────────────────────────────────
-   蓝底 = 数据可被取走（design-system §2.2 里 brand 的含义就是这个）。
-   所以只有真的能取走时才是蓝的；取不到、拉不到清单时都不该是蓝的，
-   否则颜色本身就在说一句与文字相反的话。 */
-.reach {
+/* ── 现在能取几场：这一页的全部价值，用字号/字重顶出来，不用蓝底块 ──
+   design-system §2.2 里蓝＝「数据可被取走」，但那个含义已经由这一列本身
+   （放在这一格里的数字）来承担；再套一层蓝底块是同一句话说两遍，而在表格
+   里一整块底色比在卡片里更抢——14 行的表格如果每行一块蓝，等于把审计页
+   那个「准许」灰框的错误又在这一页重犯一次。 */
+.reachCell {
+  min-width: 12em;
+}
+
+.reachCell[data-kind='unavailable'] {
+  color: var(--warn);
+}
+
+.reachCell[data-kind='reachable-no-assets'] {
+  color: var(--fail);
+}
+
+/* 接入向导第三步「可取清单」预览用的独立外壳（`ReachBlock`，见 ReachBlock.tsx）。
+ * 这里不是表格行——只有这一个程序、这一个信息块，所以保留原来的实底强调：
+ * 蓝底＝这就是「新程序现在能取到什么」的答案本身，不是一整页里重复 N 次的
+ * 同一句话。表格里的 `.reachCell` 才是需要去掉底色、改用字号字重的那一处。 */
+.reachStandalone {
   padding: var(--s-4);
   border-radius: var(--r);
   border: 1px solid var(--brand-line);
@@ -64,24 +65,21 @@
   color: var(--brand-text);
 }
 
-.reach[data-kind='none'],
-.reach[data-kind='loading'],
-/* 已停用：中性，绝不能是蓝的——蓝底的含义就是「数据可被取走」，
-   而停用的程序一样都取不走。 */
-.reach[data-kind='disabled'] {
+.reachStandalone[data-kind='none'],
+.reachStandalone[data-kind='loading'],
+.reachStandalone[data-kind='disabled'] {
   border-color: var(--line);
   background: var(--surface-2);
   color: var(--ink-2);
 }
 
-/* 拉不到清单：琥珀，与"取不到"（中性）分开——一个是结论，一个是没有结论。 */
-.reach[data-kind='unavailable'] {
+.reachStandalone[data-kind='unavailable'] {
   border-color: var(--warn-line);
   background: var(--warn-soft);
   color: var(--warn);
 }
 
-.reach[data-kind='reachable-no-assets'] {
+.reachStandalone[data-kind='reachable-no-assets'] {
   border-color: var(--fail-line);
   background: var(--fail-soft);
   color: var(--fail);
@@ -89,17 +87,17 @@
 
 .reachLine {
   margin: 0;
-  font-size: var(--t-md);
-  line-height: 1.7;
+  font-size: var(--t-sm);
+  line-height: 1.6;
 }
 
+/* 数字/状态词本身：这一格唯一的强调手段是字号字重，不是底色。 */
 .reachNum {
   font-weight: 700;
-  font-size: var(--t-xl);
+  font-size: var(--t-2xl);
+  font-variant-numeric: tabular-nums;
 }
 
-/* 「已停用」占的是本来放数字的位置，所以后面那半句要退一档，
-   免得两段同重量的文字看起来像一句话被断开了。 */
 .reachStopped {
   margin-left: var(--s-3);
   font-size: var(--t-sm);
@@ -107,13 +105,13 @@
 }
 
 .reachSoon {
-  margin: var(--s-2) 0 0;
+  margin: var(--s-1) 0 0;
   font-size: var(--t-xs);
   color: var(--warn);
 }
 
 .reachLead {
-  margin: 0 0 var(--s-2);
+  margin: 0 0 var(--s-1);
   font-size: var(--t-sm);
   font-weight: 600;
 }
@@ -121,25 +119,25 @@
 .reachReason {
   margin: 0 0 var(--s-2);
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
 .reachNote {
-  margin: var(--s-2) 0 0;
+  margin: var(--s-1) 0 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: 1.6;
   color: var(--ink-3);
 }
 
-.reach[data-kind='unavailable'] .reachNote {
-  color: var(--warn);
+/* ── 取不到几场（附原因）─────────────────────────────────────────── */
+
+.blockedCell {
+  min-width: 14em;
 }
 
-/* ── "另有 N 场取不到" ─────────────────────────────────────── */
-
-.aside {
-  margin: 0;
+.dash {
+  color: var(--ink-3);
 }
 
 .asideLead {
@@ -187,30 +185,60 @@
   color: var(--ink-3);
 }
 
-/* ── 卡片底部 ───────────────────────────────────────────────── */
+/* ── 操作者身份 / 接入时间 ─────────────────────────────────────────── */
 
-.cardFoot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-3);
-  margin-top: auto;
-  padding-top: var(--s-3);
-  border-top: 1px solid var(--line-soft);
-}
-
-.meta {
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-  min-width: 0;
+.operatorId {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
   overflow-wrap: anywhere;
 }
 
-/* ── 三态 ───────────────────────────────────────────────────── */
+.timeStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
 
-/* 空态：一句状态 + 那一个动作。按钮在框里而不是在页头角落，是因为
-   「点右上角那个按钮」本来是一句用文字指路的话——路该短到不用指。 */
+.timeMain {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timeSub {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── 操作：查看清单 + 停用/启用 + 轮换凭据 ───────────────────────── */
+
+.actionsCell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+}
+
+.actions {
+  display: flex;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.actionError {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.7;
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+/* ── 三态：加载 / 读不到 / 一个都没有 ─────────────────────────────── */
+
 .empty {
   display: flex;
   flex-direction: column;
@@ -257,23 +285,7 @@
   overflow-wrap: anywhere;
 }
 
-/* ── 停用 / 轮换（spec §11 缺口 4）──────────────────────────── */
-
-.actions {
-  display: flex;
-  gap: var(--s-2);
-  flex-wrap: wrap;
-  padding-top: var(--s-3);
-  border-top: 1px solid var(--line-soft);
-}
-
-.actionError {
-  margin: 0;
-  font-size: var(--t-xs);
-  line-height: 1.7;
-  color: var(--fail);
-  overflow-wrap: anywhere;
-}
+/* ── 二次确认 / 一次性展示（停用·轮换，spec §11 缺口 4）───────────── */
 
 .confirmBody {
   display: flex;
@@ -338,4 +350,37 @@
 .ackBox {
   accent-color: var(--brand);
   cursor: pointer;
+}
+
+/* ── 列宽 ────────────────────────────────────────────────────────
+   卡片改成表格之后没有给过列宽，浏览器的自动表格布局就按内容分：
+   「取不到」那一列因为第三行有四行文字而独吞了空间，于是三个程序名全部折行
+   （「知识库 / 索引器」），操作列的三个动作也被挤成竖排、行高撑到 150px。
+   
+   只给两端定下限，中间那两列继续自动伸缩——它们才是真正需要空间的。
+   `ui/Table` 在窄屏切成卡片形态，那时这些下限不该生效（会顶出横滚），
+   所以整块限制在表格形态的宽度区间里。 */
+@media (min-width: 60em) {
+  .table th:first-child,
+  .table td:first-child {
+    min-width: 9.5em;
+  }
+
+  .table th:nth-child(2),
+  .table td:nth-child(2) {
+    min-width: 15em;
+  }
+
+  /* 操作者身份 / 接入时间：内容短且不该折 */
+  .table th:nth-child(5),
+  .table td:nth-child(5),
+  .table th:nth-child(6),
+  .table td:nth-child(6) {
+    white-space: nowrap;
+  }
+
+  /* 三个动作一行放得下，不必竖着排 */
+  .table td:last-child .actions {
+    flex-wrap: nowrap;
+  }
 }

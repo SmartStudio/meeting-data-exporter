@@ -2,7 +2,6 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import type { AuditRow as Row } from '@/api/admin/audit'
 import { fmtDateTime } from '@/lib/format'
-import { Pill, type PillTone } from '@/ui/Pill'
 import styles from './Audit.module.css'
 
 /**
@@ -42,7 +41,6 @@ const ID_KINDS: Readonly<Record<string, string>> = {
 }
 
 interface ResultView {
-  tone: PillTone
   label: string
   note: string | null
 }
@@ -50,20 +48,23 @@ interface ResultView {
 /**
  * 结果怎么呈现。三档一一对应后端的 `result.kind`：
  *
- * - `allow` → 准许，中性。
+ * - `allow` → 准许。这是**默认值**，14 行里通常 11 行是它——不该占视觉。
+ *   原来它是一个灰底圆角框，形状和筛选条的输入框一模一样，纯噪声；现在是
+ *   一段 `--ink-3` 的普通文字，无框无底。
  * - `deny` → 红（spec §4.10：「被拒绝的记录是红的，且写明拒绝原因」）。
  *   原因**一律来自后端**（`detail` 的第一行 → 命中规则 → null），
  *   前端一个字都不加工；两处都没有就说「未记录原因」，不编一句兜底理由。
+ *   拒绝与存疑都在行左侧加一道色条（`AuditTable` 的 `data-flag`）——一屏
+ *   几十行时，只有一格变色扫不出来，一道贯穿整行的色条才扫得出来。
  * - `unknown` → 库里那一列出现了既不是 allow 也不是 deny 的脏值。后端刻意
  *   不归一化，这里也不能二选一：标成「存疑」并把原值带出来。
  */
 function resultView(result: Row['result']): ResultView {
-  if (result.kind === 'allow') return { tone: 'neutral', label: '准许', note: null }
+  if (result.kind === 'allow') return { label: '准许', note: null }
   if (result.kind === 'deny') {
-    return { tone: 'fail', label: '拒绝', note: result.reason ?? '未记录原因' }
+    return { label: '拒绝', note: result.reason ?? '未记录原因' }
   }
   return {
-    tone: 'warn',
     label: '存疑',
     note: result.reason ?? `库里的结果值是「${result.decision}」，既不是 allow 也不是 deny`,
   }
@@ -91,7 +92,11 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
 
   return (
     <>
-      <tr data-testid={`audit-row-${row.id}`} data-deny={row.result.kind === 'deny' || undefined}>
+      <tr
+        data-testid={`audit-row-${row.id}`}
+        // 拒绝/存疑才标——准许是默认值，行左侧的色条只留给需要先被看到的两种
+        data-flag={row.result.kind !== 'allow' ? row.result.kind : undefined}
+      >
         <td className={styles.timeCell} data-label="时间">{fmtDateTime(row.at, now)}</td>
 
         {/* data-label 是窄屏卡片形态下的列名（`ui/Table` 的 cards 开关）*/}
@@ -100,12 +105,12 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
             <span className={styles.actorBadge} data-kind={row.actor.kind} aria-hidden="true">
               {kind.letter}
             </span>
-            <span className={styles.stack}>
+            {/* 小方块 + 两行副文本压成一行：色块已经是概括，id 与
+                `actor_type` 原值（能对回库里那一行的东西）跟在它后面就够。 */}
+            <span className={styles.actorText}>
               <span className={styles.main}>{row.actor.id}</span>
-              {/* 色块是概括，`actor_type` 原值才是能对回库里那一行的东西 */}
-              <span className={styles.sub}>
-                {kind.label} · {row.actor.type}
-              </span>
+              {' · '}
+              {kind.label} · {row.actor.type}
             </span>
           </span>
         </td>
@@ -134,9 +139,11 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
 
         <td data-label="结果" data-testid={`audit-result-${row.id}`} data-kind={row.result.kind}>
           <span className={styles.stack}>
-            <Pill tone={res.tone}>{res.label}</Pill>
+            <span className={styles.resultLabel} data-kind={row.result.kind}>
+              {res.label}
+            </span>
             {res.note !== null && (
-              <span className={row.result.kind === 'deny' ? styles.denyNote : styles.sub}>{res.note}</span>
+              <span className={row.result.kind === 'deny' ? styles.denyNote : styles.warnNote}>{res.note}</span>
             )}
           </span>
         </td>

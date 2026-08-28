@@ -234,15 +234,15 @@ export default function AuditPage() {
         onPageSize={(size) => setUi((prev) => ({ ...prev, page: 1, pageSize: size }))}
       />
 
+      {/* 两句口径说明收成一行脚注——内容照旧一个字都不丢，只是不再按正文的
+          字号排、也不再用 <br> 强制断成两段。上界钉在锚点上是有代价的
+          （新记录要刷新才出现），所以必须说出来，而不是让人以为这一页是
+          实时的；为什么钉见 filters.ts 的 toQuery。 */}
       <p className={styles.foot}>
         {hasRangeFilter(ui)
-          ? '这一页只显示所选时间范围内的记录。查更早的操作请把范围改成「全部时间」。'
+          ? '这一页只显示所选时间范围内的记录，查更早的操作请把范围改成「全部时间」。'
           : '时间范围是「全部时间」，这一页显示的是库里所有符合条件的记录。'}
-        {/* 上界钉在锚点上是有代价的（新记录要刷新才出现），所以必须说出来，
-            而不是让人以为这一页是实时的。为什么钉见 filters.ts 的 toQuery。 */}
-        <br />
-        结果的时间上界钉在打开本页（或上次「刷新」）的那一刻，翻页时两页看的是同一段时间；
-        要看更新的操作请按「刷新」。
+        {' 结果的时间上界钉在打开本页（或上次「刷新」）的那一刻，翻页时两页看的是同一段时间，要看更新的操作请按「刷新」。'}
       </p>
     </PageShell>
   )
@@ -265,7 +265,10 @@ export default function AuditPage() {
  *
  * 每一项的 `hint` 今天是同一句常量，所以按内容去重后只显示一次；
  * 将来后端按动作给不同的话，这里自然会各显示一句。
- */
+ *
+ * 动作原来另起一个 `<ul>` 列表，是这块琥珀提示占到 150px 的主因之一——
+ * 缺口提示是真的缺口提示，但一两个动作名不值得单独一段。折进第一句里，
+ * 提示压成两行：第一行是"缺了什么"，第二行是后端那句原话。 */
 function UnlabeledNote({ page }: { page: AuditPage }) {
   const items = page.unlabeledActions
   if (items.length === 0) return null
@@ -276,14 +279,13 @@ function UnlabeledNote({ page }: { page: AuditPage }) {
       <p>
         这一页有 <b>{items.length}</b> 种动作后端还没有登记中文名，
         「动作」列里显示的是 <code>audit_log</code> 的原值：
-      </p>
-      <ul>
-        {items.map((u) => (
-          <li key={u.action}>
+        {items.map((u, i) => (
+          <span key={u.action}>
+            {i > 0 && '、'}
             <code>{u.action}</code>（{u.count} 次）
-          </li>
+          </span>
         ))}
-      </ul>
+      </p>
       {/* 后端那句话原样上屏，前端不改写、不缩写 */}
       {hints.map((h) => (
         <p key={h}>{h}</p>

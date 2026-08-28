@@ -218,12 +218,16 @@ describe('审计条目', () => {
     expect(within(tr).getByText(/不针对某一场会议/)).toBeInTheDocument()
   })
 
-  test('放行的结果是「准许」', async () => {
+  test('放行的结果是「准许」——默认值，不占视觉：这一行不带左侧色条', async () => {
     const tr = await ready()
     expect(within(tr).getByText('准许')).toBeInTheDocument()
+    // 「结果」列的准许原来是一个灰底圆角框，和上面的筛选输入框长得一模一样。
+    // 现在准许是纯文字：没有 data-flag 就没有 CSS 里那道左侧色条（Audit.module.css
+    // 的 `tr[data-flag]`），它与拒绝/存疑唯一的区别就是这一个属性。
+    expect(tr).not.toHaveAttribute('data-flag')
   })
 
-  test('被拒绝的记录是红的，并写明拒绝原因（原因来自后端，不是前端编的）', async () => {
+  test('被拒绝的记录是红的，并写明拒绝原因（原因来自后端，不是前端编的），行左侧带色条', async () => {
     serve([
       row({
         result: { decision: 'deny', kind: 'deny', reason: '本地已到期，请去 NAS 取' },
@@ -234,6 +238,8 @@ describe('审计条目', () => {
     expect(cell).toHaveAttribute('data-kind', 'deny')
     expect(cell.textContent).toContain('拒绝')
     expect(cell.textContent).toContain('本地已到期，请去 NAS 取')
+    // 拒绝：行左侧 3px 色条，靠 data-flag='deny' 驱动
+    expect(tr).toHaveAttribute('data-flag', 'deny')
   })
 
   test('拒绝但库里没留原因时说「未记录原因」，不编一句兜底理由', async () => {
@@ -242,7 +248,7 @@ describe('审计条目', () => {
     expect(within(tr).getByTestId('audit-result-1').textContent).toContain('未记录原因')
   })
 
-  test('库里的结果值既不是 allow 也不是 deny 时标成「存疑」，并带上那个原值', async () => {
+  test('库里的结果值既不是 allow 也不是 deny 时标成「存疑」，并带上那个原值，行左侧也带色条', async () => {
     serve([
       row({ result: { decision: 'weird', kind: 'unknown', reason: '审计记录里的结果值无法识别：weird' } }),
     ])
@@ -251,6 +257,8 @@ describe('审计条目', () => {
     expect(cell).toHaveAttribute('data-kind', 'unknown')
     expect(cell.textContent).toContain('存疑')
     expect(cell.textContent).toContain('weird')
+    // 存疑同样需要先被看到，色条只是换成 warn 色——用同一个 data-flag 机制
+    expect(tr).toHaveAttribute('data-flag', 'unknown')
   })
 
   test('detail 为 NULL（迁移 008 之前的历史记录）显示「无细节」，不是空白', async () => {

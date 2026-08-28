@@ -82,7 +82,9 @@
 /* ── 「未知身份筛不出来」这句提醒 ──────────────────────────────── */
 
 /* 琥珀＝这需要你看一眼。它说的是"你现在看到的结果里少了一类记录"，
-   而在审计页上"少了一类记录"正是最需要被看见的那种缺失。 */
+   而在审计页上"少了一类记录"正是最需要被看见的那种缺失。
+   这是真的缺口提示，留着；但压紧——原来两段散文 + 一张 `<ul>` 清单占到
+   150px，行高收到 1.5、清单折进第一句之后通常两行就说完了。 */
 .caveat {
   margin: 0 0 var(--s-4);
   padding: var(--s-3) var(--s-5);
@@ -91,7 +93,7 @@
   background: var(--warn-soft);
   color: var(--warn);
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: 1.5;
   max-width: 78ch;
 }
 
@@ -104,19 +106,12 @@
   font-size: var(--t-xs);
 }
 
-/* 「这一页有 N 种动作后端还没登记中文名」用的是同一块告示牌，
-   但它里面有段落和一张清单，所以把默认外边距收一下 */
 .caveat p {
   margin: 0;
 }
 
 .caveat p + p {
-  margin-top: var(--s-2);
-}
-
-.caveat ul {
-  margin: var(--s-2) 0;
-  padding-left: var(--s-5);
+  margin-top: var(--s-1);
 }
 
 /* ── 本次结果的时间窗口 ────────────────────────────────────────── */
@@ -142,12 +137,12 @@
   color: var(--warn);
 }
 
+/* 口径说明，脚注体量：一行小字，不按正文的字号和留白排。 */
 .foot {
-  margin: var(--s-5) 0 0;
-  font-size: var(--t-xs);
+  margin: var(--s-4) 0 0;
+  font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.7;
-  max-width: 70ch;
+  line-height: 1.5;
 }
 
 /* ── 表 ─────────────────────────────────────────────────────────── */
@@ -157,7 +152,13 @@
   flex-direction: column;
 }
 
+/* 行高压紧：改版前每行 ~72px（td 上下各 8px 内边距 + 两行文字继承正文
+   1.55 的行高），一屏看不到几行。这里把上下内边距收到 --s-2，两行堆叠的
+   文字改用 1.35——密集数据表要的是"扫得快"，不是段落阅读的呼吸感，那套
+   1.55/1.7 留给页面正文和脚注。 */
 .table tbody td {
+  padding-top: var(--s-2);
+  padding-bottom: var(--s-2);
   vertical-align: top;
 }
 
@@ -165,6 +166,7 @@
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--t-xs);
+  line-height: 1.35;
   color: var(--ink-2);
   white-space: nowrap;
 }
@@ -178,12 +180,14 @@
 
 .main {
   font-size: var(--t-sm);
+  line-height: 1.35;
   color: var(--ink);
   overflow-wrap: anywhere;
 }
 
 .sub {
   font-size: var(--t-2xs);
+  line-height: 1.35;
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -191,12 +195,14 @@
 .mono {
   font-family: var(--mono);
   font-size: var(--t-2xs);
+  line-height: 1.35;
   color: var(--ink-3);
   white-space: nowrap;
 }
 
 .link {
   font-size: var(--t-sm);
+  line-height: 1.35;
   color: var(--brand-text);
   text-decoration: underline;
   text-underline-offset: var(--s-0);
@@ -207,6 +213,7 @@
    所以给一句话 + 中性偏灰，绝不留空白——空白让人以为是渲染坏了。 */
 .missing {
   font-size: var(--t-2xs);
+  line-height: 1.35;
   color: var(--ink-3);
   font-style: italic;
 }
@@ -215,8 +222,18 @@
 
 .actor {
   display: inline-flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--s-2);
+  min-width: 0;
+}
+
+/* 小方块 + id + 身份，压成一行——原来是色块旁边两行副文本，这里的信息量
+   没变（色块是概括，id 与 actor_type 原值仍然都在），只是不再逐行堆叠。 */
+.actorText {
+  font-size: var(--t-sm);
+  line-height: 1.35;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
   min-width: 0;
 }
 
@@ -254,22 +271,58 @@
 
 /* ── 结果 ───────────────────────────────────────────────────────── */
 
-/* 被拒绝的记录是红的（spec §4.10），拒绝原因跟着红——它是这一行的重点。 */
+/* 「准许」是默认值——14 行里通常 11 行是它，不该占视觉。原来它和上面的
+   筛选输入框长得一模一样（灰底圆角框），是纯噪声；现在是一段 --ink-3 的
+   普通文字，无框无底，字重也不加粗——加粗同样是一种强调，默认值不配拥有。 */
+.resultLabel {
+  font-size: var(--t-sm);
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+
+/* 拒绝：--fail 文字 + 行左侧色条（下面 tr[data-flag] 那条规则）。 */
+.resultLabel[data-kind='deny'] {
+  color: var(--fail);
+  font-weight: 600;
+}
+
+/* 存疑：--warn 文字 + 同一条左侧色条逻辑，色换成 warn。 */
+.resultLabel[data-kind='unknown'] {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* 拒绝原因跟着红——它是这一行的重点（spec §4.10）。 */
 .denyNote {
   font-size: var(--t-2xs);
+  line-height: 1.35;
   color: var(--fail);
   overflow-wrap: anywhere;
 }
 
-/* 整行的左沿也标一道红：一屏几十行时，只有一格红字扫不出来 */
-.table tbody tr[data-deny] td:first-child {
+/* 存疑的原因跟着琥珀，同一个道理。 */
+.warnNote {
+  font-size: var(--t-2xs);
+  line-height: 1.35;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+/* 整行左沿标一道色条：一屏几十行时，只有一格变色扫不出来。拒绝红、存疑
+   琥珀，准许（默认值）不占这道条——data-flag 只在非 allow 时才有值。 */
+.table tbody tr[data-flag='deny'] td:first-child {
   box-shadow: inset var(--s-1) 0 0 var(--fail);
+}
+
+.table tbody tr[data-flag='unknown'] td:first-child {
+  box-shadow: inset var(--s-1) 0 0 var(--warn);
 }
 
 /* ── 细节 ───────────────────────────────────────────────────────── */
 
 .detail {
   font-size: var(--t-sm);
+  line-height: 1.35;
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
