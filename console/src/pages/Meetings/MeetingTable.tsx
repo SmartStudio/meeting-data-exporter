@@ -120,9 +120,10 @@ export function MeetingTable(props: MeetingTableProps) {
             </th>
             <th>会议记录</th>
             <th>主持人</th>
-            <th>资产</th>
+            {/* 数字列右对齐——一列数只有右对齐才比得出大小 */}
+            <th className={styles.numHead}>资产</th>
             <th>拉取 · 归档</th>
-            <th>本地保留</th>
+            <th className={styles.numHead}>本地保留</th>
             {/* 列头与格子里的答案必须是同一个命题。此前列头问"授权给了谁"，
                 而绝大多数格子答的是"规则禁止采集"——那不是一个"谁"。
                 现在这一列问的是「这场会议的数据谁能取走」，

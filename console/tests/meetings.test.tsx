@@ -14,6 +14,9 @@ import {
   dotState,
   extendedText,
   grantCellKind,
+  programAbbr,
+  rowFlag,
+  stageNote,
   whyLabel,
   whyTone,
   WHY_MISSING_LABEL,
@@ -313,7 +316,9 @@ describe('会议记录页 · 数据全部来自真实端点', () => {
     await ready()
     // 种子里 m1 归档于 2 天前、窗口 30 天 → 还剩 28 天。这条只有在
     // now = new Date() 时才成立；钉在 2026-08-23 的话它会随真实日期漂移。
-    expect(screen.getByTestId('keep-m1')).toHaveTextContent('剩 28 天')
+    // （阶段 7：这一格从"进度条 + 剩 28 天"压成了右对齐的等宽天数「28 天」，
+    //   数字本身没变——变的只是它旁边不再有一根复述它的横条。）
+    expect(screen.getByTestId('keep-m1')).toHaveTextContent('28 天')
   })
 })
 
@@ -1046,14 +1051,37 @@ describe('页面骨架与令牌', () => {
     }
   })
 
+  /**
+   * 阶段 7 把这条搬了家但没有放松。
+   *
+   * 「归档失败 ≠ 未归档」此前钉在「本地保留」那一格上（`.keepNone[data-fail]`
+   * 是红的）。现在那一格统一只说「未计时」——**成因不在这里答了**，它由
+   * 「拉取 · 归档」那一栏的异常注记回答，而且答得比原来响：红字 + 红方块 +
+   * 一道行首色条。同一件事在一行里红两次，红就不再是"最严重"的意思。
+   *
+   * 所以这条断言换的是位置，不是强度：归档失败仍然必须是**这一行里唯一被
+   * 染红的那件事**，而单纯没归档的行一点红都不许有。
+   */
   test('归档失败是红的；未归档不是（两件事，不能同一个灰也不能同一个红）', async () => {
     const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
-    expect(rowCss).toMatch(/\.keepNone\[data-fail='true'\]\s*\{\s*color:\s*var\(--fail\)/)
+    expect(rowCss).toMatch(/\.note\[data-tone='fail'\]\s*\{\s*color:\s*var\(--fail\)/)
+    expect(rowCss).toMatch(/\.sq\[data-state='failed'\]\s*\{\s*background:\s*var\(--fail\)/)
     handler = defaultHandler([M3, M2])
     renderPage()
     await waitFor(() => expect(screen.getByTestId('row-m3')).toBeInTheDocument())
-    expect(screen.getByTestId('keep-m3').querySelector('[data-fail="true"]')).not.toBeNull()
-    expect(screen.getByTestId('keep-m2').querySelector('[data-fail="true"]')).toBeNull()
+
+    // m3 归档失败：一句红字 + 一道红色行首色条
+    expect(screen.getByTestId('stage-m3')).toHaveTextContent('归档失败')
+    expect(screen.getByTestId('stage-m3').querySelector('[data-tone="fail"]')).not.toBeNull()
+    expect(screen.getByTestId('row-m3')).toHaveAttribute('data-flag', 'fail')
+
+    // m2 归档成功：一个字都不写，也没有色条
+    expect(screen.getByTestId('stage-m2').textContent).toBe('')
+    expect(screen.getByTestId('row-m2')).not.toHaveAttribute('data-flag')
+
+    // 「本地保留」那一格不再替它说第二遍——那正是"红两次"的来源
+    expect(screen.getByTestId('keep-m3')).toHaveTextContent('未计时')
+    expect(screen.getByTestId('keep-m3').querySelector('[data-tone="fail"]')).toBeNull()
   })
 
   test('「＋30 天」平时不占位，hover / 键盘光标才浮出来', () => {
@@ -1272,32 +1300,94 @@ describe('主持人这一列不再是 32 位机器 id', () => {
   })
 })
 
-describe('「拉取 · 归档」不再是三个没有图例的圆点', () => {
-  test('每个阶段自己带文字状态，不需要去别处查一张对照表', async () => {
+/**
+ * 阶段 7：这一栏从「两行文字」压成「两个方块 + 只在出问题时才出现的一句话」。
+ *
+ * 阶段 6 把三个没有图例的圆点换成文字，解决的是"读不懂"；这一轮解决的是
+ * "读得懂但没人读"——59 场里 50 多场那两行文字逐字相同，一行 62px 有一半
+ * 花在复述"一切正常"上。
+ *
+ * **压缩不许拿无障碍抵账**。下面这几条盯的就是这件事：方块不是可读内容，
+ * 每一行的状态必须仍然有一段说得清的文字给读屏软件。所以此前查可见文字的
+ * 断言全部改成查**无障碍名**，一条都没有删。
+ */
+describe('「拉取 · 归档」正常态一个字都不写，语义一个字都不少', () => {
+  test('正常态：这一格没有任何可见文字，但两个方块各带一句完整的可读文本', async () => {
     renderPage()
     await ready()
-    const row = screen.getByTestId('row-m1')
-    // m1 是 fetch: done / archive: done
-    expect(row).toHaveTextContent('拉取')
-    expect(row).toHaveTextContent('归档')
-    expect(within(row).getByRole('button', { name: '拉取：已完成' })).toHaveTextContent('已完成')
+    const cell = screen.getByTestId('stage-m1')
+    // m1 是 fetch: done / archive: done —— 正常态，一个字都不写
+    expect(cell.textContent).toBe('')
+    // 语义走无障碍名，与压缩之前那两行文字逐字同形
+    expect(within(cell).getByRole('button', { name: '拉取：已完成' })).toBeInTheDocument()
+    expect(within(cell).getByRole('button', { name: '归档：已完成' })).toBeInTheDocument()
+    // 方块自己不可读（它是 aria-hidden 的图形），可读文本在外层
+    expect(cell.querySelectorAll('[aria-hidden="true"][data-state]')).toHaveLength(2)
   })
 
-  test('归档失败那一行把「失败」两个字写出来，不只靠一个红点', async () => {
+  test('归档失败那一行把「失败」写出来：可见的一句红字 + 完整的无障碍名', async () => {
     renderPage()
     await ready()
-    const row = screen.getByTestId('row-m3')
-    expect(within(row).getByRole('button', { name: '归档：失败' })).toHaveTextContent('失败')
+    const cell = screen.getByTestId('stage-m3')
+    // 无障碍名照旧说得出"失败"两个字
+    expect(within(cell).getByRole('button', { name: '归档：失败' })).toBeInTheDocument()
+    // 眼睛也读得到：异常才补文字，而且是红的
+    expect(cell).toHaveTextContent('归档失败')
   })
 
   test('人工改写过的阶段把「人工」写出来，不只靠一圈琥珀', async () => {
     handler = defaultHandler([meeting({ fetch: 'off', hand: ['fetch'] })])
     renderPage()
     await ready()
-    const btn = within(screen.getByTestId('row-m1')).getByRole('button', {
-      name: '拉取：未执行 · 人工改写',
+    // 无障碍名里的「人工改写」一个字没少
+    expect(
+      within(screen.getByTestId('row-m1')).getByRole('button', {
+        name: '拉取：未执行 · 人工改写',
+      }),
+    ).toBeInTheDocument()
+    // 可见的那句话也在——它就是"异常才写字"里的一种异常
+    expect(screen.getByTestId('stage-m1')).toHaveTextContent('人工设为不拉取')
+  })
+
+  test('异常行挂行首色条，不是整行变红', async () => {
+    const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
+    expect(rowCss).toMatch(/\.row\[data-flag='fail'\] td:first-child\s*\{\s*box-shadow:\s*inset/)
+    expect(rowCss).toMatch(/\.row\[data-flag='warn'\] td:first-child\s*\{\s*box-shadow:\s*inset/)
+    // 整行变红的写法（给 tr 上底色）不许回来
+    expect(stripComments(rowCss)).not.toMatch(/\[data-flag[^{]*\{[^}]*background/)
+
+    handler = defaultHandler([M3, M2])
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('row-m3')).toBeInTheDocument())
+    expect(screen.getByTestId('row-m3')).toHaveAttribute('data-flag', 'fail')
+    expect(screen.getByTestId('row-m2')).not.toHaveAttribute('data-flag')
+  })
+
+  test('stageNote：正常态返回 null，异常按"最贵的那件事"排序', () => {
+    const base = meeting() as unknown as Parameters<typeof stageNote>[0]
+    expect(stageNote(base)).toBeNull()
+    expect(stageNote({ ...base, archive: 'failed' })).toEqual({ text: '归档失败', tone: 'fail' })
+    // 读不懂后端排在人工改写之前：那是一个我们没有的结论
+    expect(stageNote({ ...base, fetch: 'teleported' })?.text).toBe('拉取未知')
+    expect(stageNote({ ...base, fetch: 'off', hand: ['fetch'] })).toEqual({
+      text: '人工设为不拉取',
+      tone: 'warn',
     })
-    expect(btn).toHaveTextContent('人工')
+    expect(stageNote({ ...base, fetch: 'none' })).toEqual({ text: '无录制', tone: 'neutral' })
+    // 归档失败盖过一切——一格只放得下一句
+    expect(stageNote({ ...base, fetch: 'none', archive: 'failed' })?.text).toBe('归档失败')
+  })
+
+  test('rowFlag：只有归档失败与七天内到期配得上色条；人工改写不挂条', () => {
+    const now = new Date()
+    const base = meeting() as unknown as Parameters<typeof rowFlag>[0]
+    expect(rowFlag(base, now)).toBeNull()
+    expect(rowFlag({ ...base, archive: 'failed' }, now)).toBe('fail')
+    expect(rowFlag({ ...base, fetch: 'off', hand: ['fetch'] }, now)).toBeNull()
+    const soon = { ...base, keep: { ...base.keep, expiresAt: Math.floor(now.getTime() / 1000) + 2 * DAY } }
+    expect(rowFlag(soon, now)).toBe('warn')
+    // 本地文件已经清理掉了就不存在"快到期"这回事
+    expect(rowFlag({ ...soon, keep: { ...soon.keep, filesGone: true } }, now)).toBeNull()
   })
 
   test('页面底部那块圆点图例删掉了——格子自己说清楚了就不需要对照表', async () => {
@@ -1318,27 +1408,85 @@ describe('「可取走的程序」：列头与格子回答同一个命题', () =
     expect(screen.queryByRole('columnheader', { name: '已授权给' })).toBeNull()
   })
 
-  test('规则禁止是默认态，用极淡的行内灰字，不再占一枚 pill', async () => {
+  test('规则禁止是默认态，用极淡的行内灰字，不占任何标记', async () => {
     handler = defaultHandler([meeting({ allow: 'deny', grants: [] })])
     renderPage()
     await ready()
     const cell = screen.getByTestId('grant-m1')
     expect(cell).toHaveTextContent('规则禁止')
-    // pill 那种强调留给真的有授权的行——最常见的默认态不许占最强的视觉重量
-    expect(cell.querySelector('[class*="pill"]')).toBeNull()
+    // 标记那种强调留给真的有授权的行——最常见的默认态不许占最强的视觉重量。
+    // （阶段 7：pill 换成了 24×20 的两字母标记，这条断言跟着换成"一个标记都没有"）
+    expect(within(cell).queryAllByRole('button')).toHaveLength(0)
   })
 
-  test('真的有授权的行仍然是 pill——强调留给"数据真的在外面"', async () => {
+  /**
+   * 阶段 7：蓝色 pill + `＋` 按钮 + 虚线「＋ 授权给…」三种形态表达同一件事，
+   * 统一成一枚 24×20 的两字母等宽标记 + 一个虚线 `＋`。
+   *
+   * **缩写必须可回溯**：从程序的 key 派生，不是前端存的一张中文名对照表。
+   */
+  test('真的有授权的行给一枚两字母标记，全名在 title 上', async () => {
     renderPage()
     await ready()
     const cell = screen.getByTestId('grant-m1')
-    expect(cell).toHaveTextContent('知识库索引器')
-    expect(cell.querySelector('[class*="pill"]')).not.toBeNull()
+    const mark = within(cell).getByRole('button', {
+      name: /收回 知识库索引器 对「产品周会」的授权/,
+    })
+    // kb-indexer → KB。缩写从 key 派生，不从中文名查表
+    expect(mark).toHaveTextContent('KB')
+    // 全名不许只活在缩写里——悬停就有
+    expect(mark).toHaveAttribute('title', expect.stringContaining('知识库索引器'))
+    // 末尾那个虚线 ＋ 仍然是"再加一个"的入口
+    expect(within(cell).getByRole('button', { name: /再给「产品周会」授权一个采集程序/ })).toBeInTheDocument()
+  })
+
+  test('缩写派生不出来就退回完整程序名——不瞎缩', async () => {
+    handler = (c) => {
+      if (c.method === 'GET' && c.path === '/api/v1/admin/programs') {
+        // 纯中文 id：切出来一段合法的 ASCII 都没有，派生不出两个字母
+        return { status: 200, body: [{ ...PROGRAMS[0], id: '知识库', name: '知识库索引器' }] }
+      }
+      return defaultHandler([meeting({ grants: ['知识库'] })])(c)
+    }
+    renderPage()
+    await ready()
+    const cell = screen.getByTestId('grant-m1')
+    const mark = within(cell).getByRole('button', { name: /收回 知识库索引器 对「产品周会」的授权/ })
+    // 退回全名，而不是编一个谁也对不上号的两字母标记
+    expect(mark).toHaveTextContent('知识库索引器')
+    expect(mark).toHaveAttribute('data-full', 'true')
+  })
+
+  test('programAbbr：规则可回溯，且派生不出来时是 null 而不是瞎猜', () => {
+    // 第一段恰好两个字符 → 它本来就是缩写，直接用（拆首字母会得到 KI / DS）
+    expect(programAbbr('kb-indexer')).toBe('KB')
+    expect(programAbbr('dw-sync')).toBe('DW')
+    // 否则取前两段的首字母
+    expect(programAbbr('daily-digest')).toBe('DD')
+    expect(programAbbr('nas_archive_sync')).toBe('NA')
+    // 只有一段就取前两个字符
+    expect(programAbbr('archiver')).toBe('AR')
+    // 派生不出来的一律 null——调用方据此退回完整程序名
+    expect(programAbbr('知识库')).toBeNull()
+    expect(programAbbr('a')).toBeNull()
+    expect(programAbbr('')).toBeNull()
   })
 })
 
-describe('「本地保留」的进度条与旁边那行字说同一件事', () => {
-  test('刚归档 = 条是满的（还剩很多），不是空的（快没了）', async () => {
+/**
+ * 阶段 7：进度条整根删掉了。
+ *
+ * 阶段 6 修的是"条画反了"（画成已用，于是一整列几乎空的浅条在对绝大多数行
+ * 说反话）。这一轮把条本身去掉，理由是两条：它复述右边那个数（一列 50 根条，
+ * 每根都在说同一件事），而且**贴在数字下面的横条会被读成下划线**——眼睛先把
+ * 它当成"这个数被标了重点"。
+ *
+ * 剩下的就是一个右对齐的等宽天数。下面两条盯的仍然是同一个意图：这一格说的
+ * 话必须和事实一致（刚归档＝还剩很多、快到期＝该看一眼），外加一条新的：
+ * 那根会说反话的条不许回来。
+ */
+describe('「本地保留」是一个右对齐的等宽天数，不是一根会说反话的条', () => {
+  test('刚归档 = 还剩很多，而且这一格里没有任何进度条', async () => {
     const archivedAt = nowSec() - 60 // 一分钟前刚归档
     handler = defaultHandler([
       meeting({
@@ -1357,14 +1505,16 @@ describe('「本地保留」的进度条与旁边那行字说同一件事', () =
     await ready()
 
     const cell = screen.getByTestId('keep-m1')
-    expect(cell).toHaveTextContent('剩 30 天')
-    const bar = within(cell).getByRole('progressbar')
-    // 文字说"剩 30 天"，条就得是满的。此前这里画的是"已用 0%"——
-    // 一整列几乎空的浅灰条，读出来是"快没了"
-    expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThan(95)
+    expect(cell).toHaveTextContent('30 天')
+    // 刚归档不是"快到期"，不上琥珀，整行也不挂色条
+    expect(cell.querySelector('[data-soon="true"]')).toBeNull()
+    expect(screen.getByTestId('row-m1')).not.toHaveAttribute('data-flag')
+    // 那根复述天数、又会被读成下划线的条不许回来
+    expect(within(cell).queryByRole('progressbar')).toBeNull()
+    expect(css('src/pages/Meetings/MeetingRow.tsx')).not.toMatch(/ProgressBar/)
   })
 
-  test('快到期 = 条快见底', async () => {
+  test('快到期 = 天数转琥珀，并且整行挂一道琥珀色条', async () => {
     const archivedAt = nowSec() - 27 * DAY
     handler = defaultHandler([
       meeting({
@@ -1382,13 +1532,34 @@ describe('「本地保留」的进度条与旁边那行字说同一件事', () =
     renderPage()
     await ready()
     const cell = screen.getByTestId('keep-m1')
-    expect(cell).toHaveTextContent('剩 3 天')
-    const bar = within(cell).getByRole('progressbar')
-    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(15)
+    expect(cell).toHaveTextContent('3 天')
+    expect(cell.querySelector('[data-soon="true"]')).not.toBeNull()
+    // 琥珀＝保留期快到了，这是它在这一栏唯一被允许的含义
+    expect(css('src/pages/Meetings/MeetingRow.module.css')).toMatch(
+      /\.keepLeft\[data-soon='true'\]\s*\{\s*color:\s*var\(--warn\)/,
+    )
+    // 余光里也看得见：整行挂一道琥珀色条
+    expect(screen.getByTestId('row-m1')).toHaveAttribute('data-flag', 'warn')
+    // 完整的一句话（还剩几天、哪天到期）在原生 title 上，不占版面
+    expect(cell.querySelector('[data-soon="true"]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('本地文件还剩 3 天'),
+    )
   })
 })
 
-describe('分诊条：0 不占一整张卡', () => {
+/**
+ * 阶段 7：五张统计卡 → 一条分段筛选。
+ *
+ * 阶段 6 的处置是「0 不配占一整张卡」，把计数为 0 的格子折叠成一行细字。
+ * **卡片没有了，那条理由跟着没有了**：一段 0 在这条 42px 的横条上只占约 80px
+ * 宽，而折叠会让分段的数量随数据变化——同一个筛选器每次进来位置都不一样，
+ * 那比一个 0 贵得多。折叠因此删掉，它守的两件事换成下面这几条守：
+ *   · 0 仍然不许占强调色（`data-tone="zero"`）；
+ *   · 0 仍然是一个点得动的筛选项；
+ *   · 读不到（「？」）与 0 仍然是两件事。
+ */
+describe('分诊条：一条分段筛选，不是五张统计卡', () => {
   const oneNonZero = { archiveFailed: 1, expiringIn7d: 0, awaitingGrant: 0, inProgress: 0, nasOnly: 0 }
 
   function withTriage(counts: Record<string, number>): (c: Call) => Reply | undefined {
@@ -1397,22 +1568,26 @@ describe('分诊条：0 不占一整张卡', () => {
       c.path === '/api/v1/admin/meetings/triage' ? { status: 200, body: counts } : base(c)
   }
 
-  test('四个 0 折叠成一行细字，非零的那格仍是卡片', async () => {
+  test('计数为 0 的段照旧在条上、点得动，但不占强调色', async () => {
     handler = withTriage(oneNonZero)
     renderPage()
     await ready()
 
+    // 非零的「归档失败」拿到语义色
     expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1')
-    const zeros = screen.getByTestId('triage-zeros')
-    expect(zeros).toHaveTextContent('均为 0')
+    expect(screen.getByTestId('triage-archfail')).toHaveAttribute('data-tone', 'fail')
+
     for (const id of ['soon', 'ungranted', 'running', 'nasonly']) {
-      expect(screen.queryByTestId(`triage-count-${id}`)).toBeNull()
-      // 但它们仍然是筛选项，点得动
+      // 数字还在（0 不是"不知道"，它是一个事实）
+      expect(screen.getByTestId(`triage-count-${id}`)).toHaveTextContent('0')
+      // 但 0 不是一次告警，不许染红/染琥珀
+      expect(screen.getByTestId(`triage-${id}`)).toHaveAttribute('data-tone', 'zero')
+      // 仍然是筛选项，点得动
       expect(screen.getByTestId(`triage-${id}`)).toBeEnabled()
     }
   })
 
-  test('折叠掉的那几格照样能点出筛选', async () => {
+  test('计数为 0 的段照样能点出筛选', async () => {
     handler = withTriage(oneNonZero)
     const user = userEvent.setup()
     renderPage()
@@ -1421,34 +1596,79 @@ describe('分诊条：0 不占一整张卡', () => {
     await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('triage')).toBe('nasOnly'))
   })
 
-  test('五格全是 0 时整排就是一行字，一张卡都不占', async () => {
+  test('五段全是 0 时仍然是五段——分段的位置不随数据变', async () => {
     handler = withTriage({ archiveFailed: 0, expiringIn7d: 0, awaitingGrant: 0, inProgress: 0, nasOnly: 0 })
     renderPage()
     await ready()
-    expect(screen.getByTestId('triage-zeros')).toHaveTextContent('均为 0')
     for (const def of TRIAGE_DEFS) {
-      expect(screen.queryByTestId(`triage-count-${def.id}`)).toBeNull()
+      expect(screen.getByTestId(`triage-count-${def.id}`)).toHaveTextContent('0')
+      expect(screen.getByTestId(`triage-${def.id}`)).toHaveAttribute('data-tone', 'zero')
     }
   })
 
-  test('计数读不到的格子**不折叠**——"？"不是 0', async () => {
+  test('计数读不到时显示「？」并且不上语义色——"？"不是 0', async () => {
     const base = defaultHandler()
     handler = (c) =>
       c.path === '/api/v1/admin/meetings/triage' ? { status: 500, body: { error: 'boom' } } : base(c)
     renderPage()
     await ready()
     await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('？'))
-    expect(screen.queryByTestId('triage-zeros')).toBeNull()
+    expect(screen.getByTestId('triage-count-archfail')).not.toHaveTextContent('0')
+    // 那个"？"不是一次告警，是一次未知
+    expect(screen.getByTestId('triage-archfail')).toHaveAttribute('data-tone', 'zero')
+    // 这一句是故障，不是口径说明，所以它露出来
+    expect(screen.getByTestId('triage-scope')).toHaveAttribute('data-visible', 'true')
   })
 
-  test('「一次只能筛一格」那句话删了，改由单选圆圈说', async () => {
+  test('选中态同一时刻只有一个，而且是底部色条不是填充块', async () => {
+    const user = userEvent.setup()
     renderPage()
     await ready()
-    expect(screen.getByTestId('triage-scope')).not.toHaveTextContent('一次只能筛一格')
+
+    const pressed = () =>
+      TRIAGE_DEFS.filter(
+        (d) => screen.getByTestId(`triage-${d.id}`).getAttribute('aria-pressed') === 'true',
+      )
+    expect(pressed()).toHaveLength(0)
+
+    await user.click(screen.getByTestId('triage-archfail'))
+    await waitFor(() => expect(pressed()).toHaveLength(1))
+    await user.click(screen.getByTestId('triage-nasonly'))
+    await waitFor(() => expect(pressed().map((d) => d.id)).toEqual(['nasonly']))
+    // 再点一次取消，一个都不选也是合法状态（= 不筛）
+    await user.click(screen.getByTestId('triage-nasonly'))
+    await waitFor(() => expect(pressed()).toHaveLength(0))
+
     const barCss = css('src/pages/Meetings/TriageBar.module.css')
-    // 单选外观：一圈空心环，选中时填实
-    expect(barCss).toMatch(/\.label::before/)
-    expect(barCss).toMatch(/\.card\[aria-pressed='true'\] \.label::before/)
+    // 选中态＝底部一道 2px 色条。填充块会把这条横条读成五枚按钮
+    expect(barCss).toMatch(/\.seg\[aria-pressed='true'\]\s*\{[^}]*border-bottom-color:\s*var\(--ink\)/)
+    expect(stripComments(barCss)).not.toMatch(/\.seg\[aria-pressed='true'\]\s*\{[^}]*background:/)
+  })
+
+  test('「一次只能筛一格」那句话仍然不在，口径说明也不再按正文排', async () => {
+    renderPage()
+    await ready()
+    const scope = screen.getByTestId('triage-scope')
+    expect(scope).not.toHaveTextContent('一次只能筛一格')
+    // 口径说明不占版面：视觉隐藏（读屏仍然念得到，走 aria-describedby）
+    expect(scope).not.toHaveAttribute('data-visible')
+    expect(screen.getByTestId('triage-bar')).toHaveAttribute('aria-describedby', scope.id)
+    const barCss = css('src/pages/Meetings/TriageBar.module.css')
+    expect(barCss).toMatch(/\.scope\s*\{[^}]*clip-path:\s*inset\(50%\)/)
+    // 同一句话在每一段自己的 title 里也拿得到——鼠标那一路
+    expect(screen.getByTestId('triage-archfail')).toHaveAttribute(
+      'title',
+      expect.stringContaining('不受下面的搜索、筛选与分页影响'),
+    )
+  })
+
+  test('一条分段条，不是五张卡：不再有卡片那套白底 + 边框 + 圆角', () => {
+    const barCss = stripComments(css('src/pages/Meetings/TriageBar.module.css'))
+    expect(barCss).not.toMatch(/\.card\b/)
+    // 分段自己不画背景、不画边框、不画圆角——它靠底部那条基线成形
+    const seg = /\.seg \{[^}]*\}/.exec(barCss)?.[0] ?? ''
+    expect(seg).toMatch(/background:\s*none/)
+    expect(seg).not.toMatch(/border-radius/)
   })
 })
 
@@ -1461,6 +1681,35 @@ describe('页头与工具条：不用文案补可供性', () => {
     const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
     const title = /\.title \{[^}]*\}/.exec(rowCss)?.[0] ?? ''
     expect(title).toMatch(/text-decoration:\s*underline/)
+  })
+
+  /**
+   * 阶段 7：页头那句副标题降级成脚注。
+   *
+   * 它是一条**制度说明**（"本地会删、NAS 不删"），一个月不变，读者一辈子只
+   * 需要读一次，却按正文排在标题正下方——整页信息密度最高的那条横线上方。
+   * 删不得（不知道这件事的人会把「仅存 NAS」读成"数据丢了"），所以是降级：
+   * 挪到它解释的那两列下面，小一号、次要色。
+   */
+  test('页头那句制度说明降级成表格下面的脚注，不再按正文排在标题下', async () => {
+    renderPage()
+    await ready()
+    const note = screen.getByTestId('lifecycle-note')
+    // 一个字都没删
+    expect(note).toHaveTextContent('归档到 NAS 之后本地文件还会留一段时间')
+    expect(note).toHaveTextContent('记录与 NAS 路径永久保留')
+
+    // 但它不在页头里了：h1 的兄弟节点里没有这句话
+    const head = screen.getByRole('heading', { name: '会议记录', level: 1 }).parentElement!
+    expect(head.textContent).not.toContain('归档到 NAS 之后')
+    // 位置在表格之后
+    const table = screen.getByRole('table')
+    expect(table.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // 排版是脚注不是正文：最小字号 + 次要色
+    expect(css('src/pages/Meetings/Meetings.module.css')).toMatch(
+      /\.lifecycleNote\s*\{[^}]*font-size:\s*var\(--t-2xs\)/,
+    )
   })
 
   test('搜索框的键位提示不再是 placeholder 尾巴上那个孤立的斜杠', async () => {

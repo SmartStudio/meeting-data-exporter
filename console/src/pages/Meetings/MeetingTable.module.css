@@ -30,6 +30,12 @@
   cursor: pointer;
 }
 
+/* 数字列的表头跟着格子右对齐。两个类压过 ui/Table 的 `.table thead th`
+   （一个类 + 两个元素），这是本页对通用表格的第二处覆盖。 */
+.wrap .numHead {
+  text-align: right;
+}
+
 /* ── 三态：大空态（系统里一场都没有 / 读不到）───────────────── */
 
 .big {

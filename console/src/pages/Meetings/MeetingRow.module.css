@@ -1,5 +1,32 @@
-/* 会议行。列宽用 ch 表达"放得下几个字符"，不写死像素——
- * 表格整体的最小宽度由 MeetingTable 引用 --meetings-table-w 兜底。 */
+/* 会议行。目标：单行 ≈46px，一屏 20 行（阶段 7）。
+ * 列宽用 ch 表达"放得下几个字符"，不写死像素——表格整体的最小宽度由
+ * MeetingTable 引用 --meetings-table-w 兜底。 */
+
+/* ── 行高 ────────────────────────────────────────────────────────
+   ui/Table 给每个格子 `var(--s-3)`（8px）的上下内边距，一行因此是 62px。
+   这一页的密度要求比通用表格高：标题 + 会议号两行文字本身只有 33px，
+   收到 `var(--s-2)`（6px）之后一行落在 46px 上。
+   选择器写成 `.row .xxx` / `.row td[data-label]`（两个类）是为了压过
+   `ui/Table.module.css` 的 `.table tbody td`（一个类 + 两个元素）——
+   这是本页对通用表格唯一的一处覆盖，不改 ui/。 */
+.row .check,
+.row .main,
+.row .act,
+.row td[data-label] {
+  padding-top: var(--s-2);
+  padding-bottom: var(--s-2);
+}
+
+/* 异常行的左侧色条。**不整行变红**：一屏 20 行里三行红底之后，红就只剩
+   "这几行长得不一样"的意思。红＝归档失败（到期永久丢失），琥珀＝七天内到期。
+   键盘光标那道蓝条（ui/Table 的 tr[data-cursor]）优先级更高，会盖住它——
+   那是对的：光标是"我现在在这儿"，比"这一行有问题"更即时。 */
+.row[data-flag='fail'] td:first-child {
+  box-shadow: inset var(--s-1) 0 0 var(--fail);
+}
+.row[data-flag='warn'] td:first-child {
+  box-shadow: inset var(--s-1) 0 0 var(--warn);
+}
 
 .check {
   width: 4ch;
@@ -9,6 +36,14 @@
 .checkbox {
   accent-color: var(--brand);
   cursor: pointer;
+}
+
+/* 行内的行高压到 1.35。默认的 1.55 是正文行高，它在这里只体现为标题按钮
+   周围的一圈空行距（行盒的 strut 比按钮本身高 3px）——那 3px 乘以一屏 20 行
+   就是一整行的高度。 */
+.main {
+  min-width: 0;
+  line-height: 1.35;
 }
 
 /* 标题是进入内容预览的入口，所以**静止状态下就要看起来可点**。
@@ -22,12 +57,13 @@
   padding: 0;
   font: inherit;
   font-weight: 500;
+  line-height: 1.35;
   color: var(--ink);
   cursor: pointer;
   text-align: left;
   text-decoration: underline;
   /* --ink-4 是图形专用色（描边 / 分隔 / 填充），下划线正是一条描边——
-     不承载文字信息。用 --line 试过：1px 的 #DCE2EC 压在白底上几乎看不见，
+     不承载文字信息。用 --line 试过：1px 的浅灰压在白底上几乎看不见，
      那等于这条可供性没做。 */
   text-decoration-color: var(--ink-4);
   text-decoration-thickness: var(--s-px);
@@ -46,9 +82,9 @@ tr[data-dim='true'] .title {
 
 .meta {
   font-size: var(--t-2xs);
+  line-height: 1.2;
   color: var(--ink-3);
   font-family: var(--mono);
-  margin-top: var(--s-px);
   white-space: nowrap;
 }
 
@@ -89,18 +125,18 @@ tr[data-dim='true'] .title {
   font-variant-numeric: tabular-nums;
 }
 
-.assets {
+/* 资产是一列数，右对齐才比得出大小 */
+.row .assets {
   font-family: var(--mono);
   font-size: var(--t-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  text-align: right;
+  width: 8ch;
 }
 /* 部分资产还没拿到是**中性**的，不是告警。琥珀在 design-system.md §2.2 里只有
    两个含义：有人手动改写了规则、保留期快到了——两者都意味着"这需要你看一眼"。
-   "7/19"两者都不是，而且它唯一命中的那行还是 fetch:'running'（分诊语义里
-   "处理中＝中性＝不需要你做什么"），同一行在资产列画琥珀就是一次假警报。
-   （若将来要把"已结束但仍缺资产"单独提出来，那是给 §2.2 提修订，不是在这里
-   就地加第三义。） */
+   "7/19"两者都不是。 */
 .assets[data-state='partial'] {
   color: var(--ink-2);
 }
@@ -108,103 +144,125 @@ tr[data-dim='true'] .title {
   color: var(--ink-3);
 }
 
-/* 两个阶段各占一行。宽度按"放得下『归档 规则不执行』"给——最长的那个状态文案
-   决定这一列的下限，写死像素的话换个字号就折行。 */
+/* ── 拉取 · 归档：两个方块 ───────────────────────────────────────
+   宽度按"两个方块 + 最长的一句异常注记（人工设为不拉取）"给。
+   正常态这一格是空的，只有两个 8px 的方块。 */
 .stage {
-  width: 17ch;
+  width: 16ch;
 }
 
-.stageStack {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
+.stageRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
   min-width: 0;
 }
 
-/* 一行 = 一个阶段的开关。整行可点（而不是只有那个 18px 的圆点可点），
-   触屏上这是唯一够得着的做法。 */
-.stageLine {
-  display: flex;
-  align-items: center;
-  gap: var(--s-1);
-  font: inherit;
-  font-size: var(--t-xs);
-  text-align: left;
+/* 方块的命中区。方块本身 8px，在触屏上点不准，所以可点的是这一圈。 */
+.sqSlot {
+  appearance: none;
   background: none;
   border: var(--s-px) solid transparent;
-  border-radius: var(--r-sm);
-  padding: var(--s-px) var(--s-1);
+  border-radius: var(--r-xs);
+  padding: var(--s-1) var(--s-0);
+  display: inline-flex;
+  align-items: center;
   cursor: pointer;
-  white-space: nowrap;
 }
-.stageLine:hover:not(:disabled) {
+button.sqSlot:hover:not(:disabled) {
   background: var(--surface-2);
   border-color: var(--line);
 }
-.stageLine:active:not(:disabled) {
+button.sqSlot:active:not(:disabled) {
   transform: translateY(var(--s-px));
 }
-.stageLine:disabled {
+.sqSlot:disabled {
   cursor: not-allowed;
 }
-
-.stageIcon {
-  display: inline-flex;
-  line-height: 0;
-  flex: none;
+span.sqSlot {
+  cursor: default;
 }
 
-/* 阶段名比状态淡一档：一列里五十行都写着"拉取 / 归档"，真正在变的是右边那半。 */
-.stageName {
+/* 颜色即状态。四种取值，没有第五种——认不出的取值走 unknown 那一支，
+   画成虚线空心格并且不可点（见 MeetingRow 的 StageMark）。 */
+.sq {
+  flex: none;
+  width: var(--s-3);
+  height: var(--s-3);
+  border-radius: var(--r-xs);
+  border: var(--s-px) solid transparent;
+  background: var(--ink-2);
+}
+/* 已完成＝实心中性 */
+.sq[data-state='done'] {
+  background: var(--ink-2);
+}
+/* 进行中＝描边空心。它是"还没有结论"，实心会读成"已经是这样了" */
+.sq[data-state='running'] {
+  background: none;
+  border-color: var(--ink-4);
+}
+/* 失败＝红实心。本系统最严重的状态（design-system.md §2.2） */
+.sq[data-state='failed'] {
+  background: var(--fail);
+}
+/* 无 / 不执行 / 未执行＝最淡的一格。它们是"没发生"，不需要人做什么 */
+.sq[data-state='off'],
+.sq[data-state='blocked'],
+.sq[data-state='none'] {
+  background: var(--line);
+}
+/* 认不出的取值：虚线空心 + 琥珀。琥珀＝"这需要你看一眼" */
+.sq[data-state='unknown'] {
+  background: none;
+  border-style: dashed;
+  border-color: var(--warn);
+}
+/* 被人工改写过的阶段挂一圈琥珀。文字版在异常注记里（「人工设为不拉取」），
+   这一圈只是让它在余光里也认得出来。 */
+.sq[data-hand='true'] {
+  box-shadow: 0 0 0 var(--s-px) var(--warn);
+}
+
+/* 异常注记。**正常态它根本不渲染**——这是这一栏能从 62px 压到 46px 的原因。 */
+.note {
+  font-size: var(--t-2xs);
   color: var(--ink-3);
-  flex: none;
+  margin-left: var(--s-1);
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-
-.stageState {
-  color: var(--ink);
-}
-
-/* 失败＝一个月后永久丢失，是本系统最严重的状态（design-system.md §2.2）。
-   圆点已经是红的，文字跟上——颜色不是唯一的信息载体。 */
-.stageLine[data-state='failed'] .stageState {
+.note[data-tone='fail'] {
   color: var(--fail);
   font-weight: 600;
 }
-/* 未执行 / 规则不执行 / 无录制都是"没发生"，不需要人做什么 */
-.stageLine[data-state='off'] .stageState,
-.stageLine[data-state='blocked'] .stageState,
-.stageLine[data-state='none'] .stageState {
-  color: var(--ink-3);
-}
-
-/* 琥珀圈的文字版。琥珀在 §2.2 里只有一个含义：有人手动改写了规则。 */
-.handMark {
-  font-size: var(--t-2xs);
+.note[data-tone='warn'] {
   color: var(--warn);
-  flex: none;
 }
 
-.keep {
-  width: 22ch;
+/* ── 本地保留：一个右对齐的等宽天数 ─────────────────────────────
+   宽度按"＋30 天按钮 + 天数"给。进度条删掉了：它复述右边那个数，而且贴在
+   数字下面的横条会被读成下划线。 */
+.row .keep {
+  width: 13ch;
+  text-align: right;
 }
 
 .keepRow {
   display: flex;
-  align-items: center;
-  gap: var(--s-3);
-}
-
-.keepBar {
-  flex: 1;
-  min-width: 7ch;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--s-2);
 }
 
 .keepLeft {
   font-family: var(--mono);
-  font-size: var(--t-xs);
+  font-size: var(--t-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  color: var(--ink-2);
+  color: var(--ink);
 }
 /* 琥珀＝保留期快到了。这是它在这一栏唯一被允许的含义。 */
 .keepLeft[data-soon='true'] {
@@ -212,18 +270,22 @@ tr[data-dim='true'] .title {
   font-weight: 600;
 }
 
-.keepGone,
-.keepNone,
+.keepUnit {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+/* 没在计时 / 已清理。极淡的一句，成因写在原生 title 上——
+   「是哪一种没归档」由「拉取 · 归档」那一栏的异常注记回答。 */
+.keepOff,
 .grantNone {
-  font-size: var(--t-xs);
+  font-size: var(--t-2xs);
   color: var(--ink-3);
   white-space: nowrap;
 }
-/* 归档失败 ≠ 未归档。红＝失败＝一个月后永久丢失，是本系统最严重的状态
-   （design-system.md §2.2）；两者同一个灰，最严重的状态就在表格里消失了。 */
-.keepNone[data-fail='true'] {
-  color: var(--fail);
-  font-weight: 600;
+/* 琥珀＝有人绕过了规则 / 我们读不懂后端给的取值，两者都要人看一眼 */
+.grantNone[data-tone='warn'] {
+  color: var(--warn);
 }
 
 /* 延长按钮：平时不占视觉重量，鼠标停在行上或键盘光标落在行上才浮出来。
@@ -235,7 +297,7 @@ tr[data-dim='true'] .title {
   border: var(--s-px) solid var(--line);
   color: var(--ink-3);
   border-radius: var(--r-pill);
-  padding: var(--s-px) var(--s-2);
+  padding: 0 var(--s-2);
   cursor: pointer;
   white-space: nowrap;
   opacity: 0;
@@ -251,8 +313,7 @@ tr[data-cursor='true'] .extendBtn,
 }
 /* hover 只是"鼠标停在这儿"，**不是**一条语义。琥珀在 design-system.md §2.2 里
    只有两个含义（有人手动改写了规则 / 保留期快到了），拿它当强调色用，会让
-   同一栏里"还剩 3 天"的那个琥珀降一级——一直响的警报等于没有警报。
-   改成中性加重（描边 ink-4 + 文字 ink），和分诊格 `.card:hover` 是同一套语言。 */
+   同一栏里"3 天"的那个琥珀降一级——一直响的警报等于没有警报。 */
 .extendBtn:hover:not(:disabled) {
   border-color: var(--ink-4);
   color: var(--ink);
@@ -264,42 +325,70 @@ tr[data-cursor='true'] .extendBtn,
   cursor: not-allowed;
 }
 
+/* ── 可取走的程序：两字母等宽标记 ───────────────────────────────
+   宽度按"三枚标记 + 一个 ＋"给。 */
 .grant {
-  width: 26ch;
+  width: 15ch;
 }
 
-.grantRow {
+.progRow {
   display: flex;
   gap: var(--s-1);
-  flex-wrap: wrap;
   align-items: center;
+  flex-wrap: wrap;
 }
 
-/* 虚线描边＝这里还什么都没有，等着被填上。 */
-.grantAdd {
-  font: inherit;
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-  background: none;
-  border: var(--s-px) dashed var(--line);
-  border-radius: var(--r-pill);
-  padding: var(--s-0) var(--s-3);
+/* 24×20 的方标记。两字母缩写从程序 key 派生（display.programAbbr），
+   全名在原生 title 上。点它＝收回这条授权。 */
+.prog,
+.progAdd {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  width: var(--s-7);
+  height: var(--s-6);
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--ink-2);
   cursor: pointer;
-  white-space: nowrap;
+  flex: none;
 }
-.grantAdd:hover:not(:disabled) {
-  color: var(--brand-text);
-  border-color: var(--brand);
+.prog:hover:not(:disabled) {
+  border-color: var(--ink-4);
+  color: var(--ink);
 }
-.grantAdd:active:not(:disabled) {
-  transform: translateY(var(--s-px));
-}
-.grantAdd:disabled {
+.prog:disabled,
+.progAdd:disabled {
   cursor: not-allowed;
 }
 
+/* 缩写派生不出来时退回完整程序名——一枚认不出的两字母标记比长名字更糟。
+   那一支不再是方标记，按内容宽度走。 */
+.prog[data-full='true'] {
+  width: auto;
+  padding: 0 var(--s-2);
+  font-family: var(--sans);
+  font-weight: 500;
+}
+
+/* 虚线描边＝这里还能再填一个。 */
+.progAdd {
+  border-style: dashed;
+  background: none;
+  color: var(--ink-3);
+  font-weight: 400;
+}
+.progAdd:hover:not(:disabled) {
+  color: var(--brand-text);
+  border-color: var(--brand);
+}
+
 .act {
-  width: 7ch;
+  width: 5ch;
   text-align: right;
 }
 
@@ -308,8 +397,8 @@ tr[data-cursor='true'] .extendBtn,
   border: var(--s-px) solid transparent;
   color: var(--ink-3);
   cursor: pointer;
-  width: var(--s-8);
-  height: var(--s-8);
+  width: var(--s-7);
+  height: var(--s-7);
   border-radius: var(--r-sm);
   display: grid;
   place-items: center;
@@ -329,41 +418,47 @@ tr[data-cursor='true'] .detailBtn,
   color: var(--ink);
 }
 
-/* 后端下发了认不出的阶段状态时顶替圆点的标签。琥珀＝"这需要你看一眼"，
-   而"我们读不懂后端给的状态"正是需要人看一眼的事。 */
-.unknownDot {
-  white-space: nowrap;
-}
-
-/* 授权 pill 正在被收回。不把 pill 直接抽走——请求可能失败，
-   抽走再放回来会让人以为自己看错了。 */
-.pendingMark {
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-}
-
 /* ── 窄屏：行变卡片（spec §11 缺口 2）────────────────────────────
    `ui/Table` 的 cards 开关把 td 变成 block，这里把按列宽写的那几条约束卸掉。
    断点 56em 写死的理由见 Table.module.css。 */
 @media (max-width: 56em) {
   /* 列宽在竖排布局下没有意义，留着反而把格子挤成一条 */
   .check,
-  .keep,
+  .row .keep,
   .grant,
   .stage,
-  .act {
+  .act,
+  .row .assets {
     width: auto;
   }
-  .act {
+  .act,
+  .row .keep,
+  .row .assets {
     text-align: left;
+  }
+  .keepRow {
+    justify-content: flex-start;
   }
   .host,
   .meta {
     white-space: normal;
   }
 
-  /* 阶段那两行在卡片形态下是主要的可点目标，给足手指的高度 */
-  .stageLine {
+  /* 卡片形态下 td 是 block，`td:first-child` 只剩勾选框那一格——
+     色条跟着挪到整张卡上，与 ui/Table 处理键盘光标是同一种做法。 */
+  .row[data-flag='fail'] td:first-child,
+  .row[data-flag='warn'] td:first-child {
+    box-shadow: none;
+  }
+  .row[data-flag='fail'] {
+    box-shadow: inset var(--s-1) 0 0 var(--fail);
+  }
+  .row[data-flag='warn'] {
+    box-shadow: inset var(--s-1) 0 0 var(--warn);
+  }
+
+  /* 两个方块在卡片形态下是主要的可点目标，给足手指的高度 */
+  .sqSlot {
     min-height: var(--tap-min);
   }
 
@@ -374,16 +469,16 @@ tr[data-cursor='true'] .detailBtn,
     opacity: 1;
   }
 
-  /* 触控目标：这两个按钮在宽屏上是紧凑的浮出控件，手指点不准 */
+  /* 触控目标：这几个按钮在宽屏上是紧凑的浮出控件，手指点不准 */
   .extendBtn,
   .detailBtn,
-  .grantAdd {
+  .prog,
+  .progAdd {
     min-height: var(--tap-min);
   }
 
   /* 勾选框自己占卡片顶上一行。**不做 float 去贴标题**：浮动会让后面几格
-     也绕着它排，而它只有一行高，绕出来的结果随卡片内容变——不值得为
-     省一行冒这个险。它就在标题正上方，指的是哪一场没有歧义。 */
+     也绕着它排，而它只有一行高，绕出来的结果随卡片内容变。 */
   .check {
     display: flex;
     align-items: center;

@@ -2,6 +2,7 @@ import type { AdminMeeting } from '@/api/admin/meetings'
 import type { ServiceProgram } from '@/api/admin/grants'
 import type { StatusDotState } from '@/ui/StatusDot'
 import { STATUS_DOT_LABEL } from '@/ui/StatusDot'
+import { daysLeft } from '@/lib/format'
 
 /**
  * 会议记录页的**纯展示映射**。这个文件是 `write.ts` 的遗产：那个文件同时装着
@@ -56,6 +57,107 @@ export type AllowView = 'allow' | 'deny' | 'unknown'
 
 export function allowView(raw: string): AllowView {
   return raw === 'allow' || raw === 'deny' ? raw : 'unknown'
+}
+
+/* ── 表格里那两个方块旁边的「异常注记」（阶段 7）──────────────────
+
+   此前这一栏是两行文字（「拉取 已完成」「归档 已完成」），每行 87px 的一半
+   花在复述"一切正常"上——59 场里 50 多场读出来都是同一句。现在正常态**一个
+   字都不写**：两个并排的小方块，颜色即状态。
+
+   代价是"出问题的那几场"不能再靠读文字发现，所以异常必须自己冒出来：
+   `stageNote` 回答的就是「这一行有没有一句非说不可的话」。返回 `null` 就是
+   正常态，那时这一格只有两个方块。
+
+   **优先级是排过的，不是随手写的 if 链**：一格只放得下一句，那句必须是最贵的
+   那一件事。失败 > 读不懂后端 > 有人绕过规则 > 压根没录 > 规则不执行 > 未执行。
+   归档失败排第一的理由与 design-system.md §2.2 一致：它意味着一个月后永久丢失。 */
+
+export type StageNoteTone = 'fail' | 'warn' | 'neutral'
+
+export interface StageNote {
+  text: string
+  tone: StageNoteTone
+}
+
+/** 正常态返回 `null`——那一格因此一个字都不写。 */
+export function stageNote(m: AdminMeeting): StageNote | null {
+  const f = dotState('fetch', m.fetch)
+  const a = dotState('archive', m.archive)
+
+  if (a === 'failed') return { text: '归档失败', tone: 'fail' }
+  // 读不懂后端下发的取值。**不静默**——认不出的状态画成方块等于替后端下结论
+  if (f === 'unknown') return { text: `${STAGE_SHORT.fetch}未知`, tone: 'warn' }
+  if (a === 'unknown') return { text: `${STAGE_SHORT.archive}未知`, tone: 'warn' }
+  // 琥珀在 §2.2 里只有一个含义：有人手动改写了规则
+  if (m.hand.includes('fetch') && (f === 'off' || f === 'blocked')) {
+    return { text: '人工设为不拉取', tone: 'warn' }
+  }
+  if (m.hand.includes('archive') && (a === 'off' || a === 'blocked')) {
+    return { text: '人工设为不归档', tone: 'warn' }
+  }
+  if (f === 'none') return { text: '无录制', tone: 'neutral' }
+  if (f === 'blocked') return { text: '规则不拉取', tone: 'neutral' }
+  if (a === 'blocked') return { text: '规则不归档', tone: 'neutral' }
+  if (f === 'off') return { text: '未拉取', tone: 'neutral' }
+  if (a === 'off') return { text: '未归档', tone: 'neutral' }
+  return null
+}
+
+/* ── 整行的告警条（左侧 3px 色条）────────────────────────────────
+
+   异常行**不整行变红**：一屏 20 行里只要有三行变红，红就不再是"最严重"的
+   意思，而是"这几行长得不一样"。改成行首一道色条——它在余光里看得见，
+   又不会把这一行的正文压成红底。
+
+   只有两种成因配得上这道条，与 §2.2 的两个语义色一一对应：
+   归档失败（红＝一个月后永久丢失）、保留期七天内到期（琥珀＝该看一眼了）。
+   **人工改写不挂条**：它已经在阶段注记里写着「人工设为不拉取」，再挂一道条
+   就是同一件事收两次费，而配了人工改写的部署会得到一屏永久琥珀。 */
+
+export type RowFlag = 'fail' | 'warn'
+
+export function rowFlag(m: AdminMeeting, now: Date): RowFlag | null {
+  if (dotState('archive', m.archive) === 'failed') return 'fail'
+  if (!m.keep.filesGone && m.keep.expiresAt !== null && daysLeft(m.keep.expiresAt, now) <= 7) {
+    return 'warn'
+  }
+  return null
+}
+
+/* ── 采集程序的两字母标记 ────────────────────────────────────────
+
+   「可取走的程序」此前有三种形态表达同一件事：蓝色 chip（有授权）、`＋` 按钮
+   （再加一个）、虚线「＋ 授权给…」（一个都没有）。三种形态、三种宽度，一列
+   扫下来看不出哪几行真的把数据放出去了。统一成一枚 24×20 的等宽标记。
+
+   ## 缩写从 `key` 派生，不从中文名查表
+
+   在前端写一张「知识库索引器 → KB」的表，等于把后端的程序清单抄一份到界面上：
+   运维新建一个程序，界面上就是一个没有缩写的空格，而没有人会想到要回来改这张表。
+   所以规则只吃 `id`（也就是程序的 key，`kb-indexer` / `daily-digest` / `dw-sync`）：
+
+   1. 按 `-` `_` `.` 空白切段，只保留纯 ASCII 字母数字的段；
+   2. **第一段恰好两个字符**就直接用它（`kb-indexer` → `KB`、`dw-sync` → `DW`）
+      ——这类 id 的第一段本来就是缩写，拆开取首字母反而会得到 `KI` / `DS`；
+   3. 否则取前两段的首字母（`daily-digest` → `DD`）；
+   4. 只有一段且长度够，取它的前两个字符（`archiver` → `AR`）；
+   5. **派生不出来就返回 `null`**（纯中文 id、单字符 id）。调用方据此退回显示
+      完整程序名——瞎缩一个出来，界面上就会有一枚谁也对不上号的标记。 */
+
+const ABBR_SEP = /[-_.\s]+/
+const ABBR_SEG = /^[a-z0-9]+$/
+const ABBR_LEN = 2
+
+export function programAbbr(id: string): string | null {
+  const segs = id.trim().toLowerCase().split(ABBR_SEP).filter((s) => ABBR_SEG.test(s))
+  const first = segs[0]
+  if (first === undefined) return null
+  if (first.length === ABBR_LEN) return first.toUpperCase()
+  const second = segs[1]
+  if (second !== undefined) return (first[0]! + second[0]!).toUpperCase()
+  if (first.length > ABBR_LEN) return first.slice(0, ABBR_LEN).toUpperCase()
+  return null
 }
 
 /* ── 判定理由的呈现（spec.md §6.1）────────────────────────────── */

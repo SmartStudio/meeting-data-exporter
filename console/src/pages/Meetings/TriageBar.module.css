@@ -1,187 +1,146 @@
-/* 分诊条。五格等分，窄屏自动折行（375px 下变成两列，不横滚）。 */
+/* 分诊条：一条紧贴内容顶部的分段筛选条（阶段 7）。
+ *
+ * 此前是五张白卡（`--surface` + 1px 边 + 圆角 + 每张里一个单选圆圈），实测
+ * 109px 高，装着五个个位数。改成分段条之后目标高度 ≈ 42px：数字与标签同一行，
+ * 选中态是底部一道 2px 色条，**不是填充块**——填充块会让这条横条变成五枚
+ * 按钮，而分段条的语义是"同一批东西的不同切片"。
+ *
+ * 底边那条 1px 是分段条的基线，各段的下边框压在它上面（`margin-bottom: -1px`），
+ * 选中的那一段因此看起来是"从基线上长出来的"，而不是浮在上面。
+ */
 
 .bar {
   display: flex;
-  gap: var(--s-3);
+  align-items: stretch;
   flex-wrap: wrap;
-  margin: var(--s-5) 0;
+  border-bottom: var(--s-px) solid var(--line);
+  margin: 0 0 var(--s-4);
 }
 
-.card {
-  /* 基准宽 148px 不落在 4pt 标尺上，用 flex-basis + grow 让各格自己等分，
-     min-width 用 ch 表达"至少放得下一行提示文案"，不引入一次性的像素值。
-     `max-width` 是为 0 值折叠之后留的（阶段 6）：只剩一格时它不该被拉成
-     一整行宽——那一格再重要也不是一块横幅。 */
-  flex: 1 1 14ch;
-  min-width: 14ch;
-  max-width: 26ch;
-  text-align: left;
-  cursor: pointer;
-  background: var(--surface);
-  border: var(--s-px) solid var(--line);
-  border-radius: var(--r-lg);
-  padding: var(--s-3) var(--s-4) var(--s-4);
-  font: inherit;
-  color: var(--ink);
-  display: flex;
-  flex-direction: column;
-  transition:
-    border-color var(--dur-1) var(--ease-out),
-    box-shadow var(--dur-1) var(--ease-out);
-}
-
-.card:hover {
-  border-color: var(--ink-4);
-}
-
-.card:active {
-  transform: translateY(var(--s-px));
-}
-
-.card[aria-pressed='true'] {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 var(--s-1) color-mix(in oklab, var(--brand) 15%, transparent);
-}
-
-.card[data-skeleton='true'] {
-  cursor: default;
-  gap: var(--s-2);
-}
-
-/* 口径副标。`flex-basis: 100%` 让它自己占满一行落到五格下面，不去跟卡片抢宽度
-   ——也就不需要再套一层容器、不动 `.bar` 的外边距和 testid。
-   `--s-3` 的 gap 已经把它和上一行隔开了，这里不再加 margin。 */
-.scope {
-  flex: 1 0 100%;
-  margin: 0;
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-  line-height: 1.4;
-}
-
-/* ── 计数为 0 的那几格，折叠成的一行 ─────────────────────────────
-   它们仍然是筛选项（点得动、能被选中），只是不再各占一张等重的卡片。 */
-.zeros {
-  flex: 1 0 100%;
-  margin: 0;
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-  line-height: 1.6;
-}
-
-.zeroItem {
-  font: inherit;
+.seg {
+  appearance: none;
   background: none;
   border: 0;
-  padding: 0;
-  margin: 0;
+  /* 选中态就是这条线，未选中时它透明——所以两态之间不发生任何布局位移 */
+  border-bottom: var(--s-0) solid transparent;
+  margin-bottom: calc(-1 * var(--s-px));
+  padding: var(--s-3) var(--s-5) var(--s-2);
+  font: inherit;
   color: var(--ink-3);
   cursor: pointer;
-  /* 与上面那几张卡同一套单选语言，小一号 */
-  display: inline-flex;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  white-space: nowrap;
+  transition:
+    color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
+}
+
+/* 第一段与内容左边缘对齐——分段条是内容的一部分，不是一块浮在上面的控件 */
+.seg:first-child {
+  padding-left: 0;
+}
+
+.seg:hover:not(:disabled) {
+  color: var(--ink);
+  border-bottom-color: var(--line);
+}
+
+.seg[aria-pressed='true'] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.seg:disabled {
+  cursor: not-allowed;
+}
+
+.seg[data-skeleton='true'] {
+  cursor: default;
   align-items: center;
-  gap: var(--s-1);
-}
-
-.zeroItem::before {
-  content: '';
-  flex: none;
-  width: var(--s-3);
-  height: var(--s-3);
-  border-radius: var(--r-pill);
-  border: var(--s-px) solid var(--ink-4);
-  background: var(--surface);
-}
-
-.zeroItem:hover {
-  color: var(--ink-2);
-}
-
-.zeroItem[aria-pressed='true'] {
-  color: var(--brand-text);
-}
-.zeroItem[aria-pressed='true']::before {
-  border-color: var(--brand);
-  background: var(--brand);
-  box-shadow: inset 0 0 0 var(--s-px) var(--surface);
+  gap: var(--s-3);
 }
 
 .count {
   font-family: var(--mono);
-  font-size: var(--t-2xl);
-  font-weight: 500;
+  font-size: var(--t-xl);
+  font-weight: 600;
   /* 等宽数字是「中文不用负字距」的唯一例外（design-system.md §3.2）。 */
   letter-spacing: -.02em;
   font-variant-numeric: tabular-nums;
-  line-height: 1.3;
-}
-
-/* 单选圆圈（阶段 6）。此前这一排的"一次只能筛一格"是写在下面那句副标里的——
-   一句解释控件自身行为约束的话。改成让控件自己长成单选的样子：一圈空心环，
-   选中时填实。这也是「chip 看起来可多选」与「radio 看起来只能选一个」的差别。 */
-.label {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  font-size: var(--t-xs);
+  line-height: 1.2;
   color: var(--ink-2);
 }
 
-.label::before {
-  content: '';
-  flex: none;
-  width: var(--s-4);
-  height: var(--s-4);
-  border-radius: var(--r-pill);
-  border: var(--s-px) solid var(--ink-4);
-  background: var(--surface);
+.label {
+  font-size: var(--t-xs);
+  line-height: 1.2;
 }
 
-.card[aria-pressed='true'] .label::before {
-  border-color: var(--brand);
-  background: var(--brand);
-  /* 内圈留一道底色，实心点才看得出是"填进环里"的，而不是一个纯色方块 */
-  box-shadow: inset 0 0 0 var(--s-0) var(--surface);
-}
-
-.hint {
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-  margin-top: var(--s-0);
-  line-height: 1.4;
-  /* 与上一行的文字左对齐（让开圆圈那一格），三行读起来才是一栏 */
-  padding-left: calc(var(--s-4) + var(--s-2));
-}
-
-/* 语义色只落在大数字上。红＝失败、琥珀＝临期、蓝＝可被取走，
-   其余两格保持中性——它们不需要人做什么。 */
-.card[data-tone='fail'] .count {
+/* 语义色只落在数字上，而且只有两个：红＝失败、琥珀＝临期。
+   其余（含计数为 0 与读不到）中性——0 不是一次告警。 */
+.seg[data-tone='fail'] .count {
   color: var(--fail);
 }
-.card[data-tone='warn'] .count {
+.seg[data-tone='warn'] .count {
   color: var(--warn);
 }
-.card[data-tone='brand'] .count {
-  color: var(--brand-text);
+.seg[data-tone='neutral'] .count,
+.seg[data-tone='zero'] .count {
+  color: var(--ink-2);
 }
-.card[data-tone='zero'] .count {
+
+.seg[aria-pressed='true'] .count {
+  color: var(--ink);
+}
+.seg[aria-pressed='true'][data-tone='fail'] .count {
+  color: var(--fail);
+}
+.seg[aria-pressed='true'][data-tone='warn'] .count {
+  color: var(--warn);
+}
+
+/* ── 口径说明 ───────────────────────────────────────────────────
+   「这五个数字统计全部会议……」不是这一页的内容，是一句口径。正常状态下它
+   视觉隐藏（读屏走 aria-describedby，鼠标走每一段自己的 title），不占版面。
+   `clip-path` + 1px 盒子是标准的视觉隐藏写法：`display:none` 会让读屏也读不到。 */
+.scope {
+  position: absolute;
+  width: var(--s-px);
+  height: var(--s-px);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 计数读不到时它露出来：那不是口径说明，是一次故障，必须看得见。 */
+.scope[data-visible='true'] {
+  position: static;
+  width: auto;
+  height: auto;
+  flex: 1 0 100%;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
+  padding: var(--s-2) 0 0;
+  font-size: var(--t-2xs);
+  line-height: 1.5;
   color: var(--ink-3);
 }
 
-/* ── 窄屏（≤56em）：两列，且是明说的两列 ──────────────────────────
-   现状（spec §11 记的「分诊条两列」）是 `min-width: 14ch` 撞出来的结果——
-   字号一改列数就变，而它是这一页最先被看到的东西。这里把它定死成两列：
-   五格排成 2+2+1，每格仍然带全数字、口径与提示，一个字都不删。
+/* ── 窄屏（≤56em）─────────────────────────────────────────────────
+   分段条允许折行（五段在 375px 上排不下），但每一段仍然是完整的一段：
+   数字、标签一个都不删。触控高度按 --tap-min 兜底。
    断点写死 56em 的理由见 ui/Table.module.css。 */
 @media (max-width: 56em) {
-  .card {
-    flex: 1 1 calc(50% - var(--s-3));
-    min-width: 0;
-    max-width: none;
-  }
-
-  /* 折叠行里的选项在触屏上也要点得着 */
-  .zeroItem {
+  .seg {
     min-height: var(--tap-min);
+    padding-left: var(--s-4);
+    padding-right: var(--s-4);
+    align-items: center;
   }
 }

@@ -2,18 +2,18 @@ import type { ServiceProgram } from '@/api/admin/grants'
 import type { AdminMeeting } from '@/api/admin/meetings'
 import { readonlyTitle, useReadonly } from '@/app/session'
 import { daysLeft, fmtDateTime, fmtDay } from '@/lib/format'
-import { Pill } from '@/ui/Pill'
-import { ProgressBar } from '@/ui/ProgressBar'
-import { StatusDot } from '@/ui/StatusDot'
 import {
   assetTotals,
   dotState,
   grantCellKind,
   hostView,
   meetingTitle,
+  programAbbr,
   programName,
+  rowFlag,
   STAGE_NAME,
   STAGE_SHORT,
+  stageNote,
   stateLabel,
   type Stage,
 } from './display'
@@ -37,6 +37,24 @@ export interface MeetingRowProps {
   onRevoke: (id: string, programId: string) => void
 }
 
+/**
+ * 一场会议一行。**目标是单行（≈46px），正常态一个字都不写**（阶段 7）。
+ *
+ * 此前一行 62–87px：「拉取 · 归档」两个阶段各占一整行文字，而那两行在 59 场
+ * 里有 50 多场读出来是同一句「已完成 / 已完成」。一屏只看得到 8 行，也就是说
+ * 想知道"哪几场需要我现在管"必须滚三屏。
+ *
+ * 现在：两个并排的小方块，颜色即状态；**只有异常才补一句文字**（`stageNote`）。
+ * 异常行在行首挂一道色条（`data-flag`），不整行变红。
+ *
+ * ## 方块不是可读内容
+ *
+ * 压成方块之后，"这一行处在什么状态"必须用另一种方式说给读屏软件听。每个方块
+ * 都裹在一个带 `aria-label` 的元素里，两个合起来就是完整的一句「拉取：已完成」
+ * 「归档：失败」——与压缩之前那两行文字逐字同形。可见的异常注记因此是
+ * `aria-hidden`：它是给眼睛的冗余编码，读屏已经从方块的 label 里拿到同一件事，
+ * 念两遍只会更慢。
+ */
 export function MeetingRow(props: MeetingRowProps) {
   const {
     meeting: m,
@@ -57,14 +75,20 @@ export function MeetingRow(props: MeetingRowProps) {
   const { got, total } = assetTotals(m)
   const dim = m.keep.filesGone
   const title = meetingTitle(m)
+  const flag = rowFlag(m, now)
+  const note = stageNote(m)
 
   return (
     <tr
+      className={styles.row}
       data-id={m.id}
       data-testid={`row-${m.id}`}
       data-dim={dim}
       data-selected={selected}
       data-cursor={cursor}
+      // 异常行的左侧色条。整行变红在一屏 20 行的密度下会失效——三行红之后
+      // 红就只是"这几行长得不一样"，不再是"最严重"。
+      data-flag={flag ?? undefined}
     >
       <td className={styles.check}>
         <input
@@ -76,7 +100,7 @@ export function MeetingRow(props: MeetingRowProps) {
         />
       </td>
 
-      <td>
+      <td className={styles.main}>
         {/* 标题是按钮，点进内容预览——不是纯文本（spec.md §4.2）。 */}
         <button type="button" className={styles.title} onClick={() => onOpenTitle(m.id)}>
           {title}
@@ -113,18 +137,18 @@ export function MeetingRow(props: MeetingRowProps) {
         {m.unknownAssetTypes.length > 0 && <sup aria-hidden="true">?</sup>}
       </td>
 
-      {/* 两个阶段各占一行，**每一行都带文字**。此前这一栏是「● —— ●」——
-          实心/空心/连线/转圈四种记号，屏幕上没有任何地方说它们是什么意思，
-          页面底下那块图例离得太远而且窄屏根本不在同一屏。文字标签让这一格
-          自己说清楚，图例因此被删掉了（见 `pages/Meetings/index.tsx`）。 */}
-      <td className={styles.stage} data-label="拉取 · 归档">
-        {/* 竖排容器是必需的，不是多一层 div：窄屏卡片形态下 `td[data-label]`
-            自己是一个横向 flex（列名 ｜ 值），两个阶段直接放进去会被并排摆，
-            在 375px 上挤成两根竖柱。 */}
-        <div className={styles.stageStack}>
-          <StageLine m={m} stage="fetch" isPending={isPending} onToggle={onToggleStage} />
-          <StageLine m={m} stage="archive" isPending={isPending} onToggle={onToggleStage} />
-        </div>
+      <td className={styles.stage} data-label="拉取 · 归档" data-testid={`stage-${m.id}`}>
+        <span className={styles.stageRow}>
+          <StageMark m={m} stage="fetch" isPending={isPending} onToggle={onToggleStage} />
+          <StageMark m={m} stage="archive" isPending={isPending} onToggle={onToggleStage} />
+          {/* 异常注记。`aria-hidden`：同一件事已经在两个方块的 aria-label 里
+              说过了，这一句是给眼睛的冗余编码。 */}
+          {note !== null && (
+            <span className={styles.note} data-tone={note.tone} aria-hidden="true">
+              {note.text}
+            </span>
+          )}
+        </span>
       </td>
 
       <td className={styles.keep} data-label="本地保留" data-testid={`keep-${m.id}`}>
@@ -153,7 +177,7 @@ export function MeetingRow(props: MeetingRowProps) {
  * 主持人一格。
  *
  * 此前这里是 `{m.missing.includes('host') ? '—' : m.host}`，渲染出来每一行都是
- * 一串 32 位机器 id。判定逻辑与它的全部推理在 `display.ts` 的 `hostView`——
+ * 一串 32 位机器 id。判定逻辑与它的全部推理在 `lib/host.ts` 的 `hostView`——
  * 这里只负责把三段排出来：主文本、尾巴、以及挂在 title 上的全量 id。
  *
  * 尾巴用等宽字体、比主文本淡一档：它不是名字的一部分，它是「用来区分两行」
@@ -180,21 +204,22 @@ function HostCell({ m }: { m: AdminMeeting }) {
 }
 
 /**
- * 一个阶段的一行：圆点 + 阶段名 + 状态文字，整行是那个"点一下重跑该阶段"的开关。
+ * 一个阶段 = 一个小方块。**颜色即状态**：
+ * 已完成＝`--ink-2` 实心、进行中＝描边空心、失败＝`--fail` 实心、
+ * 无 / 不执行＝`--line` 实心。
  *
- * **文字不是给圆点配的说明，文字才是主体**。圆点单独存在时这一栏需要一份图例
- * 才读得懂，而图例在窄屏卡片形态下根本不在同一屏——一个需要去别处查表才能读的
- * 状态列，等于没有状态列。现在圆点退化成冗余编码（颜色/形状 + 文字），
- * 色觉障碍与"没见过这套记号"的人读到的是同一件事。
+ * 方块本身 `aria-hidden`，可读文本挂在外层的 `aria-label` 上，并且与压缩之前
+ * 那两行文字逐字同形（`拉取：已完成 · 人工改写`）——换一个写法等于给同一件事
+ * 造第二套叫法，而这一栏的口径在详情抽屉、人工改写面板里还要再用一次。
  *
- * **认不出的状态不画圆点**：六种圆点各自有确定的含义，随便挑一个画等于替后端
- * 下了一个我们没有的结论。改画一个「未知」标签，并把原始取值放进 title 里
- * ——那是排查这件事唯一的线索。
+ * 整块可点＝「改写这一阶段」的开关（没有改写就打开写理由的面板，有改写就撤销）。
+ * 命中区比方块大得多：9px 的方块在触屏上点不准，按钮自己撑到行高。
  *
- * 圆点被 `aria-hidden` 包着：它自己带 `aria-label`，不裹起来的话读屏会把
- * 「拉取：已完成」念两遍。可读文本由外层按钮的 `aria-label` 一次给全。
+ * **认不出的状态不画方块**：四种方块各自有确定的含义，随便挑一种画等于替后端
+ * 下了一个我们没有的结论。它改画一个空心问号格，原始取值进 title——那是排查
+ * 这件事唯一的线索——并且不再是按钮（读不懂状态时不提供改写入口）。
  */
-function StageLine({
+function StageMark({
   m,
   stage,
   isPending,
@@ -211,13 +236,10 @@ function StageLine({
   const overridden = m.hand.includes(stage)
 
   if (state === 'unknown') {
+    const text = `${STAGE_NAME[stage]}：后端下发了认不出的取值「${raw}」`
     return (
-      <span className={styles.stageLine}>
-        <Pill tone="warn" className={styles.unknownDot}>
-          <span title={`${STAGE_NAME[stage]}：后端下发了认不出的取值「${raw}」`}>
-            {STAGE_SHORT[stage]}未知
-          </span>
-        </Pill>
+      <span className={styles.sqSlot} role="img" aria-label={text} title={text}>
+        <span className={styles.sq} data-state="unknown" aria-hidden="true" />
       </span>
     )
   }
@@ -225,8 +247,7 @@ function StageLine({
   const pending = isPending(wkey(m.id, stage))
   const disabled = pending || readonly
   const roWhy = readonlyTitle(readonly)
-  // 可读文本与 StatusDot 自己拼的那句逐字同形——它是这一栏的既有口径，
-  // 换一个写法等于给同一件事造第二套叫法。
+  // 可读文本与 StatusDot 自己拼的那句逐字同形——它是这一栏的既有口径。
   const text =
     `${STAGE_SHORT[stage]}：${stateLabel(state)}` +
     (overridden ? ' · 人工改写' : '') +
@@ -235,25 +256,26 @@ function StageLine({
   return (
     <button
       type="button"
-      className={styles.stageLine}
-      data-state={state}
+      className={styles.sqSlot}
       onClick={() => onToggle(m.id, stage)}
       disabled={disabled}
       aria-label={text}
       title={text}
     >
-      <span className={styles.stageIcon} aria-hidden="true">
-        <StatusDot state={state} label={STAGE_SHORT[stage]} overridden={overridden} />
-      </span>
-      <span className={styles.stageName}>{STAGE_SHORT[stage]}</span>
-      <span className={styles.stageState}>{stateLabel(state)}</span>
-      {/* 琥珀圈的含义也要有文字。它在 design-system §2.2 里只有一个意思：
-          有人手动改写了规则——那正是"需要你看一眼"的那一类 */}
-      {overridden && <span className={styles.handMark}>人工</span>}
+      <span className={styles.sq} data-state={state} data-hand={overridden || undefined} aria-hidden="true" />
     </button>
   )
 }
 
+/**
+ * 本地保留 = 一个右对齐的等宽天数。
+ *
+ * 此前是一根进度条 + 「剩 28 天」。条被删掉了，理由有两条：一是它与旁边那行字
+ * 说的是同一件事（一列 50 根条，每根都在复述右边那个数）；二是任何贴在数字
+ * 下面的横条都会被读成下划线——实测过，眼睛先把它当成"这个数被标了重点"。
+ *
+ * 剩下的就是数：右对齐、等宽、快到期转琥珀。到期日与天数的完整说法进 title。
+ */
 function KeepCell({
   m,
   now,
@@ -270,56 +292,42 @@ function KeepCell({
 
   if (m.keep.filesGone) {
     return (
-      <div className={styles.keepRow}>
-        <Pill>仅存 NAS</Pill>
-        {m.keep.expiresAt !== null && (
-          <span className={styles.keepGone}>{fmtDay(m.keep.expiresAt)}到期</span>
-        )}
-      </div>
+      <span
+        className={styles.keepOff}
+        title={
+          m.keep.expiresAt === null
+            ? '本地文件已按保留期清理，记录与 NAS 路径仍在'
+            : `本地文件已于 ${fmtDay(m.keep.expiresAt)}到期清理，记录与 NAS 路径仍在`
+        }
+      >
+        仅存 NAS
+      </span>
     )
   }
 
   if (m.keep.archivedAt === null || m.keep.expiresAt === null) {
-    // 保留期自**归档成功**起算。没归档成功就没有"还剩几天"这回事——
-    // 这里说清楚是哪一种没归档，而不是含糊地画一根空进度条。
+    // 保留期自**归档成功**起算。没归档成功就没有"还剩几天"这回事。
     //
-    // 「归档失败」和「未归档」不是同一件事，不能同一个灰：红＝失败＝一个月后
-    // 永久丢失，是本系统最严重的状态（design-system.md §2.2）。
+    // 「是哪一种没归档」不在这一格里说了——它已经在「拉取 · 归档」那一栏的
+    // 异常注记里（`stageNote`），归档失败在那儿是红的、还带一道行首色条。
+    // 同一件事在一行里说两遍、红两次，红就不再是最严重的意思。
     const failed = m.archive === 'failed'
     return (
-      <span className={styles.keepNone} data-fail={failed}>
-        {failed ? '归档失败，未开始计时' : '未归档'}
+      <span
+        className={styles.keepOff}
+        title={failed ? '归档失败，本地保留期尚未开始计时' : '尚未归档成功，本地保留期尚未开始计时'}
+      >
+        未计时
       </span>
     )
   }
 
   const left = daysLeft(m.keep.expiresAt, now)
   const soon = left <= 7
-  const windowSec = m.keep.expiresAt - m.keep.archivedAt
-  const usedSec = Math.floor(now.getTime() / 1000) - m.keep.archivedAt
-  // **量的是「还剩多少」，不是「已经用掉多少」**。旁边那行字写的是「剩 30 天」，
-  // 而画成"已用"的条在刚归档那一刻几乎是空的——一整列浅得快看不见的条子，
-  // 读出来是"快没了"，事实是"才刚开始"。59 场已归档的会议里绝大多数都在这个
-  // 位置上，也就是说这一列此前对绝大多数行说的是反话。
-  //
-  // 现在：满＝时间还长，见底＝快到期；到期前七天转琥珀，一条快见底的琥珀条
-  // 与「剩 3 天」说的是同一件事。
-  const leftPct = windowSec > 0 ? Math.max(0, Math.min(100, ((windowSec - usedSec) / windowSec) * 100)) : 0
-  const totalDays = Math.max(1, Math.round(windowSec / 86400))
   const pending = isPending(wkey(m.id, 'extend'))
 
   return (
     <div className={styles.keepRow}>
-      <ProgressBar
-        className={styles.keepBar}
-        value={leftPct}
-        tone={soon ? 'warn' : 'brand'}
-        size="sm"
-        label={`本地文件还剩 ${left} 天，保留期共 ${totalDays} 天`}
-      />
-      <span className={styles.keepLeft} data-soon={soon}>
-        剩 {left} 天
-      </span>
       {/* hover / 键盘光标停在这一行时才浮出来——常驻会让整列变成一片按钮。
           它始终在 DOM 里（不是条件渲染），所以键盘 `e` 和读屏都拿得到。 */}
       <button
@@ -332,10 +340,30 @@ function KeepCell({
       >
         {pending ? '延长中…' : '＋30 天'}
       </button>
+      <span
+        className={styles.keepLeft}
+        data-soon={soon}
+        title={`本地文件还剩 ${left} 天，${fmtDay(m.keep.expiresAt)}到期`}
+      >
+        {left}
+        <span className={styles.keepUnit}> 天</span>
+      </span>
     </div>
   )
 }
 
+/**
+ * 「可取走的程序」。
+ *
+ * 此前一格里有三种形态在表达同一件事：蓝色 chip（已授权）、`＋`（再加一个）、
+ * 虚线「＋ 授权给…」（一个都没有）。三种宽度、三种颜色，一列扫下来看不出
+ * 哪几行真的把数据放到了企业外面。
+ *
+ * 现在：每个已授权程序 = 一枚 24×20 的两字母等宽标记（缩写从程序 `key` 派生，
+ * 见 `display.programAbbr`；派生不出来就退回完整程序名，不瞎缩），末尾一个
+ * 虚线 `＋`。不能授权的那几种状态仍然是一行极淡的灰字——它们是最常见的默认态，
+ * 不许占最强的视觉重量。
+ */
 function GrantCell({
   m,
   programs,
@@ -358,67 +386,104 @@ function GrantCell({
   if (cell.kind === 'na') return <span className={styles.grantNone}>无资产</span>
   if (cell.kind === 'wait') return <span className={styles.grantNone}>未归档</span>
   if (cell.kind === 'unknown') {
-    // 读不懂 `allow` 就不画「＋ 授权给…」。授权是数据出企业边界的闸门，
+    // 读不懂 `allow` 就不画那个 `＋`。授权是数据出企业边界的闸门，
     // 闸门在读不懂状态时必须是关着的，而且要说出来自己关着。
     return (
-      <Pill tone="warn">
-        <span title={`后端下发了认不出的采集权限取值「${m.allow}」`}>权限未知</span>
-      </Pill>
+      <span
+        className={styles.grantNone}
+        data-tone="warn"
+        title={`后端下发了认不出的采集权限取值「${m.allow}」`}
+      >
+        权限未知
+      </span>
     )
   }
   if (cell.kind === 'denied') {
-    // 人工设为禁止是琥珀 pill：有人绕过了规则，这正是 design-system §2.2 里
-    // 琥珀唯一的含义——"这需要你看一眼"。它很少见，配得上一块强调。
-    if (cell.hand) return <Pill tone="warn">已人工禁止</Pill>
-    // 规则禁止是**最常见的默认态**（真实数据里连着占了 8 行），此前它是一枚
-    // pill——版面上最强的视觉重量给了"什么都没发生"。改成一行极淡的灰字：
-    // pill 那种强调留给真的有授权的行，一屏扫下来才看得出哪几场数据真在外面。
-    return <span className={styles.grantNone}>规则禁止</span>
-  }
-
-  if (m.grants.length === 0) {
+    // 人工设为禁止：有人绕过了规则，这正是 design-system §2.2 里琥珀唯一的
+    // 含义——"这需要你看一眼"。规则禁止则是**最常见的默认态**（真实数据里
+    // 连着占了 8 行），一行极淡的灰字，把强调让给真的有授权的行。
     return (
-      <button
-        type="button"
-        className={styles.grantAdd}
-        onClick={() => onOpenGrant(m.id)}
-        disabled={readonly}
-        title={roTitle}
-      >
-        ＋ 授权给…
-      </button>
+      <span className={styles.grantNone} data-tone={cell.hand ? 'warn' : undefined}>
+        {cell.hand ? '已人工禁止' : '规则禁止'}
+      </span>
     )
   }
 
   const title = meetingTitle(m)
   return (
-    <div className={styles.grantRow}>
-      {m.grants.map((id) => {
-        const pending = isPending(wkey(m.id, `revoke:${id}`))
-        return (
-          <Pill
-            key={id}
-            tone="brand"
-            onRemove={pending ? () => undefined : () => onRevoke(m.id, id)}
-            removeDisabled={readonly}
-            removeTitle={roTitle}
-            removeLabel={`收回 ${programName(programs, id)} 对「${title}」的授权`}
-          >
-            {programName(programs, id)}
-            {pending && <span className={styles.pendingMark}>（收回中…）</span>}
-          </Pill>
-        )
-      })}
+    <div className={styles.progRow}>
+      {m.grants.map((id) => (
+        <ProgMark
+          key={id}
+          name={programName(programs, id)}
+          programId={id}
+          meetingTitle={title}
+          pending={isPending(wkey(m.id, `revoke:${id}`))}
+          readonly={readonly}
+          roTitle={roTitle}
+          onRevoke={() => onRevoke(m.id, id)}
+        />
+      ))}
       <button
         type="button"
-        className={styles.grantAdd}
+        className={styles.progAdd}
         onClick={() => onOpenGrant(m.id)}
         disabled={readonly}
-        title={roTitle}
-        aria-label={`再给「${title}」授权一个采集程序`}
+        title={roTitle ?? '把这场会议授权给一个采集程序'}
+        aria-label={
+          m.grants.length === 0
+            ? `给「${title}」授权一个采集程序`
+            : `再给「${title}」授权一个采集程序`
+        }
       >
-        ＋
+        <span aria-hidden="true">＋</span>
       </button>
     </div>
+  )
+}
+
+/**
+ * 一枚采集程序标记。
+ *
+ * 缩写**必须可回溯**：它从程序的 `key`（`kb-indexer` / `daily-digest` /
+ * `dw-sync`）派生，不是前端存的一张中文名对照表——那种表在运维新建一个程序的
+ * 当天就过期，而且没有人会想到要回来改它。派生不出来（纯中文 id、单字符 id）
+ * 就退回显示完整程序名：一枚认不出的两字母标记比一个长名字更糟。
+ *
+ * 点它 = 收回这条授权，与此前 pill 上那个 ✕ 是同一个动作、同样一次点击；
+ * 全名与"点了会发生什么"都在原生 title 上。
+ */
+function ProgMark({
+  name,
+  programId,
+  meetingTitle: title,
+  pending,
+  readonly,
+  roTitle,
+  onRevoke,
+}: {
+  name: string
+  programId: string
+  meetingTitle: string
+  pending: boolean
+  readonly: boolean
+  roTitle: string | undefined
+  onRevoke: () => void
+}) {
+  const abbr = programAbbr(programId)
+  const why = roTitle !== undefined ? `（${roTitle}）` : ' · 点击收回这场会议的授权'
+  return (
+    <button
+      type="button"
+      className={styles.prog}
+      // 退回全名的那一支不再是 24×20 的方标记，按内容宽度走
+      data-full={abbr === null || undefined}
+      onClick={onRevoke}
+      disabled={readonly || pending}
+      title={`${name}${pending ? '（收回中…）' : ''}${why}`}
+      aria-label={`收回 ${name} 对「${title}」的授权`}
+    >
+      {abbr ?? name}
+    </button>
   )
 }
