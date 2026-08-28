@@ -20,13 +20,6 @@ export interface StatusDotProps {
   /** 该阶段是否被人工改写过。琥珀环只表示这一件事——"有人手动改写了规则"，
    *  不要因为好看就在别的地方也套一圈琥珀。 */
   overridden?: boolean
-  /** 提供则渲染成可点的切换按钮（拉取/归档两个阶段的圆点本身就是"点一下重跑该阶段"
-   *  的开关）；不提供则是纯展示的状态点。 */
-  onClick?: () => void
-  disabled?: boolean
-  /** 禁用的原因。会拼进可读文本（aria-label 与 title 共用同一句）——一个点不动
-   *  的圆点如果不说为什么，看起来就是坏了。只在 `disabled` 为真时出现。 */
-  disabledReason?: string
   className?: string
 }
 
@@ -34,18 +27,16 @@ export interface StatusDotProps {
  * 状态点基元。颜色不是唯一信息载体——六个状态各有可读文本，通过 aria-label 与
  * 原生 title（悬浮提示）双重暴露，色觉障碍用户也能读出状态，不需要浮层基座
  *（tooltip 用原生 title 属性，不占用 Task 4 的 Popover）。
+ *
+ * **纯展示，没有可点变体。** 曾经有一个 `onClick` 分支（圆点即"重跑该阶段"的
+ * 开关），但那个可供性已经搬到整行 `.stageLine` 上——18px 的圆点在触屏上本来
+ * 就点不准，一整行有 44px。搬走之后 `onClick` 全站零调用点，连同 `disabled` /
+ * `disabledReason` 一起删掉：一个没人走的分支上挂着的焦点环，
+ * scripts/a11y-check.ts 的 Tab 探针永远验不到，留着就是一句没人核对的承诺。
+ * 真要回退，把分支和探针一起加回来。
  */
-export function StatusDot({
-  state,
-  label,
-  overridden = false,
-  onClick,
-  disabled = false,
-  disabledReason,
-  className,
-}: StatusDotProps) {
-  const why = disabled && disabledReason !== undefined && disabledReason !== '' ? `（${disabledReason}）` : ''
-  const text = `${label}：${STATUS_DOT_LABEL[state]}${overridden ? ' · 人工改写' : ''}${why}`
+export function StatusDot({ state, label, overridden = false, className }: StatusDotProps) {
+  const text = `${label}：${STATUS_DOT_LABEL[state]}${overridden ? ' · 人工改写' : ''}`
   const classes = [styles.dot, className].filter(Boolean).join(' ')
 
   const icon = (
@@ -54,21 +45,6 @@ export function StatusDot({
       {overridden ? <circle cx={9} cy={9} r={8} className={styles.overrideRing} /> : null}
     </svg>
   )
-
-  if (onClick) {
-    return (
-      <button
-        type="button"
-        className={classes}
-        onClick={onClick}
-        disabled={disabled}
-        aria-label={text}
-        title={text}
-      >
-        {icon}
-      </button>
-    )
-  }
 
   return (
     <span className={classes} role="img" aria-label={text} title={text}>

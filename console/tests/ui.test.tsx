@@ -216,21 +216,14 @@ describe('StatusDot', () => {
     expect(screen.getByLabelText('拉取：已完成 · 人工改写')).toBeInTheDocument()
   })
 
-  test('带 onClick 时是可点的切换按钮（点一下重跑该阶段），disabled 时不可点', async () => {
-    const onClick = vi.fn()
-    const { rerender } = render(<StatusDot state="failed" label="归档到 NAS" onClick={onClick} />)
-    const btn = screen.getByRole('button', { name: '归档到 NAS：失败' })
-    await userEvent.click(btn)
-    expect(onClick).toHaveBeenCalledTimes(1)
-
-    rerender(<StatusDot state="failed" label="归档到 NAS" onClick={onClick} disabled />)
-    const disabledBtn = screen.getByRole('button', { name: '归档到 NAS：失败' })
-    expect(disabledBtn).toBeDisabled()
-  })
-
-  test('不带 onClick 时是纯展示元素，不出现在按钮角色里', () => {
-    render(<StatusDot state="done" label="拉取" />)
+  // 「可点的圆点」这个变体没有了：那个可供性搬到了整行 .stageLine 上（18px 的圆点
+  // 在触屏上点不准，一整行有 44px）。这里钉住"它只是展示"，不给下一个人留一个
+  // 看起来能接事件、实际全站零调用点的口子。
+  test('永远是纯展示元素：不进按钮角色，也不进 Tab 序列', () => {
+    render(<StatusDot state="failed" label="归档到 NAS" />)
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    const dot = screen.getByRole('img', { name: '归档到 NAS：失败' })
+    expect(dot).not.toHaveAttribute('tabindex')
   })
 
   test('failed 态只用语义红 --fail，不借它表达别的意思', () => {

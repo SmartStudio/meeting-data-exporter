@@ -550,7 +550,7 @@ const SCENES: Scene[] = [
     why: '保留天数配置非法 + 归档失败数暂不可得 + 到期清理已暂停',
     route: '/storage?world=degraded',
     expect: [
-      '[data-testid="retention-default"][class*="warnNote"]',
+      '[data-testid="retention-alert"]',
       '[data-testid="stat-archive-failed"] [class*="statVMissing"]',
       '[data-testid="cleanup-state"][class*="cleanupPaused"]',
     ],
@@ -1015,7 +1015,9 @@ async function tabWalk(page: Page, cap = 400): Promise<Stop[]> {
   return stops
 }
 
-const COMPONENT_COVERAGE = ['Input__', 'Button__', 'Chip__', 'StatusDot__']
+// StatusDot 不在这张表里：它已经没有可点变体（见 ui/StatusDot.tsx 的注释），
+// Tab 一圈本来就走不到它。要求探针去验一个不存在的焦点环，验的是别的东西。
+const COMPONENT_COVERAGE = ['Input__', 'Button__', 'Chip__']
 
 async function runTabAndFocus(page: Page, context: BrowserContext): Promise<void> {
   const cdp: CDPSession = await context.newCDPSession(page)

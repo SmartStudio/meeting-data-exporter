@@ -66,8 +66,11 @@
   color: var(--ink-3);
 }
 
-/* 口径说明的 ⓘ。它是一个可聚焦的提示标记，不是文字内容——所以用 --ink-4
-   （图形专用），并且始终 flex: none，不参与折行。 */
+/* 口径说明的 ⓘ。它**是文字**——用户要看见它、认出它、点它，所以走 --ink-3
+   （文字梯度的最后一档，再浅就过不了 4.5:1），不是 --ink-4。
+   --ink-4 在 tokens.css 里写死了「图形专用：描边 / 分隔 / 填充，禁止用于文字」，
+   曾经这里用它、并且用一句「它不是文字内容」把自己说服过去——scripts/a11y-check.ts
+   两种主题各报了一遍（浅 3.72:1 / 深 3.87:1，都要 4.5）。可聚焦的字形是字。 */
 .hint {
   display: inline-flex;
   align-items: center;
@@ -77,7 +80,7 @@
   font-family: var(--sans);
   font-size: var(--t-xs);
   line-height: 1;
-  color: var(--ink-4);
+  color: var(--ink-3);
   cursor: help;
   border-radius: var(--r-pill);
 }
