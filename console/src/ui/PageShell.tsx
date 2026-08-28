@@ -30,7 +30,15 @@ export function PageShell({ title, description, actions, children }: PageShellPr
     <section className={styles.page} aria-labelledby={titleId}>
       <header className={styles.head}>
         <div className={styles.headText}>
-          <h1 id={titleId} className={styles.title}>
+          {/* 视觉上隐藏，语义上保留。
+              改版把「你在哪」搬进了顶栏（`app/GlobalBar.tsx` 从路由派生同一份文案，
+              连同计数和主操作），页头再印一遍就是同一个词同屏出现两次——六个页面
+              都这样。
+              但这个 `<h1>` 不能删：它是本视图层级最高的标题，`<section
+              aria-labelledby>` 靠它把整块内容绑起来，读屏才念得出「会议记录，区域」；
+              顶栏那份是导航指示，刻意不是 heading（否则每页两个 h1）。
+              所以：可见的那一份在顶栏，无障碍树里的那一份留在这里。 */}
+          <h1 id={titleId} className={styles.titleHidden}>
             {title}
           </h1>
           {description !== undefined && <p className={styles.desc}>{description}</p>}

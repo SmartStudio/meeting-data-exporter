@@ -79,6 +79,12 @@
   --nav-ink:   #EAEDF2;
   --nav-ink-2: #9BA5B4;   /* 压在 --nav 上 7.15:1 */
   --nav-ink-3: #808A9B;   /* 压在 --nav 上 5.11:1 */
+  /* 深色模式下这条暗带与主区的关系**不能用对比度去量**：两块近黑的面之间
+     对比度恒在 1.0x 附近（第一版就是这么栽的——--nav #0A0C10 对 --ground
+     #0B0C0E 实测 1.00:1，等于同一个颜色，暗带构图整个失效）。近黑相邻面看的是
+     **明度台阶**：深色那一组按 L* = 3.3 / 7.6 / 11.7 / 15.0 排开
+     （--nav / --ground / --surface / --surface-2），每档约 4 个 L*，
+     这是相邻面能被眼睛分开的下限。改深色这四个值时请对着 L* 排，别对着对比度排。 */
 
   --ink:   #080A0F;
   --ink-2: #39414F;
@@ -154,6 +160,11 @@
 
   /* ── 骨架尺寸 ──────────────────────────────────── */
 
+  /* 行首告警条的宽度。**不并进 --s-* 标尺**：它不是间距，是一个语义构件的尺寸，
+     而且这一轮起它要在会议记录 / 自动规则 / 操作审计三页表达同一件事——
+     「这一行需要人处理」。三处各写各的宽度，就是三条粗细不一样的同种线。 */
+  --flag-w: 3px;
+
   --rail-w: 196px;   /* 左栏宽。此前硬编码 4 处，其中 2 处是心算结果 */
   --gbar-h: 48px;    /* 顶栏高。sysbar 的 sticky top 依赖它 */
   --pad-x:  var(--s-7);  /* 主区左右留白（24px），toast 的左偏移依赖它 */
@@ -226,9 +237,9 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #3D86FF; --on-brand: #04101F;
-    --ground: #0B0C0E; --surface: #16181C; --surface-2: #1C1F24; --rail: #0B0F16; --line: #2A2D33; --line-soft: #212429;
-    --nav: #0A0C10; --nav-2: #14181E; --nav-line: #22262D; --nav-ink: #EAEDF2; --nav-ink-2: #9BA5B4; --nav-ink-3: #808A9B;
+    --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #4F92FF; --on-brand: #04101F;
+    --ground: #14171B; --surface: #1C1F25; --surface-2: #22262C; --rail: #0B0F16; --line: #2E323A; --line-soft: #262A31;
+    --nav: #0A0C0F; --nav-2: #1A1E25; --nav-line: #2A303A; --nav-ink: #EAEDF2; --nav-ink-2: #9BA5B4; --nav-ink-3: #808A9B;
     --ink: #EDF0F5; --ink-2: #B7BFCC; --ink-3: #87909F; --ink-4: #6A7484;
     --warn: #E3A653; --warn-soft: #33270F; --warn-line: #5E4820;
     --fail: #F0857A; --fail-soft: #351815; --fail-line: #63302B; --on-fail: #300D08; --accent-invert: #0050CC;
@@ -237,9 +248,9 @@
   }
 }
 :root[data-theme="dark"] {
-  --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #3D86FF; --on-brand: #04101F;
-  --ground: #0B0C0E; --surface: #16181C; --surface-2: #1C1F24; --rail: #0B0F16; --line: #2A2D33; --line-soft: #212429;
-  --nav: #0A0C10; --nav-2: #14181E; --nav-line: #22262D; --nav-ink: #EAEDF2; --nav-ink-2: #9BA5B4; --nav-ink-3: #808A9B;
+  --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #4F92FF; --on-brand: #04101F;
+  --ground: #14171B; --surface: #1C1F25; --surface-2: #22262C; --rail: #0B0F16; --line: #2E323A; --line-soft: #262A31;
+  --nav: #0A0C0F; --nav-2: #1A1E25; --nav-line: #2A303A; --nav-ink: #EAEDF2; --nav-ink-2: #9BA5B4; --nav-ink-3: #808A9B;
   --ink: #EDF0F5; --ink-2: #B7BFCC; --ink-3: #87909F; --ink-4: #6A7484;
   --warn: #E3A653; --warn-soft: #33270F; --warn-line: #5E4820;
   --fail: #F0857A; --fail-soft: #351815; --fail-line: #63302B; --on-fail: #300D08; --accent-invert: #0050CC;

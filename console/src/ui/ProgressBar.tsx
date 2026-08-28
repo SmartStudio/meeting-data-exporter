@@ -79,9 +79,14 @@ export function ProgressBar(props: ProgressBarProps) {
     return max > 0 ? (clamped / max) * 100 : 0
   }
 
+  /* `data-bar` 是给 `scripts/a11y-page.js` 的 `scanBars()` 用的稳定标记。
+     它原来按 `role="progressbar"` 找轨道，于是单值进度条的调用点被改版删光之后，
+     那项检查扫到 0 个元素——一项扫 0 个元素的检查等于没在检查，而报告里它照样
+     显示「通过」。分段容量条的几何陷阱（轨道高度、圆角、裁剪、每段宽度对不对得上
+     取值）与单值条一模一样，该一起扫。 */
   if (props.segments !== undefined) {
     return (
-      <div className={trackClass} role="img" aria-label={label}>
+      <div className={trackClass} role="img" aria-label={label} data-bar="track" data-bar-kind="segments">
         {props.segments.map((s) => {
           const pct = pctOf(s.value)
           return (
@@ -106,6 +111,8 @@ export function ProgressBar(props: ProgressBarProps) {
   return (
     <div
       className={trackClass}
+      data-bar="track"
+      data-bar-kind="value"
       role="progressbar"
       aria-valuenow={clamped}
       aria-valuemin={0}

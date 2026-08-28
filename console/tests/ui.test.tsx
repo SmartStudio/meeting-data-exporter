@@ -440,3 +440,25 @@ describe('令牌纪律（本任务新增的两个令牌）', () => {
     expect(afterDark).not.toMatch(/--tap-min|--dur-loop/)
   })
 })
+
+describe('焦点环只有一层', () => {
+  /**
+   * 全局 `styles/base.css` 的 `:focus-visible` 给每个可聚焦元素画一圈 2px 描边。
+   * `Input.module.css` 原来又用**裸 `:focus`** 把输入框自己的 1px 边框刷成同一个
+   * 品牌蓝——外圈 + 2px 间隙 + 内边框，叠成一个双线框，第一印象读成"这里填错了"。
+   * 登录页最明显（两个输入框就是整屏内容），但每个输入框都是这样。
+   *
+   * 修法是把蓝边限定在**没有全局环的那种聚焦**上：`:focus:not(:focus-visible)`
+   * 是鼠标点进来的情况，那时蓝边是唯一的焦点提示，该留。
+   */
+  test('输入框的品牌蓝边框只在 :focus:not(:focus-visible) 下出现', () => {
+    expect(inputCss).toMatch(/\.input:focus:not\(:focus-visible\)\s*\{[^}]*--brand/)
+  })
+
+  test('没有裸 .input:focus 规则——那正是双线框的来源', () => {
+    // 只匹配 `:focus` 后面直接跟空白或 `{` 的写法，`:focus-visible` /
+    // `:focus:not(...)` 不算
+    const bare = /\.input:focus(?![-:\w(])\s*\{/.test(inputCss)
+    expect(bare).toBe(false)
+  })
+})

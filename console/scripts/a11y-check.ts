@@ -493,7 +493,11 @@ const SCENES: Scene[] = [
     id: 'rules',
     why: '自动规则三栈（写坏 conds 的 / 停用的 / 带 issues 的各一条）',
     route: '/rules',
-    expect: ['[class*="Rules__issues"]', 'li[data-off="true"]', '[class*="Rules__condBad"]'],
+    // 按 **data 属性**点名，不按 class 名：CSS Module 的类名在 dev 与构建产物里
+    // 命名规则都不一样（`_why_hash` vs `Rules__why_hash`），本来就不是契约。
+    // 这几条原来写的是 `Rules__issues` / `Rules__condBad`，改版把它们改名之后
+    // 这一屏就"跑过去了但扫的不是这一页"。
+    expect: ['li[data-off="true"]', 'li[data-flag="unreadable"]', 'li[data-tone="fail"]'],
   },
   {
     id: 'rules-editor',
@@ -568,7 +572,10 @@ const SCENES: Scene[] = [
     route: '/audit',
     expect: [
       '[data-testid="audit-window"]',
-      'tr[data-deny]',
+      // 改版把「拒绝」从 data-deny 换成了 data-flag（准许是默认值，不标）。
+      // 两种都点名：拒绝要有色条，存疑也要有——它们是这一屏存在的理由。
+      'tr[data-flag="deny"]',
+      'tr[data-flag="unknown"]',
       '[data-testid^="audit-result-"][data-kind="unknown"]',
       // 「这一页有 N 种动作后端还没登记中文名」那块告示牌（阶段 5 · F9）。
       // 它用的是 --warn 那组颜色，两种主题都要过对比度
@@ -653,11 +660,19 @@ async function openDrawer(page: Page): Promise<void> {
   await page.waitForTimeout(450)
 }
 async function openPopover(page: Page): Promise<void> {
-  await page.locator('button[aria-haspopup="menu"]').first().click()
+  // **幂等**：菜单已经开着就什么都不做。再点一次触发器是把它关掉，
+  // 而主题三选搬进菜单之后，连点三颗按钮之间需要保证它一直开着。
+  const trigger = page.locator('button[aria-haspopup="menu"]').first()
+  if ((await trigger.getAttribute('aria-expanded')) === 'true') return
+  await trigger.click()
   await page.waitForTimeout(350)
 }
 async function openGrant(page: Page): Promise<void> {
-  await page.locator('[class*="grantAdd"]').first().click()
+  // 按**可读名**定位，不按 class 名。改版把这个按钮的类从 grantAdd 改成
+  // progAdd，这条夹具就等了 30 秒然后整轮挂掉——而 class 名本来就不是契约。
+  // aria-label 是：给「<标题>」授权一个采集程序 / 再给「…」授权一个采集程序。
+  // 顺带：无障碍扫描本来就该按可读名找元素。
+  await page.locator('button[aria-label*="授权一个采集程序"]').first().click()
   await page.waitForTimeout(450)
 }
 /* ── 另外六个页面的形态搭建 ─────────────────────────────────────── */
@@ -896,7 +911,10 @@ const PAIRS: Array<{ fg: string; bg: string; need: number; why: string }> = [
   { fg: '--warn', bg: '--surface', need: 4.5, why: '保留期将至的琥珀字压卡片底' },
   { fg: '--brand', bg: '--surface', need: 3, why: '焦点环压卡片底' },
   { fg: '--brand', bg: '--ground', need: 3, why: '焦点环压页面底' },
-  { fg: '--brand', bg: '--rail', need: 3, why: '焦点环压左栏底' },
+  { fg: '--brand', bg: '--rail', need: 3, why: '焦点环压填充块底（骨架屏 / 审计页的 --rail 块）' },
+  // 左栏在改版后不再用 --rail 当底，改成了暗带 --nav。上面那条测的已经不是左栏，
+  // 补这一条测真的左栏——焦点环压在暗带上仍然要过 3:1。
+  { fg: '--brand', bg: '--nav', need: 3, why: '焦点环压左栏暗带底' },
   { fg: '--ink-4', bg: '--surface', need: 3, why: '图形专用色（描边/分隔/填充）压卡片底' },
   { fg: '--code-note', bg: '--code-ground', need: 4.5, why: '代码块注释（内容表面，不跟随主题）' },
   { fg: '--video-ink-3', bg: '--video-ground', need: 4.5, why: '播放器三级文字（内容表面，不跟随主题）' },
@@ -1210,9 +1228,12 @@ interface LayoutResult {
 }
 
 let vacuityNoted = false
+let barsSeen = 0
 
 async function runLayout(page: Page): Promise<void> {
-  const scenes = SCENES.filter((s) => ['ok', 'selected', 'drawer', 'loading', 'nas-down', 'login'].includes(s.id))
+  // 加了 'storage'：改版把单值进度条的调用点删光之后，条状几何扫描在这几个场景里
+  // 一个元素都找不到，而报告照样显示"通过"。容量条现在是全站唯一的条，它必须在扫描里。
+  const scenes = SCENES.filter((s) => ['ok', 'selected', 'drawer', 'loading', 'nas-down', 'login', 'storage'].includes(s.id))
   for (const w of WIDTHS) {
     await page.setViewportSize({ width: w, height: 900 })
     for (const s of scenes) {
@@ -1274,6 +1295,7 @@ async function runLayout(page: Page): Promise<void> {
         const bars = await page.evaluate('window.__a11y.scanBars()') as {
           problems: Array<Record<string, unknown>>; seen: Array<Record<string, unknown>>
         }
+        barsSeen += bars.seen.length
         bump('条状元素', bars.seen.length)
         for (const p of bars.problems) {
           fail('3 横向溢出', `${w}px/${s.id}`, `条状元素几何：${String(p.why)}`, `    ${String(p.desc)}`)
@@ -1281,6 +1303,15 @@ async function runLayout(page: Page): Promise<void> {
       }
     }
   }
+  // **空扫守卫**：一项扫 0 个元素的检查等于没在检查，但报告里它显示"通过"。
+  // 这一轮就发生过：改版删光了单值进度条的调用点，条状几何从扫 20 个变成扫 0 个，
+  // 六项门槛依旧全绿。要么把新的条挂上 data-bar，要么这项检查该删——两条路都得有人决定。
+  if (barsSeen === 0) {
+    fail('3 横向溢出', '条状元素', '一个带 data-bar="track" 的元素都没扫到——这项几何检查现在什么都没检查',
+      '    要么页面上真的没有条了（那就删掉这项检查，别留一个恒绿的空壳）,',
+      '    要么新的条没挂 data-bar="track"（见 src/ui/ProgressBar.tsx）。')
+  }
+
   await page.setViewportSize({ width: WIDTHS[0] ?? 1440, height: 900 })
 }
 
@@ -1365,7 +1396,11 @@ async function runMedia(page: Page, tf: TokenFile): Promise<void> {
   expectAll(got, tf.darkMedia, '跟随系统 + 深色（@media 块）')
   bump('三态主题令牌比对', darkNames.length * 4)
 
-  /* 显式浅色必须在系统深色下赢 */
+  /* 显式浅色必须在系统深色下赢。
+     主题三选从顶栏搬进了头像菜单（顶栏最贵的位置不该给一年点一次的设置），
+     所以每次导航之后要先把菜单打开——夹具不跟着 UI 走，就会像这次一样
+     等 30 秒然后整轮挂掉。 */
+  await openPopover(page)
   await page.getByRole('button', { name: '浅色', exact: true }).click()
   await page.waitForTimeout(150)
   got = await probe()
@@ -1374,6 +1409,7 @@ async function runMedia(page: Page, tf: TokenFile): Promise<void> {
 
   /* 显式深色必须在系统浅色下赢 */
   await page.emulateMedia({ colorScheme: 'light' })
+  await openPopover(page)
   await page.getByRole('button', { name: '深色', exact: true }).click()
   await page.waitForTimeout(150)
   got = await probe()
@@ -1381,6 +1417,7 @@ async function runMedia(page: Page, tf: TokenFile): Promise<void> {
   expectAll(got, tf.darkAttr, '显式深色（系统为浅色）')
 
   /* 切回跟随系统必须把属性摘掉 */
+  await openPopover(page)
   await page.getByRole('button', { name: '跟随系统', exact: true }).click()
   await page.waitForTimeout(150)
   got = await probe()

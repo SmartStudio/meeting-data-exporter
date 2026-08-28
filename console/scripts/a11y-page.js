@@ -547,13 +547,16 @@
   api.scanBars = function () {
     const problems = []
     const seen = []
-    for (const track of document.querySelectorAll('[role="progressbar"]')) {
+    for (const track of document.querySelectorAll('[data-bar="track"]')) {
       if (!isRendered(track)) continue
       const tcs = getComputedStyle(track)
       const tr = track.getBoundingClientRect()
       const fill = track.firstElementChild
       const radius = parseFloat(tcs.borderTopLeftRadius) || 0
       const clipped = ['hidden', 'clip', 'auto', 'scroll'].indexOf(tcs.overflowX) >= 0
+      // 分段容量条是 role="img"（一条被三方分掉的条没有单一"进度"），
+      // 它没有 aria-valuenow —— 取值对不对得上那一条只对单值形态做。
+      const isValueBar = track.getAttribute('data-bar-kind') === 'value'
       const want = Number(track.getAttribute('aria-valuenow'))
       const max = Number(track.getAttribute('aria-valuemax')) || 100
       const rec = {
@@ -576,7 +579,7 @@
           problems.push(Object.assign({ why: 'fill 同时有 border-radius ' + maxRad + 'px 和 scaleX(' + sx + ')：端帽被水平压成椭圆' }, rec))
         }
         const expect = tr.width * (max > 0 ? want / max : 0)
-        if (Math.abs(fr.width - expect) > 1.5) {
+        if (isValueBar && Math.abs(fr.width - expect) > 1.5) {
           problems.push(Object.assign({ why: 'fill 渲染宽 ' + Math.round(fr.width) + 'px 与 aria-valuenow ' + want + '/' + max + ' 应得的 ' + Math.round(expect) + 'px 对不上' }, rec))
         }
         if (Math.abs(fr.height - tr.height) > 0.6) {
