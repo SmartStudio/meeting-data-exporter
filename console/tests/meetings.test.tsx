@@ -14,6 +14,7 @@ import {
   dotState,
   extendedText,
   grantCellKind,
+  parseWhy,
   programAbbr,
   rowFlag,
   stageNote,
@@ -142,6 +143,16 @@ const M3 = meeting({
     allow: { by: 'wait', text: '尚未归档成功，没有可授权的资产' },
   },
 })
+
+/**
+ * 后端为「已归档」这一段拼出来的判定理由，逐字照抄 `src/http/handlers/console/meetings.ts`。
+ * 种子里那句 `归档规则 #100，已写入 NAS` 是个缩写版，测不出真实长度带来的问题——
+ * 用户圈出来的正是这一段：140 字里藏着一个规则号。
+ */
+const ARCHIVED_WHY =
+  '已归档到 /tmp/mde-nas/all（2026-08-28 02:22:10 UTC）。' +
+  '当前归档规则栈的判定是「归档规则 #4「验收：与拉取规则对齐——拉下来的就归档」决定：归档到 all」——' +
+  '那是此刻这一次求值，不是当初归档时跑的那一次；已经写进 NAS 的副本不受规则改动影响。'
 
 const TRIAGE = { archiveFailed: 7, expiringIn7d: 3, awaitingGrant: 4, inProgress: 1, nasOnly: 5 }
 
@@ -524,6 +535,50 @@ describe('不许静默放行', () => {
     }
   })
 
+  /**
+   * `parseWhy` 只**切分**后端那句话，一个字都不新编。切出来的三段各自仍然是
+   * 原句的子串——判定理由的可回溯性靠的就是这一点。
+   */
+  test('parseWhy：切出规则号 / 规则名 / 判成什么，注意事项单独拎出来', () => {
+    const done = parseWhy(ARCHIVED_WHY)
+    expect(done.rule).toEqual({
+      ref: '归档规则 #4',
+      name: '验收：与拉取规则对齐——拉下来的就归档',
+      result: '归档到 all',
+    })
+    // 事实留在正文：归档到哪、什么时候
+    expect(done.text).toBe('已归档到 /tmp/mde-nas/all（2026-08-28 02:22:10 UTC）。')
+    // 注意事项一个字不丢
+    expect(done.aside).toBe(
+      '那是此刻这一次求值，不是当初归档时跑的那一次；已经写进 NAS 的副本不受规则改动影响。',
+    )
+  })
+
+  test('parseWhy：整句话就是一条引用时，正文是空的；没起名字的规则 name 是 null', () => {
+    const plain = parseWhy('拉取规则 #2「全量拉取：所有会议都拉」决定：拉取（video、audio）')
+    expect(plain.text).toBe('')
+    expect(plain.aside).toBeNull()
+    expect(plain.rule?.name).toBe('全量拉取：所有会议都拉')
+
+    const noName = parseWhy('归档规则 #9决定：不归档')
+    expect(noName.rule).toEqual({ ref: '归档规则 #9', name: null, result: '不归档' })
+  })
+
+  /** 认不出格式的一律原样照登——猜错的代价是把一句判定理由拆成两个半句。 */
+  test('parseWhy：认不出格式就原样照登，不去猜', () => {
+    for (const raw of [
+      '没有任何归档规则匹配这场会议，按兜底处理：不归档',
+      '人工改写（zou）决定：不归档，改写理由：客户要求',
+      '这场会议在 meetings 表里查不到元数据，归档规则求值所需的事实取不到，无从判定。',
+      '拉取规则 #100 判定全拉',
+    ]) {
+      const parts = parseWhy(raw)
+      expect(parts.text, raw).toBe(raw)
+      expect(parts.aside, raw).toBeNull()
+      if (!raw.includes('决定：') || !raw.includes('规则 #')) expect(parts.rule, raw).toBeNull()
+    }
+  })
+
   test('展示映射：未知一律落到 unknown，不落到 done / allow', () => {
     expect(dotState('fetch', 'done')).toBe('done')
     expect(dotState('fetch', 'failed')).toBe('unknown') // failed 不是拉取的取值
@@ -778,14 +833,67 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
     expect(section).toHaveTextContent('22.8 MB')
   })
 
-  test('「撤销归档」没有按钮，但它的语义与缺口写在归档段里（2026-08-25 定案）', async () => {
+  /**
+   * 「撤销归档」这条缺口从界面上整个撤走了。
+   *
+   * 此前归档段里有一个虚线框（`data-testid="undo-archive-gap"`），逐字写着规格
+   * 定的语义、定案日期、以及"后端没有这条端点所以不放按钮"。**那是开发笔记**：
+   * 它向管理员解释一个不存在的按钮为什么不存在。缺口的账本是
+   * `docs/console/spec.md` §11 那张表（第 7 行），不是抽屉里的一段话——上一轮
+   * 刚为「全局搜索」立过这条规矩（§11 第 6 行）。
+   *
+   * 所以这条断言从"那段话在屏幕上找得到"改成**"这四个字在屏幕上一个都没有"**，
+   * 并钉住源码里那段注释还在（它对读代码的人有用，只是不许渲染）。
+   */
+  test('界面上一个「撤销归档」都没有——缺口登记在 spec §11，不渲染成文案', async () => {
     await openDrawer()
-    const gap = screen.getByTestId('undo-archive-gap')
-    // 逐字：只撤记录、NAS 副本保留、可逆、不需要二次确认
-    expect(gap).toHaveTextContent('只撤归档记录、NAS 上的副本保留')
-    expect(gap).toHaveTextContent('可逆动作、不需要二次确认')
-    // 不许出现一个名叫「撤销归档」的按钮去干别的事
+    expect(screen.queryByTestId('undo-archive-gap')).toBeNull()
     expect(screen.queryByRole('button', { name: '撤销归档' })).toBeNull()
+    // 整个抽屉里连这四个字都不该出现
+    expect(panel('产品周会').textContent).not.toMatch(/撤销归档/)
+    // 但读代码的人还要知道这里为什么空着
+    const src = css('src/pages/Meetings/MeetingDetail.tsx')
+    expect(src).toMatch(/为什么没有「撤销归档」按钮/)
+    expect(src).toMatch(/spec\.md` §11/)
+  })
+
+  test('「撤销归档」这条缺口在 spec §11 那张表里查得到', () => {
+    const spec = readFileSync(resolve(process.cwd(), '../docs/console/spec.md'), 'utf-8')
+    const table = spec.slice(spec.indexOf('## 11.'))
+    const row = table.split('\n').find((l) => l.startsWith('| 7 |'))
+    expect(row, '§11 少了「撤销归档」那一行').toBeDefined()
+    expect(row).toMatch(/撤销归档/)
+    expect(row).toMatch(/US-2\.5/)
+  })
+
+  test('资产表：口径进了列头与列头的 title，不再当一段脚注占正文', async () => {
+    await openDrawer()
+    const table = screen.getByTestId('asset-table')
+    // 列头文案本身就是口径
+    const head = within(table).getByRole('columnheader', { name: '已拿到 / 应有' })
+    // 「不适用的类不出现在这张表里」搬进了 title，不是被删掉
+    expect(head).toHaveAttribute('title', expect.stringContaining('不适用的类不出现在这张表里'))
+    expect(head).toHaveAttribute('title', expect.stringContaining('八类资产'))
+    // 正文里不再有那句脚注
+    expect(table.textContent).not.toMatch(/不适用的类不出现在这张表里/)
+  })
+
+  /**
+   * 「算不出来」与「0 字节」在一个按体积做决策的系统里是两件事。原来那句话
+   * 三行长，现在正文只留这个区分本身，为什么算不出来进 `title`。
+   */
+  test('合计体积算不出来时，"算不出来 ≠ 0 字节"仍然表达得出来', async () => {
+    handler = defaultHandler([meeting({ sizeBytes: null })])
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(screen.getByRole('button', { name: '产品周会 的详情' }))
+    const cell = await screen.findByTestId('size-unknown')
+    expect(cell).toHaveTextContent('算不出来')
+    expect(cell).toHaveTextContent('不是 0 字节')
+    expect(cell).toHaveAttribute('title', expect.stringContaining('不等于这场会议占 0 字节'))
+    // 「逐类的体积后端没有下发」是后端契约，不是管理员要读的话——删掉了
+    expect(panel('产品周会').textContent).not.toMatch(/逐类的体积/)
   })
 
   test('本地保留段：大号剩余天数 + 归档日/到期日 + 延长 30 天', async () => {
@@ -795,6 +903,74 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
     expect(section).toHaveTextContent('归档日')
     expect(section).toHaveTextContent('到期日')
     expect(within(section).getByRole('button', { name: '延长 30 天' })).toBeEnabled()
+
+    // 真会被搞错的口径留一行；后半句（到期后删本地、只留记录和 NAS 路径）
+    // 是全站通则，§4.9 归档存储页已经写过一次，这一页不再重复
+    expect(screen.getByTestId('keep-basis')).toHaveTextContent(
+      '保留期从归档成功那一刻起算，不是从会议日。',
+    )
+    expect(section.textContent).not.toMatch(/只留记录和 NAS 路径/)
+  })
+
+  /* ── 判定理由：可回溯性一条都不许弱化 ─────────────────────── */
+
+  async function openWithRealWhy() {
+    handler = defaultHandler([
+      meeting({
+        why: {
+          fetch: { by: 'rule', text: '拉取规则 #2「全量拉取：所有会议都拉」决定：拉取（video、audio）' },
+          archive: { by: 'rule', text: ARCHIVED_WHY },
+          allow: { by: 'rule', text: '权限规则 #1「默认准许」决定：准许采集（video）' },
+        },
+      }),
+    ])
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(screen.getByRole('button', { name: '产品周会 的详情' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('section-fetch')).toHaveTextContent('全量拉取：所有会议都拉'),
+    )
+    return user
+  }
+
+  test('规则引用排成结构：规则号 + 规则名 + 判成什么，三样都逐字可查', async () => {
+    await openWithRealWhy()
+
+    const fetchRule = within(screen.getByTestId('section-fetch')).getByTestId('why-rule')
+    expect(fetchRule).toHaveTextContent('拉取规则 #2')
+    expect(fetchRule).toHaveTextContent('全量拉取：所有会议都拉')
+    expect(fetchRule).toHaveTextContent('拉取（video、audio）')
+
+    // 归档段的引用此前埋在一段 140 字里，现在自己站一层
+    const archiveRule = within(screen.getByTestId('section-archive')).getByTestId('why-rule')
+    expect(archiveRule).toHaveTextContent('归档规则 #4')
+    expect(archiveRule).toHaveTextContent('验收：与拉取规则对齐——拉下来的就归档')
+    expect(archiveRule).toHaveTextContent('归档到 all')
+
+    const allowRule = within(screen.getByTestId('section-allow')).getByTestId('why-rule')
+    expect(allowRule).toHaveTextContent('权限规则 #1')
+    expect(allowRule).toHaveTextContent('默认准许')
+  })
+
+  /**
+   * 「当前这次求值 ≠ 当初归档时跑的那一次」是个真实且不直观的陷阱，一个字都不许丢；
+   * 但它在**每一场已归档的会议**上都是同一句话，重复到第三场就没人读了。
+   * 所以：正文里没有，标签的 `title` 上有。搬家不等于消失。
+   */
+  test('那句注意事项从正文搬进「来自规则」的 title，一个字没丢', async () => {
+    await openWithRealWhy()
+    const why = within(screen.getByTestId('section-archive')).getByTestId('why-line')
+
+    expect(why.textContent).not.toMatch(/那是此刻这一次求值/)
+    expect(why.textContent).not.toMatch(/不受规则改动影响/)
+
+    expect(within(why).getByText('来自规则')).toHaveAttribute(
+      'title',
+      '那是此刻这一次求值，不是当初归档时跑的那一次；已经写进 NAS 的副本不受规则改动影响。',
+    )
+    // 事实（归档到哪、什么时候）仍然在正文里
+    expect(why).toHaveTextContent('已归档到 /tmp/mde-nas/all（2026-08-28 02:22:10 UTC）。')
   })
 
   test('采集授权段：已授权程序 + 放行/禁止的理由 + 人工改写入口', async () => {
@@ -885,7 +1061,12 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
           }
         : base(c)
     await openDrawer()
-    expect(await screen.findByTestId('history-unlabeled')).toHaveTextContent(/frobnicate/)
+    const line = await screen.findByTestId('history-unlabeled')
+    expect(line).toHaveTextContent(/frobnicate/)
+    // 「上面显示的是 audit_log 里的原值」是在解释另一处 UI 怎么工作，
+    // 不是这里要做的判断的依据——搬进 title，不是删掉
+    expect(line.textContent).not.toMatch(/audit_log/)
+    expect(line).toHaveAttribute('title', expect.stringContaining('audit_log 里的原值'))
     expect(screen.getByTestId('history-rows')).toHaveTextContent('未登记标签')
   })
 

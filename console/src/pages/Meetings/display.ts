@@ -208,6 +208,77 @@ export function whyTone(by: string): WhyTone {
   return 'neutral'
 }
 
+/* ── 判定理由的拆解（规则引用 / 事实 / 注意事项）─────────────────
+
+   后端把一段判定理由拼成一句话下发。归档完成那一句尤其长：
+   「已归档到 X（时间）。当前归档规则栈的判定是「归档规则 #4「名字」决定：归档到 all」
+   ——那是此刻这一次求值，不是当初归档时跑的那一次；已经写进 NAS 的副本不受规则改动
+   影响。」一整段读下来才能知道是哪条规则判的，而抽屉是「点开看是哪条规则」的地方。
+
+   这里只做**切分**，不生成任何文字：切出来的每一段仍然是后端那句话的子串
+   （计划 §1 第 3 条「文本一律来自后端下发的 `why`，前端不自己编」）。切成三份：
+
+   1. `rule` —— 规则号 + 规则名 + 判成了什么。排成结构，一眼能扫。
+   2. `text` —— 引用之外的事实（归档到哪、什么时候）。原样照登。
+   3. `aside` —— 引用后面由「——」引出的那段。**它在每一场已归档的会议上都是同一句
+      话**，同一句话重复出现在每一处就不再有人读它，所以它不进正文，由调用方挂到
+      「来自规则」这个标签上。意思一个字不删——那是个真实且不直观的陷阱。
+
+   ## 认不出格式就原样照登
+
+   后端还有一堆不长这样的理由（兜底「没有任何归档规则匹配……」、人工改写、
+   「元数据查不到，无从判定」）。它们一律落到 `rule: null` + 正文原样，
+   **不去猜**——猜错的代价是把一句判定理由拆成两个半句。 */
+
+/** 后端拼理由的格式：`{栈名} #{id}「{note}」决定：{效果}`（`src/policy/stacks.ts`）。
+ *  规则没起名字时中间那对「」不出现，所以是可选组。 */
+const WHY_RULE_RE = /([^\s「」]*规则)\s*#(\d+)\s*(?:「(.+?)」)?\s*决定：\s*([^。；「」]+)/
+
+/** 注意事项由一个破折号引出。它只出现在引用**后面**，规则名里的破折号在引用之内。 */
+const ASIDE_MARK = '——'
+
+export interface WhyRuleRef {
+  /** 「归档规则 #4」。逐字来自后端，规则号在这里可回溯 */
+  ref: string
+  /** 规则名（后端的 `note`）。没起名字的规则是 null，不编一个 */
+  name: string | null
+  /** 判成了什么：「归档到 all」「不拉取」「准许采集（video、audio）」 */
+  result: string
+}
+
+export interface WhyParts {
+  rule: WhyRuleRef | null
+  /** 引用之外的事实。可能是空串（整句话就是一条引用时） */
+  text: string
+  /** 每场会议都一样的那句注意事项。null = 这一段没有 */
+  aside: string | null
+}
+
+export function parseWhy(text: string): WhyParts {
+  const m = WHY_RULE_RE.exec(text)
+  if (m === null) return { rule: null, text, aside: null }
+
+  const head = text.slice(0, m.index)
+  // 归档完成那一句把引用包在一对外层「」里。引用已经排成结构了，
+  // 剩下那半个「」是标点残渣，不是内容
+  const tail = text.slice(m.index + m[0].length).replace(/^」/, '')
+
+  const cut = tail.indexOf(ASIDE_MARK)
+  const aside = cut < 0 ? '' : tail.slice(cut + ASIDE_MARK.length).trim()
+  const rest = cut < 0 ? tail : tail.slice(0, cut)
+
+  // 引用前面**只留说完整了的句子**。引出引用的那半句连接词（「当前归档规则栈的
+  // 判定是」）在引用被抬成结构之后就没有下文了，留着比去掉更难读。
+  // 判据是句号，不是一张连接词表——后端换个说法这里不用跟着改。
+  const kept = head.slice(0, head.lastIndexOf('。') + 1)
+
+  return {
+    rule: { ref: `${m[1]!} #${m[2]!}`, name: m[3] ?? null, result: m[4]!.trim() },
+    text: `${kept}${rest}`.trim(),
+    aside: aside === '' ? null : aside,
+  }
+}
+
 /* ── 主持人这一栏 ─────────────────────────────────────────────── */
 
 /**

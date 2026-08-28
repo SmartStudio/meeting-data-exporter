@@ -75,6 +75,13 @@
   color: var(--ink-3);
   line-height: 1.6;
 }
+/* 带 `title` 的说明句同样要有把手，判据见 `.whyByText[data-aside]` */
+.note[title] {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: var(--s-0);
+  text-decoration-color: var(--line);
+}
 
 .muted {
   font-size: var(--t-sm);
@@ -92,8 +99,15 @@
 
 /* `why.by` 决定样式。中性是默认，琥珀＝人工改写，红＝失败。
    生命周期原因（expired / wait / na）与"理由缺失"保持中性——
-   前者不是谁的过错，后者是一条待查的线索，都不是告警。 */
+   前者不是谁的过错，后者是一条待查的线索，都不是告警。
+
+   盒子内部现在是三层而不是一段话：标签 / 规则引用 / 其余事实。
+   规则号是管理员点开抽屉要找的东西，它必须自己站出来，而不是躺在
+   一段 140 字里等人读完。 */
 .why {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
   margin: 0;
   font-size: var(--t-sm);
   line-height: 1.7;
@@ -104,12 +118,64 @@
   color: var(--ink-2);
 }
 
-.why b {
-  display: block;
+.whyBy {
+  margin: 0;
   font-size: var(--t-xs);
   font-weight: 600;
-  margin-bottom: var(--s-px);
+  line-height: 1.4;
   color: var(--ink-3);
+}
+
+/* 带 `title` 的那一份要有把手：虚线下划线 + help 光标。
+   没有把手的 title 等于没写——没人会去悬停一个看起来不能悬停的词。 */
+.whyByText[data-aside='true'] {
+  text-decoration: underline dotted;
+  text-underline-offset: var(--s-0);
+  cursor: help;
+}
+
+/* 规则引用：规则号 / 判成什么 一行，规则名换行。
+   规则号走等宽 + tabular-nums，一列扫下来数字对得齐。 */
+.rule {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s-0) var(--s-3);
+  align-items: baseline;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.ruleRef {
+  grid-column: 1;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.ruleResult {
+  grid-column: 2;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ruleName {
+  grid-column: 1 / -1;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* 引用之外的事实（归档到哪、什么时候）。它是补充，不该跟规则号抢。 */
+.whyText {
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .why[data-tone='warn'] {
@@ -117,7 +183,10 @@
   background: var(--warn-soft);
   color: var(--warn);
 }
-.why[data-tone='warn'] b {
+.why[data-tone='warn'] .whyBy,
+.why[data-tone='warn'] .ruleRef,
+.why[data-tone='warn'] .ruleResult,
+.why[data-tone='warn'] .ruleName {
   color: var(--warn);
 }
 
@@ -126,7 +195,10 @@
   background: var(--fail-soft);
   color: var(--fail);
 }
-.why[data-tone='fail'] b {
+.why[data-tone='fail'] .whyBy,
+.why[data-tone='fail'] .ruleRef,
+.why[data-tone='fail'] .ruleResult,
+.why[data-tone='fail'] .ruleName {
   color: var(--fail);
 }
 
@@ -138,11 +210,14 @@
   font-size: var(--t-sm);
 }
 
-.caption {
-  text-align: left;
+/* 列头。口径那句话（「不适用的类不出现在这张表里」）挂在这两个 th 的 title 上，
+   不再当一段脚注占正文——列头文案本身已经写着「已拿到 / 应有」。 */
+.assets thead th {
   font-size: var(--t-2xs);
+  font-weight: 400;
   color: var(--ink-3);
-  padding-bottom: var(--s-2);
+  padding-bottom: var(--s-1);
+  border-bottom: var(--s-px) solid var(--line-soft);
 }
 
 .assets th {
@@ -155,6 +230,23 @@
 .assets td {
   text-align: right;
   padding: var(--s-1) 0;
+}
+
+.assets th.assetNumHead {
+  text-align: right;
+}
+
+/* 合计体积那一行。它是表格的合计，不是又一段话 */
+.assets tfoot th,
+.assets tfoot td {
+  padding-top: var(--s-2);
+  border-top: var(--s-px) solid var(--line-soft);
+  color: var(--ink-3);
+}
+.assets tfoot [title] {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: var(--s-0);
 }
 
 .assetNum {
@@ -205,19 +297,6 @@
   border-radius: var(--r-sm);
   padding: var(--s-0) var(--s-2);
   overflow-wrap: anywhere;
-}
-
-/* 「这个动作后端还没有」。中性框而不是琥珀：它不是一次告警，
-   是一条事实说明——琥珀留给"有人绕过了规则"。 */
-.gap {
-  margin: 0;
-  padding: var(--s-3) var(--s-4);
-  border: var(--s-px) dashed var(--line);
-  border-radius: var(--r);
-  font-size: var(--t-xs);
-  line-height: 1.7;
-  color: var(--ink-2);
-  background: var(--surface-2);
 }
 
 /* ── 本地保留：大号剩余天数 ───────────────────────────────── */

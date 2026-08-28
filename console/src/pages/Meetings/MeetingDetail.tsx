@@ -15,6 +15,7 @@ import {
   grantCellKind,
   hostLabel,
   meetingTitle,
+  parseWhy,
   programName,
   STAGE_NAME,
   stateLabel,
@@ -47,9 +48,13 @@ import styles from './MeetingDetail.module.css'
  * 端点（`git grep` 全仓库无撤销归档路径，用户故事 US-2.5 至今 0 实现）。
  * 能做到的最接近的真实动作是**人工改写**（`PUT /override`，effect=skip）：
  * 它把这一阶段关掉、留下理由与审计，但**不撤销已经发生的那一次归档**。
- * 两者不是一回事，所以这里按它真正的名字叫「人工改写」，并在归档段把
- * 「撤销归档」这条缺口写出来——放一个名叫「撤销归档」、实际只是关掉开关的
- * 按钮，是这一页最不该犯的那类错误。
+ * 两者不是一回事，所以这里按它真正的名字叫「人工改写」——放一个名叫「撤销归档」、
+ * 实际只是关掉开关的按钮，是这一页最不该犯的那类错误。
+ *
+ * **缺口登记在 `docs/console/spec.md` §11（第 7 行），不渲染到界面上。**
+ * 这一段此前是抽屉里一个虚线框，向管理员解释一个不存在的按钮为什么不存在，
+ * 还带着 spec 的定案日期——那是把开发笔记当界面文案。界面回答的是
+ * 「我现在要做什么」，缺口的账本是 §11 那张表。
  */
 
 /** 八类资产的中文名。**来源是 spec §6.2 那张表**，与后端 `ASSET_LABEL` 逐字一致。 */
@@ -161,14 +166,44 @@ export function MeetingDetail(props: MeetingDetailProps) {
  * **文本一律来自后端下发的 `why`，前端不自己编**（计划 §1 第 3 条）。
  * 后端没下发时显示「理由缺失」并说清那是读不到、不是没有理由——留空会被读成
  * 「这一段本来就没有理由」。
+ *
+ * ## 一整段变成三层：标签 / 规则引用 / 其余事实
+ *
+ * 后端下发的是一整句话。抽屉是管理员点开来看「是哪条规则判的」的地方，而
+ * 规则号躺在一段 140 字的话中间——要读完才找得到。`parseWhy` 把它切开
+ * （**只切分，不改字**），规则号 + 规则名 + 判成什么单独排一层。
+ *
+ * 引用后面那句「那是此刻这一次求值……」不进正文：**每一场已归档的会议上它都是
+ * 同一句话**，重复到第三场就没人读了。挂在「来自规则」这个标签的 `title` 上，
+ * 一个字不删——它是个真实且不直观的陷阱（当前求值 ≠ 当初归档时那一次）。
  */
 export function WhyLine({ why }: { why: AdminWhy }) {
   const missing = why.by === ''
+  const parts = parseWhy(why.text)
+  const aside = missing ? null : parts.aside
+  const rule = missing ? null : parts.rule
+  const body = missing ? WHY_MISSING_TEXT : parts.text
+
   return (
-    <p className={styles.why} data-tone={whyTone(why.by)} data-by={why.by} data-testid="why-line">
-      <b>{whyLabel(why.by)}</b>
-      {missing ? WHY_MISSING_TEXT : why.text}
-    </p>
+    <div className={styles.why} data-tone={whyTone(why.by)} data-by={why.by} data-testid="why-line">
+      <p className={styles.whyBy}>
+        {/* `title` 是这句注意事项在整个抽屉里唯一的落点。虚线下划线是它的
+            可见把手——没有把手的 title 等于没写 */}
+        <span className={styles.whyByText} data-aside={aside !== null} title={aside ?? undefined}>
+          {whyLabel(why.by)}
+        </span>
+      </p>
+
+      {rule !== null && (
+        <p className={styles.rule} data-testid="why-rule">
+          <b className={styles.ruleRef}>{rule.ref}</b>
+          <span className={styles.ruleResult}>{rule.result}</span>
+          {rule.name !== null && <span className={styles.ruleName}>{rule.name}</span>}
+        </p>
+      )}
+
+      {body !== '' && <p className={styles.whyText}>{body}</p>}
+    </div>
   )
 }
 
@@ -228,13 +263,20 @@ function StageSection({
 
 /* ── 拉取段：八类资产 ─────────────────────────────────────────── */
 
+/** 表头那一句口径。它是**列头的脚注**，不是正文——所以住在 `title` 里。 */
+const ASSET_SCOPE_TITLE = '八类资产各自的格式数。不适用的类不出现在这张表里。'
+
+/** 合计体积算不出来时那句区分的全文。正文只留「算不出来 · 不是 0 字节」。 */
+const SIZE_UNKNOWN_TITLE = '一个资产都没有声明大小，所以合计体积算不出来。这不等于这场会议占 0 字节。'
+
 /**
  * 八类资产各自的格式数。
  *
  * spec §4.3 还要「各自的体积」——**后端只下发一个合计** `sizeBytes`
  * （`ConsoleMeetingRow.sizeBytes` 是所有已完成资产 `bytes_expected` 之和），
  * 逐类的体积拿不到。所以这里给格式数与合计，并且不去按比例摊一个假的逐类体积。
- * 这条记在任务报告里。
+ * 这条记在任务报告里，**不写在界面上**：后端下发了什么是契约的事，
+ * 管理员在这里要做的判断里用不到它。
  */
 function AssetTable({ m }: { m: AdminMeeting }) {
   const keys = Object.keys(m.assets)
@@ -244,9 +286,16 @@ function AssetTable({ m }: { m: AdminMeeting }) {
   return (
     <>
       <table className={styles.assets} data-testid="asset-table">
-        <caption className={styles.caption}>
-          八类资产的格式数（已拿到 / 应有）。不适用的类不出现在这张表里。
-        </caption>
+        <thead>
+          <tr>
+            <th scope="col" title={ASSET_SCOPE_TITLE}>
+              资产
+            </th>
+            <th scope="col" className={styles.assetNumHead} title={ASSET_SCOPE_TITLE}>
+              已拿到 / 应有
+            </th>
+          </tr>
+        </thead>
         <tbody>
           {keys.map((k) => {
             const cell = m.assets[k]!
@@ -261,18 +310,29 @@ function AssetTable({ m }: { m: AdminMeeting }) {
             )
           })}
         </tbody>
+        <tfoot>
+          <tr>
+            <th scope="row">合计体积</th>
+            <td>
+              {m.sizeBytes === null ? (
+                // 「算不出来」与「0 字节」在一个按体积做决策的系统里是两件事，
+                // 所以这个区分留在屏幕上；为什么算不出来进 title
+                <span data-testid="size-unknown" title={SIZE_UNKNOWN_TITLE}>
+                  算不出来 · 不是 0 字节
+                </span>
+              ) : (
+                <span className={styles.assetNum}>{fmtBytes(m.sizeBytes)}</span>
+              )}
+            </td>
+          </tr>
+        </tfoot>
       </table>
       {m.unknownAssetTypes.length > 0 && (
         <p className={styles.text} data-testid="unknown-assets">
-          另有 {m.unknownAssetTypes.length} 类认不出的资产类型（{m.unknownAssetTypes.join('、')}）
-          ——它们确实占着上面的计数，只是没法归进契约的八类。
+          另有 {m.unknownAssetTypes.length} 类认不出的资产类型（{m.unknownAssetTypes.join('、')}
+          ）：已计入上面的数，但不属于契约的八类。
         </p>
       )}
-      <p className={styles.text}>
-        合计体积 {fmtBytes(m.sizeBytes)}
-        {m.sizeBytes === null && '（一个资产都没有声明大小，算不出来——不是 0 字节）'}。
-        逐类的体积后端没有下发。
-      </p>
     </>
   )
 }
@@ -324,16 +384,15 @@ function ArchiveFacts({ m, now }: { m: AdminMeeting; now: Date }) {
         <dt>体积</dt>
         <dd>{fmtBytes(m.sizeBytes)}</dd>
       </dl>
-      {/* spec §4.3 脚注定的语义（2026-08-25）：「撤销归档」＝只撤记录、NAS 副本
-          保留，是可逆动作，不需要二次确认。**后端没有这条端点**（US-2.5 至今
-          0 实现），所以这里没有那个按钮——放一个名字对、动作不对的按钮，
-          在一个"归档记录没了就等于丢了"的系统里是最贵的一种误导。 */}
-      <p className={styles.gap} data-testid="undo-archive-gap">
-        <b>「撤销归档」还没有。</b>
-        规格里它的语义是<b>只撤归档记录、NAS 上的副本保留</b>（2026-08-25 定），
-        因此是可逆动作、不需要二次确认。但后端目前没有这条端点，控制台不放这个按钮。
-        下面那个「人工改写」是另一件事：它把归档阶段关掉，不撤销已经发生的那一次归档。
-      </p>
+      {/* 这里为什么没有「撤销归档」按钮：spec §4.3 脚注（2026-08-25）定的语义是
+          「只撤归档记录、NAS 副本保留」，可逆、不需要二次确认；**后端没有这条端点**
+          （US-2.5 至今 0 实现）。放一个名字对、动作不对的按钮，在一个"归档记录没了
+          就等于丢了"的系统里是最贵的一种误导，所以一个按钮都不放。
+
+          这段话此前是渲染出来的一个虚线框（`data-testid="undo-archive-gap"`）——
+          **那是把开发笔记当界面文案**：它向管理员解释一个不存在的按钮为什么不存在，
+          还带着 spec 的定案日期。缺口登记在 `docs/console/spec.md` §11 第 7 行，
+          那张表才是缺口的账本；这条注释是指路，不是记录（同 §11 抬头那段的规矩）。 */}
     </>
   )
 }
@@ -363,9 +422,15 @@ function KeepSection({
 
       {keep.expiresAt === null || keep.archivedAt === null ? (
         <p className={styles.text} data-testid="keep-none">
-          {m.archive === 'failed'
-            ? '归档失败，保留期未开始计时。归档不成功，本地到期后这场会议就永久没有了。'
-            : '尚未归档，保留期未开始计时。'}
+          {/* 归档失败这一支不许压缩掉后果：本地到期就是永久丢失，
+              这是这一页唯一一句"不看会出事"的话 */}
+          {m.archive === 'failed' ? (
+            <>
+              归档失败，保留期未开始计时。<b>归档不成功，本地到期后这场会议就永久没有了。</b>
+            </>
+          ) : (
+            '尚未归档，保留期未开始计时。'
+          )}
         </p>
       ) : (
         <>
@@ -395,8 +460,11 @@ function KeepSection({
         </>
       )}
 
-      <p className={styles.text}>
-        保留期从<b>归档成功</b>那一刻起算，不是从会议日。到期后本地文件删除，只留记录和 NAS 路径。
+      {/* 「从归档成功那一刻起算，不是从会议日」是真的会被搞错的口径，留一行。
+          后半句（到期后删本地、只留记录和 NAS 路径）是全站通则，§4.9 归档存储页
+          已经写过一次，这一页不再重复——同一句话说两遍，两遍都没人读。 */}
+      <p className={styles.note} data-testid="keep-basis">
+        保留期从<b>归档成功</b>那一刻起算，不是从会议日。
       </p>
 
       <div className={styles.acts}>
@@ -546,12 +614,18 @@ function HistorySection({
           {/* 这一段历史里有哪几种动作后端还没登记中文名（阶段 5 · A9）。
               上面每行的 `text` 里已经带着「（未登记标签）」，但那要一行行读；
               这里汇总一句。**前端不补一份动作名映射表**——补了之后
-              「后端漏登记」就被永久掩盖，见 `api/admin/audit.ts`。 */}
+              「后端漏登记」就被永久掩盖，见 `api/admin/audit.ts`。
+
+              「上面显示的是 audit_log 里的原值」进 `title`：那是在解释另一处 UI
+              怎么工作，不是这里要做的判断的依据。 */}
           {history.data.unlabeledActions.length > 0 && (
-            <p className={styles.note} data-testid="history-unlabeled">
-              这段历史里有 {history.data.unlabeledActions.length} 种动作后端还没有登记中文名
-              （{history.data.unlabeledActions.map((u) => u.action).join('、')}），
-              上面显示的是 audit_log 里的原值。
+            <p
+              className={styles.note}
+              data-testid="history-unlabeled"
+              title="这几种动作上面每行显示的是 audit_log 里的原值。"
+            >
+              {history.data.unlabeledActions.length} 种动作后端还没有登记中文名（
+              {history.data.unlabeledActions.map((u) => u.action).join('、')}）
             </p>
           )}
         </>
