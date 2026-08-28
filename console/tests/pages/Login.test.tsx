@@ -203,3 +203,71 @@ describe('登录页：提交与报错', () => {
     expect(init?.credentials).toBe('include')
   })
 })
+
+describe('登录页：这一页只有一件事要做', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  test('底部那行功能 chip 整条删掉了——其中「保留 30 天」是一句会撒谎的话', () => {
+    // 真实保留天数在 `system_settings`（`GET /admin/storage` 的
+    // `retention.defaultDays`，当前 `defaultDaysSource: "fallback"`）。管理员
+    // 改成 60 天的那一刻，写死在登录页上的「30 天」开始骗人。登录页没有会话、
+    // 拿不到也不该拿这个设置，所以正确做法是删掉这个数字，不是想办法去取它。
+    installFetchMock(CREDS)
+    renderApp('/login')
+
+    expect(screen.queryByText(/保留\s*30\s*天/)).toBeNull()
+    expect(screen.queryByText('归档 NAS')).toBeNull()
+    expect(screen.queryByText('授权采集')).toBeNull()
+    expect(document.querySelector('ol')).toBeNull()
+
+    // 「记住此设备 30 天」里的 30 天是另一回事：它是这次登录真的会写进 cookie
+    // 的有效期，由这次提交自己决定，不是一个别处可改的设置。
+    expect(screen.getByRole('checkbox', { name: '记住此设备 30 天' })).toBeInTheDocument()
+  })
+
+  test('占位标志（蓝底方块里一个「Y」）不在首屏了，产品名自己说话', () => {
+    installFetchMock(CREDS)
+    renderApp('/login')
+
+    expect(screen.queryByText('Y')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'YAO-DATA', level: 1 })).toBeInTheDocument()
+  })
+
+  test('辅助文字只剩一句、且是控件缺席时必须交代的那一句', () => {
+    // 判据：删掉它，用户会不会做错事？
+    //   「仅限公司内部管理员使用」——不会（没有注册按钮这件事自己说清楚了），删。
+    //   「忘记密码请联系系统管理员」——会：这一页没有、也不会有找回密码的控件，
+    //     没这句话，被锁在外面的人只能去找一个不存在的链接。留。
+    //   原文尾巴上的「开通」删掉：那说的是开户，不是找回密码，两件事。
+    installFetchMock(CREDS)
+    renderApp('/login')
+
+    expect(screen.queryByText(/仅限公司内部管理员使用/)).toBeNull()
+    expect(screen.getByText('忘记密码请联系系统管理员')).toBeInTheDocument()
+  })
+
+  test('报错行排在「登录」之后：常驻占位落到卡片底部，表单内部间距回到一致', async () => {
+    // 它原来夹在勾选框和按钮中间，空着也占一行，两侧各再吃一份 16px 的 gap——
+    // 勾选框到按钮之间空出 55px，是字段间距的三倍多。它不能改成"有错才渲染"
+    // （spec §4.1 要求不跳动），所以挪到最后一个控件之后，让那段常驻空白和
+    // 卡片内边距连成一片。
+    const user = userEvent.setup()
+    installFetchMock(CREDS)
+    renderApp('/login')
+
+    const submit = screen.getByRole('button', { name: '登录' })
+    const slot = screen.getByRole('alert')
+    // querySelectorAll 按文档顺序返回，所以这就是"谁在前谁在后"
+    const inOrder = [...document.querySelectorAll('form button[type="submit"], form [role="alert"]')]
+    expect(inOrder).toEqual([submit, slot])
+
+    // 挪了位置，但仍然是同一个常驻节点——出错前后 DOM 不多一行也不少一行
+    await user.type(screen.getByLabelText('账号'), CREDS.username)
+    await user.type(screen.getByLabelText('密码'), 'wrong-password')
+    await user.click(submit)
+    await waitFor(() => expect(slot).toHaveTextContent('账号或密码错误'))
+    expect(screen.getByRole('alert')).toBe(slot)
+  })
+})

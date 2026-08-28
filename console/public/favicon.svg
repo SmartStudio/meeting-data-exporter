@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="YAO-DATA">
+  <!-- 与左栏顶部的应用角标（Rail.module.css 的 .brandMark）同一个记号：品牌色
+       圆角方块 + 白色 Y。浏览器标签页上认到的东西，要和界面里认到的是同一个。
+       #0066FF 是 tokens.css 的 --brand（浅色）。SVG 是被浏览器 chrome 单独
+       加载的独立文档，取不到应用的 CSS 变量，所以这里只能落成字面值——
+       改品牌色时这两处要一起改。 -->
+  <rect width="32" height="32" rx="7" fill="#0066FF"/>
+  <path d="M9 9.5 L16 17.5 L23 9.5 M16 17.5 L16 24"
+        fill="none" stroke="#FFFFFF" stroke-width="3.4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

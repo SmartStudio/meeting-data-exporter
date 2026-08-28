@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>YAO-DATA · 会议数据管理控制台</title>
+    <!-- 图标是自己的静态文件（public/），不引外部资源。
+         写了 rel="icon" 浏览器就不会再去隐式请求 /favicon.ico——控制台每次
+         加载都在控制台里留一条 404 的原因就是那条隐式请求没人应答。
+         .ico 仍然备着：不认 SVG 图标的浏览器（Safari 16 以前）会回落到它，
+         没有它就又变回一条 404。 -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate icon" href="/favicon.ico" sizes="32x32" />
     <!-- 字体加载顺序不能反：Archivo 零 CJK 覆盖，中文由 Noto Sans SC 接管。
          详见 docs/console/design-system.md §3.1 与 src/styles/tokens.css 顶部声明。 -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />

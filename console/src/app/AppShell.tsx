@@ -8,7 +8,7 @@ import { Skeleton } from '@/ui/Skeleton'
 import GlobalBar from './GlobalBar'
 import Rail from './Rail'
 import { SessionProvider } from './session'
-import ShortcutBar from './ShortcutBar'
+import ShortcutBar, { shortcutsFor } from './ShortcutBar'
 import SystemStatus, { SystemHealthProvider } from './SystemStatus'
 import styles from './AppShell.module.css'
 
@@ -84,6 +84,13 @@ export default function AppShell() {
   // 一次本来不需要发生的跳转。
   // `SessionProvider` 包在最外层：角色决定了下面每一个写入口画成什么样
   // （`app/session.tsx` 说明了为什么"没有 Provider"必须落到只读一侧）。
+
+  // 底部留白只在真的有快捷键条的那一页给。它是 `position: fixed`，不给留白就
+  // 会盖住内容区最后一行——归档存储页首屏被盖掉的正是「立即清理已到期文件」
+  // 与「暂停到期清理」两颗破坏性按钮的下半截。反过来，在不渲染它的五个页面上
+  // 继续留 72px，就是为一条不存在的东西空出一屏的底部。
+  const hasShortcuts = shortcutsFor(location.pathname).length > 0
+
   return (
     <SessionProvider identity={identity.data}>
       <SystemHealthProvider>
@@ -94,7 +101,7 @@ export default function AppShell() {
             <SystemStatus />
             {/* 唯一的 <main>：一页只能有一个，所以它在外壳这一层，
                 页面自己用 PageShell 的 <section aria-labelledby> */}
-            <main className={styles.view}>
+            <main className={hasShortcuts ? `${styles.view} ${styles.viewWithBar}` : styles.view}>
               <Outlet />
             </main>
           </div>

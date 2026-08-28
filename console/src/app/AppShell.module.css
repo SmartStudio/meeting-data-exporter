@@ -13,11 +13,19 @@
   flex-direction: column;
 }
 
-/* 底部留出 --s-11，给固定定位的 ShortcutBar 让位，避免遮住内容区最后一行 */
 .view {
   flex: 1;
-  padding: var(--s-5) var(--pad-x) var(--s-11);
+  padding: var(--s-5) var(--pad-x) var(--s-7);
   min-width: 0;
+}
+
+/* ShortcutBar 是 position: fixed，压在内容上。**只有真的渲染了它的那一页**
+   才在底部留出它的高度（`AppShell.tsx` 用 `shortcutsFor()` 判断，与那条栏
+   自己的显隐同一个判据，不会一边留白一边不画）。
+   原来这段留白无条件给在 .view 上：五个不渲染快捷键条的页面各自空出 72px，
+   而归档存储页首屏那四颗按钮反倒被盖住——留白给错了地方。 */
+.viewWithBar {
+  padding-bottom: var(--s-11);
 }
 
 /* 登录态守卫的 loading / error 两态共用的外层容器——挂载检查还没有结果之前，
@@ -67,8 +75,10 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* 快捷键条在窄屏一律不渲染（触屏没有那些键），所以这条 shorthand 排在
+     .viewWithBar 之后、把它的 padding-bottom 一并盖掉是对的——窄屏下没有
+     任何一页需要给它留位置。 */
   .view {
-    /* 快捷键条在窄屏不渲染（触屏没有那些键），不用再给它留位置 */
     padding: var(--s-5) var(--s-4) var(--s-7);
   }
 }

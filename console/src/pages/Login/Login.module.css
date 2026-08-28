@@ -7,55 +7,53 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--s-7);
+  gap: var(--s-5);
   padding: var(--s-8) var(--s-5);
 }
 
-.brand {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--s-3);
-  text-align: center;
-}
-
-/* 与 Rail.tsx 的 .brandMark 同一套视觉语言（品牌色实底方块 + 粗体字母），
- * 不引入另一套标志画法——这两处是这个应用里仅有的两个"品牌角标"。 */
-.brandMark {
-  width: var(--s-11);
-  height: var(--s-11);
-  flex: none;
-  display: grid;
-  place-items: center;
-  border-radius: var(--r-lg);
-  background: var(--brand);
-  color: var(--on-brand);
-  font-weight: 700;
-  font-size: var(--t-2xl);
-}
-
-.brandName {
-  margin: 0;
-  font-size: var(--t-xl);
-  font-weight: 700;
-  color: var(--ink);
-}
-
-.brandSub {
-  margin: 0;
-  font-size: var(--t-sm);
-  color: var(--ink-3);
-}
-
+/* 卡片是这一页唯一的物件，所以它得有实体感。
+ *
+ * 三处改动，都是为了同一件事：
+ *   - `--shadow` 换掉 `--shadow-lg`。后者是 64px 模糊、-20px 收缩的大扩散阴影，
+ *     摊在这么小一块上每个像素都淡到看不见，只留下一圈灰雾。`--shadow` 的
+ *     18px 模糊在这个尺寸上才画得出一条边。抽屉/浮层那种大面板用 lg 是对的，
+ *     360px 的卡片不是那个尺度。
+ *   - 内边距 --s-7 → --s-8。卡片的重量一半来自它自己留多少白。
+ *   - 产品名收进卡片里（见 index.tsx）：卡片有了内容层级，不再是一个只装着
+ *     两个输入框的薄壳。
+ *
+ * 宽度仍是 `--login-card-w`（360px）。它偏窄——1440 视口下占 25%——但那是
+ * tokens.css 里的值，本轮不许改令牌文件，已在报告里提请把它调到 400px。 */
 .card {
   width: min(92vw, var(--login-card-w));
   background: var(--surface);
   border: var(--s-px) solid var(--line);
   border-radius: var(--r-lg);
-  box-shadow: var(--shadow-lg);
-  padding: var(--s-7);
+  box-shadow: var(--shadow);
+  /* 底部比其它三边窄：报错行常驻占位（见 .errorSlot）本身就在卡片底部留了
+     一段空白，两边叠起来会让卡片看着"下面多出来一截"。 */
+  padding: var(--s-8) var(--s-8) var(--s-5);
 }
 
+.head {
+  margin: 0 0 var(--s-7);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--t-2xl);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.sub {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+/* 表单里每一个间隔都是 --s-5，没有例外——这正是报错行要挪到按钮下面的理由，
+ * 见 .submitGroup。 */
 .form {
   display: flex;
   flex-direction: column;
@@ -85,9 +83,33 @@
   cursor: pointer;
 }
 
+/* 「登录」按钮 + 报错行，按这个顺序编成一组。
+ *
+ * 报错行原来夹在勾选框和按钮之间，且是表单的直接子项——空着的时候它照样占
+ * 一行高度，两侧各再吃一份 16px 的 gap，于是勾选框到按钮之间空出 55px，是
+ * 字段间距的三倍多，看起来像这里漏掉了一个控件。
+ *
+ * 报错行不能改成"有错才渲染"（spec.md §4.1 要求登录失败时表单不跳动），那么
+ * 唯一能让那段常驻空白不破坏节奏的位置，就是**排在最后一个控件之后**：它落在
+ * 卡片底部，和内边距连成一片，看不出是一段预留；而表单内部每一个间隔都回到
+ * 统一的 16px。
+ *
+ * 报错落在按钮下方也更合流程——它是刚才那一次点击的回答，出现在手刚点过的
+ * 地方，而不是要回头往上找。 */
+.submitGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.submit {
+  width: 100%;
+  justify-content: center;
+}
+
 /* 报错行常驻占位：无论 error 是不是 null，这个容器都在——只是文字内容变化。
  * min-height 按一行 --t-sm 文字的排版高度给死，避免出错前后表单跳一行
- * （spec.md §4.1 明确要求，登录失败不应该让下面的按钮跟着挪位置）。 */
+ * （spec.md §4.1 明确要求，登录失败不应该让上面的字段跟着挪位置）。 */
 .errorSlot {
   min-height: var(--s-6);
   display: flex;
@@ -97,48 +119,11 @@
   color: var(--fail);
 }
 
-.submit {
-  width: 100%;
-  justify-content: center;
-}
-
+/* 卡片之外的一句话。它交代的是这一页**没有**"忘记密码"这个控件、以及在那种
+ * 情况下该找谁——控件的缺席需要有人说一句，这不是可以靠改控件消掉的文案。 */
 .hint {
   margin: 0;
   text-align: center;
   font-size: var(--t-xs);
   color: var(--ink-3);
-}
-
-/* 四阶段点线：纯展示，不接状态（见 index.tsx 里的注释）。每个 <li> 是
- * "圆点 + 间距 + 文字"，非末项在右侧再接一段短线做视觉连接。 */
-.stages {
-  display: flex;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-}
-
-.stages li {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-
-.stages li::before {
-  content: '';
-  width: var(--s-1);
-  height: var(--s-1);
-  flex: none;
-  border-radius: var(--r-pill);
-  background: var(--brand);
-}
-
-.stages li:not(:last-child)::after {
-  content: '';
-  width: var(--s-8);
-  height: var(--s-px);
-  background: var(--line);
-  margin: 0 var(--s-2);
 }
