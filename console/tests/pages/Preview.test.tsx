@@ -277,6 +277,42 @@ describe('打开时的初始状态', () => {
   })
 })
 
+/* ── 抬头的主持人 ─────────────────────────────────────────────────── */
+
+describe('抬头的主持人：不许把 userid 当人名摆出去', () => {
+  /**
+   * 这一页曾经写的是 `主持 {meeting.host}`——而 `host` 是主持人的 **userid**，
+   * 真实取值 `woaJARCQAA…` 是一串 32 位机器码。会议记录页 2026-08-28 修掉了它，
+   * 预览页当时漏了：同一个病在另一页原样活着。判定搬进 `lib/host.ts` 之后两页共用。
+   *
+   * 这里刻意用**真实形状**的 userid，不用 fixture 里那个 `zouyanjian`——
+   * 后者短到 12 位以内，走的是「整串显示」那条支路，验不出这个 bug。
+   * 预览页的 bug 之所以躲过了所有基于 mock 的检查，正是因为替身里的 host
+   * 填的是人名（`'邹研发'` / `'王总'`），比真实依赖宽容。
+   */
+  const REAL_ID = 'woaJARCQAAt_hKBw--YKZeVjEaIMGFQQ'
+
+  test('身份映射查不到姓名时，屏幕上不出现那串 id', async () => {
+    answer(/\/content$/, { ...INDEX, meeting: { ...MEETING, host: REAL_ID, hostName: null } })
+    renderPreview()
+    await ready()
+    const head = screen.getByRole('heading', { name: '产品周会' }).parentElement
+    expect(head).not.toHaveTextContent(REAL_ID)
+    expect(head).toHaveTextContent('未知主持人')
+    // 全量 id 仍然拿得到——排查时只有它有用，但它在 title 里，不在正文里
+    expect(within(head as HTMLElement).getByTitle(new RegExp(REAL_ID))).toBeInTheDocument()
+  })
+
+  test('查到姓名就显示姓名', async () => {
+    answer(/\/content$/, { ...INDEX, meeting: { ...MEETING, host: REAL_ID, hostName: '邹燕建' } })
+    renderPreview()
+    await ready()
+    const head = screen.getByRole('heading', { name: '产品周会' }).parentElement
+    expect(head).toHaveTextContent('主持 邹燕建')
+    expect(head).not.toHaveTextContent(REAL_ID)
+  })
+})
+
 /* ── 时间轴：不是章节 ─────────────────────────────────────────────── */
 
 describe('时间轴 tab —— 按转写时间戳切分，不是章节', () => {

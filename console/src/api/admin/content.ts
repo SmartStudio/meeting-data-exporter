@@ -52,6 +52,8 @@ export interface ContentMeeting {
   /** 秒 */
   durationSec: number
   host: string
+  /** 身份映射查出来的姓名。查不到是 null——别在这里回落成 `host`，见 `lib/host.ts` */
+  hostName: string | null
   /** 元数据里没拉回来的列名。「标题是空的」与「元数据没拉回来」靠它区分 */
   missing: string[]
 }
@@ -299,6 +301,9 @@ function readMeeting(r: FieldReader, raw: unknown, where: string): ContentMeetin
     startAt: r.num(o, 'startAt', where),
     durationSec: r.num(o, 'durationSec', where),
     host: r.str(o, 'host', where),
+    // 宽读：没下发这个字段就是「没查到姓名」，退到 lib/host.ts 的降级路径。
+    // 为一个显示名让整页预览打不开不划算——同 api/admin/meetings.ts 的口径。
+    hostName: typeof (o as Record<string, unknown>).hostName === 'string' ? String((o as Record<string, unknown>).hostName) : null,
     missing: r.strList(o, 'missing', where),
   }
 }

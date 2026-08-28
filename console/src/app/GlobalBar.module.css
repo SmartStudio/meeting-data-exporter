@@ -37,34 +37,6 @@
   flex: 1;
 }
 
-.search {
-  font: inherit;
-  font-size: var(--t-sm);
-  color: var(--ink-3);
-  background: var(--surface);
-  border: var(--s-px) solid var(--line);
-  border-radius: var(--r);
-  padding: var(--s-1) var(--s-3);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-
-.search:hover {
-  border-color: var(--ink-4);
-  color: var(--ink-3);
-}
-
-.kbd {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-  border: var(--s-px) solid var(--line);
-  border-radius: var(--r-xs);
-  padding: 0 var(--s-1);
-}
 
 .themeGroup {
   display: flex;
@@ -127,11 +99,6 @@
     display: none;
   }
 
-  .search {
-    /* 让它自己占满一行：与主题三档挤在一行会把两边都压到读不出来 */
-    flex: 1 0 100%;
-    min-height: var(--tap-min);
-  }
 
   .themeBtn {
     min-height: var(--tap-min);

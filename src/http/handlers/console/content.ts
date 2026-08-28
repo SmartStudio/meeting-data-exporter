@@ -926,6 +926,10 @@ function meetingBlock(row: ConsoleMeetingRow): Record<string, unknown> {
     startAt: row.startAt,
     durationSec: row.durationSec,
     host: row.host,
+    // 身份映射查出来的姓名，查不到是 null。**必须跟着 host 一起下发**：少了它，
+    // 预览页只能把 host 那串 32 位 userid 原样摆上去，而那正是会议记录页刚修掉的
+    // 问题。两个页面读同一个 assembleRow，抬头这里漏一个字段就等于漏一页。
+    hostName: row.hostName,
     // 「标题是空的」与「元数据没拉回来」在界面上长得一模一样，这一列是唯一的区分
     missing: row.missing,
   }

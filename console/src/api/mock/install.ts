@@ -136,6 +136,14 @@ function wire(m: Meeting): Record<string, unknown> {
     startAt: shift(m.startAt),
     durationSec: m.durationSec,
     host: m.host,
+    // mock 的 `Meeting.host` 存的是人名（'邹研发' / '王总'），不是 userid——
+    // 真网关那一列是 `woaJARCQAA…` 这样的 32 位串。两者形状不同，所以这里显式
+    // 当作「已经查到姓名」下发；不写这一行，lib/host.ts 会把一个已经是姓名的
+    // 东西降级成「未知主持人 · 邹研发」。
+    //
+    // 顺带记一笔：预览页把 userid 原样上屏的 bug 之所以躲过了所有基于 mock 的
+    // 检查（含 a11y 的 preview 四个形态），正是因为这里的替身比真实依赖宽容。
+    hostName: m.host,
     missing: [],
     assets: m.assets,
     unknownAssetTypes: [],

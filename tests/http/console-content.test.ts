@@ -693,3 +693,30 @@ test('周期性会议：路径段解回 (meetingId, subMeetingId) 两段，不�
   expect(res.status).toBe(200)
   expect((await body(res)).meeting.subMeetingId).toBe('sub-3')
 })
+
+/**
+ * 抬头必须带 `hostName`。
+ *
+ * 少这一个字段的后果不是「少个可选信息」：预览页拿不到姓名就只能把 `host`
+ * 那串 32 位 userid 原样摆上去，而那正是会议记录页 2026-08-28 刚修掉的问题
+ * ——两页读的是同一个 `assembleRow`，抬头这里漏一个字段就等于漏一整页。
+ */
+test('内容抬头带 hostName：查到姓名给姓名，查不到给 null（不许回落成 userid）', async () => {
+  const REAL_ID = 'woaJARCQAAt_hKBw--YKZeVjEaIMGFQQ'
+
+  for (const [hostName, expected] of [['邹燕建', '邹燕建'], [null, null]] as const) {
+    const h = harness({ single: row({ host: REAL_ID, hostName }) })
+    const app = createApp(h.ctx.deps)
+    const res = await app(
+      new Request(`https://gw.example/api/v1/admin/meetings/${encodeURIComponent(ROW_ID)}/content`, {
+        headers: { cookie: `${ADMIN_SESSION_COOKIE}=tok` },
+      }),
+    )
+    expect(res.status).toBe(200)
+    const m = (await body(res)).meeting
+    expect(m.hostName).toBe(expected)
+    // 查不到姓名时**尤其**不许把 userid 塞进 hostName 冒充结果
+    expect(m.hostName).not.toBe(REAL_ID)
+    expect(m.host).toBe(REAL_ID)
+  }
+})

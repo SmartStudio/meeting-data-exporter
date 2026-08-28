@@ -278,6 +278,22 @@ describe('AppShell · 顶栏', () => {
   beforeEach(() => sessionStorage.setItem(PROTO_STORAGE_KEY, '1'))
   afterEach(() => sessionStorage.removeItem(PROTO_STORAGE_KEY))
 
+  test('顶栏没有全局搜索按钮——功能不存在，按钮就不该在', async () => {
+    sessionStorage.removeItem(PROTO_STORAGE_KEY)
+    renderApp('/meetings')
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
+
+    // 这里曾经有一颗「搜会议 / 规则 / 程序」按钮，onClick 是空的，还印着 ⌘K 徽标。
+    // 两句假话：按钮看起来能按，徽标声称有一个全应用没人监听的键位。
+    // 同一句谎也曾在 ShortcutBar 里（已删，见 tests/shortcutBar.test.tsx）。
+    // 判据是这个仓库既有的那条：不许放一个名字对、动作不对的按钮。
+    // 缺口登记在 docs/console/spec.md §11 第 6 行，不是靠这条注释活着。
+    expect(screen.queryByRole('button', { name: /搜会议/ })).toBeNull()
+    // ⌘K 全站没人监听（lib/keys.ts 对带修饰键的按键一律返回 null），
+    // 所以整个文档里都不该出现这个徽标——顶栏删了，ShortcutBar 也删了。
+    expect(screen.queryByText('⌘K')).toBeNull()
+  })
+
   test('默认不渲染原型控件——它们是开发脚手架，不该出现在运维人员的界面里', async () => {
     sessionStorage.removeItem(PROTO_STORAGE_KEY)
     renderApp('/meetings')

@@ -64,15 +64,15 @@ export default function GlobalBar() {
 
       <span className={styles.spacer} />
 
-      {/* F1 只放入口，不实现真正的全局搜索 */}
-      <button type="button" className={styles.search}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle cx="7" cy="7" r="4.6" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M10.6 10.6 14 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-        </svg>
-        搜会议 / 规则 / 程序
-        <kbd className={styles.kbd}>⌘K</kbd>
-      </button>
+      {/* 这里曾经有一颗「搜会议 / 规则 / 程序」按钮，带 ⌘K 徽标，`onClick` 是空的
+          ——注释写着「F1 只放入口，不实现真正的全局搜索」。它同时说了两句假话：
+          按钮看起来能按，徽标声称有一个全应用没人监听的键位（`lib/keys.ts` 对带
+          修饰键的按键一律返回 null）。同一句谎已经从 ShortcutBar 里删掉了。
+
+          删按钮而不是留着当占位：`tests/meetings.test.tsx` 的「不许放一个名字对、
+          动作不对的按钮」是这个仓库既有的判据。缺口本身没有丢——登记在
+          docs/console/spec.md §11 第 6 行，那份文档自己点名批评过「缺口只活在
+          一行代码注释里」。功能做出来的时候把按钮加回来，连同键位绑定。 */}
 
       <div className={styles.themeGroup} role="group" aria-label="主题切换">
         {THEME_OPTIONS.map((opt) => (

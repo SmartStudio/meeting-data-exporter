@@ -5,6 +5,7 @@ import type { ChaptersView, ContentIndex } from '@/api/admin/content'
 import { CUES_LIMIT, fetchChapters, fetchContentIndex, fetchMeetingGrantIds } from '@/api/admin/content'
 import { useResource, type Resource } from '@/lib/useResource'
 import { fmtDateTime, fmtDuration } from '@/lib/format'
+import { hostLabel, hostView } from '@/lib/host'
 import { PageShell } from '@/ui/PageShell'
 import { Pill } from '@/ui/Pill'
 import { Skeleton } from '@/ui/Skeleton'
@@ -170,8 +171,12 @@ function Body({ index, chapters, grants }: BodyProps) {
         <div className={styles.headText}>
           <h2 className={styles.title}>{meeting.title}</h2>
           <p className={styles.meta}>
-            {fmtDateTime(meeting.startAt)} · {meeting.code} · 时长 {fmtDuration(meeting.durationSec)} ·
-            主持 {meeting.host}
+            {/* 主持人这一段曾经是 `主持 {meeting.host}`——一串 32 位 userid 原样上屏。
+                判定与全部推理在 lib/host.ts；抬头不分两段排版，用 hostLabel。
+                `{' '}` 是必须的：JSX 把标签之间的换行连同缩进一起吃掉，
+                少了它渲染出来是「时长 0:53 ·主持」。 */}
+            {fmtDateTime(meeting.startAt)} · {meeting.code} · 时长 {fmtDuration(meeting.durationSec)} ·{' '}
+            主持 <span title={hostView(meeting).title ?? undefined}>{hostLabel(meeting)}</span>
           </p>
         </div>
         <Pill tone={access.allow === 'allow' ? 'brand' : 'warn'}>
