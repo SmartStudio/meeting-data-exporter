@@ -516,7 +516,7 @@ spec 管住了「谁能**导出**」，没管「导出后谁能**看**」。资�
 
 | 故事 | 状态 | 证据 | 缺口 |
 | --- | --- | --- | --- |
-| US-1.1 确认接入条件 | ✅ | `scripts/preflight.ts:302-333`（`/v1/records` 成败推出账号版本，PASS/FAIL/SKIP 三态各有话说）· `:280-289` 按 error_code 给具体修复动作 | — |
+| US-1.1 确认接入条件 | ✅ | `scripts/preflight.ts:296-333`（`/v1/corp/records` 成败推出账号版本，PASS/FAIL/SKIP 三态各有话说）· `:280-289` 按 error_code 给具体修复动作 | — |
 | US-1.2 部署与凭证配置 | ✅ | `src/config.ts:45` 逐项点名缺哪个 key · `tests/config.test.ts`(28) · STS 落库 AES-256-GCM（`src/sts/cipher.ts:20-40`）· 服务账号只存 argon2id（`src/auth/service.ts:33-38`） | 「哪项权限」不在启动期，要靠 `bun run preflight` 第 3 项。STS 落库加密非 KMS 托管（`docs/deploy.md:572-577` 自记为后续项） |
 | US-1.3 STS-Token 自动续期 | **◐**（本次由 ✅ 降级） | 续期 `src/sts/manager.ts:81-97`（剩余 <1/3 提前 + 在途去重）· 5 分钟一轮 `src/index.ts:283-296` · 验签一律 401 `manager.ts:113-116` · 影响范围行为侧成立 `src/catalog/index.ts:103-110` | **第 2 条验收「回调超时未收到 Token 时告警」零实现**：`src/store/sts.ts:78-86` 把超 1 小时的 pending 静默改成 `expired`，返回的条数在 `src/index.ts:291-293` 被丢弃。全仓库没有任何位置说出「AI 纪要不可用，录制与逐字稿不受影响」。管理员唯一可察觉的信号是客户端的 503，既不定向、也不含影响范围 |
 | US-1.4 身份映射可用 | — | `identityMapper` 唯一消费点是 `src/http/handlers/auth.ts:99`（wecomCallback）· `tests/http/wecomDisabled.test.ts`(8) | 当前部署不经过 userid 映射。**阶段 3 之后多了一条更硬的理由**：allow 栈主体已从人换成 `service_accounts.id`（`src/policy/access.ts:33-40`），企微用户走到判定层被 `notAProgram` 显式短路（`:215-232`）——**故事正文那句「若无法可靠对应，US-2.1 不成立」在当前代码下已经是假的**，就算将来打开企微登录，US-2.1 也不再依赖它 |

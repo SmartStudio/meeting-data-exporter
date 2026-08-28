@@ -1,7 +1,7 @@
 import type { RawDetail, RawFileEntry } from '../catalog/assets'
 import type { TencentClient } from './client'
 
-/** 平台上限；批量接口默认/最大 50，与 /v1/records 的 20 不同 */
+/** 平台上限；批量接口默认/最大 50，与 /v1/corp/records 的 20 不同 */
 const LIST_PAGE_SIZE = 50
 
 /**

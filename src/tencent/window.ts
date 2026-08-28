@@ -1,4 +1,4 @@
-/** 平台限制：`/v1/records` 与 `/v1/corp/records` 单次查询区间均不得超过 31 天 */
+/** 平台限制：`/v1/corp/records` 单次查询区间不得超过 31 天 */
 export const MAX_WINDOW_SEC = 31 * 24 * 3600
 export const DEFAULT_WINDOW_SEC = 31 * 24 * 3600
 

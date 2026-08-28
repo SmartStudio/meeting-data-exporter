@@ -98,7 +98,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const jwtSecret = opts.jwtSecret ?? JWT_SECRET
 
   const tencentClient = stubTencentClient({ get: opts.tencentGet, post: opts.tencentPost })
-  const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID)
+  // 顺序跟随 src/index.ts：meeting_cache 是精确查询的第一级，得先有它
+  const meetingsCache = createMeetingCacheStore(pool)
+  const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID, meetingsCache)
   const addressesApi = createAddressesApi(tencentClient, OPERATOR_ID)
 
   const stsStore = createStsStore(pool)
@@ -148,7 +150,6 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     lookupByEmail: async (email) => (await authStore.lookupIdentityByEmail(email))?.tmUserId ?? null,
   })
   const serviceAuth = createServiceAuth({ store: authStore })
-  const meetingsCache = createMeetingCacheStore(pool)
 
   // 管理员会话与账号管理（Task 3，A1）——与上面企微/服务账号认证线完全独立，
   // 装配方式跟随 src/index.ts：真实 AdminStore/AdminAuth，接到同一个测试库

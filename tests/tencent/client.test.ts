@@ -30,13 +30,13 @@ const deps = (f: typeof fetch) => ({
 test('成功响应直接返回解析后的 body', async () => {
   const { fn } = fakeFetch([{ status: 200, body: { total_count: 3 } }])
   const c = createTencentClient(cfg, deps(fn))
-  expect(await c.get<{ total_count: number }>('/v1/records', { page: 1 })).toEqual({ total_count: 3 })
+  expect(await c.get<{ total_count: number }>('/v1/addresses', { page: 1 })).toEqual({ total_count: 3 })
 })
 
 test('请求携带全部必需头', async () => {
   const { fn, calls } = fakeFetch([{ status: 200, body: {} }])
   const c = createTencentClient(cfg, deps(fn))
-  await c.get('/v1/records', { page: 1 })
+  await c.get('/v1/addresses', { page: 1 })
   const h = calls[0]!.headers
   expect(h.get('X-TC-Registered')).toBe('1')
   expect(h.get('X-TC-Signature')).toBeTruthy()
@@ -48,7 +48,7 @@ test('致命错误立即抛出，不重试', async () => {
     { status: 400, body: { error_info: { error_code: 9042, message: 'auth failed' } } },
   ])
   const c = createTencentClient(cfg, deps(fn))
-  await expect(c.get('/v1/records', {})).rejects.toThrow(TencentApiError)
+  await expect(c.get('/v1/addresses', {})).rejects.toThrow(TencentApiError)
   expect(calls).toHaveLength(1)
 })
 
@@ -58,7 +58,7 @@ test('瞬时错误重试后成功', async () => {
     { status: 200, body: { ok: true } },
   ])
   const c = createTencentClient(cfg, deps(fn))
-  expect(await c.get<{ ok: boolean }>('/v1/records', {})).toEqual({ ok: true })
+  expect(await c.get<{ ok: boolean }>('/v1/addresses', {})).toEqual({ ok: true })
   expect(calls).toHaveLength(2)
 })
 
@@ -68,7 +68,7 @@ test('190301 重试时使用新的 nonce 与 timestamp', async () => {
     { status: 200, body: { ok: true } },
   ])
   const c = createTencentClient(cfg, deps(fn))
-  await c.get('/v1/records', {})
+  await c.get('/v1/addresses', {})
   expect(calls[0]!.headers.get('X-TC-Nonce')).not.toBe(calls[1]!.headers.get('X-TC-Nonce'))
 })
 
@@ -78,7 +78,7 @@ test('190310 触发限流收敛', async () => {
     { status: 200, body: { ok: true } },
   ])
   const c = createTencentClient(cfg, deps(fn))
-  await c.get('/v1/records', {})
+  await c.get('/v1/addresses', {})
   expect(c.currentQps()).toBeLessThan(5)
 })
 
@@ -96,7 +96,7 @@ test('超过重试上限后抛出最后一次错误', async () => {
     { status: 500, body: { error_info: { error_code: 41, message: 'timeout' } } },
   ])
   const c = createTencentClient(cfg, deps(fn))
-  await expect(c.get('/v1/records', {})).rejects.toThrow(TencentApiError)
+  await expect(c.get('/v1/addresses', {})).rejects.toThrow(TencentApiError)
   expect(calls).toHaveLength(5)
 })
 
@@ -124,7 +124,7 @@ test('突发耗尽后按 qps 恢复：总模拟耗时符合速率，而非慢若
   )
 
   const startMs = clockMs
-  for (let i = 0; i < 15; i++) await c.get('/v1/records', { page: i })
+  for (let i = 0; i < 15; i++) await c.get('/v1/addresses', { page: i })
   const elapsedMs = clockMs - startMs
 
   expect(calls).toHaveLength(15)
@@ -176,7 +176,7 @@ test('这道闸门只管 /v1/corp/records，不拖慢其它接口', async () => 
   )
 
   const startMs = clockMs
-  for (let i = 0; i < 11; i++) await c.get('/v1/records', { page: i })
+  for (let i = 0; i < 11; i++) await c.get('/v1/addresses', { page: i })
   const elapsedMs = clockMs - startMs
 
   expect(calls).toHaveLength(11)

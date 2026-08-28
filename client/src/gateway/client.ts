@@ -43,9 +43,11 @@ export function createGatewayClient(
    * 网关的错误体是 `{ error, message }` 两段：`error` 是**机器码**（分支判定用），
    * `message` 是**判定理由**（给人看的）。这里必须把 message 一并带上——丢掉它，
    * 终端上就只剩一句笼统的「meeting not found in range」，而网关那句话里恰恰
-   * 写着关键限制：按会议号/ID 的点名查询走用户维度的 `/v1/records`，只看得到
-   * operator 自己主持的会议（见网关侧 tencent/records.ts 的 EXACT_LOOKUP_SCOPE_NOTE）。
-   * 使用者会因此把「可见范围不够」误判成「时间范围没覆盖到」，反复加宽 --from/--to 而永远查不到。
+   * 写着这次判定是怎么来的：按会议号/ID 的点名查询先查网关的 `meeting_cache`，
+   * 未命中再把整个时间窗从 `/v1/corp/records`（账户级，看得见全公司）枚举一遍
+   * 本地过滤（见网关侧 tencent/records.ts 的 EXACT_LOOKUP_RESOLUTION_NOTE）。
+   * 也就是说未命中就是**时间窗没覆盖到**，不是可见范围不够——加宽 --from/--to 有用。
+   * 丢掉 message，使用者就无从知道该往哪个方向查。
    */
   async function parseError(res: Response): Promise<never> {
     const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string }

@@ -37,7 +37,7 @@ import type { RowDataPacket } from 'mysql2'
 import { loadConfig, type AppConfig, type IdentityStrategy } from '../src/config'
 import { createPool, type Pool } from '../src/store/db'
 import { createTencentClient } from '../src/tencent/client'
-import { createRecordsApi } from '../src/tencent/records'
+import { createCorpRecordsApi } from '../src/tencent/records'
 import { createStsStore } from '../src/store/sts'
 import { createAuthStore } from '../src/store/auth'
 import { createIdentityMapper } from '../src/auth/identity'
@@ -293,22 +293,24 @@ async function stepTencent(cfg: AppConfig): Promise<boolean> {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     nowMs: Date.now,
   })
-  const recordsApi = createRecordsApi(client, cfg.tencent.operatorId)
+  // 只要**窗口枚举**那一层：这一项探的是凭证、签名与账号权限，不该顺手拽上
+  // meeting_cache（数据库连不连得上是第 1 项自己的事）。createRecordsApi 那一层
+  // 多出来的只有缓存，打的还是同一个接口、同一组参数。
+  const corpRecords = createCorpRecordsApi(client, cfg.tencent.operatorId)
   const now = Math.floor(Date.now() / 1000)
 
   try {
     // 取最近 1 天：成功即证明签名算法与账号权限均正确，不要求这个窗口里真的有会议。
-    // kind:'range' ⇒ 打的是 /v1/corp/records（企业维度），与 worker 主路径同一个接口。
-    // 这是有意的：它的权限要求比 /v1/records 更高（录制管理的查看/编辑权限），
-    // 只探 /v1/records 会在缺这项权限时给出一个「通过」的假结论。
-    await recordsApi.listMeetings({ kind: 'range', from: now - 86400, to: now }, now)
+    // 打的是 /v1/corp/records（企业维度）——那是网关向腾讯要会议列表的**唯一**接口，
+    // worker 主路径与按会议号点名查询都走它，它要求录制管理的查看/编辑权限。
+    await corpRecords.listRange(now - 86400, now)
     record(
       '3',
       '腾讯凭证与签名',
       'pass',
       '成功调用 GET /v1/corp/records（账户级会议录制列表）取最近 1 天的会议列表，签名与权限校验通过。' +
-        '这正是 worker 持续归档走的那个接口——它要求账号具备录制管理的查看/编辑权限，' +
-        '而按会议号点名查询走的 /v1/records 不需要，所以这一项过了才说明全公司归档拿得到数据。',
+        '这是网关向腾讯要会议列表的唯一接口——全公司持续归档与按会议号点名查询都走它，' +
+        '它要求账号具备录制管理的查看/编辑权限，所以这一项过了才说明全公司归档拿得到数据。',
     )
     record(
       '4',

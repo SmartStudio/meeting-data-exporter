@@ -75,25 +75,23 @@ function recordsPage(meetings: unknown[]): unknown {
 }
 
 /**
- * 同一批会议按**两个列表接口各自的 wire 形状**供给。
+ * 供给 `/v1/corp/records`——网关唯一会调的会议列表接口（范围查询与精确查询都走它，
+ * 见 src/tencent/records.ts 的文件头）。
  *
- * `/v1/records`（用户维度）的主持人字段是 `host_user_id`；
- * `/v1/corp/records`（企业维度）的是 `userid`。两者形状不同，测试里也不能混成
- * 一份——混了就等于把「主持人字段改名了」这件事从覆盖里抹掉（见 tencent/records.ts）。
+ * fixture 里主持人写作 `host_user_id`，这里改名成 `userid` 再吐出去：那个接口的
+ * wire 形状就是这样，照搬 host_user_id 会让主持人静默变成 undefined。故意让两个
+ * 名字不同，这个 bug 才不会在测试里蒙混过关。
  *
  * 返回 null 表示该 path 不是会议列表接口，调用方继续往下判断。
  */
 function recordsFor(path: string, meetings: unknown[]): unknown | null {
-  if (path === '/v1/records') return recordsPage(meetings)
-  if (path === '/v1/corp/records') {
-    return recordsPage(
-      meetings.map((m) => {
-        const { host_user_id: host, ...rest } = m as Record<string, unknown>
-        return { ...rest, userid: host }
-      }),
-    )
-  }
-  return null
+  if (path !== '/v1/corp/records') return null
+  return recordsPage(
+    meetings.map((m) => {
+      const { host_user_id: host, ...rest } = m as Record<string, unknown>
+      return { ...rest, userid: host }
+    }),
+  )
 }
 
 function addressesPage(files: unknown[]): unknown {

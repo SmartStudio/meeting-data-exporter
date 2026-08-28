@@ -14,7 +14,7 @@ const base = {
   method: 'GET' as const,
   nonce: '88080',
   timestamp: '1572168600',
-  requestUri: '/v1/records?end_time=2&start_time=1',
+  requestUri: '/v1/corp/records?end_time=2&start_time=1',
   body: '',
 }
 
@@ -22,7 +22,7 @@ test('签名等于 base64(lowerHex(hmacSha256))，而非 base64(hmacBytes)', () 
   const stringToSign =
     'GET\n' +
     'X-TC-Key=AKIDtest&X-TC-Nonce=88080&X-TC-Timestamp=1572168600\n' +
-    '/v1/records?end_time=2&start_time=1\n' +
+    '/v1/corp/records?end_time=2&start_time=1\n' +
     ''
   expect(sign(base)).toBe(reference(base.secretKey, stringToSign))
 })
@@ -48,7 +48,7 @@ test('timestamp 变化导致签名变化', () => {
 })
 
 test('查询串参与签名', () => {
-  expect(sign(base)).not.toBe(sign({ ...base, requestUri: '/v1/records' }))
+  expect(sign(base)).not.toBe(sign({ ...base, requestUri: '/v1/corp/records' }))
 })
 
 import { buildAuthHeaders } from '../../src/tencent/signer'
@@ -57,7 +57,7 @@ import { buildUrl } from '../../src/tencent/url'
 const authCfg = { appId: 'corp', sdkId: 'sdk', secretId: 'AKIDx', secretKey: 'k' }
 
 test('buildAuthHeaders 含全部必需头，X-TC-Registered 固定为 1', () => {
-  const built = buildUrl('https://x', '/v1/records', { page: 1 })
+  const built = buildUrl('https://x', '/v1/corp/records', { page: 1 })
   const h = buildAuthHeaders(authCfg, 'GET', built, '')
   expect(h['Content-Type']).toBe('application/json')
   expect(h['X-TC-Registered']).toBe('1')
@@ -74,7 +74,7 @@ test('传入 stsToken 时附加 STS-Token 头', () => {
 })
 
 test('两次调用产生不同的 nonce（保证重试时签名不重放）', () => {
-  const built = buildUrl('https://x', '/v1/records', { page: 1 })
+  const built = buildUrl('https://x', '/v1/corp/records', { page: 1 })
   const a = buildAuthHeaders(authCfg, 'GET', built, '')
   const b = buildAuthHeaders(authCfg, 'GET', built, '')
   expect(a['X-TC-Nonce']).not.toBe(b['X-TC-Nonce'])

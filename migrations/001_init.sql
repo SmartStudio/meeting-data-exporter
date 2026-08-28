@@ -96,10 +96,11 @@ CREATE TABLE IF NOT EXISTS identity_map (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 会议元数据缓存：assetId 格式为 <meetingRecordId>:<recordFileId>:<assetType>:<index>，
--- 不含 meeting_id / host_user_id / start_time 等策略判定所需字段，而 /v1/records 不支持
+-- 不含 meeting_id / host_user_id / start_time 等策略判定所需字段，而会议列表接口不支持
 -- 按 meeting_record_id 反查。download-url 端点据此表由 meetingRecordId 重建完整 Meeting
 -- 以供 policyEngine.decide 使用（这是真正的安全边界，见 Task 14 报告的设计说明）。
--- 写入时机：每次成功列出会议（GET /meetings*）机会性 upsert；MySQL 共享存储，多实例安全。
+-- 写入时机：每次从腾讯拿到会议列表时整批 upsert（src/tencent/records.ts）；MySQL 共享存储，多实例安全。
+-- 2026-08-27 之后它还是精确查询（按会议号/会议 ID 点名查）的第一级，见 010 与 src/store/meetings.ts。
 CREATE TABLE IF NOT EXISTS meeting_cache (
   meeting_record_id VARCHAR(128) NOT NULL,
   meeting_id        VARCHAR(64)  NOT NULL,

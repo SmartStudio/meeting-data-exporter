@@ -22,6 +22,7 @@ import { loadConfig } from '../config'
 import { createCatalog } from '../catalog/index'
 import { POOL_CONNECTION_LIMIT, createPool, runMigrations } from '../store/db'
 import { createStsStore } from '../store/sts'
+import { createMeetingCacheStore } from '../store/meetings'
 import { createStsManager } from '../sts/manager'
 import { createTokenCipher } from '../sts/cipher'
 import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
@@ -587,7 +588,14 @@ async function main(): Promise<number> {
       // 毫秒时钟：项目里通用的 now() 是秒级，喂给令牌桶会让补充速率慢 1000 倍
       nowMs: Date.now,
     })
-    const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId)
+    // meeting_cache 在 worker 里**不是可选的**：引擎发现一场会议之后，`listAssets`
+    // 要拿 meetingId 回头反查完整的 Meeting（catalog 需要 meetingRecordId），而
+    // `/v1/corp/records` 没有精确过滤参数。这一步全靠 discovery 那一趟写进缓存的行
+    // 兜住——没有它，每场会议都会触发一次全窗口枚举，10次/min 的配额一轮就打死。
+    // 见 tencent/records.ts 的 EXACT_LOOKUP_RESOLUTION_NOTE 与
+    // tests/worker/exact-lookup.test.ts。
+    const meetingsCache = createMeetingCacheStore(pool)
+    const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
     const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
 
     // STS-Token 的**续期是网关的活**：平台异步回调，落点是网关的 webhook 路由。

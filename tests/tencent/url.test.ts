@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { buildUrl } from '../../src/tencent/url'
 
 test('buildUrl 产出的 url 与 uriForSigning 查询串完全一致', () => {
-  const b = buildUrl('https://api.meeting.qq.com', '/v1/records', {
+  const b = buildUrl('https://api.meeting.qq.com', '/v1/corp/records', {
     start_time: 1602950400,
     end_time: 1603123200,
     operator_id: 'KM4Ss4Th09ogUw1JiK',
@@ -13,9 +13,9 @@ test('buildUrl 产出的 url 与 uriForSigning 查询串完全一致', () => {
 })
 
 test('uriForSigning 不含 host，以 / 开头', () => {
-  const b = buildUrl('https://api.meeting.qq.com', '/v1/records', { page: 1 })
-  expect(b.uriForSigning).toBe('/v1/records?page=1')
-  expect(b.url).toBe('https://api.meeting.qq.com/v1/records?page=1')
+  const b = buildUrl('https://api.meeting.qq.com', '/v1/corp/records', { page: 1 })
+  expect(b.uriForSigning).toBe('/v1/corp/records?page=1')
+  expect(b.url).toBe('https://api.meeting.qq.com/v1/corp/records?page=1')
 })
 
 test('特殊字符被 urlencode（+ 必须编码为 %2B）', () => {
@@ -27,11 +27,11 @@ test('特殊字符被 urlencode（+ 必须编码为 %2B）', () => {
 })
 
 test('undefined 值的参数被剔除', () => {
-  const b = buildUrl('https://api.meeting.qq.com', '/v1/records', {
+  const b = buildUrl('https://api.meeting.qq.com', '/v1/corp/records', {
     page: 1,
     meeting_code: undefined,
   })
-  expect(b.uriForSigning).toBe('/v1/records?page=1')
+  expect(b.uriForSigning).toBe('/v1/corp/records?page=1')
 })
 
 test('参数按字典序排列，保证同一组参数产出稳定字符串', () => {

@@ -54,7 +54,12 @@ async function main(): Promise<void> {
     // 毫秒时钟：项目里通用的 now() 是秒级，喂给令牌桶会让补充速率慢 1000 倍
     nowMs: Date.now,
   })
-  const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId)
+  // meeting_cache 要在 recordsApi 之前建：精确查询（按会议号/ID 点名查）的第一级
+  // 就是它，而 `/v1/corp/records` 没有精确过滤参数（见 tencent/records.ts 的
+  // EXACT_LOOKUP_RESOLUTION_NOTE）。同一个 store 也供 download-url 端点凭
+  // meetingRecordId 重建 Meeting。
+  const meetingsCache = createMeetingCacheStore(pool)
+  const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
   const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
 
   const stsStore = createStsStore(pool)
@@ -108,7 +113,6 @@ async function main(): Promise<void> {
     lookupByEmail: async (email) => (await authStore.lookupIdentityByEmail(email))?.tmUserId ?? null,
   })
   const serviceAuth = createServiceAuth({ store: authStore })
-  const meetingsCache = createMeetingCacheStore(pool)
   const loginRateLimiter = createLoginRateLimiter()
 
   // 管理员会话与账号管理（Task 3，A1）——与企微/服务账号认证完全独立的第三条认证线，

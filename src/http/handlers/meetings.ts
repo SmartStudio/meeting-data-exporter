@@ -131,7 +131,9 @@ export async function listMeetings(req: Request, ctx: RouteCtx): Promise<Respons
     throw err
   }
 
-  await Promise.all(meetings.map((m) => ctx.deps.meetingsCache.upsert(m, now)))
+  // meeting_cache 的写入不在这里：`recordsApi` 每次从 `/v1/corp/records` 拿到会议
+  // 就整批写进去（见 tencent/records.ts 的 fetchWindow）。写入点散在各个处理器里
+  // 必然漂移，而 download-url 端点与精确查询两个读者都押在「列过的会议一定在表里」。
 
   const visible = await filterVisibleMeetings(ctx, auth.identity, meetings, now)
 
@@ -178,7 +180,7 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
     throw err
   }
 
-  await Promise.all(meetings.map((m) => ctx.deps.meetingsCache.upsert(m, now)))
+  // 缓存写入由 recordsApi 统一负责（见上面 listMeetings 处的说明）
   const meeting = [...meetings].sort((a, b) => b.startTime - a.startTime)[0]!
 
   // 整场会议只判一次：可见性与「哪几类资产能列出来」用的是**同一个判定结果**。
@@ -229,7 +231,7 @@ export async function listAssets(req: Request, ctx: RouteCtx): Promise<Response>
     throw err
   }
 
-  await Promise.all(meetings.map((m) => ctx.deps.meetingsCache.upsert(m, now)))
+  // 缓存写入由 recordsApi 统一负责（见上面 listMeetings 处的说明）
   const meeting = [...meetings].sort((a, b) => b.startTime - a.startTime)[0]!
 
   const assets = await ctx.deps.catalog.listAssets(meeting)

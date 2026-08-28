@@ -59,7 +59,16 @@ export function createInProcSource(deps: InProcSourceDeps): AssetSource {
   /**
    * 按 meetingId 反查网关 Meeting。catalog.listAssets 需要完整的 Meeting（含
    * meetingRecordId），而引擎只握着 meetingId——与 HTTP 网关的做法一致
-   * （handlers/meetings.ts 也是重新 listMeetings 一次），不引入任何跨调用缓存。
+   * （handlers/meetings.ts 也是重新 listMeetings 一次）。
+   *
+   * ⚠️ **这一行是 2026-08-27 那个 P0 的现场**。范围查询改走 `/v1/corp/records`
+   * （全公司）之后，这次反查还走着 `/v1/records`（只看得见 operator 自己主持的），
+   * 于是只要发现的会议是别人主持的，这里就抛 MeetingNotFoundInRangeError，
+   * **整轮 worker 中止**。现在 `recordsApi` 的精确查询解析顺序是
+   * 「meeting_cache → corp 全窗口枚举 → 报错」（见 tencent/records.ts），
+   * 而本轮 discovery 的 `listMeetings(range)` 已经把整窗口的会议写进了缓存——
+   * 所以这次反查是**零 API 调用**的命中，不是又一次有配额的枚举。
+   * 回归用例：tests/worker/exact-lookup.test.ts。
    *
    * 同一个 meetingId 在时间窗内可能命中多条记录（周期性会议的多次实例复用同一
    * meeting_id）；这里全部返回，由 listAssets 逐条聚合资产，不像 HTTP 网关的

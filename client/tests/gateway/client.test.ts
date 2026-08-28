@@ -47,16 +47,17 @@ test('meeting_not_found_in_range → 专用错误类', async () => {
 })
 
 /**
- * 网关在 404 体里给的 `message` 才是**判定理由**：按会议号/ID 的点名查询走的是
- * 用户维度的 `/v1/records`，只看得到 operator 自己主持的会议（见网关侧
- * tencent/records.ts 的 EXACT_LOOKUP_SCOPE_NOTE）。客户端只读 `body.error`、
- * 把 message 丢掉的话，终端上只剩一句笼统的「meeting not found in range」，
- * 使用者无从知道自己撞的是时间范围还是可见范围。
+ * 网关在 404 体里给的 `message` 才是**判定理由**：按会议号/ID 的点名查询先查
+ * 网关的 `meeting_cache`，未命中再把整个时间窗从 `/v1/corp/records` 枚举一遍本地
+ * 过滤（见网关侧 tencent/records.ts 的 EXACT_LOOKUP_RESOLUTION_NOTE）。客户端只读
+ * `body.error`、把 message 丢掉的话，终端上只剩一句笼统的
+ * 「meeting not found in range」，使用者无从知道该不该加宽 --from/--to。
  */
 test('网关给的 message 要带到错误里，不能只剩一句笼统的「未找到」', async () => {
   const gatewayMessage =
-    'meeting 700999 not found within [1, 2]. Lookup by meeting code/ID uses /v1/records, ' +
-    "which returns ONLY meetings hosted by the gateway's own operator account."
+    'meeting 700999 not found within [1, 2]. Lookup by meeting code/ID resolves in two steps: ' +
+    "first the gateway's meeting_cache, then a full enumeration of /v1/corp/records over the " +
+    'same window with local filtering.'
   const fetchStub = stub([
     { match: (u) => u.includes('/auth/service-token'), res: () => ok({ access_token: 'tok', expires_in: 900 }) },
     {

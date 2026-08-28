@@ -68,17 +68,16 @@
 
 | 接口 | 路径 | STS-Token | 用途 |
 | --- | --- | --- | --- |
-| [获取账户级会议录制列表](https://cloud.tencent.com/document/product/1095/53224) | `GET /v1/corp/records` | 不需要 | **按企业维度**发现会议与录制（范围查询走这条） |
-| [查询会议录制列表](https://cloud.tencent.com/document/product/1095/51189) | `GET /v1/records` | 不需要 | **按用户维度**发现；仅用于按 code/ID 的精确查询 |
+| [获取账户级会议录制列表](https://cloud.tencent.com/document/product/1095/53224) | `GET /v1/corp/records` | 不需要 | **按企业维度**发现会议与录制。**唯一的会议列表来源**：范围查询与精确查询都走它 |
 | [查询会议录制地址](https://cloud.tencent.com/document/product/1095/51174) | `GET /v1/addresses` | 不需要 | 取视频/音频/原始转写地址 |
 | [查询单个录制详情](https://cloud.tencent.com/document/product/1095/51180) | `GET /v1/addresses/{record_file_id}` | **强制要求** | 取全部 AI 纪要 |
 | [STS Token 生成](https://cloud.tencent.com/document/product/1095/127650) | `POST /v1/app/sts-token` | 不需要 | 触发 Token 生成 |
 
-#### 两个列表接口的可见范围（2026-08-27 实测补记）
+#### 为什么会议列表只剩 `/v1/corp/records` 一个（2026-08-27 实测 + P0 复盘）
 
-**这两条不能互换，选错的后果是产品目标不成立。**
+曾经有第二个列表接口 [`GET /v1/records`](https://cloud.tencent.com/document/product/1095/51189)（查询会议录制列表）。它**已被整条删除**。两次实测把它判了死刑：
 
-| | `GET /v1/records` | `GET /v1/corp/records` |
+| | `GET /v1/records`（已删除） | `GET /v1/corp/records`（现役） |
 | --- | --- | --- |
 | 可见范围 | **只有 operator 本人主持的会议** | **全企业**的会议 |
 | 权限 | — | 需具备录制管理的查看/编辑权限（账户管理员） |
@@ -92,13 +91,32 @@
 
 `/v1/records` 的官方原话是「当会议 ID 和会议 code 均为空时，表示查询**用户**所有会议的录制列表」，其参数表里**没有任何指定查谁的参数**（只有 `operator_id` / `operator_id_type` / `meeting_id` / `meeting_code` / `start_time` / `end_time` / `page` / `page_size` / `media_set_type` / `query_record_type`）——所以应用侧的「查看企业录制」权限只决定**能不能调**，不决定**返回谁的**。
 
-> **2026-08-27 真实环境实测**：本地网关连真实腾讯 API，跑 worker 拉最近 31 天，得到 7 场会议，`host_userid` 全部是同一个人，且正是 `TM_OPERATOR_ID` 本人。全公司持续归档（§1.2 · US-5.1）拿 `/v1/records` 做数据源是不成立的。
+> **实测一（2026-08-27，范围查询）**：本地网关连真实腾讯 API，跑 worker 拉最近 31 天，得到 7 场会议，`host_userid` 全部是同一个人，且正是 `TM_OPERATOR_ID` 本人。全公司持续归档（§1.2 · US-5.1）拿 `/v1/records` 做数据源是不成立的。改走 `/v1/corp/records` 后，3 天窗口从 **3 场 / 1 个主持人**变成 **229 场 / 54 个主持人**。
 
-实现上的分流（`src/tencent/records.ts`）：
+> **实测二（2026-08-27，精确查询）**：只把范围查询改走 corp、精确查询留在 `/v1/records`，worker **一跑就崩**。链路是：corp 发现一场别人主持的会议 → 引擎决定要拉 → `source-inproc` 的 `meetingsById` 用 `{ kind: 'id' }` 回头精确查一次（`catalog.listAssets` 要完整的 `Meeting`，含 `meetingRecordId`，而引擎只握着 `meetingId`）→ `/v1/records` 看不见别人的会议 → `MeetingNotFoundInRangeError` → **整轮 worker 中止**。不是跳过一场，是整轮崩，而且只要拉到任何一场别人主持的会议就必然发生。
+
+`/v1/records` 能看见的会议是 `/v1/corp/records` 的**真子集**，所以删掉它一场会议都不会少看见。
+
+#### 精确查询怎么在没有 `meeting_id` / `meeting_code` 参数的情况下工作
+
+`/v1/corp/records` 没有精确过滤参数，且有 10 次/min 的硬配额。所以「点名查一场会议」由网关自己解析，三级顺序（`src/tencent/records.ts` 的 `EXACT_LOOKUP_RESOLUTION_NOTE`）：
+
+1. **先读 `meeting_cache`**（`migrations/001`，`src/store/meetings.ts`）。命中即返回，**零 API 调用**。
+2. **未命中 → `/v1/corp/records` 全窗口枚举 + 本地按 `meetingId` / `meetingCode` 过滤**，并把**整窗口**的会议写回 `meeting_cache`（不只是命中的那几场）——下一个人点名查同一窗口里的另一场时就不必再花一遍同样的配额。
+3. **仍未命中 → 报错**，理由说清是「**这个时间窗里没有这场会议**」，不再是「你看不见别人主持的会议」。
+
+**`meeting_cache` 在这里的角色是配额的成败所在，不是优化。** worker 一轮的 discovery（`listMeetings(range)`）已经把整窗口的会议全拉到手并整批写进缓存，因此后续每一次 `listAssets` 的反查全部命中——**一轮里 `/v1/corp/records` 只被调用分页所需的那几次，不因会议数量增加**（回归用例：`tests/worker/exact-lookup.test.ts`）。缺了这一级，几十场会议就是几十次全窗口枚举，10 次/min 的配额一轮打死。
+
+控制台按会议号查一场缓存里没有的会议会退化成一次全窗口枚举——这是**明确接受的代价**，换来的是按会议号也看得到别人主持的会议。代价算清楚是：每页 20 条、零突发 10 次/min，每 20 场会议多等 6 秒；一个 31 天的默认窗口按实测密度（3 天 229 场）是两千场量级，折算**十几分钟**，比任何 HTTP 超时都长。
+
+**所以这条路径的正常状态是「走不到」**：worker 每一轮都把整窗口的全公司会议写进 `meeting_cache`，点名查询该当场命中。真的走到了退化路径，说明缓存没被喂上（worker 没在跑，或查的时间窗在 worker 的窗口之外）——那是要去查的事，不是要忍的慢。查询时带上尽量窄的 `from`/`to` 也能把窗口缩下来。
+
+其它实现要点：
 
 - **范围查询**（`kind: 'range'`，worker 主路径、产品核心）→ `/v1/corp/records`，并**显式传 `query_record_type=0`**（不传会被按默认值 1 处理，静默漏掉上传录制与客户端录制）。
-- **精确查询**（`kind: 'code'` / `kind: 'id'`，`mde get --code` 依赖）→ 保留 `/v1/records`，因为它是**唯一**支持 `meeting_id` / `meeting_code` 的列表接口。代价是**只看得到 operator 自己主持的会议**；不改成「拉全范围再本地过滤」是因为那会把一次点名查询变成几十次 API 调用，直接撞死 10 次/min 的配额。这条限制会**原样进未命中时的错误提示**（`EXACT_LOOKUP_SCOPE_NOTE`），不允许只回一句笼统的「未找到」。
-- 两个接口的响应**不共用一个 TypeScript 类型**：主持人字段名不同，硬套会让它静默变成 `undefined`（M3.5 的 `asset_type` 词汇表栽的就是这一类，见 `ae5d7c9`）。
+- **`meeting_cache` 的写入只有一处**：`src/tencent/records.ts` 每次从腾讯拿到会议就整批 `upsertMany`。HTTP 处理器不再各写各的——写入点散开必然漂移，而 download-url 端点与精确查询两个读者都押在「列过的会议一定在表里」。
+- 会议号在本地比对前**去掉分隔符**（`881-234-56` → `88123456`）：过去这一步是平台做的（`meeting_code` 是查询参数），改成本地过滤后必须自己做。
+- 响应类型**不与别的接口共用**：主持人字段名不同，硬套会让它静默变成 `undefined`（M3.5 的 `asset_type` 词汇表栽的就是这一类，见 `ae5d7c9`）。将来若再接入第二个列表接口，仍然各写各的 wire 类型。
 
 ### 3.2 资产类型（八类）
 
@@ -122,8 +140,8 @@
 | 约束 | 事实 | 影响 |
 | --- | --- | --- |
 | 下载链接时效 | `/v1/addresses` 默认 **6 小时**；`/v1/addresses/{id}` 仅 **5 分钟** | 换链续传是主干流程，非边界优化 |
-| 查询时间窗口 | `/v1/records` 与 `/v1/corp/records` 区间均**不得超过 31 天** | 必须切分窗口循环查询 |
-| 分页大小 | 两个列表接口均默认 10、**最大 20**；`/v1/addresses` 默认/最大 50 | API 调用量大，限流器必需 |
+| 查询时间窗口 | `/v1/corp/records` 区间**不得超过 31 天** | 必须切分窗口循环查询 |
+| 分页大小 | `/v1/corp/records` 默认 10、**最大 20**；`/v1/addresses` 默认/最大 50 | API 调用量大，限流器必需 |
 | 单接口配额 | `/v1/corp/records` **10 次/min** | 全局令牌桶（`TM_QPS` 默认 5 = 300 次/min）挡不住，6 秒即可超掉。该接口另设零突发的分钟级闸门（`tencent/ratelimit.ts` 的 `createEndpointQuota`） |
 | 转码状态 | `RecordMeeting.state`：1 录制中 / 2 转码中 / **3 转码完成**。仅 state=3 返回录制文件列表 | 用状态驱动等待，替代盲目探测 |
 | 下载许可 | `RecordFile.allow_download=false` 时，全部 `ai_*` 字段返回空 | 可即时判定，无需超时等待 |
@@ -259,7 +277,7 @@ AK/SK **不能下发到客户端**。文档明确 AK/SK 应用「可访问您账
 ┌────────────────┐        ┌──────────────────────────┐       ┌──────────────┐
 │  CLI / 桌面端   │        │   导出网关（阿里云部署）    │       │  腾讯会议 API  │
 │                │        │                          │       │              │
-│  · 无 SecretKey │ ─────► │  · 持有 AK/SK，负责签名    │ ────► │  /v1/records │
+│  · 无 SecretKey │ ─────► │  · 持有 AK/SK，负责签名    │ ────► │/v1/corp/records│
 │  · 任务队列     │  内部   │  · STS-Token 自动续期     │       │  /v1/addresses│
 │  · 断点续传     │  凭证   │  · 策略引擎（强制执行）    │       │              │
 │  · 落盘/NAS/OSS │        │  · 限流收敛 + 审计日志     │       └──────────────┘

@@ -78,6 +78,7 @@ import { createProgramsStore } from '../store/programs'
 import { createContentsStore } from '../store/contents'
 import { createConsoleMeetingsStore } from '../store/console-meetings'
 import { createStsStore } from '../store/sts'
+import { createMeetingCacheStore } from '../store/meetings'
 import { createStsManager } from '../sts/manager'
 import { createTokenCipher } from '../sts/cipher'
 import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
@@ -658,7 +659,11 @@ async function main(): Promise<number> {
       // 毫秒时钟：项目通用的 now() 是秒级，喂给令牌桶会让补充速率慢 1000 倍
       nowMs: Date.now,
     })
-    const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId)
+    // 与一次性 worker 完全同一个理由：meeting_cache 是「发现一场会议之后凭
+    // meetingId 反查完整 Meeting」的唯一低成本路径，缺了它每场会议都要枚举一次
+    // 整窗口，撞死 `/v1/corp/records` 的 10次/min 配额（见 tencent/records.ts）。
+    const meetingsCache = createMeetingCacheStore(pool)
+    const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
     const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
     const tokenCipher = createTokenCipher(config.stsEncKey)
     // STS-Token 的**续期是网关的活**（平台异步回调，落点是网关的 webhook 路由）。

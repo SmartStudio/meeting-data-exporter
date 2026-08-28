@@ -3,13 +3,12 @@ import type { RawAddressFile } from '../../src/tencent/addresses'
 import type { RawDetail } from '../../src/catalog/assets'
 
 /**
- * fixture 的规范形状，字段名与 `/v1/records`（用户维度）的响应一致——
- * src/tencent/records.ts 内部的 `RawUserRecordMeeting` 未导出（属实现细节），
- * 故这里按平台响应形状重新声明一份。
+ * fixture 的规范形状。主持人字段沿用 `host_user_id` 只是 fixture 自己的命名，
+ * **不是任何一个接口的 wire 形状**：网关唯一会调的会议列表接口
+ * `/v1/corp/records` 把主持人放在 `userid`，转换在下面的 `toCorpShape()` 里做。
  *
- * `/v1/corp/records`（企业维度）的响应由同一份 fixture 转换而来：那个接口的
- * 主持人字段叫 **`userid`** 而不是 `host_user_id`，转换在下面的 `toCorpShape()`
- * 里做——两个接口 wire 形状不同这件事，假服务这一侧也要如实反映。
+ * 两者故意不同名，这样「实现照搬了 host_user_id」这个 bug 在假服务这一侧就蒙混
+ * 不过去——主持人会静默变成 undefined，而那正是 M3.5 栽过的那一类故障。
  */
 export interface FakeRecordMeeting {
   meeting_record_id: string
@@ -82,8 +81,8 @@ function toCorpShape(r: FakeRecordMeeting): Record<string, unknown> {
 }
 
 /**
- * 假腾讯会议服务：只实现网关实际会用到的五个端点——`/v1/records`、
- * `/v1/corp/records`、`/v1/addresses`、`/v1/addresses/:id`、`/v1/app/sts-token`——返回固定 fixture，
+ * 假腾讯会议服务：只实现网关实际会用到的四个端点——`/v1/corp/records`、
+ * `/v1/addresses`、`/v1/addresses/:id`、`/v1/app/sts-token`——返回固定 fixture，
  * 但对每一个到达的请求都用 src/tencent/signer.ts 的同一套算法重新计算一遍
  * 签名，不匹配就返回 9042（与真实平台在 src/tencent/errors.ts 里的 FATAL
  * 分类一致：配置/签名问题重试无意义，应立即失败）。
@@ -134,19 +133,23 @@ export function startFakeTencentServer(
         return Response.json(errorEnvelope(SIGNATURE_ERROR_CODE, 'signature mismatch'), { status: 401 })
       }
 
+      // `/v1/records`（用户维度）是**陷阱**，不是端点。
+      //
+      // 网关已经把它整条删掉了（见 src/tencent/records.ts 的文件头）：它只返回
+      // operator 自己主持的会议，2026-08-27 靠它做精确查询当场炸出一个 P0——
+      // 拉到别人主持的会议就抛 MeetingNotFoundInRangeError，整轮 worker 中止。
+      //
+      // 这里返回错误而不是删掉分支：万一哪天有人把这条路加回来，测试要在**这一刻**
+      // 红，而不是因为假服务恰好也不认识这个路径、返回 404、被当成别的毛病。
       if (req.method === 'GET' && url.pathname === '/v1/records') {
-        const meetingId = url.searchParams.get('meeting_id')
-        const meetingCode = url.searchParams.get('meeting_code')
-        const startTimeSec = Number(url.searchParams.get('start_time'))
-        const endTimeSec = Number(url.searchParams.get('end_time'))
-
-        let matched = state.records.filter(
-          (r) => r.media_start_time >= startTimeSec * 1000 && r.media_start_time <= endTimeSec * 1000,
+        return Response.json(
+          errorEnvelope(
+            -1,
+            'fake-tencent: /v1/records is gone — it only ever returns the operator\'s own ' +
+              'meetings. Every meeting lookup, range or exact, must go through /v1/corp/records.',
+          ),
+          { status: 400 },
         )
-        if (meetingId) matched = matched.filter((r) => r.meeting_id === meetingId)
-        if (meetingCode) matched = matched.filter((r) => r.meeting_code === meetingCode)
-
-        return Response.json({ total_page: 1, record_meetings: matched })
       }
 
       if (req.method === 'GET' && url.pathname === '/v1/corp/records') {

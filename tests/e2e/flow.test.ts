@@ -120,6 +120,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   )
   runningServers.push(fakeServer.stop)
 
+  let fakeMs = Date.now()
   const tencentClient = createTencentClient(
     {
       appId: 'app-e2e',
@@ -130,11 +131,20 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
       qps: 50,
       baseUrl: fakeServer.url,
     },
-    // 令牌桶按毫秒计速：这里必须给毫秒时钟，给秒级的 now 会让补充速率慢 1000 倍
-    { fetch, sleep: () => Promise.resolve(), nowMs: Date.now },
+    // 令牌桶与 `/v1/corp/records` 的分钟级配额都按毫秒计时：这里必须给毫秒时钟，
+    // 给秒级的 now 会让补充速率慢 1000 倍。
+    //
+    // 用**假的**毫秒时钟、由 sleep 往前拨，而不是 Date.now + 空 sleep：corp 的配额
+    // 是零突发的 10次/min，一个测试里第二次 corp 调用要隔满 6 秒。真睡就是慢 6 秒，
+    // 而 sleep 直接 resolve 会让 client 里那个 `for(;;) { tryTake; await sleep }`
+    // 空转 6 秒真实时间——微任务连轴转，把同进程里 Bun.serve 的连接直接饿死
+    // （表现是「Unable to connect」，看起来像假服务挂了）。
+    { fetch, sleep: (ms) => { fakeMs += ms; return Promise.resolve() }, nowMs: () => fakeMs },
   )
 
-  const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID)
+  // 顺序跟随 src/index.ts：meeting_cache 是精确查询的第一级，得先有它
+  const meetingsCache = createMeetingCacheStore(dbPool)
+  const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID, meetingsCache)
   const addressesApi = createAddressesApi(tencentClient, OPERATOR_ID)
 
   const stsStore = createStsStore(dbPool)
@@ -179,7 +189,6 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     lookupByEmail: async (email) => (await authStore.lookupIdentityByEmail(email))?.tmUserId ?? null,
   })
   const serviceAuth = createServiceAuth({ store: authStore })
-  const meetingsCache = createMeetingCacheStore(dbPool)
 
   // 管理员会话与账号管理（Task 3，A1）——与上面企微/服务账号认证线完全独立，
   // 装配方式跟随 src/index.ts：真实 AdminStore/AdminAuth，接到同一个测试库
@@ -480,7 +489,7 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
   // 假腾讯服务确实被真实、带正确签名地调用过（不是从未走网络的旁路）
   const hitPaths = new Set(requestLog.filter((r) => r.signatureValid).map((r) => r.path))
   expect(hitPaths.has('/v1/app/sts-token')).toBe(true)
-  expect(hitPaths.has('/v1/records')).toBe(true)
+  expect(hitPaths.has('/v1/corp/records')).toBe(true)
   expect(hitPaths.has('/v1/addresses')).toBe(true)
   expect(hitPaths.has(`/v1/addresses/${fileId}`)).toBe(true)
   expect(requestLog.every((r) => r.signatureValid)).toBe(true) // 全程签名均正确、无一次被假服务拒绝
@@ -957,13 +966,14 @@ test('假腾讯服务对签名不匹配的请求返回 9042，网关判定为致
 
   let caught: unknown = null
   try {
-    await client.get('/v1/records', {
+    await client.get('/v1/corp/records', {
       operator_id: OPERATOR_ID,
       operator_id_type: 1,
       start_time: NOW - 60,
       end_time: NOW,
       page: 1,
       page_size: 20,
+      query_record_type: 0,
     })
   } catch (err) {
     caught = err
@@ -1047,14 +1057,15 @@ test('范围查询经 /v1/corp/records 拿到别人主持的会议——不再�
 })
 
 /**
- * 与上一条互补：精确查询（`mde get --code` 依赖的那条路）仍走 `/v1/records`。
+ * 与上一条互补：精确查询（`mde get --code` 依赖的那条路）**也**走 `/v1/corp/records`。
  *
- * 理由见 tencent/records.ts 的 EXACT_LOOKUP_SCOPE_NOTE：`/v1/corp/records` 没有
- * meeting_id / meeting_code 参数，改成「拉全范围再本地过滤」会把一次点名查询变成
- * 几十次调用，直接撞死 10次/min 的配额。代价是精确查询只看得到 operator 自己的
- * 会议——所以未命中时的提示必须把这条限制说出来，不能只说「未找到」。
+ * 2026-08-27 之前它走 `/v1/records`，那是个只看得到 operator 自己会议的接口，
+ * 于是范围查询改走 corp 之后当场炸出 P0（见 tencent/records.ts 的文件头）。
+ * 现在的解析顺序是「meeting_cache → corp 全窗口枚举 + 本地过滤 → 报错」，
+ * 这条用例逐级钉住：**别人主持的会议按会议号查得到**、缓存热了之后零调用、
+ * 未命中的理由说的是时间窗而不是可见范围。
  */
-test('精确查询仍走 /v1/records，未命中时的 404 说得出「只看得到 operator 自己的会议」', async () => {
+test('精确查询走 corp + meeting_cache：查得到别人主持的会议，缓存热了之后零调用', async () => {
   const clock = stepClock(NOW)
   const { app, fakeState, requestLog } = buildE2eApp(pool, {
     now: clock.now,
@@ -1065,7 +1076,9 @@ test('精确查询仍走 /v1/records，未命中时的 404 说得出「只看得
     meeting_record_id: 'rec-e2e-exact-1',
     meeting_id: 'm-e2e-exact-1',
     meeting_code: '700120',
-    host_user_id: 'ww-e2e-exact-1',
+    // 主持人**不是**登录的这个采集程序对应的人，也不是 OPERATOR_ID：
+    // 旧实现（走 /v1/records）在真实环境里根本看不见这一场
+    host_user_id: 'ww-e2e-someone-else',
     media_start_time: NOW * 1000,
     subject: '按会议号点名查询',
     state: 3,
@@ -1079,9 +1092,24 @@ test('精确查询仍走 /v1/records，未命中时的 404 说得出「只看得
 
   const hitRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700120', { headers }))
   expect(hitRes.status).toBe(200)
-  const hitPaths = requestLog.filter((r) => r.signatureValid).map((r) => r.path)
-  expect(hitPaths).toContain('/v1/records')
-  expect(hitPaths).not.toContain('/v1/corp/records')
+  const hitBody = (await hitRes.json()) as { meetings: Array<{ meeting_id: string; host_user_id: string }> }
+  expect(hitBody.meetings.map((m) => m.meeting_id)).toEqual(['m-e2e-exact-1'])
+  expect(hitBody.meetings[0]!.host_user_id).toBe('ww-e2e-someone-else')
+
+  const afterFirst = requestLog.filter((r) => r.signatureValid).map((r) => r.path)
+  expect(afterFirst).toContain('/v1/corp/records')
+  // `/v1/records` 在假服务那边是个会报错的陷阱，走上去这条断言之前就红了
+  expect(afterFirst).not.toContain('/v1/records')
+  const corpCallsAfterFirst = afterFirst.filter((p) => p === '/v1/corp/records').length
+
+  // 第二次同样的点名查询：上一次的全窗口枚举已经把这一场写进 meeting_cache，
+  // 这一次一个字节都不该再发给腾讯
+  const againRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700120', { headers }))
+  expect(againRes.status).toBe(200)
+  const corpCallsAfterSecond = requestLog
+    .filter((r) => r.signatureValid)
+    .filter((r) => r.path === '/v1/corp/records').length
+  expect(corpCallsAfterSecond).toBe(corpCallsAfterFirst)
 
   // 未命中：错误提示要能让人查下去，而不是只丢一句「没找到」
   const missRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700999', { headers }))
@@ -1089,7 +1117,8 @@ test('精确查询仍走 /v1/records，未命中时的 404 说得出「只看得
   const missBody = (await missRes.json()) as { error: string; message: string }
   expect(missBody.error).toBe('meeting_not_found_in_range')
   expect(missBody.message).toContain('700999')
-  expect(missBody.message).toContain('/v1/records')
-  expect(missBody.message).toMatch(/operator/i)
+  expect(missBody.message).toContain('meeting_cache')
   expect(missBody.message).toContain('/v1/corp/records')
+  // 「只看得到 operator 自己的会议」这条限制已经不存在了，提示里不许再说
+  expect(missBody.message).not.toMatch(/operator/i)
 })
