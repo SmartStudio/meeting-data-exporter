@@ -71,12 +71,6 @@ export function MinutesTab({ meetingId, assets, archivedAt }: MinutesTabProps) {
         />
       </div>
 
-      <p className={styles.hint}>
-        四个模板各对应一个真实的资产类型，换一个就是换一条真实的请求——腾讯确实按
-        不同模板生成多份纪要。本版本只解析 txt，docx / pdf 会如实报「未解析」，
-        那与「这场会议没有这一类」是两件事。
-      </p>
-
       {res.state === 'loading' && (
         <div className={styles.skel} role="status" aria-label="正在读取这一类纪要">
           <Skeleton width="40%" />
@@ -110,11 +104,25 @@ function SelectedBody({
   selected: SelectedContent
   archivedAt: number | null
 }) {
+  // 一段正文都没有时，后端那句话是**空态**，不是正文。上一版把它排成和正文
+  // 同样的一行字，于是一个「这场会议没有这一类纪要」的面板看起来像一篇很短的
+  // 纪要。文案一个字都不改（它是「说得出为什么的空态」，见 text.ts 的
+  // pickDefaultTemplate），改的是它长什么样。
+  const empty = selected.segments.length === 0
+
   return (
     <>
-      <p className={styles.stateText} data-state={selected.state}>
-        {selected.text}
-      </p>
+      {empty ? (
+        <div className={styles.emptyDoc}>
+          <p className={styles.emptyDocText} data-state={selected.state}>
+            {selected.text}
+          </p>
+        </div>
+      ) : (
+        <p className={styles.stateText} data-state={selected.state}>
+          {selected.text}
+        </p>
+      )}
 
       {selected.segments.map((seg) => (
         <article key={`${seg.remoteId}/${seg.fileType}/${seg.ordinal}`} className={styles.seg}>

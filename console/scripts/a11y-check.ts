@@ -609,12 +609,18 @@ const SCENES: Scene[] = [
   },
   {
     id: 'preview',
-    why: '内容预览 · 纪要 tab（资产索引里六种可得性各有几行）',
+    why: '内容预览 · 纪要 tab（资产按类合并成组，展开一组让明细也进扫描）',
     route: '/preview/m1',
+    // 资产明细（后端理由、逐格式的体积与 NAS 路径）折在 `<details>` 里。不展开
+    // 就扫，对比度这一项只量得到收起来的那几行 summary——一次**扫不到东西却报
+    // 「通过」**的检查，和上一轮条状元素扫描从 20 掉到 0 是同一个坑。
+    setup: expandAssetGroup,
     expect: [
       '[role="tablist"][aria-label="内容视图"]',
       'button[role="tab"][data-tab="minutes"][aria-selected="true"]',
-      '[class*="Preview__assetState"]',
+      '[class*="AssetPanel__state"]',
+      // 展开真的生效了才算数：明细里的路径行只在 [open] 之后可见
+      '[class*="AssetPanel__group"][open] [class*="AssetPanel__item"]',
     ],
   },
   {
@@ -726,6 +732,15 @@ async function openInventorySheet(page: Page): Promise<void> {
   await page.getByRole('button', { name: '查看清单' }).first().click()
   await page.waitForTimeout(450)
 }
+/**
+ * 把资产面板的第一组展开。折在 `<details>` 里的明细（后端逐条写的理由、每个格式
+ * 的体积与 NAS 路径）不展开就不在渲染树里可见，对比度与横向溢出两项都量不到它。
+ */
+async function expandAssetGroup(page: Page): Promise<void> {
+  await page.click('[class*="AssetPanel__summary"]')
+  await page.waitForTimeout(200)
+}
+
 async function previewTab(page: Page, id: string): Promise<void> {
   await page.click(`#pv-tab-${id}`)
   // 转写那一 tab 会自己再取一次正文

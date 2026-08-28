@@ -1,0 +1,404 @@
+/* 右下角：「这场会议的资产与去向」（spec §4.4）。
+ *
+ * 规则搬自 `Preview.module.css` 的 `.side` 一段，按新结构重写：
+ *   1. 事实清单（.kv）在最上面 —— 它是人打开这一页最先要的答案；
+ *   2. 资产按类合并成一行一组，明细收进 <details>；
+ *   3. 长 NAS 路径一律 `overflow-wrap: anywhere`，不撑宽面板。
+ *
+ * 三个宽度（1440 / 1050 / 375）都不许横向溢出：这块面板里全是长路径，
+ * 每一条会放路径的链路上都得有 `min-width: 0`，否则 grid/flex 的
+ * `min-width: auto` 会让整栏被一条路径顶开。
+ */
+
+.side {
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.sideHead {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ── 事实清单：紧凑的「标签 / 值」两列 ───────────────────────────── */
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--s-4);
+  row-gap: var(--s-3);
+  align-items: baseline;
+  margin: 0;
+  padding: var(--s-4);
+  border-bottom: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-xs);
+}
+
+.kv dt {
+  grid-column: 1;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.kv dd {
+  grid-column: 2;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 判定结论。**不许把这一条简化掉**：下面的 .why 说的是「是哪条规则判的」，
+   那是这个项目的全局硬约束（判定必须可追溯到规则）。 */
+.verdict {
+  font-weight: 600;
+  color: var(--brand-text);
+}
+
+.verdict[data-allow='deny'] {
+  color: var(--warn);
+}
+
+/* 补充说明比上面那句结论弱一档：判定理由、后端写的保留期文案都走这一档。 */
+.why,
+.soft {
+  display: block;
+  margin: var(--s-0) 0 0;
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.errInline {
+  color: var(--fail);
+}
+
+.retry {
+  font: inherit;
+  font-size: var(--t-2xs);
+  margin-left: var(--s-2);
+  padding: var(--s-1) var(--s-3);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.retry:hover {
+  border-color: var(--brand-line);
+  color: var(--brand-text);
+}
+
+/* ── 资产表 ──────────────────────────────────────────────────────── */
+
+.notice {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: var(--s-px) solid var(--line-soft);
+  background: var(--surface-2);
+  font-size: var(--t-xs);
+  line-height: 1.75;
+  color: var(--ink-2);
+}
+
+.rows {
+  display: grid;
+}
+
+/* 不画表头行：每个 <details> 是一个**独立的 grid**，表头那一行的
+   `max-content` 列由「格式 / 状态」四个字撑开，撑不到下面各行的实际列宽，
+   于是列名会停在一个对不上任何一列的位置——一条假的对齐比没有更糟。
+   summary 本身是自解释的（`docx pdf txt` + 「已归档，正文未入库」）。 */
+.summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content) minmax(0, max-content) var(--s-5);
+  grid-template-areas: 'name types state mark';
+  gap: var(--s-1) var(--s-3);
+  align-items: center;
+  padding: var(--s-2) var(--s-4);
+}
+
+/* 组内状态不一致时状态**另起一行**。挤在同一行的右半边，三个态会各自换行,
+   而格式列是垂直居中的——渲染出来是「txt docx pdf 1 未解析（格式不支持）」
+   连成一串，读的人分不出哪几个字是格式、哪几个字是状态。 */
+.summary[data-mixed='true'] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content) var(--s-5);
+  grid-template-areas:
+    'name  types mark'
+    'state state mark';
+}
+
+.summary[data-mixed='true'] .states {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s-0) var(--s-2);
+}
+
+/* 相邻两态之间画一个间隔点，靠 gap 分不开（两个「未解析（…）」都是琥珀色）。
+   点挂在**前一个**的 ::after 上而不是后一个的 ::before：窄屏上这一行会换行,
+   挂 ::before 时那个点会掉到下一行行首，成一个没头没尾的孤儿。 */
+.summary[data-mixed='true'] .state:not(:last-child)::after {
+  content: '·';
+  margin-left: var(--s-2);
+  color: var(--ink-3);
+}
+
+.group {
+  border-bottom: var(--s-px) solid var(--line-soft);
+}
+
+.group:last-child {
+  border-bottom: 0;
+}
+
+.summary {
+  min-height: var(--tap-min);
+  cursor: pointer;
+  list-style: none;
+}
+
+/* Safari 仍然按 -webkit- 前缀画那个三角 */
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.summary:hover {
+  background: var(--surface-2);
+}
+
+/* .side 是 overflow: hidden，焦点环画在外面会被裁掉半圈 —— 收进来画。 */
+.summary:focus-visible {
+  outline-offset: calc(-1 * var(--s-0));
+}
+
+.name {
+  grid-area: name;
+  min-width: 0;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.types {
+  grid-area: types;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+/* 格式给一个浅底片：它和状态列同色同字号，紧挨着就糊成一句话。
+   底片是图形不是文字，用 --ground 在深浅两套主题下都是「比面板底陷下去一档」。 */
+.type {
+  padding: 0 var(--s-1);
+  border-radius: var(--r-sm);
+  background: var(--ground);
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+/* 状态列。组内 availability 不一致时**逐态各占一行**——六个取值每一个都对应
+   一件不同的事实，压成一个就是把可修复的缺口伪装成既成事实。 */
+.states {
+  grid-area: state;
+  display: grid;
+  gap: var(--s-0);
+  justify-items: end;
+  min-width: 0;
+  text-align: right;
+}
+
+.state {
+  font-size: var(--t-2xs);
+  line-height: 1.5;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.state[data-ok='true'] {
+  color: var(--ink-3);
+}
+
+.state[data-missing='true'] {
+  color: var(--fail);
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
+
+.mark {
+  grid-area: mark;
+  align-self: center;
+  justify-self: end;
+  font-size: var(--t-xs);
+  line-height: 1;
+  color: var(--ink-3);
+  transition: transform var(--dur-1) var(--ease-out);
+}
+
+.group[open] .mark {
+  transform: rotate(90deg);
+}
+
+/* ── 展开后的明细 ────────────────────────────────────────────────── */
+
+.detail {
+  display: grid;
+  gap: var(--s-3);
+  padding: 0 var(--s-4) var(--s-4);
+  min-width: 0;
+}
+
+.reasons {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 后端逐条写好的理由，一个字都不改。去重后逐条列：一模一样的三条只出现一次。 */
+.reason {
+  margin: 0;
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.reasonWho {
+  font-family: var(--mono);
+  color: var(--ink-2);
+}
+
+.items {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+  min-width: 0;
+  padding-top: var(--s-2);
+  border-top: var(--s-px) solid var(--line-soft);
+}
+
+.itemType {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-2);
+}
+
+.num {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.itemState {
+  font-size: var(--t-2xs);
+  color: var(--warn);
+}
+
+.itemState[data-ok='true'] {
+  color: var(--ink-3);
+}
+
+.itemState[data-missing='true'] {
+  color: var(--fail);
+}
+
+.itemNote {
+  flex-basis: 100%;
+  min-width: 0;
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+/* 路径**只在这里出现一次**（以及事实清单里的 NAS 目录一次）。
+   `anywhere` 而不是横向滚动：滚动条藏起来的那半截路径，等于没给。 */
+.path {
+  display: block;
+  flex-basis: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  line-height: 1.6;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.mediaNote {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-top: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-2xs);
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+/* ── 窄屏 ────────────────────────────────────────────────────────
+   断点与 Preview.module.css 同一个 56em，不另开一个数（em 而不是 px：
+   自定义属性在 @media 条件里不生效，这个数收不成令牌；em 跟着用户字号走）。 */
+@media (max-width: 56em) {
+  .kv {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--s-1);
+  }
+
+  .kv dt {
+    grid-column: 1;
+  }
+
+  .kv dd {
+    grid-column: 1;
+    margin-bottom: var(--s-3);
+  }
+
+  .kv dd:last-of-type {
+    margin-bottom: 0;
+  }
+
+  .summary {
+    grid-template-columns: minmax(0, 1fr) var(--s-5);
+    grid-template-areas:
+      'name mark'
+      'types mark'
+      'state mark';
+    align-items: start;
+    padding-top: var(--s-3);
+    padding-bottom: var(--s-3);
+  }
+
+  .states {
+    justify-items: start;
+    text-align: left;
+  }
+}

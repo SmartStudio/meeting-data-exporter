@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import { render, renderAsRole } from '../helpers/session'
@@ -232,6 +232,31 @@ function renderPreview(id = 'm-1') {
     { initialEntries: [`/preview/${id}`] },
   )
   return render(<RouterProvider router={router} />)
+}
+
+/**
+ * 展开资产面板里的一组。
+ *
+ * 资产按类合并之后，逐格式的体积、后端逐条写的理由、NAS 路径都折在 `<details>`
+ * 里。**jsdom 不实现 `<details>` 的折叠语义**：收起状态下 `getByText` 照样找得到
+ * 这些内容，于是「断言绿着、人看不见」——这正是这一轮在 a11y 条状元素扫描上踩过
+ * 的那个坑（报告"通过"却什么都没检查）。所以这一组测试一律：**先展开、再用
+ * `toBeVisible()` 断言**，两件事分开钉。
+ */
+async function openAssetGroup(
+  user: ReturnType<typeof userEvent.setup>,
+  panel: HTMLElement,
+  name: RegExp,
+): Promise<void> {
+  // 按 summary 里的类名文字找那一组。不用 `getByRole('group')`：`<details>` 的
+  // 隐式角色在 jsdom 这一版里没有映射出来，查得到才是巧合。
+  const summary = within(panel)
+    .getAllByText(name)
+    .map((el) => el.closest('summary'))
+    .find((el): el is HTMLElement => el !== null)
+  if (summary === undefined) throw new Error(`资产面板里没有名为 ${String(name)} 的分组`)
+  await user.click(summary)
+  await waitFor(() => expect(summary.closest('details')).toHaveAttribute('open'))
 }
 
 /** 等首屏三条并行请求落地 */
@@ -570,32 +595,52 @@ describe('转写文字 tab', () => {
 
 describe('右下角是「这场会议的资产与去向」', () => {
   test('六件事都在：格式、体积、采集判定、已授权给谁、本地还剩几天、NAS 路径', async () => {
+    const user = userEvent.setup()
     renderPreview()
     await ready()
     const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
 
-    expect(within(panel).getByText('AI 纪要')).toBeInTheDocument()
+    // 四条事实在最上面，不必展开任何一组——它们是人打开这一页最先要的答案
+    expect(within(panel).getByText(/规则 #100 准许/)).toBeVisible()
+    expect(within(panel).getByText('kb-indexer、知识库索引器')).toBeVisible()
+    expect(within(panel).getByText(/还剩 3 天/)).toBeVisible()
+    expect(within(panel).getByText('/nas/2026/08/m-1')).toBeVisible()
+
+    // 类名与格式在收起的那一行上就读得到
+    expect(within(panel).getByText('AI 纪要')).toBeVisible()
     expect(within(panel).getAllByText('txt').length).toBeGreaterThan(0)
-    expect(within(panel).getByText('4.00 KB')).toBeInTheDocument()
-    expect(within(panel).getByText(/规则 #100 准许/)).toBeInTheDocument()
-    expect(within(panel).getByText('kb-indexer、知识库索引器')).toBeInTheDocument()
-    expect(within(panel).getByText(/还剩 3 天/)).toBeInTheDocument()
-    expect(within(panel).getByText('/nas/2026/08/m-1')).toBeInTheDocument()
+
+    // 体积是明细：收起时**必须看不见**（这一条钉的是合并本身有效），展开后才在
+    expect(within(panel).getByText('4.00 KB')).not.toBeVisible()
+    await openAssetGroup(user, panel, /AI 纪要/)
+    expect(within(panel).getByText('4.00 KB')).toBeVisible()
   })
 
   test('未解析的那一类要显示自己的理由，不显示成「没有」', async () => {
+    const user = userEvent.setup()
     renderPreview()
     await ready()
     const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
-    expect(within(panel).getByText(/未解析（格式不支持）/)).toBeInTheDocument()
-    expect(within(panel).getByText(/文件在 NAS 上/)).toBeInTheDocument()
+    // 「未解析（格式不支持）」是**结论**，收起的那一行上就要看得见：合并成一组
+    // 不许把一个可修复的缺口藏到点开之后
+    expect(within(panel).getAllByText(/未解析（格式不支持）/)[0]).toBeVisible()
+    // 后端逐条写的理由是明细，展开后一字不改地在
+    // 这条理由属于 ai_topic_minutes 那一组（夹具 :142）
+    await openAssetGroup(user, panel, /话题纪要/)
+    expect(within(panel).getByText(/文件在 NAS 上/)).toBeVisible()
   })
 
   test('录像给去向不给内容：说清不代理，并给出 NAS 路径', async () => {
+    const user = userEvent.setup()
     renderPreview()
     await ready()
-    expect(screen.getByText(/不由本接口代理内容/)).toBeInTheDocument()
-    expect(screen.getByText('/nas/2026/08/m-1/video.mp4')).toBeInTheDocument()
+    // 录像这一路整个搬进了资产面板（走时条不再管媒体，它只管位置）
+    const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
+    // 「为什么不代理内容」是整个 media 块的口径，常驻一句，不折进任何一组——
+    // video / audio 会分成两组，塞进每组就是把这次要修的那种重复原样复刻一遍
+    expect(within(panel).getByText(/不由本接口代理内容/)).toBeVisible()
+    await openAssetGroup(user, panel, /录像/)
+    expect(within(panel).getByText('/nas/2026/08/m-1/video.mp4')).toBeVisible()
   })
 
   test('「已授权给谁」取失败时说取失败，不显示成「没有授权」', async () => {
@@ -606,15 +651,24 @@ describe('右下角是「这场会议的资产与去向」', () => {
     expect(await within(panel).findByText(/取失败/)).toBeInTheDocument()
   })
 
-  test('不是 AI 问答框：没有输入框、没有提问按钮，理由写在界面上', async () => {
+  // 这条断言 2026-08-28 翻了个面：从「理由写在界面上」改成「界面上一个字都没有」。
+  //
+  // 裁定本身**没有变**——问答是一条新的出境路径（spec §1.4），真要接就当一个采集
+  // 程序来管，走接入向导拿凭据、受规则和授权约束、每次问答记一条审计。变的是这条
+  // 裁定记在哪：此前右下角挂着一整块「向这场会议提问 —— 刻意不做」，两段散文解释
+  // 一个不存在的输入框为什么不存在。它和会议详情抽屉里的「撤销归档」是同一个错误,
+  // 处置也一样——理由进 spec（§1.4 / §10），界面上连那个禁用的输入框都不画。
+  test('不是 AI 问答框：没有提问入口，也不在界面上解释为什么没有', async () => {
     renderPreview()
     await ready()
-    const ask = screen.getByRole('region', { name: /向这场会议提问/ })
-    expect(within(ask).queryByRole('textbox')).toBeNull()
-    expect(within(ask).queryByRole('searchbox')).toBeNull()
-    expect(within(ask).queryByRole('button')).toBeNull()
-    expect(within(ask).getByText(/出境/)).toBeInTheDocument()
-    expect(within(ask).getByText(/当一个采集程序来管/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /提问/ })).toBeNull()
+    expect(screen.queryByText(/向这场会议提问/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /提问/ })).toBeNull()
+    // 资产面板里没有任何可输入的东西。（转写 tab 那个搜索框搜的是本地已经取回来
+    // 的正文，不是一条出境路径，它可以在——所以这里只钉这一块，不钉整页。）
+    const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
+    expect(within(panel).queryByRole('textbox')).toBeNull()
+    expect(within(panel).queryByRole('searchbox')).toBeNull()
   })
 })
 
@@ -636,7 +690,17 @@ describe('只读留痕（spec §2）', () => {
     routes.unshift({ match: /\/content$/, status: 200, body: { ...INDEX, access: ACCESS_DENY } })
     renderPreview()
     await ready()
-    expect(screen.getByText(/view_restricted_content/)).toBeInTheDocument()
+    // 动作名从一整段散文挪进「已记审计」标记的 `title`（同 lib/host.ts 对 userid
+    // 的处置）：留痕这件事恒在屏幕上，记的是哪个动作是查证时才要的那一层。
+    expect(screen.getByText('已记审计')).toBeVisible()
+    expect(screen.getByTitle('动作 view_restricted_content')).toBeInTheDocument()
+  })
+
+  test('「已记审计」在准许采集的会议上一样挂着——留痕不是受限会议才有的事', async () => {
+    renderPreview()
+    await ready()
+    expect(screen.getByText('已记审计')).toBeVisible()
+    expect(screen.getByTitle('动作 view_content')).toBeInTheDocument()
   })
 })
 
@@ -673,9 +737,15 @@ describe('加载 / 失败 / 空', () => {
 /* ── 样式 ─────────────────────────────────────────────────────────── */
 
 describe('样式令牌', () => {
+  // 文件名原来是写死的两个。改成扫目录：这一页拆过一次组件（资产面板搬进了自己的
+  // 样式表），写死的清单当场就漏掉了新文件——而漏掉的那一刻这条测试仍然是绿的。
+  // 一个**报告"通过"却什么都没检查**的门禁比没有这个门禁更糟（同 a11y 的空扫描保护）。
   test('CSS 里没有裸值——色值与间距一律走令牌', () => {
-    for (const file of ['Preview.module.css', 'Player.module.css']) {
-      const css = readFileSync(resolve(process.cwd(), 'src/pages/Preview', file), 'utf-8')
+    const dir = resolve(process.cwd(), 'src/pages/Preview')
+    const files = readdirSync(dir).filter((f) => f.endsWith('.module.css'))
+    expect(files.length, '一个样式表都没扫到，说明这条门禁在空转').toBeGreaterThan(0)
+    for (const file of files) {
+      const css = readFileSync(resolve(dir, file), 'utf-8')
       const decls = css.replace(/\/\*[\s\S]*?\*\//g, '')
       expect(decls, file).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
       expect(decls, file).not.toMatch(/\brgba?\(/)

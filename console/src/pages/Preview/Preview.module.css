@@ -1,6 +1,11 @@
-/* 内容预览页。左纪要、右录像去向，中间可拖（spec §4.4）。
+/* 内容预览页。左边是正文（走时条 + 三个 tab），右边是「这场会议的资产与去向」,
+ * 中间可拖（spec §4.4）。
  *
- * 窄屏（<=900px）改成上下两段并把拖动手柄收起来：一个 5px 宽的拖动条在触屏上
+ * 录像的去向曾经是右栏上方单独一块深色「舞台」。它和资产面板回答的是同一个问题
+ * （这场会议的东西现在在哪），拆成两块就是同一件事在同一屏说两遍——现在它是
+ * 资产清单里的一行，走时条搬到左栏正文上方（见 Player.module.css）。
+ *
+ * 窄屏（<=56em）改成上下两段并把拖动手柄收起来：一个 5px 宽的拖动条在触屏上
  * 既够不着也没意义，而 375px 下强行维持两列必然横向溢出（a11y 门槛检查 3）。 */
 
 .back {
@@ -47,11 +52,34 @@
   color: var(--ink-3);
 }
 
-.audit {
-  margin: var(--s-3) 0 0;
+/* 抬头右侧那一组标记。判定（Pill）在前，留痕在后——前者是这场会议的属性，
+   后者是**这一次查看**的事实，两条都短到一眼扫完。 */
+.marks {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+/* 「已记审计」：一颗点 + 三个字。它替掉的是一整段解释为什么要留痕的散文——
+   那段话在后端下发的琥珀 banner 里已经说过一遍了。
+   点用 --ink-4（图形专用令牌，描边/分隔/填充），文字用 --ink-3。 */
+.auditMark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
   font-size: var(--t-xs);
-  line-height: 1.7;
   color: var(--ink-3);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.auditMark::before {
+  content: '';
+  width: var(--s-2);
+  height: var(--s-2);
+  border-radius: var(--r-pill);
+  background: var(--ink-4);
 }
 
 /* 琥珀警示条：spec §2 点名要它。琥珀在这套设计里只有一个含义——「这需要你看一眼」 */
@@ -83,7 +111,7 @@
 
 .work {
   display: grid;
-  grid-template-columns: var(--pv-split, 58%) 1px minmax(0, 1fr);
+  grid-template-columns: var(--pv-split, 64%) var(--s-px) minmax(0, 1fr);
   gap: var(--s-5);
   align-items: start;
   margin-top: var(--s-5);
@@ -215,6 +243,11 @@
   color: var(--ink-2);
 }
 
+/* 纪要 tab 上那段散文（「四个模板各对应一个真实的资产类型……」）已经删掉——
+   它说的事情在每一段的状态标签上已经写了。**但这条规则本身留着**：
+   TimelineTab（分段来源、样例行的引子）与 TranscriptTab（点一段跳转、原文
+   为什么整份摆着）还有四处在用它，删了规则那四处就变成 `class="undefined"`。
+   那两个文件不在本次改动的范围里。 */
 .hint {
   margin: 0;
   font-size: var(--t-xs);
@@ -316,6 +349,27 @@
   display: grid;
   gap: var(--s-3);
   margin-top: var(--s-5);
+}
+
+/* 纪要 tab 的空态。后端那句「这场会议在库里没有任何一段发言人纪要的记录」
+   排成正文的样子，看起来就像一篇很短的纪要；框起来、居中、给出留白，它才是
+   一个空态。文案照旧原样显示——这一页的空态一向说得出为什么。 */
+.emptyDoc {
+  display: grid;
+  justify-items: center;
+  padding: var(--s-9) var(--s-5);
+  border: var(--s-px) dashed var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  text-align: center;
+}
+
+.emptyDocText {
+  margin: 0;
+  max-width: 44ch;
+  font-size: var(--t-sm);
+  line-height: 1.75;
+  color: var(--ink-2);
 }
 
 .emptyBox {
@@ -482,130 +536,11 @@
 
 /* ── 右下角：资产与去向 ───────────────────────────────────────────── */
 
-.side {
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  overflow: hidden;
-}
-
-.sideHead {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  margin: 0;
-  padding: var(--s-3) var(--s-4);
-  border-bottom: 1px solid var(--line-soft);
-  font-size: var(--t-sm);
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.assetList {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.asset {
-  padding: var(--s-3) var(--s-4);
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.assetRow {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-3);
-  flex-wrap: wrap;
-}
-
-.assetName {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--t-sm);
-  color: var(--ink);
-}
-
-.assetState {
-  font-size: var(--t-2xs);
-  color: var(--warn);
-}
-
-.assetState[data-ok='true'] {
-  color: var(--ink-3);
-}
-
-.assetState[data-missing='true'] {
-  color: var(--fail);
-}
-
-.assetMeta {
-  margin: var(--s-1) 0 0;
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-}
-
-.kv {
-  margin: 0;
-  padding: var(--s-3) var(--s-4);
-  font-size: var(--t-xs);
-}
-
-.kv dt {
-  color: var(--ink-3);
-  margin-bottom: var(--s-0);
-}
-
-.kv dd {
-  margin: 0 0 var(--s-4);
-  color: var(--ink-2);
-  line-height: 1.7;
-}
-
-.kv dd:last-child {
-  margin-bottom: 0;
-}
-
-.kv b {
-  font-weight: 600;
-  color: var(--brand-text);
-}
-
-.kv b[data-allow='deny'] {
-  color: var(--warn);
-}
-
-/* ── 刻意不做的那一块 ─────────────────────────────────────────────── */
-
-.ask {
-  border: 1px dashed var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  padding: var(--s-4);
-}
-
-.askHead {
-  margin: 0 0 var(--s-2);
-  font-size: var(--t-sm);
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.ask p {
-  margin: 0 0 var(--s-3);
-  font-size: var(--t-xs);
-  line-height: 1.75;
-  color: var(--ink-3);
-}
-
-.ask p:last-child {
-  margin-bottom: 0;
-}
-
-.ask b {
-  color: var(--ink-2);
-  font-weight: 600;
-}
+/* 这一段（`.side` / `.asset*` / `.kv*`）2026-08-28 搬去了 `AssetPanel.module.css`：
+   资产面板改成按类合并 + `<details>` 展开明细之后，它自成一套版式，留在这里只会
+   让两个文件抢同一批类名。
+   同一天删掉的还有「刻意不做」那一块（`.ask*`）——「向这场会议提问」的裁定记进了
+   spec §1.4 / §10，界面上不再解释一个不存在的输入框为什么不存在。 */
 
 /* ── 窄屏 ─────────────────────────────────────────────────────────── */
 

@@ -1,120 +1,29 @@
-/* 播放位置与联动区。
+/* 走时条（transport bar）。
  *
- * 底色走 --video-* 那一组令牌：它们是「内容本身的底」，刻意不跟随主题
- * （tokens.css 的「内容表面」一节）。这一块虽然不播放录像，仍然是录像那一路
- * 内容的位置，用同一组底色才不会在深浅两套主题之间跳来跳去。 */
+ * 上一版这块是「深色舞台 + 控制条 + 三段说明」，底色走 --video-* 那一组。
+ * 那一组令牌是**内容本身的底**（tokens.css 的「内容表面」一节，刻意不跟随主题），
+ * 而这块从来没有装过内容——它装的是文字。舞台拆掉之后剩下的是一条控件带,
+ * 它属于界面，所以底色回到 --surface / --line / --ink*：一条压在正文上方、
+ * 跟着主题走的条，不该是整屏唯一一块不跟随主题的黑。
+ *
+ * 唯一还留在图形令牌上的是轨道底：--ink-4 是图形专用（描边/分隔/填充），
+ * 用在轨道底色上合法——上面**不压任何文字**（时间码在条外面）。 */
 
+/* sticky 的理由在 Player.tsx 文件头：三处联动（时间轴、转写、走时高亮）全都挂在
+   这个位置上，正文一滚它就该还在。top 取 --gbar-h 而不是 0：顶栏是 sticky 的,
+   贴 0 会被它盖掉半条。
+   祖先链上没有 overflow: hidden（base.css 用的是 overflow-x: clip，注释里写着
+   正是为了不破坏 sticky），所以这条真的生效。 */
 .player {
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  overflow: hidden;
-  background: var(--video-ground);
-}
-
-/* 原型的舞台是一层 radial-gradient（假录像画面的打光）。这里是**平铺实色**,
-   理由不是审美：底一旦是背景图，对比度扫描（scripts/a11y-page.js 的
-   scanContrast）就判不出这块底的颜色，压在上面的十来行字会全部落进
-   "解不出底色"那一档——只留下一条 note，没有人再去量。
-   这块面板现在装的是文字（录像的去向），不是画面，平铺实色既够看也量得出。 */
-.stage {
-  padding: var(--s-5);
-  position: relative;
-  min-height: var(--s-11);
-  background: var(--video-ground);
-}
-
-.stageTitle {
-  margin: 0 0 var(--s-2);
-  font-size: var(--t-md);
-  font-weight: 600;
-  color: var(--video-ink);
-  padding-right: 30%;
-}
-
-.stageText {
-  margin: 0 0 var(--s-3);
-  font-size: var(--t-xs);
-  line-height: 1.7;
-  color: var(--video-ink-2);
-  padding-right: 30%;
-}
-
-.mediaList {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--s-2);
-}
-
-.mediaItem {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--s-2);
-  font-size: var(--t-xs);
-  color: var(--video-ink-2);
-}
-
-.mediaName {
-  font-weight: 600;
-  color: var(--video-ink);
-}
-
-.mediaType {
-  font-family: var(--mono);
-  font-size: var(--t-2xs);
-  color: var(--video-ink-3);
-}
-
-.mediaText {
-  color: var(--video-ink-2);
-}
-
-.path {
-  font-family: var(--mono);
-  font-size: var(--t-2xs);
-  color: var(--video-ink-2);
-  word-break: break-all;
-}
-
-/* 发言人小窗：腾讯是把会场那一路画面叠在共享内容右上角的，这里叠的是名字 */
-.cam {
-  position: absolute;
-  top: var(--s-4);
-  right: var(--s-4);
-  width: 27%;
-  max-width: var(--s-11);
-  padding: var(--s-2);
-  border-radius: var(--r-sm);
-  /* 同 .stage：实色而非渐变，好让对比度扫描量得出压在上面这两行字 */
-  background: var(--video-cam-a);
-  display: grid;
-  gap: var(--s-0);
-  text-align: center;
-}
-
-.camLabel {
-  font-size: var(--t-2xs);
-  color: var(--video-ink-3);
-}
-
-.camName {
-  font-size: var(--t-xs);
-  font-weight: 600;
-  color: var(--video-ink);
-}
-
-/* 字幕浮层：跟着转写走，不是一句写死的样例 */
-.cc {
+  position: sticky;
+  top: var(--gbar-h);
   margin: var(--s-4) 0 0;
-  padding: var(--s-1) var(--s-4);
-  border-radius: var(--r-sm);
-  background: var(--video-cc-bg);
-  color: var(--video-cc-ink);
-  font-size: var(--t-sm);
-  line-height: 1.55;
-  text-align: center;
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  /* 圆角要切住底下那条 .err 的实底；sticky 元素**自己**的 overflow 不影响
+     自己的粘性（破坏粘性的是祖先的 overflow），所以这里可以放心切。 */
+  overflow: hidden;
 }
 
 .ctl {
@@ -122,18 +31,18 @@
   align-items: center;
   gap: var(--s-3);
   flex-wrap: wrap;
-  padding: var(--s-3) var(--s-4);
-  background: var(--video-chrome);
+  padding: var(--s-1) var(--s-4) var(--s-2);
 }
 
+/* 轨道单独占一行（order: -1 把它排到按钮之前），横贯整条 */
 .track {
   flex-basis: 100%;
   order: -1;
   position: relative;
   height: var(--s-2);
-  margin: var(--s-0) 0 var(--s-1);
+  margin: var(--s-2) 0 var(--s-1);
   border-radius: var(--r-pill);
-  background: var(--video-line);
+  background: var(--ink-4);
   cursor: pointer;
 }
 
@@ -150,47 +59,73 @@
   width: var(--s-4);
   height: var(--s-4);
   border-radius: var(--r-pill);
-  background: var(--video-knob);
+  background: var(--brand);
+  /* 一圈底色描边：游标停在 fill 的末端，同色压同色就看不见头在哪 */
+  border: var(--s-px) solid var(--surface);
   transform: translate(-50%, -50%);
 }
 
-/* 竖线是转写分段的起点。原型这里叫「章节标记」——本系统没有章节，改了名字 */
+/* 竖线是转写分段的起点。原型这里叫「章节标记」——本系统没有章节，改了名字。
+   用 --surface 而不是某个灰：这条线要同时压在轨道底（--ink-4）和已走过的
+   填充（--brand）上，两套主题下都得看得清，只有底色本身两边都够反差。 */
 .mark {
   position: absolute;
   top: 0;
   width: var(--s-0);
   height: 100%;
-  border-radius: var(--r-pill);
-  background: var(--video-mark);
+  background: var(--surface);
   transform: translateX(-50%);
   pointer-events: none;
 }
 
+/* --tap-min 是无障碍标准给的 44px 触控下限（design-system.md §5）。
+   图标只有 16px，可点面积必须自己撑出来。 */
 .btn {
   display: grid;
   place-items: center;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
   padding: var(--s-1);
-  border: 0;
+  border: var(--s-px) solid transparent;
   border-radius: var(--r-sm);
   background: none;
-  color: var(--video-ink-2);
+  color: var(--ink-2);
   line-height: 0;
   cursor: pointer;
 }
 
 .btn:hover {
-  color: var(--video-ink);
-  background: var(--video-hover);
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--surface-2);
 }
 
 .btn[aria-pressed='true'] {
-  color: var(--brand);
+  color: var(--brand-text);
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
 }
 
+/* 走时是这条上唯一的主操作，给它实底（同 ui/Button 的 primary 语言） */
+.play {
+  border-radius: var(--r-pill);
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--on-brand);
+}
+
+.play:hover {
+  border-color: var(--brand-press);
+  background: var(--brand-press);
+  color: var(--on-brand);
+}
+
+/* 时间码必须等宽对齐：走时的时候不 tabular-nums 就是每 250ms 抖一次 */
 .time {
   font-family: var(--mono);
-  font-size: var(--t-2xs);
-  color: var(--video-ink-2);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
   white-space: nowrap;
 }
 
@@ -201,51 +136,86 @@
 .rate {
   font: inherit;
   font-family: var(--mono);
-  font-size: var(--t-2xs);
-  color: var(--video-ink-2);
-  background: var(--video-hover);
-  border: 0;
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: var(--s-px) solid var(--line);
   border-radius: var(--r-sm);
-  padding: var(--s-0) var(--s-2);
+  padding: var(--s-1) var(--s-2);
+  min-height: var(--tap-min);
   cursor: pointer;
 }
 
-.note {
+/* ── 条下面那一行：此刻 · 谁在说 · 说的是什么 ──────────────────── */
+
+.now {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-2);
   margin: 0;
-  padding: var(--s-3) var(--s-4);
-  border-top: 1px solid var(--video-line);
-  font-size: var(--t-2xs);
-  line-height: 1.7;
-  color: var(--video-ink-2);
+  padding: var(--s-2) var(--s-4) var(--s-3);
+  border-top: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-sm);
+  line-height: 1.6;
 }
 
-.note b {
-  color: var(--video-ink);
+.nowTime {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-text);
+}
+
+/* 分隔点也是文字，所以走 --ink-3 而不是 --ink-4（后者禁止用于文字） */
+.sep {
+  color: var(--ink-3);
+}
+
+.who {
   font-weight: 600;
+  color: var(--ink);
 }
 
+/* 「还没走到第一段」不是一个发言人的名字，别让它长得像 */
+.who[data-none='true'] {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+/* 字幕最多两行：这条是 sticky 的，一句长转写把它撑到四行，滚动时正文顶部
+   会跟着一跳一跳。两行足够读出上下文，再长的去转写 tab 看整段。 */
+.nowText {
+  flex: 1 1 14em;
+  min-width: 0;
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* ── 转写分段那条请求的三态：各一行，紧贴在条下面 ───────────────── */
+
+.state {
+  margin: 0;
+  padding: var(--s-2) var(--s-4);
+  border-top: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-xs);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+/* 「取失败」与「这场会议没有转写」是两件事，颜色上也不能混 */
 .err {
   margin: 0;
-  padding: var(--s-3) var(--s-4);
-  border-top: 1px solid var(--video-line);
-  font-size: var(--t-2xs);
-  line-height: 1.7;
+  padding: var(--s-2) var(--s-4);
+  border-top: var(--s-px) solid var(--fail-line);
+  font-size: var(--t-xs);
+  line-height: 1.6;
   color: var(--fail);
   background: var(--fail-soft);
-}
-
-/* 窄屏：发言人小窗压在文字上会把标题挤成一列单字，收成常规块。
-   断点用 em 的理由见 Preview.module.css 末尾那段注释，两处必须是同一个值 */
-@media (max-width: 56em) {
-  .cam {
-    position: static;
-    width: auto;
-    max-width: none;
-    margin-bottom: var(--s-3);
-  }
-
-  .stageTitle,
-  .stageText {
-    padding-right: 0;
-  }
+  word-break: break-word;
 }

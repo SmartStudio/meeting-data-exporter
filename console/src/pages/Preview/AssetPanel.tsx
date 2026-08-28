@@ -1,10 +1,10 @@
-import type { ContentIndex } from '@/api/admin/content'
+import type { ContentAsset, ContentIndex } from '@/api/admin/content'
 import { assetLabel, availabilityLabel } from '@/api/admin/content'
 import type { Resource } from '@/lib/useResource'
 import { daysLeft, fmtBytes, fmtDay } from '@/lib/format'
 import { Pill } from '@/ui/Pill'
 import { WHY_LABEL } from './text'
-import styles from './Preview.module.css'
+import styles from './AssetPanel.module.css'
 
 /**
  * 右下角：**「这场会议的资产与去向」**（spec §4.4 逐字）。
@@ -15,9 +15,27 @@ import styles from './Preview.module.css'
  * 这一块回答的是「这场会议里的东西现在在哪、谁取得走」——腾讯会议那张页面是给
  * 参会者读的，这一页是给管数据的人看的，左边一样，右边不一样。
  *
+ * ## 版面：先给答案，再给明细
+ *
+ * 事实清单（采集判定 / 已授权给 / 本地保留 / NAS 路径）在**最上面**——它是人
+ * 打开这一页最先要的那几行答案，把它压在一张长资产列表下面等于藏起来。
+ *
+ * ## 资产按类合并，理由去重
+ *
+ * 上一版一条资产画一张卡片，同一类的 docx / pdf / txt 各占一张，而后端的 `reason`
+ * 是**按类**写的：三张卡片上一字不差地重复同一段话，路径还在散文里和 `<code>` 里
+ * 各出现一次——同一句话在屏幕上出现六遍，人就不读了。
+ *
+ * 所以这里按 `assetKey ?? assetType` 合并成一行一组，`reason` **去重后逐条列**
+ * （只要有一条不同就分别列出并标明是哪个 `fileType` 的），路径**只在明细里出现
+ * 一次**。reason 本身一个字都不改：那是后端逐条写好的理由。
+ *
+ * ## 状态列不许压成一个
+ *
  * 每一行的 `availability` 都带着自己的理由：六个取值里**只有 `missing` 是
- * 「这场会议确实缺这一类」**，其余五种都是可修复的缺口。把它们显示成「没有」,
- * 就是把一个可修复的缺口伪装成一件既成事实。
+ * 「这场会议确实缺这一类」**，其余五种都是可修复的缺口。所以组内取值不一致时
+ * 必须把各态**分别数出来**（「2 已归档，正文未入库 · 1 未解析（格式不支持）」），
+ * 合并成一个词就是把一个可修复的缺口伪装成一件既成事实。
  */
 
 export interface AssetPanelProps {
@@ -27,9 +45,69 @@ export interface AssetPanelProps {
   onRetryGrants: () => void
 }
 
+/* ── 分组 ─────────────────────────────────────────────────────────── */
+
+interface Group<T> {
+  /** `assetKey ?? assetType`。认不出的新引擎按 `assetType` 自成一组，不折进「其他」 */
+  key: string
+  label: string
+  items: T[]
+}
+
+/**
+ * 按 `assetKey ?? assetType` 合并。**保持后端下发的顺序**——索引的顺序是后端
+ * 排好的，这里重排一次就是在前端另立一套优先级。
+ */
+function groupByKind<T extends { assetKey: string | null; assetType: string }>(
+  list: readonly T[],
+): Array<Group<T>> {
+  const out: Array<Group<T>> = []
+  for (const a of list) {
+    const key = a.assetKey ?? a.assetType
+    const hit = out.find((g) => g.key === key)
+    if (hit === undefined) out.push({ key, label: assetLabel(a.assetKey, a.assetType), items: [a] })
+    else hit.items.push(a)
+  }
+  return out
+}
+
+/** 组内各 `availability` 各有几条。首次出现的顺序即显示顺序。 */
+function countStates(items: readonly ContentAsset[]): Array<{ availability: string; n: number }> {
+  const out: Array<{ availability: string; n: number }> = []
+  for (const a of items) {
+    const hit = out.find((s) => s.availability === a.availability)
+    if (hit === undefined) out.push({ availability: a.availability, n: 1 })
+    else hit.n += 1
+  }
+  return out
+}
+
+/**
+ * 组内的 `reason` 去重：一模一样的三条只留一条，同时记下它是哪几个 `fileType` 的。
+ * 文本本身**原样保留**，不截断、不改写。
+ */
+function dedupeReasons(items: readonly ContentAsset[]): Array<{ text: string; types: string[] }> {
+  const out: Array<{ text: string; types: string[] }> = []
+  for (const a of items) {
+    if (a.reason === null) continue
+    const hit = out.find((r) => r.text === a.reason)
+    if (hit === undefined) out.push({ text: a.reason, types: [a.fileType] })
+    else hit.types.push(a.fileType)
+  }
+  return out
+}
+
+function assetId(a: { assetType: string; remoteId: string; fileType: string }): string {
+  return `${a.assetType}/${a.remoteId}/${a.fileType}`
+}
+
+/* ── 组件 ─────────────────────────────────────────────────────────── */
+
 export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
   const { assets, access, local, media } = index
   const total = assets.length + media.assets.length
+  const groups = groupByKind(assets)
+  const mediaGroups = groupByKind(media.assets)
 
   return (
     <section className={styles.side} aria-label="这场会议的资产与去向">
@@ -39,61 +117,23 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
         <Pill>{total} 项</Pill>
       </h3>
 
-      {assets.length === 0 && (
-        <p className={styles.notice}>
-          库里没有这场会议的任何一段文本资产记录——既没有正文行，也没有归档记录或
-          本地文件。这不等于平台没生成，也可能是拉取还没轮到它。
-        </p>
-      )}
-
-      <ul className={styles.assetList}>
-        {assets.map((a) => (
-          <li key={`${a.assetType}/${a.remoteId}/${a.fileType}`} className={styles.asset}>
-            <div className={styles.assetRow}>
-              <span className={styles.assetName}>{assetLabel(a.assetKey, a.assetType)}</span>
-              <span className={styles.mono}>{a.fileType}</span>
-              <span className={styles.mono}>{fmtBytes(a.bytes)}</span>
-              <span
-                className={styles.assetState}
-                data-ok={a.availability === 'parsed' ? 'true' : undefined}
-                data-missing={a.availability === 'missing' ? 'true' : undefined}
-              >
-                {availabilityLabel(a.availability)}
-              </span>
-            </div>
-            {a.chars !== null && <p className={styles.assetMeta}>正文 {a.chars} 字</p>}
-            {a.reason !== null && <p className={styles.reason}>{a.reason}</p>}
-            {a.nasPath !== null && <code className={styles.path}>{a.nasPath}</code>}
-          </li>
-        ))}
-
-        {media.assets.map((a) => (
-          <li key={`media/${a.assetType}/${a.remoteId}/${a.fileType}`} className={styles.asset}>
-            <div className={styles.assetRow}>
-              <span className={styles.assetName}>{assetLabel(a.assetKey, a.assetType)}</span>
-              <span className={styles.mono}>{a.fileType}</span>
-              <span className={styles.mono}>{fmtBytes(null)}</span>
-              <span className={styles.assetState}>不入库，只给去向</span>
-            </div>
-            <p className={styles.assetMeta}>
-              录像与音频不进正文库，本接口也不下发它们的体积；去向（NAS 路径）在上面的
-              播放位置区里。
-            </p>
-          </li>
-        ))}
-      </ul>
-
+      {/* 事实清单在最上面：这是人打开这一页最先要的答案 */}
       <dl className={styles.kv}>
         <dt>采集判定</dt>
         <dd>
-          <b data-allow={access.allow}>{access.allow === 'allow' ? '准许采集' : '禁止采集'}</b>
-          {' · '}
-          {WHY_LABEL[access.why.by] ?? access.why.by} · {access.why.text}
+          <b className={styles.verdict} data-allow={access.allow}>
+            {access.allow === 'allow' ? '准许采集' : '禁止采集'}
+          </b>
+          {/* 判定必须可追溯到是哪条规则判的——这一条一个字都不许简化 */}
+          <span className={styles.why}>
+            {WHY_LABEL[access.why.by] ?? access.why.by} · {access.why.text}
+          </span>
         </dd>
 
         <dt>已授权给</dt>
         <dd>
           {grants.state === 'loading' && '读取中……'}
+          {/* 取失败**不能**显示成「还没有授权给任何程序」：后者是一个我们没有依据的结论 */}
           {grants.state === 'error' && (
             <>
               <span className={styles.errInline}>取失败：{grants.error.message}</span>
@@ -108,12 +148,15 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
 
         <dt>本地保留</dt>
         <dd>
+          {/* 天数不切成独立元素：它是一句话里的数，不是一列要对齐的数字
+              （tabular-nums 挂在 .kv dd 上就够）。切开会把这一句拆成三个文本节点。 */}
           {local.expiresAt === null
             ? '还没有归档到 NAS，保留窗口还没开始计时'
             : local.filesGone
               ? `本地文件已在 ${local.purgedAt === null ? '到期时' : fmtDay(local.purgedAt)}清理，只能去 NAS 取`
               : `本地文件还在，还剩 ${daysLeft(local.expiresAt)} 天`}
-          <p className={styles.reason}>{local.text}</p>
+          {/* 后端文案。它是补充说明，视觉上比上面那句结论弱一档 */}
+          <span className={styles.soft}>{local.text}</span>
         </dd>
 
         <dt>NAS 路径</dt>
@@ -125,34 +168,139 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
           )}
         </dd>
       </dl>
-    </section>
-  )
-}
 
-/**
- * 右下角**不是 AI 问答框**（spec §1.4 数据出境闸门 · §10 YAGNI）。
- *
- * 原型在这个位置为「向这场会议提问」留了空，并且**刻意没有实现**，理由写在
- * 界面上：那是一条新的出境路径，真要接就当一个采集程序来管——走接入向导拿凭据、
- * 受规则和授权约束、每次问答记一条审计。
- *
- * 这里连那个禁用的输入框都不画：一个点不动的输入框仍然在暗示"这个功能马上就有"，
- * 而这条路径要不要开是一个尚未做出的决定，不是一个尚未完成的工期（同 G-g
- * 对「新建定时任务」按钮的处置）。
- */
-export function AskNote() {
-  return (
-    <section className={styles.ask} aria-label="向这场会议提问（刻意不做）">
-      <h3 className={styles.askHead}>向这场会议提问 —— 刻意不做</h3>
-      <p>
-        问答要把会议内容送到模型那边，那是一条<b>新的出境路径</b>，不能从这个页面悄悄
-        开出去。真要接，就<b>当一个采集程序来管</b>：走接入向导拿凭据、受规则和授权约束、
-        每次问答记一条审计。
-      </p>
-      <p>
-        在那之前这里不放输入框——一个点不动的输入框只会让人以为它快好了，而这是一个
-        还没做的决定，不是一个还没写完的功能。
-      </p>
+      {assets.length === 0 && (
+        <p className={styles.notice}>
+          库里没有这场会议的任何一段文本资产记录——不等于平台没生成，也可能是拉取还没轮到它。
+        </p>
+      )}
+
+      {/* 不画表头行：每个 <details> 是一个独立的 grid，表头的列宽撑不到下面各行，
+          列名会停在一个对不上任何一列的位置。summary 本身自解释（格式 + 状态）。 */}
+      <div className={styles.rows}>
+        {groups.map((g) => {
+          const states = countStates(g.items)
+          const reasons = dedupeReasons(g.items)
+          const mixed = states.length > 1
+          // 一条理由覆盖不到全组（有的 fileType 根本没给理由）时也要标明是哪个的
+          const labelled = reasons.length > 1 || (reasons[0]?.types.length ?? 0) < g.items.length
+
+          return (
+            <details key={g.key} className={styles.group}>
+              {/* 单态的组一行排完；组内状态不一致时状态另起一行占满宽度——三个态
+                  挤进同一行的右半边会换行成三段，和左边的格式列连成一串读不开。 */}
+              <summary className={styles.summary} data-mixed={mixed ? 'true' : undefined}>
+                <span className={styles.name}>{g.label}</span>
+                <span className={styles.types}>
+                  {g.items.map((a) => (
+                    <span key={assetId(a)} className={styles.type}>
+                      {a.fileType}
+                    </span>
+                  ))}
+                </span>
+                <span className={styles.states}>
+                  {states.map((s) => (
+                    <span
+                      key={s.availability}
+                      className={styles.state}
+                      data-ok={s.availability === 'parsed' ? 'true' : undefined}
+                      data-missing={s.availability === 'missing' ? 'true' : undefined}
+                    >
+                      {mixed && <span className={styles.count}>{s.n} </span>}
+                      {availabilityLabel(s.availability)}
+                    </span>
+                  ))}
+                </span>
+                <span className={styles.mark} aria-hidden="true">
+                  ▸
+                </span>
+              </summary>
+
+              <div className={styles.detail}>
+                {reasons.length > 0 && (
+                  <ul className={styles.reasons}>
+                    {reasons.map((r) => (
+                      <li key={r.text} className={styles.reason}>
+                        {labelled && <span className={styles.reasonWho}>{r.types.join(' / ')}：</span>}
+                        {r.text}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <ul className={styles.items}>
+                  {g.items.map((a) => (
+                    <li key={assetId(a)} className={styles.item}>
+                      <span className={styles.itemType}>{a.fileType}</span>
+                      {/* 组内状态不一致时，逐条说清是哪个格式处在哪一态 */}
+                      {mixed && (
+                        <span
+                          className={styles.itemState}
+                          data-ok={a.availability === 'parsed' ? 'true' : undefined}
+                          data-missing={a.availability === 'missing' ? 'true' : undefined}
+                        >
+                          {availabilityLabel(a.availability)}
+                        </span>
+                      )}
+                      <span className={styles.num}>{fmtBytes(a.bytes)}</span>
+                      {a.chars !== null && <span className={styles.num}>正文 {a.chars} 字</span>}
+                      {a.nasPath !== null && <code className={styles.path}>{a.nasPath}</code>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </details>
+          )
+        })}
+
+        {mediaGroups.map((g) => (
+          <details key={`media/${g.key}`} className={styles.group}>
+            <summary className={styles.summary}>
+              <span className={styles.name}>{g.label}</span>
+              <span className={styles.types}>
+                {g.items.map((a) => (
+                  <span key={assetId(a)} className={styles.type}>
+                    {a.fileType}
+                  </span>
+                ))}
+              </span>
+              <span className={styles.states}>
+                <span className={styles.state} data-ok="true">
+                  不入库，只给去向
+                </span>
+              </span>
+              <span className={styles.mark} aria-hidden="true">
+                ▸
+              </span>
+            </summary>
+
+            <div className={styles.detail}>
+              <ul className={styles.items}>
+                {g.items.map((a) => (
+                  <li key={assetId(a)} className={styles.item}>
+                    <span className={styles.itemType}>{a.fileType}</span>
+                    {a.nasPath === null ? (
+                      <span className={styles.itemNote}>
+                        {a.localGone
+                          ? '本地文件已到期清理，NAS 上也没有这一段的副本'
+                          : '还没归档到 NAS，暂时没有可取的路径'}
+                      </span>
+                    ) : (
+                      <code className={styles.path}>{a.nasPath}</code>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </details>
+        ))}
+      </div>
+
+      {/* `media.text` 说的是「为什么录像不代理内容」——它是**整个 media 块**的口径，
+          不是某一组的。放进每一组的展开区里，就是把这次要修的那种重复原样复刻一遍
+          （video + audio 两组各说一遍同一句话）。所以它在这里出现一次，且不必展开
+          就能看到：「控制台没有可播放的媒体源」是人该在第一眼知道的事。 */}
+      {media.assets.length > 0 && <p className={styles.mediaNote}>{media.text}</p>}
     </section>
   )
 }

@@ -9,7 +9,7 @@ import { hostLabel, hostView } from '@/lib/host'
 import { PageShell } from '@/ui/PageShell'
 import { Pill } from '@/ui/Pill'
 import { Skeleton } from '@/ui/Skeleton'
-import AssetPanel, { AskNote } from './AssetPanel'
+import AssetPanel from './AssetPanel'
 import MinutesTab from './MinutesTab'
 import Player from './Player'
 import TimelineTab from './TimelineTab'
@@ -31,6 +31,21 @@ import styles from './Preview.module.css'
  *    尤其要有这条记录。
  * 3. **右下角不是 AI 问答框**，是「这场会议的资产与去向」——见 `AssetPanel`。
  *
+ * ## 同一件事只说一遍
+ *
+ * 「本次查看已记进操作审计」曾经在同一屏出现三次：`PageShell` 的 `description`、
+ * 抬头下面一整段散文、以及后端下发的琥珀 banner。留痕是硬约束，说三遍不会让它
+ * 更硬——只会让人一条都不读。现在页名由顶栏按路由渲染，抬头右侧只挂一个
+ * 「已记审计」标记（记的是哪个动作走 `title`），后端那条 banner 一个字不改。
+ *
+ * ## 走时条在左栏，不在右栏
+ *
+ * 三处联动（点时间轴跳转、点转写跳转、走时高亮跟随）读的和改的都是左栏那份正文，
+ * 而控制它的那条曾经在右栏、半屏之外。现在它 sticky 在 tab 与正文之间——
+ * 转写工具（Descript / otter.ai）都是这个形态，理由就是这个。
+ * 右栏因此只剩「这场会议的资产与去向」，录像的去向（`media`）并进那张清单，
+ * 分栏默认值从 58% 改成 64%。
+ *
  * ## 首屏三条请求，各自失败各自说
  *
  * 索引（`/content`）、转写分段（`/content/chapters`）、已授权给谁
@@ -50,7 +65,6 @@ export default function PreviewPage() {
   return (
     <PageShell
       title="内容预览"
-      description="这场会议里到底讲了什么，以及它现在在哪、谁取得走。管理员查看会议内容会留痕（spec §2）。"
       actions={
         <Link to="/meetings" className={styles.back}>
           返回会议列表
@@ -111,7 +125,8 @@ function Body({ index, chapters, grants }: BodyProps) {
   const [playing, setPlaying] = useState(false)
   const [rate, setRate] = useState(1)
   const [cc, setCc] = useState(true)
-  const [split, setSplit] = useState(58)
+  /** 左栏占比。右栏删掉舞台与那两段说明之后只剩资产面板，不需要 42% */
+  const [split, setSplit] = useState(64)
   const tabsRef = useRef<HTMLDivElement>(null)
 
   const cues = chapters.state === 'ready' ? chapters.data : null
@@ -179,20 +194,27 @@ function Body({ index, chapters, grants }: BodyProps) {
             主持 <span title={hostView(meeting).title ?? undefined}>{hostLabel(meeting)}</span>
           </p>
         </div>
-        <Pill tone={access.allow === 'allow' ? 'brand' : 'warn'}>
-          {access.allow === 'allow' ? '准许采集' : '规则禁止采集'}
-        </Pill>
+        {/* 抬头右侧是一组**标记**，不是说明文字。
+            「本次查看已记进操作审计」上一版在同一屏说了三遍：PageShell 的
+            description、这里的一段散文、以及后端下发的琥珀 banner。留痕是
+            spec §2 的硬约束，它必须仍然读得到——但它是一条事实，一个标记就够。
+            具体记的是哪个动作（view_content / view_restricted_content）是机器名,
+            走 title，与主持人那串 userid 同一个处置（见 lib/host.ts）。
+            这个标记在准许与禁止两种判定下都在：只在受限时才挂，等于把
+            「没被禁的这次查看没留痕」暗示出去，而那不是真的。 */}
+        <div className={styles.marks}>
+          <Pill tone={access.allow === 'allow' ? 'brand' : 'warn'}>
+            {access.allow === 'allow' ? '准许采集' : '规则禁止采集'}
+          </Pill>
+          <span className={styles.auditMark} title={`动作 ${access.audit.action}`}>
+            已记审计
+          </span>
+        </div>
       </header>
-
-      <p className={styles.audit}>
-        本次查看已记进操作审计，动作 <code className={styles.mono}>{access.audit.action}</code>
-        ——这是「管理员仍然能看」的对价，不是可选项（spec §2）。
-      </p>
 
       {meeting.missing.length > 0 && (
         <p className={styles.warnLine}>
-          这场会议的元数据缺了 {meeting.missing.join('、')}：上面对应位置的空白是「没拉回来」,
-          不是「本来就是空的」。
+          元数据缺了 {meeting.missing.join('、')}——对应位置的空白是「没拉回来」，不是「本来就是空的」。
         </p>
       )}
 
@@ -223,6 +245,26 @@ function Body({ index, chapters, grants }: BodyProps) {
               </button>
             ))}
           </div>
+
+          {/* 走时条在 tab 与正文**之间**，并且是 sticky 的。
+              它不属于右栏：三处联动（点时间轴跳转、点转写跳转、走时高亮跟随）
+              读的和改的都是左栏这份正文，控制它的那条却在半屏之外，眼睛得来回
+              横跳。转写工具（Descript / otter.ai）一律把它压在正文顶上，
+              理由就是这个。 */}
+          <Player
+            meeting={meeting}
+            cues={cues?.cues ?? []}
+            cuesLoading={chapters.state === 'loading'}
+            cuesError={chapters.state === 'error' ? chapters.error : null}
+            position={position}
+            playing={playing}
+            rate={rate}
+            cc={cc}
+            onSeek={seek}
+            onTogglePlay={() => setPlaying((p) => !p)}
+            onRate={setRate}
+            onToggleCc={() => setCc((v) => !v)}
+          />
 
           <div id="pv-panel" role="tabpanel" aria-labelledby={`pv-tab-${tab}`} className={styles.panel}>
             {tab === 'minutes' && (
@@ -268,23 +310,7 @@ function Body({ index, chapters, grants }: BodyProps) {
         />
 
         <div className={styles.mediaCol}>
-          <Player
-            meeting={meeting}
-            media={index.media}
-            cues={cues?.cues ?? []}
-            cuesLoading={chapters.state === 'loading'}
-            cuesError={chapters.state === 'error' ? chapters.error : null}
-            position={position}
-            playing={playing}
-            rate={rate}
-            cc={cc}
-            onSeek={seek}
-            onTogglePlay={() => setPlaying((p) => !p)}
-            onRate={setRate}
-            onToggleCc={() => setCc((v) => !v)}
-          />
           <AssetPanel index={index} grants={grants} onRetryGrants={grants.retry} />
-          <AskNote />
         </div>
       </div>
     </>
