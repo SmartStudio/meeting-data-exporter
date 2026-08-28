@@ -46,21 +46,25 @@ export function ReachBlock({
     // 加载态刻意用另一个 testid：`reach-<id>` 只标"已经有结论"的那几种渲染，
     // 否则测试里 findByTestId 会抓到还在转的那一帧，断言的是空话。
     return (
-      <div className={styles.reach} data-kind="loading" data-testid={`reach-${programId}-loading`}>
-        <p className={styles.reachLead}>正在求交：有授权 ∩ 在保留期内 ∩ 规则允许采集…</p>
+      <div
+        className={styles.reach}
+        data-kind="loading"
+        data-testid={`reach-${programId}-loading`}
+        aria-busy="true"
+        aria-label="正在读取这个程序的清单"
+      >
         <Skeleton width="72%" />
       </div>
     )
   }
 
   if (res.state === 'error') {
+    // 「清单暂不可得」这四个字本身就说了它不是一个结论，底色也是琥珀而不是中性
+    // ——原来后面还跟着一句「这不是『一场都取不走』」，那是用文字复述配色和标签。
     return (
       <div className={styles.reach} data-kind="unavailable" data-testid={`reach-${programId}`}>
         <p className={styles.reachLead}>清单暂不可得</p>
         <p className={styles.reachReason}>{inventoryErrorText(res.error)}</p>
-        <p className={styles.reachNote}>
-          这不是「一场都取不走」——那是一个结论；现在只是没查到，别按结论用。
-        </p>
         <Button size="sm" onClick={res.retry}>
           重新读取清单
         </Button>
@@ -88,15 +92,15 @@ export function ReachBlock({
           <b className={styles.reachNum}>已停用</b>
           <span className={styles.reachStopped}>现在 0 场会议对它开放</span>
         </p>
-        <p className={styles.reachCaveat}>
-          停用立刻生效：它拿凭据换不到新令牌，手上还没过期的那张也一起失效。已有的授权一条都没删。
-        </p>
+        {/* 「停用立刻生效 / 授权一条都没删」原来常驻在这里。它是**做决定那一刻**
+            要知道的事，而那一刻有二次确认面板（`ProgramActions` 的 confirm-disable）
+            逐条写着；停用之后再挂一遍，是把一次性的提醒变成了常设的段落。 */}
         <p className={styles.reachNote} data-testid={`reach-${programId}-ifenabled`}>
           {line.kind === 'none'
             ? '恢复启用后它也一场都取不到——清单本身就是空的。'
             : line.kind === 'reachable-no-assets'
               ? `恢复启用后清单里有 ${line.count} 场，但一类资产都没列出来——这两件事自相矛盾，把这句话报给维护者。`
-              : `恢复启用后它能取走 ${line.count} 场会议的 ${line.assetsText}。这是「如果它还能登录」的结果，不是现在。`}
+              : `恢复启用后能取走 ${line.count} 场会议的 ${line.assetsText}。`}
         </p>
       </div>
     )
@@ -106,11 +110,9 @@ export function ReachBlock({
   const verb = standing === 'expired' ? '换发凭据后可取走' : '现在可取走'
 
   return (
+    /* 过期的程序：卡片右上角挂着「凭据已过期」徽标，下面这句的动词也已经是
+       「换发凭据后可取走」——两处都说了，就不再多写一段说明重复第三遍。 */
     <div className={styles.reach} data-kind={line.kind} data-testid={`reach-${programId}`}>
-      {standing === 'expired' && (
-        <p className={styles.reachCaveat}>凭据已过期，现在换不到令牌——下面这份清单是换发凭据后的样子。</p>
-      )}
-
       {line.kind === 'reachable' && (
         <>
           <p className={styles.reachLine}>

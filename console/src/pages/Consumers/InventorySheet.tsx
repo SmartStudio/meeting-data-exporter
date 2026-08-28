@@ -8,12 +8,14 @@ import styles from './InventorySheet.module.css'
 /**
  * 「查看清单」——把卡片上那一个数字摊开成逐场。
  *
- * 面板顶部逐字复述三个「与」（spec §1.3）不是啰嗦：这三件事**分别由不同的人、
- * 在不同的页面维护**，看清单的人多半只管得着其中一件，不说清就会去改错地方。
+ * 面板顶部曾经逐字复述三个「与」（有授权 且 在保留期内 且 规则允许采集）。
+ * **这段话已经删掉**：下半张表逐场写着「被哪一条判定挡下、去哪儿改」
+ * （`blockers[].reason` 加 `remedyHint`），那是同一件知识落在具体那一行上的样子。
+ * 一段总论加一份逐行清单，读的人只会用逐行那一份。
  *
  * **只有会议 id，没有标题**：`GET /programs/:id/inventory` 的条目里不下发会议
  * 元数据（`meetingId` / `subMeetingId` / `assetTypes` / 判定，没有 `title`）。
- * 与其在这里替它编一个"未知会议"，不如把 id 原样摆出来并说清标题要去哪儿对。
+ * 与其在这里替它编一个"未知会议"，不如把 id 原样摆出来。
  */
 export function InventorySheet({
   open,
@@ -33,8 +35,7 @@ export function InventorySheet({
   return (
     <Sheet open={open} onClose={onClose} title={`${programName} 现在能取走什么`}>
       <p className={styles.note}>
-        能取走 = <b>有授权</b> 且 <b>在保留期内</b> 且 <b>规则允许采集</b>。 已授权 {granted} 场，其中真正能取到{' '}
-        {inv.fetchableCount} 场。
+        已授权 {granted} 场，其中现在能取到 <b>{inv.fetchableCount}</b> 场。
       </p>
 
       {inv.fetchable.length === 0 ? (
@@ -86,10 +87,10 @@ export function InventorySheet({
         </>
       )}
 
-      <p className={styles.foot}>
-        清单端点只给会议 id，不给标题——要看是哪一场，到「会议记录」页按 id 搜。
-        取用记录会写进操作审计，可追溯到具体是哪个程序、哪一天取走了哪几类资产。
-      </p>
+      {/* 清单里只有会议 id。这一句留着是因为界面此刻**给不出**标题，而人看到
+          一串 id 会以为标题丢了；「取用记录会写进操作审计」那半句删了——
+          它是背景知识，删掉没人会因此做错事。 */}
+      <p className={styles.foot}>只有会议 id：要看是哪一场，到「会议记录」页按 id 搜。</p>
     </Sheet>
   )
 }

@@ -72,7 +72,6 @@
 .job[data-alarm='true'] .ord,
 .job[data-alarm='true'] .last,
 .job[data-alarm='true'] .impact,
-.job[data-alarm='true'] .noRuns,
 .job[data-alarm='true'] .nextKey,
 .job[data-alarm='true'] .nextGap,
 .job[data-alarm='true'] .sumItem::before {
@@ -194,12 +193,6 @@
   box-shadow: inset 0 0 0 var(--s-px) var(--ink-4);
 }
 
-.noRuns {
-  margin: 0;
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-}
-
 .next {
   text-align: right;
 }
@@ -253,15 +246,6 @@
   font-size: var(--t-lg);
   font-weight: 600;
   color: var(--ink);
-}
-
-.failuresNote {
-  margin: var(--s-2) 0 0;
-  max-width: 74ch;
-  font-size: var(--t-sm);
-  line-height: 1.7;
-  color: var(--ink-3);
-  overflow-wrap: anywhere;
 }
 
 /* 被 100 条上限截断。这句话不是提示，是"你看到的不是全部"这个事实本身 */

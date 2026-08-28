@@ -23,6 +23,10 @@ import styles from './Rules.module.css'
  * 同一个口径，所以这里的场次数与那个数字对得上。停用的规则也算得出来——
  * 管理员要先看得见「把它开回来会命中什么」。
  *
+ * 这一段以前也逐字印在面板顶上。**现在改成把口径写进那句计数的措辞里**：
+ * 「N 场满足这条规则的条件」。「命中」是个能被读成两种意思的词，所以要一段
+ * 说明去收窄它；换成一个只有一种读法的说法，那段说明就不用写了。
+ *
  * ## 「标题缺失」与「标题为空」在这里必须分得开（阶段 4 · T13）
  *
  * 后端为此在每一条命中里下发了 `missing`。两者都渲染成一个空格子的话，
@@ -74,13 +78,12 @@ function MatchesBody({
 
   return (
     <div className={styles.matches}>
-      <p className={styles.matchesLede}>
-        这里列的是<b>这条规则自身的条件命中的会议</b>，不是整栈求值的结果——
-        主体不符、被更高优先级顶掉的规则照样算命中。
-        {rule.enabled ? null : '这条规则当前是停用的，下面是把它开回来会命中的场次。'}
-      </p>
+      {/* 「命中 ≠ 整栈求值的结果」这件事以前是一段说明。现在由下面那句计数里的
+          **措辞**承担：说的是「满足这条规则的条件」，而不是含糊的「命中」——
+          一个说不清的词加一段解释，不如一个说得清的词。 */}
       <p className={styles.matchesRule}>
-        {rule.priority} · {describeEffect(schema, rule.kind, rule.effect, rule.assetTypes)}
+        优先级 {rule.priority} · {describeEffect(schema, rule.kind, rule.effect, rule.assetTypes)}
+        {rule.enabled ? null : <span className={styles.off}> · 已停用</span>}
       </p>
 
       {res.state === 'loading' && (
@@ -103,12 +106,12 @@ function MatchesBody({
           <p className={styles.matchesScope}>
             考察了 {ready.scope.meetings} 场
             {ready.scope.truncated && <>（库里一共 {ready.scope.meetingsTotal} 场，只看了这一批）</>}
-            ，其中 <b>{ready.matches.length}</b> 场命中。
+            ，其中 <b>{ready.matches.length}</b> 场满足这条规则的条件。
           </p>
 
           {ready.matches.length === 0 ? (
             <p className={styles.emptyStack}>
-              这一批里一场都没命中。
+              这一批里一场都没满足。
               {ready.scope.truncated && '注意只看了这一批，不是全库。'}
             </p>
           ) : (
@@ -131,7 +134,7 @@ function MatchesBody({
                     {otherMissing.length > 0 && (
                       <p className={styles.matchHint}>
                         这场会议还缺这几项事实：{otherMissing.map(missingFactLabel).join('、')}
-                        （库里那几列是 NULL，用到它们的条件判不出来）
+                        ——用到它们的条件判不出来
                       </p>
                     )}
                   </li>

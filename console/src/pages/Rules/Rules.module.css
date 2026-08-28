@@ -34,23 +34,23 @@
   color: var(--ink-3);
   margin: var(--s-2) 0 0;
 }
-.fallback code {
-  font-family: var(--mono);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-xs);
-  padding: 0 var(--s-1);
+/* 拉取栈没有启用规则时这一行说的是「现在全拉」——那不是一句背景说明，
+   是这一栈此刻真实的处置，所以它要有琥珀的分量，不能和别的兜底一样淡。 */
+.fallback[data-compat='true'] b {
+  color: var(--warn);
+  font-weight: 600;
 }
 
-/* 拉取栈的兼容兜底告示。琥珀而不是红：它不是故障，是一个必须说清的现状。 */
+/* 「建第一条会翻面」贴在新建按钮上方。琥珀而不是红：它不是故障，
+   是一件按下那个按钮之前必须知道的事。 */
 .compat {
-  margin: var(--s-4) 0 0;
-  padding: var(--s-4) var(--s-5);
+  margin: var(--s-4) 0 var(--s-2);
+  padding: var(--s-3) var(--s-4);
   border: 1px solid var(--warn-line);
   border-radius: var(--r);
   background: var(--warn-soft);
   color: var(--ink-2);
-  font-size: var(--t-sm);
+  font-size: var(--t-xs);
   line-height: 1.75;
   max-width: 74ch;
 }
@@ -99,15 +99,27 @@
   border-style: dashed;
 }
 
+/* 优先级：数字 + 它自己的标签。几何刻意和右边的「N 场命中」对称——
+   两边都是「一个数，下面写着它是什么数」。 */
 .priority {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-0);
+  min-width: 4ch;
+  padding-top: var(--s-0);
+}
+.priority b {
   font-family: var(--mono);
   font-size: var(--t-lg);
   font-weight: 500;
   color: var(--ink-3);
-  min-width: 3ch;
-  text-align: right;
-  padding-top: var(--s-0);
+}
+.priority span {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
 .ruleBody {
@@ -278,15 +290,8 @@
   min-width: 0;
 }
 
-.matchesLede {
-  margin: 0;
-  font-size: var(--t-sm);
-  color: var(--ink-3);
-  line-height: 1.75;
-}
-
 .matchesRule {
-  margin: var(--s-3) 0 0;
+  margin: 0;
   font-family: var(--mono);
   font-size: var(--t-xs);
   color: var(--ink-2);

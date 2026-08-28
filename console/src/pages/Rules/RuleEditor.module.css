@@ -101,7 +101,48 @@
   min-width: 0;
 }
 
-/* 连接词竖排在左侧（spec §4.7）。 */
+/* 「且 / 或」整条规则只有一个开关。以前每行一个按钮、按一个全变，于是下面得挂
+   一段「这是刻意限制」的说明——两个单选摆在一起，这件事自己就看得出来了。 */
+.joinPick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  margin: 0 0 var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.joinPickLegend {
+  float: none;
+  padding: 0 var(--s-2) 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.joinOpt {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--tap-min);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.joinOpt input {
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+.joinOpt[data-on='true'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* 连接词竖排在左侧（spec §4.7）。现在是静态文字：开关在上面那一个。 */
 .condJoin {
   flex: none;
   width: var(--s-9);
@@ -112,20 +153,6 @@
 .when {
   font-size: var(--t-xs);
   color: var(--ink-3);
-}
-
-.joinBtn {
-  appearance: none;
-  min-width: var(--s-8);
-  min-height: var(--s-8);
-  border: 1px solid var(--brand-line);
-  border-radius: var(--r-sm);
-  background: var(--brand-soft);
-  color: var(--brand-text);
-  font-family: inherit;
-  font-size: var(--t-xs);
-  font-weight: 600;
-  cursor: pointer;
 }
 
 .condFields {
@@ -177,11 +204,6 @@
   background: var(--fail-soft);
   color: var(--fail);
 }
-.condDel:disabled {
-  color: var(--ink-4);
-  cursor: default;
-}
-
 /* ── 动作 ───────────────────────────────────────────────────── */
 
 .effects {

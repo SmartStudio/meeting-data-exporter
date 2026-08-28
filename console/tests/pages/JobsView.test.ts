@@ -54,11 +54,15 @@ function job(over: Partial<JobItem> = {}): JobItem {
 }
 
 describe('healthView() —— 四个取值各有各的呈现，认不出的不当成正常', () => {
-  test('never_ran：从没跑过，与"调度器挂了"分得开', () => {
+  test('never_ran：从没跑过，与"调度器挂了"靠状态分得开，不靠一句解释', () => {
     const v = healthView('never_ran')
     expect(v.label).toBe('从没跑过')
     expect(v.alarm).toBe(false)
-    expect(v.note).toMatch(/不是/)
+    expect(v.tone).toBe('neutral')
+    // 「这不是调度器挂了」是徽标的字与颜色说的：它和 overdue 是两个不同的取值、
+    // 两种不同的 tone、一个不告警一个告警。再挂一句说明就是四张卡片四行重复
+    expect(v.note).toBe('')
+    expect(v.tone).not.toBe(healthView('overdue').tone)
   })
 
   test('running：正在跑', () => {
@@ -73,7 +77,9 @@ describe('healthView() —— 四个取值各有各的呈现，认不出的不�
     expect(v.label).toBe('已经落后')
     expect(v.tone).toBe('fail')
     expect(v.alarm).toBe(true)
-    expect(v.note).toContain('调度器')
+    // 「调度器多半挂了」这句话在页面顶上那条横幅里（`jobs-overdue`，由 alarm
+    // 触发），不在每一张卡片上——两处都写就是同一句话出现两遍
+    expect(v.note).toBe('')
   })
 
   test('ok：正常，不告警', () => {

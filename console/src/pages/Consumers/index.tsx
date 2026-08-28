@@ -24,6 +24,19 @@ import styles from './Consumers.module.css'
  *
  * 这一轮**没有**的两个动作：停用程序、轮换凭据（spec §11 缺口 4）。
  * 端点还不存在，A8 之后由 F7 接。不放假按钮。
+ *
+ * ## 三个「与」不再写在导语里
+ *
+ * 「有授权 ∩ 在保留期内 ∩ 规则允许采集」这件事，卡片自己就在说：`ReachBlock`
+ * 报的那个数**就是**求交的结果，取不到时它逐条列出被哪一类判定挡下、去哪一页
+ * 改。把同一件事再写成一段导语，等于用文字复述界面已经在做的事——而它占掉了
+ * 这一页六成的可见文字。
+ *
+ * ## 「接入新程序」在空态下搬进空态框里
+ *
+ * 原来的空态句子里有半句是「点右上角「接入新程序」」——那是用文字指路，
+ * 说明按钮站得离人太远。一个程序都没有的时候这一页只该有一个动作，所以
+ * 页头的动作区在这时**让位**：按钮搬到空态框正中间，那句指路的话就不用写了。
  */
 export default function ConsumersPage() {
   // 挂载时冻结一次。同一屏里"剩 N 天"要按同一个此刻算，不能一个卡片一个时钟。
@@ -32,20 +45,24 @@ export default function ConsumersPage() {
   const readonly = useReadonly()
   const res = useResource(() => listPrograms(), [])
 
+  const empty = res.state === 'ready' && res.data.length === 0
+  const addButton = (
+    <Button
+      variant="primary"
+      onClick={() => setWizardOpen(true)}
+      disabled={readonly}
+      title={readonlyTitle(readonly)}
+    >
+      接入新程序
+    </Button>
+  )
+
   return (
     <PageShell
       title="采集授权"
-      description="外部程序按会议逐个授权。程序真正能取到 = 有授权 且 在保留期内 且 规则允许采集，三个条件缺一不可，且分别在三个页面上维护。"
-      actions={
-        <Button
-          variant="primary"
-          onClick={() => setWizardOpen(true)}
-          disabled={readonly}
-          title={readonlyTitle(readonly)}
-        >
-          接入新程序
-        </Button>
-      }
+      description="每个外部程序现在实际能取到哪些会议。"
+      // 空态时页头不放按钮：那一刻这一页只该有一个动作，它在空态框里
+      actions={empty ? undefined : addButton}
     >
       {res.state === 'loading' && (
         <ul className={styles.cards} aria-busy="true" aria-label="正在读取采集程序">
@@ -63,23 +80,23 @@ export default function ConsumersPage() {
 
       {res.state === 'error' && (
         <div className={styles.pageError}>
+          {/* 标题把「没读到」与「一个都没有」分开——这件事以前靠一段说明文字说，
+              而两种状态本来就长得完全不一样，写成标题就够了 */}
+          <h2 className={styles.pageErrorTitle}>没读到程序列表</h2>
           {/* 端点名与后端错误码都在 message 里，照原样显示——"读取失败"四个字定位不了任何东西 */}
           <p role="alert" className={styles.pageErrorText}>
             {res.error.message}
-          </p>
-          <p className={styles.pageErrorNote}>
-            这是「没读到程序列表」，不是「一个程序都没有」。在读到之前，这一页不代表任何事实。
           </p>
           <Button onClick={res.retry}>重试</Button>
         </div>
       )}
 
       {res.state === 'ready' &&
-        (res.data.length === 0 ? (
-          <p className={styles.empty}>
-            还没有接入任何采集程序。点右上角「接入新程序」建第一个——接入只给它一个身份，
-            能取到什么仍然由规则与逐场授权决定。
-          </p>
+        (empty ? (
+          <div className={styles.empty}>
+            <p className={styles.emptyLead}>还没有接入任何采集程序</p>
+            {addButton}
+          </div>
         ) : (
           <ul className={styles.cards}>
             {res.data.map((p) => (

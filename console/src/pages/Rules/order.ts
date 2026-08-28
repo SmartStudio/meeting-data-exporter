@@ -32,11 +32,15 @@ export interface StackMeta {
   index: string
   /** 这一组决定什么。 */
   decides: string
-  /** 兜底的 effect 取值。 */
+  /** 兜底的 effect 取值。**不上屏**——它是库里那一列的取值，不是给人读的词。 */
   fallback: string
   /** 兜底读给管理员看的一句话。 */
   fallbackText: string
-  /** 组下面那一段说明。 */
+  /**
+   * 组下面那一句。**只写「不做这件事会怎样」**——「这一组决定什么」由 `decides`
+   * 那颗徽标说，「一条都不匹配会怎样」由 `fallbackText` 说，再复述一遍就是
+   * 用段落重讲界面已经讲过的话。
+   */
   lede: string
 }
 
@@ -53,7 +57,7 @@ export const STACK_META: Record<StackKind, StackMeta> = {
     decides: '决定去腾讯会议拉哪些会议、拉哪几类资产',
     fallback: 'skip',
     fallbackText: '一条都不匹配时不拉取',
-    lede: '不拉取的会议，录制文件仍留在腾讯会议侧，本系统不持有副本，也不会进 NAS。',
+    lede: '不拉取的会议，录制仍留在腾讯会议侧。',
   },
   archive: {
     name: '归档规则',
@@ -61,7 +65,7 @@ export const STACK_META: Record<StackKind, StackMeta> = {
     decides: '决定往 NAS 的哪个目录归档',
     fallback: 'skip',
     fallbackText: '一条都不匹配时不归档',
-    lede: 'NAS 是最终存放地。没有归档成功的会议，本地到期后就彻底没有了——所以归档失败是本系统最高级别的告警。',
+    lede: '没有归档成功的会议，本地文件到期后就彻底没有了。',
   },
   allow: {
     name: '采集权限规则',
@@ -69,7 +73,7 @@ export const STACK_META: Record<StackKind, StackMeta> = {
     decides: '决定哪些会议准许被外部程序取走',
     fallback: 'deny',
     fallbackText: '一条都不匹配时拒绝，默认全部拒绝',
-    lede: '这是数据离开企业边界的唯一闸门。前两组的兜底是"不做"，这一组的兜底是"拒绝"——因为它是数据出境闸门，默认必须是关的。',
+    lede: '数据离开企业边界的唯一闸门。',
   },
 }
 

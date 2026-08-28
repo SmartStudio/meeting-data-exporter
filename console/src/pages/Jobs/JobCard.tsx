@@ -57,15 +57,14 @@ function Sparkline({ runs, now }: { runs: JobRun[]; now: number }) {
 /**
  * 「上次运行」那一行。三条分支各有各的说法，**没有一条会含糊过去**：
  *
- * - 从没跑过 → 说「从没跑过」
+ * - 从没跑过 → 说「一条运行记录都没有」
  * - 触发了但还没被认领（`startedAt` 为 null）→ 说清它在排队，不编一个开始时间
  * - 还没跑完（`durationSec` 为 null）→ 说「还没跑完」，不给一个会持续变大的秒数
  */
 function LastRun({ job, now }: { job: JobItem; now: number }) {
   const r = job.lastRun
   if (r === null) {
-    // 「从没跑过」这句话已经在健康徽标和 sparkline 那一格里说过两遍了，
-    // 这里换个说法说同一件事的另一面：一条运行记录都没有。
+    // 「从没跑过」由健康徽标说。这里说的是同一件事的另一面：库里一条记录都没有。
     return (
       <p className={styles.last} data-testid="job-last">
         还没有任何一条运行记录。
@@ -76,8 +75,7 @@ function LastRun({ job, now }: { job: JobItem; now: number }) {
   if (r.startedAt === null) {
     return (
       <p className={styles.last} data-testid="job-last">
-        最近一次触发（{runStatusText(r.status)}）<b>还没被调度器认领</b>
-        ——调度器在 worker 进程里，下一个 tick 才会来取。
+        最近一次触发（{runStatusText(r.status)}）<b>还没被调度器认领</b>。
       </p>
     )
   }
@@ -140,15 +138,16 @@ export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
       </div>
 
       <div className={styles.right}>
-        {job.recentRuns.length === 0 ? (
-          <p className={styles.noRuns}>从没跑过</p>
-        ) : (
-          <Sparkline runs={job.recentRuns} now={now} />
-        )}
+        {/* 一次运行都没有时这里原来写着「从没跑过」——那与左边的健康徽标一字不差。
+            徽标已经说了，sparkline 这一格就空着：没有柱子本身就是"没有运行记录"。 */}
+        {job.recentRuns.length > 0 && <Sparkline runs={job.recentRuns} now={now} />}
         <div className={styles.next}>
-          {/* 「预计」不是「承诺」：调度器停了这个时刻照样算得出，所以它永远和
-              health 一起看，不能单独当"一切正常"的证据。 */}
-          <span className={styles.nextKey}>下次预计</span>
+          {/* 「下次预计」在任务已经落后时是一句算得出来的空话：调度器停着，
+              它到点也不会跑。所以这一格换标签，而不是在页面顶上写一段话去更正它
+              ——「按周期应在」说的是一个算出来的时刻，本来就不是承诺。
+              颜色不动：整格已经是告警底（`.job[data-alarm]`），
+              再叠一层琥珀既压不出对比度，也把两种语义混在一格里。 */}
+          <span className={styles.nextKey}>{hv.alarm ? '按周期应在' : '下次预计'}</span>
           <b className={styles.nextAt}>{fmtDateTime(job.nextDueAt, new Date(now * 1000))}</b>
           <span className={styles.nextGap}>{fmtAfter(job.nextDueAt, now)}</span>
         </div>

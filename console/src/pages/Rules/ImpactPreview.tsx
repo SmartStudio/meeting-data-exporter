@@ -51,7 +51,7 @@ export function ImpactPreview({ kind, result, error, pending }: ImpactPreviewPro
         <p className={styles.warnLine} role="alert">
           影响预览算不出来：{error.message}
           <br />
-          <b>算不出来不等于没有影响</b>——这次改动会不会动到谁，现在是不知道的。
+          <b>算不出来不等于没有影响。</b>
         </p>
       )}
 

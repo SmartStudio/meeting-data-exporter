@@ -92,14 +92,18 @@ export default function RulesPage() {
     setHitCounts((prev) => new Map(prev).set(ruleId, n))
   }, [])
 
+  /*
+   * 导语只留一句：它是读这一页时唯一会改变结论的规矩。删掉的三句各有各的去处——
+   * 「同优先级按 id 升序」就是排序本身，屏幕上的先后已经是判定的先后；
+   * 「人工改写优先于所有规则」在影响预览里有 `shielded` 那一行逐次报数；
+   * 「改之前先看影响预览」是在指路，而预览本来就钉在编辑器底部躲不开。
+   */
   return (
     <PageShell
       title="自动规则"
       description={
         <>
-          三栈各自独立求值：按优先级从高到低，<b>第一条命中的说了算</b>，不做合并、不做叠加。
-          同优先级按建立先后（id 升序）。单场会议的人工改写优先于所有规则。
-          <b> 改之前先看影响预览。</b>
+          每栈按优先级从高到低求值，<b>第一条命中的说了算</b>。
         </>
       }
     >
@@ -109,11 +113,10 @@ export default function RulesPage() {
         <div className={styles.error} role="alert" data-testid="rules-schema-error">
           <p className={styles.errorTitle}>{FRONTEND_TEXT.schemaMissing}</p>
           <p className={styles.errorDetail}>{schemaRes.error.message}</p>
+          {/* 「为什么前端不留一份旧快照顶上」是我们的取舍，不是管理员此刻要做的事。
+              留下的是他此刻看到的东西会变成什么样。 */}
           <p className={styles.errorDetail}>
-            条件字段、运算符、动作的可选项全部由后端下发（<code>GET /rules/schema</code>）。
-            读不到就<b>没有</b>可用的清单——前端不留一份旧快照顶上，那份快照会在
-            后端不可达时冒充真相。下面的规则照常列出来，但条件与动作显示的是
-            <b>库里的原值</b>，新建与编辑已停用。
+            下面的规则照常列出来，但条件与动作显示的是<b>库里的原值</b>；新建与编辑已停用。
           </p>
           <Button onClick={schemaRes.retry}>重试</Button>
         </div>
@@ -247,13 +250,12 @@ function UnknownStack({
         认不出的规则
       </h2>
       <p className={styles.lede}>
-        下面这几条的 kind 不是三栈之一（fetch / archive / allow），
-        引擎不会让它们参与任何判定。它们仍然在库里，改掉 kind 才会生效。
+        这几条不属于三栈中的任何一栈，引擎不让它们参与任何判定。编辑它、选一栈才会生效。
       </p>
       <ul className={styles.rules}>
         {rules.map((r) => (
           <li key={r.id} className={styles.unknownRow} aria-label={`认不出的规则 #${r.id}`}>
-            <span className={styles.unknownKind}>kind「{r.kind}」</span>
+            <span className={styles.unknownKind}>类型「{r.kind}」</span>
             <span className={styles.unknownNote}>{r.note ?? '（没有说明）'}</span>
             <Button
               size="sm"

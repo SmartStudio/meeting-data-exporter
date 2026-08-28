@@ -18,7 +18,7 @@ import { ReachBlock, useInventory } from './ReachBlock'
 import { SecretRow } from './SecretRow'
 import styles from './Wizard.module.css'
 
-const STEPS = ['基本信息', '生成凭据', '可取资产', '接入方式'] as const
+const STEPS = ['基本信息', '生成凭据', '可取清单', '接入方式'] as const
 
 /**
  * 接入新程序 = 四步向导（spec §4.5）。
@@ -32,8 +32,12 @@ const STEPS = ['基本信息', '生成凭据', '可取资产', '接入方式'] a
  * 照抄那组勾选框就是一个点了没反应的控件——它会让人以为自己已经把录像挡在
  * 外面了，而实际上什么都没设。
  *
- * 所以第三步保留了名字（「可取资产」），内容换成**这个新程序此刻的实测清单**：
- * 它一定是 0 场，而"为什么是 0、接下来该去哪一页"正是这一步该说的话。
+ * 所以第三步的内容换成**这个新程序此刻的实测清单**：它一定是 0 场，而
+ * "为什么是 0、接下来该去哪一页"正是这一步该说的话——`ReachBlock` 自己会说。
+ *
+ * 这一步原来还叫「可取资产」，下面挂一段「『能取到什么』不在这里勾选」的说明。
+ * 那段说明是在替一个**名字取错了的步骤**道歉：叫「可取资产」就会让人等着一组
+ * 勾选框。名字改成「可取清单」之后，那段话不用写了。
  *
  * ## 凭据只出现一次这件事由界面兜住
  *
@@ -151,10 +155,6 @@ export function Wizard({ open, onDone }: { open: boolean; onDone: (created: bool
 
       {step === 0 && (
         <div className={styles.body}>
-          <p className={styles.lede}>
-            先给它一个 id 和一个人能看懂的名字。id 同时是采集权限规则里的主体名与 URL 的一段，
-            名字会出现在授权列表和操作审计里——三个月后有人问「dw-sync 是谁在用」，靠的就是这一行。
-          </p>
           <Field
             id={`${uid}-id`}
             label="程序 id"
@@ -194,8 +194,7 @@ export function Wizard({ open, onDone }: { open: boolean; onDone: (created: bool
       {step === 1 && created !== null && (
         <div className={styles.body}>
           <p className={styles.lede}>
-            凭据已生成。<strong className={styles.strong}>Secret 明文只出现这一次</strong>
-            ，库里只存 argon2id 哈希，丢了找不回来。请立刻存进你的密钥管理。
+            <strong className={styles.strong}>Secret 明文只出现这一次</strong>，关掉就找不回来。
           </p>
           {/* 后端下发的那一句原样上屏。建号与轮换现在共用同一句话（A8），
               前端不改写它——改写就会变成两句不一样的、迟早会漂的话。 */}
@@ -226,12 +225,8 @@ export function Wizard({ open, onDone }: { open: boolean; onDone: (created: bool
 
       {step === 3 && created !== null && (
         <div className={styles.body}>
-          <p className={styles.lede}>把下面这段给对方。凭据换到的令牌有效期看响应里的 expires_in。</p>
+          <p className={styles.lede}>把下面这段给对方。</p>
           <pre className={styles.snippet}>{accessSnippet(window.location.origin, created.id)}</pre>
-          <p className={styles.note}>
-            接入只是给了它身份。它现在能取走多少，取决于「自动规则」里的采集权限规则栈与逐场授权——
-            这两件事在别的页面上。
-          </p>
         </div>
       )}
 
@@ -260,10 +255,6 @@ function AssetsStep({ created }: { created: CreatedProgram }) {
   const standing = programStanding(created, Math.floor(Date.now() / 1000))
   return (
     <div className={styles.body}>
-      <p className={styles.lede}>
-        「能取到什么」不在这里勾选——它是 有授权 ∩ 在保留期内 ∩ 规则允许采集 求交出来的结果，
-        三件事分别在「会议记录」「归档存储」「自动规则」三页上维护。下面是它此刻的实测清单：
-      </p>
       <ReachBlock programId={created.id} standing={standing} res={res} />
     </div>
   )

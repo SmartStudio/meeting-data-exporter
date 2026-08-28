@@ -136,15 +136,6 @@
   color: var(--warn);
 }
 
-.reachCaveat {
-  margin: 0 0 var(--s-3);
-  padding-bottom: var(--s-2);
-  border-bottom: 1px solid var(--line);
-  font-size: var(--t-xs);
-  line-height: 1.7;
-  color: var(--ink-2);
-}
-
 /* ── "另有 N 场取不到" ─────────────────────────────────────── */
 
 .aside {
@@ -218,16 +209,26 @@
 
 /* ── 三态 ───────────────────────────────────────────────────── */
 
+/* 空态：一句状态 + 那一个动作。按钮在框里而不是在页头角落，是因为
+   「点右上角那个按钮」本来是一句用文字指路的话——路该短到不用指。 */
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-4);
   margin: 0;
   padding: var(--s-8) var(--s-5);
   text-align: center;
-  font-size: var(--t-sm);
-  line-height: 1.8;
-  color: var(--ink-3);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
+}
+
+.emptyLead {
+  margin: 0;
+  font-size: var(--t-md);
+  line-height: 1.7;
+  color: var(--ink-2);
 }
 
 .pageError {
@@ -241,19 +242,19 @@
   border-radius: var(--r-lg);
 }
 
+.pageErrorTitle {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--fail);
+}
+
 .pageErrorText {
   margin: 0;
   font-size: var(--t-sm);
   line-height: 1.7;
   color: var(--fail);
   overflow-wrap: anywhere;
-}
-
-.pageErrorNote {
-  margin: 0;
-  font-size: var(--t-xs);
-  line-height: 1.7;
-  color: var(--ink-2);
 }
 
 /* ── 停用 / 轮换（spec §11 缺口 4）──────────────────────────── */

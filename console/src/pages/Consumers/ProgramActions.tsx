@@ -93,7 +93,7 @@ export function ProgramActions({
   function closeRotated(): void {
     if (!ack) {
       setLeaveWarn(
-        '还没勾「我已经保存好了」。关掉这一屏之后这段明文就再也拿不到了——服务端只存哈希，丢了只能再轮换一次（旧的会当场失效）。确认存好了再关。',
+        '还没勾「我已经保存好了」。关掉之后这段明文再也拿不到——丢了只能再轮换一次，旧的当场失效。',
       )
       return
     }
@@ -144,8 +144,7 @@ export function ProgramActions({
               直到它换上新的那一串。轮换之前先确认那边有人能改配置。
             </p>
             <p className={styles.confirmNote}>
-              新的明文<b>只显示这一次</b>：服务端只存哈希，没有「再看一次」的办法。
-              轮换不改启用状态。
+              新的明文<b>只显示这一次</b>。
             </p>
           </div>
         ) : program.enabled ? (
@@ -155,16 +154,15 @@ export function ProgramActions({
               （判定在网关每一次取数时做，不是只在拿凭据换令牌那一层）。
             </p>
             <p className={styles.confirmNote}>
-              <b>已有的授权一条都不会删。</b>停用是可逆的：再点「启用」就回到现在这个样子，
-              不用重新逐场授权。
+              <b>已有的授权一条都不会删</b>——停用是可逆的，再点「启用」就回到现在这个样子。
             </p>
           </div>
         ) : (
           <div className={styles.confirmBody} data-testid="confirm-enable">
             <p className={styles.confirmLead}>
-              启用之后它按停用之前的那些授权继续取数——停用期间授权一条都没删。
+              按停用之前的那些授权继续取数——停用期间授权一条都没删。
             </p>
-            <p className={styles.confirmNote}>凭据没有变：停用不轮换 secret，对接方那边不用改配置。</p>
+            <p className={styles.confirmNote}>凭据没有变，对接方那边不用改配置。</p>
           </div>
         )}
         <div className={styles.confirmFoot}>

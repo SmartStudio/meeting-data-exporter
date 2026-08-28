@@ -145,6 +145,18 @@ describe('程序列表', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  test('空态里就是那一个动作本身，不是一句「点右上角那个按钮」', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, []])
+    renderPage()
+
+    const lead = await screen.findByText(/还没有接入任何采集程序/)
+    // 按钮与那句话在同一个框里：不用告诉人往哪儿点，够得着就行
+    const box = lead.parentElement!
+    expect(within(box).getByRole('button', { name: '接入新程序' })).toBeInTheDocument()
+    // 全页只有这一个，页头的动作区这时让位——空态上两个同名按钮等于两个入口
+    expect(screen.getAllByRole('button', { name: '接入新程序' })).toHaveLength(1)
+  })
+
   test('停用与凭据过期各自标出来——它们是真实字段，不是推出来的', async () => {
     const now = Math.floor(Date.now() / 1000)
     respond(/GET .*\/admin\/programs$/, () => [
@@ -261,8 +273,10 @@ describe('「现在可取走 N 场会议的 X」', () => {
     renderPage()
 
     const note = await screen.findByTestId('reach-kb-indexer-ifenabled')
-    expect(note).toHaveTextContent('恢复启用后它能取走 4 场会议的 AI 纪要')
-    expect(note).toHaveTextContent('不是现在')
+    // 数与资产串照说，但整句话必须带着「恢复启用后」这个前提——它不是「现在」
+    expect(note).toHaveTextContent('4 场会议的 AI 纪要')
+    expect(note.textContent ?? '').toMatch(/^恢复启用后/)
+    expect(screen.getByTestId('reach-kb-indexer')).not.toHaveTextContent('现在可取走')
   })
 
   test('停用且清单本来就是空的时候，下面那一行说的是"恢复启用后也一场都取不到"', async () => {
@@ -275,14 +289,20 @@ describe('「现在可取走 N 场会议的 X」', () => {
     )
   })
 
-  test('停用立刻生效这件事写在界面上（已签发的令牌也失效），并且说清授权没删', async () => {
+  test('「停用立刻生效 / 授权没删」只在按下停用的那一刻说，不常驻在卡片上', async () => {
     respond(/GET .*\/admin\/programs$/, () => [200, [{ ...KB, enabled: false }]])
     respond(/GET .*\/inventory$/, () => [200, inventory({ fetchableCount: 4, assetTypes: ['ai_minutes'] })])
     renderPage()
 
+    // 已经停用之后，卡片要答的是「现在取不到」这个状态，不是复述一遍停用的语义
     const reach = await screen.findByTestId('reach-kb-indexer')
-    expect(reach).toHaveTextContent('停用立刻生效')
-    expect(reach).toHaveTextContent('已有的授权一条都没删')
+    expect(reach).toHaveTextContent('已停用')
+    expect(reach).toHaveTextContent('现在 0 场会议对它开放')
+    expect(reach).not.toHaveTextContent('停用立刻生效')
+
+    // 那件事在做决定的那一刻说得清清楚楚（confirm-disable 那条测试断言它的内容）
+    await userEvent.click(screen.getByRole('button', { name: '启用' }))
+    expect(await screen.findByTestId('confirm-enable')).toHaveTextContent('授权一条都没删')
   })
 
   test('凭据过期时同理，说的是"换发凭据后"', async () => {
@@ -430,11 +450,12 @@ describe('查看清单', () => {
     expect(within(panel).getByText(/本地文件已到期清理（\/nas\/2026\/05\/m-purged）/)).toBeInTheDocument()
   })
 
-  test('面板顶部复述三个「与」——这一页的读者需要知道这三件事由不同的人维护', async () => {
+  test('面板顶部给的是两个数：授权了几场、其中现在真能取到几场', async () => {
     const panel = await openList()
-    expect(panel).toHaveTextContent('有授权')
-    expect(panel).toHaveTextContent('在保留期内')
-    expect(panel).toHaveTextContent('规则允许采集')
+    expect(panel).toHaveTextContent('已授权 2 场')
+    expect(panel).toHaveTextContent('现在能取到 1 场')
+    // 「取不到的那几场为什么取不到」由逐行的判定理由回答，不再由顶部一段总论回答
+    expect(within(panel).getByText(/本地文件已按保留期清理/)).toBeInTheDocument()
   })
 
   test('能取到的那几场把判定理由带出来，不是只给一个绿点', async () => {
@@ -479,7 +500,7 @@ describe('接入向导', () => {
     expect(steps.map((s) => s.textContent)).toEqual([
       '1基本信息',
       '2生成凭据',
-      '3可取资产',
+      '3可取清单',
       '4接入方式',
     ])
     expect(steps[0]).toHaveAttribute('aria-current', 'step')
@@ -557,7 +578,7 @@ describe('接入向导', () => {
     expect(within(panel).getByRole('button', { name: '上一步' })).toBeDisabled()
   })
 
-  test('第三步"可取资产"给的是这个新程序的实测清单，不是一组勾选框', async () => {
+  test('第三步"可取清单"给的是这个新程序的实测清单，不是一组勾选框', async () => {
     const panel = await openWizard()
     respond(/POST .*\/admin\/programs$/, () => [201, CREATED])
     respond(/GET .*\/programs\/new-prog\/inventory$/, () => [200, inventory({ programId: 'new-prog' })])

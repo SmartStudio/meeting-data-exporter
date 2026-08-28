@@ -36,10 +36,15 @@ import styles from './RuleEditor.module.css'
  * 等于没有。三个数一律来自 `POST /rules/preview`，前端一个都不算（spec §5.5
  * 定义了计算范围，前端另算一遍就是第二份真相）。
  *
+ * 上面那句 spec 原话曾经原样印在表单顶上，后面还跟着「下面的影响预览钉在底部，
+ * 边填边看」。**那半句已经删了**：预览就钉在底部，一直在视野里，用一句话告诉人
+ * 「它在下面」是在替一个已经做到了的可供性道歉。
+ *
  * ## 三条刻意的限制
  *
- * 1. **一条规则内只能全用「且」或全用「或」**。混用而没有括号，读起来通顺，
- *    求值顺序却常常和人的直觉不一样。需要混用就拆成两条规则。
+ * 1. **一条规则内只能全用「且」或全用「或」**。这一条现在由控件的形状说出来——
+ *    整条规则一个二选一（`ConditionList` 里的 `joinPick`），而不是每行一个按钮
+ *    加一段「这是刻意限制」的说明。
  * 2. **`dept` 可见但禁用**，并写明原因。不隐藏：库里的老规则上真的有这个字段，
  *    隐藏了管理员就看不出那条规则为什么不命中。
  * 3. **删除按钮默认是安静的**，点第一次才变红（二次确认）。
@@ -314,11 +319,6 @@ function EditorBody({ state, schema, allRules, onClose, onSaved }: BodyProps) {
 
   return (
     <div className={styles.body}>
-      <p className={styles.lede}>
-        规则的难点从来不是「怎么填」，是<b>填完之后有多少场会议的状态会变</b>。
-        下面的影响预览钉在底部，边填边看。
-      </p>
-
       {droppedConds > 0 && (
         <p className={styles.warnBox} role="alert">
           这条规则里有 {droppedConds} 个条件不是 <code>{'{ f, op, v }'}</code> 形式的对象，
@@ -361,10 +361,6 @@ function EditorBody({ state, schema, allRules, onClose, onSaved }: BodyProps) {
       <section className={styles.section} aria-label="条件">
         <h3 className={styles.sectionTitle}>条件</h3>
         <ConditionList schema={schema} draft={draft} update={update} />
-        <p className={styles.hint}>
-          一条规则内只能全用「且」或全用「或」——这是刻意限制。混用而没有括号，
-          读起来通顺，求值顺序却常常和人的直觉不一样；需要混用就拆成两条规则。
-        </p>
         {/* 「哪个字段不可选、为什么」全部由 schema 说。以前这里写死的是 dept 一条，
             而那句话与后端 issues 里的措辞是两句不同的话——同一屏上两种说法 */}
         {unavailableFields.map((f) => (
@@ -388,10 +384,6 @@ function EditorBody({ state, schema, allRules, onClose, onSaved }: BodyProps) {
         <section className={styles.section} aria-label="采集程序">
           <h3 className={styles.sectionTitle}>采集程序</h3>
           <ProgramPicker value={draft.subjectValue} onChange={(v) => update({ subjectValue: v })} />
-          <p className={styles.hint}>
-            采集权限规则的主体是<b>采集程序</b>，不是人。拉取与归档两栈是系统级行为，
-            不针对任何主体。
-          </p>
         </section>
       )}
 
@@ -406,8 +398,7 @@ function EditorBody({ state, schema, allRules, onClose, onSaved }: BodyProps) {
           />
         </label>
         <p className={styles.hint}>
-          说明会出现在规则列表<b>和每场会议的判定理由里</b>——事后复盘"那天为什么放行"
-          读的就是这句话。
+          会出现在规则列表<b>和每场会议的判定理由里</b>。
         </p>
         <label className={styles.field}>
           <span>优先级</span>
@@ -417,9 +408,7 @@ function EditorBody({ state, schema, allRules, onClose, onSaved }: BodyProps) {
             onChange={(e) => update({ priority: Number(e.target.value) })}
           />
         </label>
-        <p className={styles.hint}>
-          数字大的先求值。同优先级按建立先后（id 升序），<b>不按 effect 决定平局</b>。
-        </p>
+        <p className={styles.hint}>数字大的先求值。</p>
       </section>
 
       {issues.length > 0 && (
@@ -545,45 +534,66 @@ interface PartProps {
   update: (patch: Partial<Draft>) => void
 }
 
+/**
+ * 条件列表 + **整条规则一个**连接词开关。
+ *
+ * 以前每一行的连接词各是一个按钮，点任意一个都会把整条规则的连接词一起换掉，
+ * 于是下面必须挂一段解释：「一条规则内只能全用『且』或全用『或』——这是刻意限制」。
+ * 那段解释是在替一个**说谎的控件**打补丁：n 个按钮看起来能设 n 个值，实际只有一个值。
+ *
+ * 现在开关只有一个（两个单选，条件多于一条时才出现），每一行的连接词退成静态文字。
+ * 「只能全用一种」这件事由控件的形状说出来，不用再写。
+ */
 function ConditionList({ schema, draft, update }: PartProps & { schema: RulesSchema }) {
   function setCond(i: number, next: RuleCondition) {
     update({ conds: draft.conds.map((c, j) => (j === i ? next : c)) })
   }
   const blank = blankCond(schema)
+  const joinWord = draft.join === 'or' ? '或' : '且'
 
   return (
     <>
+      {draft.conds.length > 1 && (
+        <fieldset className={styles.joinPick}>
+          <legend className={styles.joinPickLegend}>需要满足</legend>
+          {(['and', 'or'] as const).map((j) => (
+            <label key={j} className={styles.joinOpt} data-on={draft.join === j}>
+              <input
+                type="radio"
+                name="cond-join"
+                checked={draft.join === j}
+                onChange={() => update({ join: j })}
+              />
+              <span>{j === 'and' ? '以下全部条件（且）' : '以下任一条件（或）'}</span>
+            </label>
+          ))}
+        </fieldset>
+      )}
       <ul className={styles.conds}>
         {draft.conds.map((cond, i) => (
           <li key={i} className={styles.cond}>
             <div className={styles.condJoin}>
-              {i === 0 ? (
-                <span className={styles.when}>当</span>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.joinBtn}
-                  aria-label={`连接词：${draft.join === 'or' ? '或' : '且'}，点一下切换（一条规则内只能全用一种）`}
-                  onClick={() => update({ join: draft.join === 'or' ? 'and' : 'or' })}
-                >
-                  {draft.join === 'or' ? '或' : '且'}
-                </button>
-              )}
+              <span className={styles.when}>{i === 0 ? '当' : joinWord}</span>
             </div>
 
             <ConditionFields schema={schema} cond={cond} onChange={(next) => setCond(i, next)} />
 
-            <button
-              type="button"
-              className={styles.condDel}
-              aria-label={`删除第 ${i + 1} 个条件`}
-              // 一条都不剩会被写侧拒绝（空 conds = 匹配一切），所以最后一条删不掉
-              disabled={draft.conds.length === 1}
-              title={draft.conds.length === 1 ? '至少要有一个条件：空条件在求值器里是「匹配一切」' : undefined}
-              onClick={() => update({ conds: draft.conds.filter((_, j) => j !== i) })}
-            >
-              <span aria-hidden="true">×</span>
-            </button>
+            {/* 一条都不剩会被写侧拒绝（空 conds = 匹配一切），所以最后一条删不掉。
+                这件事以前是一个**永远点不动的 ×** 加一个 `title` 解释「至少要有
+                一个条件」——而 title 要把鼠标停上去才看得见，触屏上根本看不到，
+                于是那个 × 在大多数人眼里就是一个点了没反应的按钮。
+                只剩一条时干脆不画它：没有这个口子，比有一个关着的口子加一句
+                解释更清楚，也不用写那句话。 */}
+            {draft.conds.length > 1 && (
+              <button
+                type="button"
+                className={styles.condDel}
+                aria-label={`删除第 ${i + 1} 个条件`}
+                onClick={() => update({ conds: draft.conds.filter((_, j) => j !== i) })}
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            )}
           </li>
         ))}
       </ul>

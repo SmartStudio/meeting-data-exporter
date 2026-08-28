@@ -86,7 +86,10 @@ export function fmtAgo(pastSec: number, nowSec: number): string {
 export interface HealthView {
   label: string
   tone: PillTone
-  /** 这个状态到底意味着什么。空串表示不需要额外解释 */
+  /**
+   * 这个状态到底意味着什么。**空串表示不需要额外解释**，而四个已知取值现在
+   * 全都是空串——见下面 `healthView` 的注释：徽标的字与颜色已经把它们说完了。
+   */
   note: string
   /** 是不是"该有人管一下"级别。只有 overdue 是 —— 它的意思是调度器多半挂了 */
   alarm: boolean
@@ -105,32 +108,37 @@ export interface HealthView {
  *
  * 认不出的取值给「未知」并把原值带出来。**不给「正常」**：把没见过的状态映成
  * 已知的任何一个都是编造，而映成"正常"是其中最糟的那一种。
+ *
+ * ## 四个已知取值的 `note` 现在都是空串
+ *
+ * 它们原来各带一句解释，于是**同一句话会在四张卡片上出现四遍**——刚部署的实例
+ * 四个任务全是 `never_ran`，屏幕上就有四行一模一样的「一次都没跑过。刚部署的
+ * 实例就是这样，和调度器停了不是一回事。」
+ *
+ * 这两件事本来就由别的东西说：
+ *
+ * - **`never_ran` 与「调度器停了」分得开**，靠的是它们是两个不同的徽标、
+ *   两种不同的颜色（中性 vs `fail`），不是靠一句「不是一回事」。
+ * - **`overdue` 意味着什么**，页面顶上那条 `jobs-overdue` 横幅逐字说着，
+ *   而那条横幅只在有任务落后时出现——正好是卡片会带这句解释的同一时刻。
+ *
+ * 认不出的取值仍留一句：那时徽标只说得出「这个值我不认识」，说不出该怎么办。
  */
 export function healthView(health: string): HealthView {
   switch (health) {
     case 'never_ran':
-      return {
-        label: '从没跑过',
-        tone: 'neutral',
-        note: '一次都没跑过。刚部署的实例就是这样，和调度器停了不是一回事。',
-        alarm: false,
-      }
+      return { label: '从没跑过', tone: 'neutral', note: '', alarm: false }
     case 'running':
-      return { label: '正在跑', tone: 'brand', note: '上一轮还没结束。', alarm: false }
+      return { label: '正在跑', tone: 'brand', note: '', alarm: false }
     case 'overdue':
-      return {
-        label: '已经落后',
-        tone: 'fail',
-        note: '上一次开跑离现在超过两个周期——调度器多半已经不在跑了，或者被什么卡住了。',
-        alarm: true,
-      }
+      return { label: '已经落后', tone: 'fail', note: '', alarm: true }
     case 'ok':
       return { label: '正常', tone: 'neutral', note: '', alarm: false }
     default:
       return {
         label: `未知状态「${health}」`,
         tone: 'warn',
-        note: '后端给了一个这里认不出的取值。它没有被映成任何一个已知状态——请对一遍后端的 health 枚举。',
+        note: '这个取值这里认不出，没有被映成任何一个已知状态——请把它报给维护者。',
         alarm: false,
       }
   }

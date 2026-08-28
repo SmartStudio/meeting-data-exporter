@@ -44,6 +44,8 @@ export function RuleStack(props: RuleStackProps) {
   const blocked = blockedByUnconditional(rules)
   const enabledCount = rules.filter((r) => r.enabled).length
   const readonly = useReadonly()
+  /** 见 `FetchCompatNotice`：这一栈没有启用的规则时，兜底不是 skip。 */
+  const fetchCompat = kind === 'fetch' && enabledCount === 0
 
   return (
     <section className={styles.group} aria-labelledby={titleId}>
@@ -52,11 +54,15 @@ export function RuleStack(props: RuleStackProps) {
         <Pill tone={kind === 'allow' ? 'brand' : 'neutral'}>{meta.decides}</Pill>
       </h2>
       <p className={styles.lede}>{meta.lede}</p>
-      <p className={styles.fallback}>
-        兜底：{meta.fallbackText}（<code>{meta.fallback}</code>）
-      </p>
-
-      {kind === 'fetch' && enabledCount === 0 && <FetchCompatNotice hasRules={rules.length > 0} />}
+      {/* effect 的原值（skip / deny）不再跟在后面：那是库里那一列的取值，
+          屏幕上的中文已经说完了同一件事 */}
+      {fetchCompat ? (
+        <p className={styles.fallback} data-compat="true">
+          现在：<b>没有一条启用的拉取规则管得着，发现到的录制全部拉取</b>
+        </p>
+      ) : (
+        <p className={styles.fallback}>兜底：{meta.fallbackText}</p>
+      )}
 
       {rules.length === 0 ? (
         <p className={styles.emptyStack}>{emptyText(kind)}</p>
@@ -81,6 +87,10 @@ export function RuleStack(props: RuleStackProps) {
         </ul>
       )}
 
+      {/* 翻面这件事只在**要建第一条规则的那一刻**才有用，所以它贴着那个按钮，
+          不再是列表上方一整段告示 */}
+      {fetchCompat && <FetchCompatNotice />}
+
       {/* schema 读不出来时也禁：编辑器里每一份取值域都来自它，开一个填着
           旧快照的表单比开不了更糟。为什么开不了在页面顶上那条横幅里说 */}
       <Button
@@ -101,35 +111,32 @@ export function RuleStack(props: RuleStackProps) {
  * spec §8：用同一句话把三种空态糊在一起，人就不知道下一步该做什么。
  */
 function emptyText(kind: StackKind): string {
-  if (kind === 'allow') {
-    return '这一栈还没有规则。兜底是拒绝，所以现在任何外部程序都取不到任何会议——这正是数据出境闸门该有的初始状态。'
-  }
-  if (kind === 'archive') {
-    return '这一栈还没有规则。兜底是不归档，所以现在没有任何会议会被写进 NAS，本地文件到期后就彻底没有了。'
-  }
-  return '这一栈还没有规则。'
+  // 「兜底是 X」上面那一行刚说过，这里只说"于是现在会发生什么"
+  if (kind === 'allow') return '还没有规则。现在任何外部程序都取不到任何会议。'
+  if (kind === 'archive') return '还没有规则。现在没有任何会议会被归档。'
+  return '还没有规则。'
 }
 
 /**
  * 拉取栈**一条启用的规则都没有**时，实际发生的不是 spec §4.6 字面上的 skip。
  *
  * 后端有一条兼容兜底（`src/policy/fetch-compat.ts`）：库里没有启用的拉取规则时，
- * worker 沿用接线前的行为「时间窗内全拉」。这一页要是照 spec 字面写"兜底：不拉取"，
- * 就是在对着一个正在全量拉取的系统说它什么都没拉。
+ * worker 沿用接线前的行为「时间窗内全拉」。
  *
- * 这句话是**镜像**自后端的 `FETCH_STACK_UNCONFIGURED_REASON`（没有端点下发它，
- * 记在任务报告的缺口里）。判据本身不是求值：数一数有没有启用的 fetch 规则而已。
+ * ## 这件事以前是一段"更正"，现在是兜底那一行本身
+ *
+ * 原来的写法是：兜底那一行照 spec 字面写「一条都不匹配时不拉取」，下面再挂一段
+ * 一百多字的告示说「其实不是，现在全拉」。**那是让一个标签先说假话、再用一段
+ * 散文去改口。** 现在假话不说了——没有启用规则时兜底那一行直接写「发现到的录制
+ * 全部拉取」，于是这段告示里只剩下那句标签自己说不出来的话：**建第一条会翻面。**
+ *
+ * 它贴在「新建拉取规则」按钮上方而不是列表顶上：翻面是按下那个按钮之后才发生的事。
  */
-function FetchCompatNotice({ hasRules }: { hasRules: boolean }) {
+function FetchCompatNotice() {
   return (
     <p className={styles.compat}>
-      <b>现在走的是兼容兜底，不是「不拉取」。</b>
-      库里{hasRules ? '这一栈的规则全部处于停用状态' : '一条启用的拉取规则都没有'}，
-      worker 沿用接线前的行为：按时间窗发现到的录制<b>全部拉取</b>。
-      所以现在被拉的会议不是「被某条规则放行的」，而是「还没有规则可管它」。
-      ⚠️ 建下第一条拉取规则的那一刻兜底就翻面成 spec §4.6 的 skip，
-      届时没有被任何一条拉取规则命中的会议将不再被拉取——
-      想先把现状显式化，第一条请建一条无条件的「全拉」，再用影响预览逐步收紧。
+      建下第一条拉取规则的那一刻，这一栈就翻面成「一条都不匹配时不拉取」——
+      届时没有被任何一条拉取规则命中的会议将<b>不再被拉取</b>。
     </p>
   )
 }
@@ -174,8 +181,11 @@ function RuleRow(props: RuleRowProps) {
       data-off={rule.enabled ? undefined : 'true'}
       aria-label={`${props.stackName} #${rule.id}`}
     >
-      <div className={styles.priority} title="优先级（降序求值）">
-        {Number.isFinite(rule.priority) ? rule.priority : '—'}
+      {/* 「优先级」三个字写在数字下面，不再是一个 title——
+          鼠标停上去才看得见的标签，对读不懂这个数的人等于不存在 */}
+      <div className={styles.priority}>
+        <b>{Number.isFinite(rule.priority) ? rule.priority : '—'}</b>
+        <span>优先级</span>
       </div>
 
       <div className={styles.ruleBody}>
@@ -221,14 +231,13 @@ function RuleRow(props: RuleRowProps) {
 
         {neverMatches && (
           <p className={styles.warnLine}>
-            这条规则<b>永远不会命中</b>：它每一个条件用的字段当前都没有数据源。
+            <b>永远不会命中</b>：条件用的字段当前都没有数据源。
           </p>
         )}
 
         {props.blockedBy !== null && rule.enabled && (
           <p className={styles.warnLine}>
-            上面的规则 #{props.blockedBy} 是无条件的（匹配一切），
-            求值到那一条就停了——这条<b>够不着</b>。
+            <b>够不着</b>：上面的 #{props.blockedBy} 是无条件规则（匹配一切），求值到那里就停了。
           </p>
         )}
 

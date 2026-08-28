@@ -63,7 +63,9 @@ export default function JobsPage() {
   return (
     <PageShell
       title="定时任务"
-      description="四个任务串起整条链路。失败项不会静默丢弃，会一直留在下方等重试。"
+      // 第二句（「失败项不会静默丢弃，会一直留在下方等重试」）删了：它在下面
+      // 那张表里逐行都写着——「已自动重试 2 / 5」就是同一件事的可核对版本
+      description="四个任务串起整条链路。"
     >
       {res.state === 'loading' && <Loading />}
       {res.state === 'error' && <ErrorBox message={res.error.message} onRetry={retry} />}
@@ -97,10 +99,10 @@ function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }
   return (
     <div className={styles.errorBox} data-testid="jobs-error">
       <h2 className={styles.h2}>读不到任务状态</h2>
+      {/* 标题已经说了「读不到」。留下的这半句是标题说不出来的那一件事：
+          读不到与"没在跑"是两回事，而这两件事的应对完全不同。 */}
       <p className={styles.errorText}>
-        后台服务没有响应。<b>这不代表任务没在跑</b>
-        ——调度器在另一个进程里，它跑不跑与这一页读不读得到没有关系。已经归档到 NAS
-        的文件同样不受影响。
+        后台服务没有响应。<b>这不代表任务没在跑</b>——调度器在另一个进程里。
       </p>
       <div className={styles.errorActs}>
         <Button variant="primary" onClick={onRetry}>
@@ -127,17 +129,18 @@ function Ready({
   return (
     <>
       {overdue.length > 0 && (
+        /* 原来这条横幅底下还有一段：「下面每个格子的『下次预计』照样算得出来，
+           那是算术不是承诺」。那是在替一个**此刻在说谎的标签**道歉——所以改的是
+           标签：落后的任务那一格现在写「按周期应在」（见 `JobCard`），
+           一个算出来的时刻，不是一次承诺。这段话就不用写了。 */
         <div className={styles.banner} data-sev="fail" data-testid="jobs-overdue" role="status">
           <p className={styles.bannerText}>
             <b>
               {overdue.length} 个任务已经落后（{overdue.map((j) => j.label).join('、')}）
             </b>
-            ——离上一次开跑超过两个周期，<b>调度器多半已经不在跑了</b>，或者被什么卡住了。
+            ——离上一次开跑超过两个周期，<b>调度器多半已经不在跑了</b>。
             <br />
-            <span className={styles.bannerSub}>
-              下面每个格子的「下次预计」照样算得出来，那是算术不是承诺——调度器停着的时候，
-              它到点也不会跑。先去看 worker 进程还在不在。
-            </span>
+            <span className={styles.bannerSub}>先确认调度进程还在不在。</span>
           </p>
         </div>
       )}
@@ -147,9 +150,11 @@ function Ready({
           <p className={styles.bannerText}>
             <b>{stall.text}</b>——「{stall.label}」连着没跑成，新的录制多半正在积压。
             <br />
+            {/* 主语从头到尾是那个**任务**（「最近 N 轮拉取连续失败」），
+                所以「这不是对腾讯会议接口的探测」那句免责已经不必写。
+                留下的是它说不出来的那件事：受影响的范围到哪儿为止。 */}
             <span className={styles.bannerSub}>
-              这是从任务运行记录推出来的判断，<b>不是对腾讯会议接口的直接探测</b>
-              ——我们没有那样一个探测端点。已经拉下来的会议、归档与对外采集不受影响。
+              已经拉下来的会议、归档与对外采集<b>不受影响</b>。
             </span>
           </p>
         </div>

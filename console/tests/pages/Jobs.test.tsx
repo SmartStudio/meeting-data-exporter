@@ -231,12 +231,25 @@ describe('sparkline', () => {
 })
 
 describe('四个 health 各有各的呈现', () => {
-  test('never_ran 说「从没跑过」，并说清它不等于调度器挂了', async () => {
-    await mount(payload({ jobs: [job({ health: 'never_ran', lastRun: null, recentRuns: [] })] }))
-    const card = (await screen.findAllByTestId('job-card'))[0]!
-    expect(card).toHaveTextContent('从没跑过')
-    expect(card).toHaveTextContent('和调度器停了不是一回事')
-    expect(card).not.toHaveTextContent('正常')
+  test('never_ran 说「从没跑过」，且与「已经落后」是两个不同的状态，不是一句解释', async () => {
+    await mount(
+      payload({
+        jobs: [
+          job({ health: 'never_ran', lastRun: null, recentRuns: [] }),
+          job({ name: 'x', health: 'overdue' }),
+        ],
+      }),
+    )
+    const [neverRan, overdue] = await screen.findAllByTestId('job-card')
+    expect(neverRan).toHaveTextContent('从没跑过')
+    expect(neverRan).not.toHaveTextContent('正常')
+    // 「这不是调度器挂了」由**状态本身**说：两张卡片一个不告警、一个告警。
+    // 以前它是每张卡片上一句一模一样的说明文字，四个任务就是四行重复
+    expect(neverRan).toHaveAttribute('data-alarm', 'false')
+    expect(overdue).toHaveAttribute('data-alarm', 'true')
+    expect(overdue).toHaveTextContent('已经落后')
+    // 而且「从没跑过」在一张卡片上只出现一次：徽标说了，右边就不再重复一遍
+    expect(within(neverRan!).getAllByText('从没跑过')).toHaveLength(1)
   })
 
   test('running 说「正在跑」', async () => {
@@ -346,9 +359,12 @@ describe('失败项 · 需要处理', () => {
     expect(empty).toHaveTextContent('没有待处理的失败项')
   })
 
-  test('页面上写着失败项会一直留着等重试（spec §4.8 的产品承诺）', async () => {
+  test('「会被自动重试」写在列名上（spec §4.8 的产品承诺），不是表头上方一段话', async () => {
     await mount(payload({ failuresTotal: 1, failures: [failure()] }))
-    expect(await screen.findByTestId('failures-note')).toHaveTextContent('等重试')
+    const table = await screen.findByTestId('failures-table')
+    // 列名把「自动」写进去，逐行的「2 / 5」就是这条承诺可核对的样子
+    expect(within(table).getByRole('columnheader', { name: '已自动重试' })).toBeInTheDocument()
+    expect(table).toHaveTextContent('2 / 5')
   })
 })
 
@@ -398,11 +414,17 @@ describe('「拉取连续失败」的措辞（计划 G-d）', () => {
     expect(bar).toHaveTextContent(fetchStreakText(TENCENT_DOWN_STREAK))
   })
 
-  test('说成推断，不说成「腾讯会议不可达」——我们没有那个探测', async () => {
-    await mount(payload({ jobs: [job({ name: 'fetch_recordings', recentRuns: failedRuns })] }))
+  test('主语是那个任务，不是腾讯会议——我们没有那个探测', async () => {
+    await mount(
+      payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
+    )
     const bar = await screen.findByTestId('jobs-fetch-stalled')
-    expect(bar).toHaveTextContent('不是对腾讯会议接口的直接探测')
+    // 说的是「这个任务连着没跑成」这个观察本身，句子里没有一处把它说成一个结论
+    expect(bar).toHaveTextContent('拉取新录制')
+    expect(bar).toHaveTextContent('连着没跑成')
     expect(bar.textContent ?? '').not.toContain('腾讯会议不可达')
+    // 受影响的范围说清楚：那是这句观察本身说不出来的事
+    expect(bar).toHaveTextContent('不受影响')
   })
 
   test('没连续失败到阈值就没有这条', async () => {
@@ -425,7 +447,7 @@ describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
     await mount(payload({ failuresTotal: 1, failures: [failure()] }))
     const row = await screen.findByTestId('failure-row')
     const labels = [...row.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
-    expect(labels).toEqual(['最近失败', '任务', '对象', '原因', '已重试', '影响'])
+    expect(labels).toEqual(['最近失败', '任务', '对象', '原因', '已自动重试', '影响'])
   })
 })
 

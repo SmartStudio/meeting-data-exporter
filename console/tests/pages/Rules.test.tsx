@@ -364,11 +364,16 @@ describe('三栈（spec §4.6）', () => {
     expect(row).toHaveTextContent(/够不着|挡住/)
   })
 
-  test('拉取栈一条启用的规则都没有时，说清现在走的是兼容兜底"全拉"，不是 skip', async () => {
+  test('拉取栈一条启用的规则都没有时，兜底那一行自己说真话——不是先写 skip 再挂一段更正', async () => {
     stubList([{ ...FETCH_RULE, enabled: false }])
     mount()
     const fetchStack = await screen.findByRole('region', { name: /拉取规则/ })
-    expect(fetchStack).toHaveTextContent(/兼容兜底|时间窗内全拉/)
+    // 这一栈此刻真实的处置就写在那个标签上
+    expect(fetchStack).toHaveTextContent(/发现到的录制全部拉取/)
+    // spec 字面上的 skip 这时**不能**出现：它是假的，而一句假标签加一段更正
+    // 比一句真标签差——读的人只会读到其中一半
+    expect(fetchStack).not.toHaveTextContent('兜底：一条都不匹配时不拉取')
+    // 标签自己说不出来的那一件事留着：建第一条会翻面
     expect(fetchStack).toHaveTextContent(/建下第一条拉取规则的那一刻/)
   })
 
@@ -466,17 +471,32 @@ describe('规则编辑器', () => {
     expect(panel).toHaveTextContent(/需要企业微信通讯录/)
   })
 
-  test('一条规则内只能全用「且」或全用「或」——切一处就是全切', async () => {
+  test('「且 / 或」整条规则只有一个开关——限制由控件的形状说，不由一段说明说', async () => {
     const panel = await openNewAllowRule()
     await userEvent.click(within(panel).getByRole('button', { name: '添加条件' }))
     await userEvent.click(within(panel).getByRole('button', { name: '添加条件' }))
-    // 两个连接词按钮（第一行是「当」，不是按钮）
-    const joins = within(panel).getAllByRole('button', { name: /连接词/ })
-    expect(joins).toHaveLength(2)
-    await userEvent.click(joins[0]!)
-    for (const b of within(panel).getAllByRole('button', { name: /连接词/ })) {
-      expect(b).toHaveTextContent('或')
-    }
+
+    // 三个条件，连接词却只有一个二选一的开关。以前是每行一个按钮、按一个全变，
+    // 于是下面必须挂一段「这是刻意限制」——那是在替一个说谎的控件打补丁
+    expect(within(panel).getAllByRole('radio', { name: /以下(全部|任一)条件/ })).toHaveLength(2)
+    expect(within(panel).queryAllByRole('button', { name: /连接词/ })).toHaveLength(0)
+
+    await userEvent.click(within(panel).getByRole('radio', { name: /任一条件/ }))
+    // 每一行的连接词跟着一起变：它们是这个开关的显示，不是各自的控件
+    expect(within(panel).getAllByText('或')).toHaveLength(2)
+    expect(within(panel).queryAllByText('且')).toHaveLength(0)
+  })
+
+  test('只剩一条条件时干脆没有那个 ×，不是一个点不动的 × 加一句 title', async () => {
+    const panel = await openNewAllowRule()
+    // 开局就一条条件：删到零会被写侧拒绝（空 conds = 匹配一切），所以这个口子
+    // 本来就不存在。以前它是一个 disabled 的 ×，理由写在 title 里——
+    // 而 title 要把鼠标停上去才看得见，触屏上看不到
+    expect(within(panel).queryByRole('button', { name: /删除第 1 个条件/ })).toBeNull()
+
+    await userEvent.click(within(panel).getByRole('button', { name: '添加条件' }))
+    // 有两条了，两条都删得掉
+    expect(within(panel).getAllByRole('button', { name: /删除第 \d 个条件/ })).toHaveLength(2)
   })
 
   test('影响预览的三个数逐字来自后端，前端不算', async () => {

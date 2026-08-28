@@ -24,7 +24,10 @@ import styles from './Jobs.module.css'
  * 重试，不需要也没法单独点。把整个任务的「立即运行」伪装成行内的「重试」，
  * 点下去实际跑的是一整轮——那是一个名字和行为对不上的按钮。
  *
- * 所以这里给的是一句说明（表头下方那段），把人指回上面对应任务的「立即运行」。
+ * 这件事以前靠表头下面一段说明（「失败项不会被静默丢弃……想立刻重试就用上面
+ * 对应任务的『立即运行』」）来说。**那段话删了，改成把「自动」写进列名**：
+ * 「已自动重试 2 / 5」逐行都在，既说清了它在被重试，也说清了不用人点。
+ * 一段承诺加一张表，读的人只会核对表里那个数。
  */
 export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
   const hidden = hiddenFailureCount(o)
@@ -36,11 +39,6 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
       <h2 id="jobs-failures-title" className={styles.h2}>
         失败项 · 需要处理
       </h2>
-
-      <p className={styles.failuresNote} data-testid="failures-note">
-        失败项不会被静默丢弃：它们会一直留在这张表里<b>等重试</b>
-        ——由各自的任务在下一轮自动捞起来重试。想立刻重试就用上面对应任务的「立即运行」。
-      </p>
 
       {hidden > 0 && (
         <p className={styles.truncated} data-testid="failures-truncated" role="status">
@@ -63,7 +61,10 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
               <th scope="col">任务</th>
               <th scope="col">对象</th>
               <th scope="col">原因</th>
-              <th scope="col">已重试</th>
+              {/* 「已自动重试」而不是「已重试」：这一列原来叫「已重试」，
+                  于是表头上方得挂一段话说明「它们会被各自的任务自动捞起来重试、
+                  没有逐条的重试按钮」。列名把「自动」写进去，那段话就不用写了。 */}
+              <th scope="col">已自动重试</th>
               <th scope="col">影响</th>
             </tr>
           </thead>
@@ -89,7 +90,7 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
                   )}
                 </td>
                 <td className={styles.reason} data-label="原因">{f.reason}</td>
-                <td className={styles.nowrap} data-label="已重试">
+                <td className={styles.nowrap} data-label="已自动重试">
                   {attemptsText(f)}
                   {f.escalated && (
                     // 到上限的含义是**该找人了**，不是"系统放弃了"：四个任务的
