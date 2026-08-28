@@ -15,7 +15,10 @@ import {
   STACK_META,
   blockedByUnconditional,
   groupByStack,
+  matchStatsOf,
   neverMatchesForLackOfDataSource,
+  ruleMark,
+  scannedOf,
   sortForDisplay,
 } from '../../src/pages/Rules/order'
 
@@ -37,6 +40,8 @@ function rule(over: Partial<Rule>): Rule {
     createdAt: 1_700_000_000,
     updatedAt: 1_700_000_000,
     issues: [],
+    matchCount: null,
+    matchScanned: null,
     ...over,
   }
 }
@@ -354,5 +359,211 @@ describe('neverMatchesForLackOfDataSource —— 只有 dept 条件的规则永�
     expect(
       neverMatchesForLackOfDataSource(null, rule({ conds: [{ f: 'dept', op: 'in', v: ['财务部'] }] })),
     ).toBe(false)
+  })
+})
+
+/* ── 命中数：口径由后端定，前端只读不算 ─────────────────────── */
+
+describe('matchStatsOf —— 命中数只从后端下发的字段读', () => {
+  test('后端给了就用它，不管这条规则是不是停用的', () => {
+    expect(matchStatsOf(rule({ matchCount: 8, matchScanned: 480 }))).toEqual({
+      count: 8,
+      scanned: 480,
+    })
+    // 停用的规则也照样有数：管理员要先看得见「把它开回来会命中什么」
+    expect(matchStatsOf(rule({ enabled: false, matchCount: 3, matchScanned: 480 })).count).toBe(3)
+  })
+
+  test('读不出来是 null，**不兜成 0**——0 是一个具体的答案，会让人删掉好规则', () => {
+    expect(matchStatsOf(rule({ matchCount: null, matchScanned: null }))).toEqual({
+      count: null,
+      scanned: null,
+    })
+    // 命中 0 场是一个真的答案，它必须与「读不出来」分得开
+    expect(matchStatsOf(rule({ matchCount: 0, matchScanned: 480 })).count).toBe(0)
+  })
+
+  test('NaN / Infinity 也算读不出来——上屏就是一个不是数的「数」', () => {
+    expect(matchStatsOf(rule({ matchCount: Number.NaN })).count).toBeNull()
+    expect(matchStatsOf(rule({ matchScanned: Number.POSITIVE_INFINITY })).scanned).toBeNull()
+  })
+})
+
+describe('scannedOf —— 统计范围（栈头那句「命中按最近 N 场统计」）', () => {
+  test('取第一条说得出来的；同一次响应里它们本来就是同一次扫描', () => {
+    expect(scannedOf([rule({ id: 1, matchScanned: null }), rule({ id: 2, matchScanned: 480 })])).toBe(480)
+  })
+
+  test('一条都说不出来时返回 null——宁可整句不说，不编一个数', () => {
+    expect(scannedOf([rule({ id: 1 }), rule({ id: 2 })])).toBeNull()
+    expect(scannedOf([])).toBeNull()
+  })
+})
+
+/* ── 坏规则的挂号（色条挂哪一档 + 下面那一行写什么）─────────── */
+
+describe('ruleMark —— 三类坏规则，危险方向不一样，严重度分栈', () => {
+  const mark = (over: Partial<Rule>, blockedBy: number | null = null) =>
+    ruleMark(RULES_SCHEMA, rule(over), blockedBy)
+
+  /* ── 一、conds 读不出来 → 命中 0，等于没建 ──────────────────
+     `src/policy/conds.ts` 的 evaluateRule：conds 不是数组时 matched: false，
+     **不当成「空 conds → 匹配一切」**（store/policy.ts 的 CONDS_UNPARSABLE 注释
+     写死了理由：那等于让一条坏掉的规则放行全部会议）。 */
+
+  test('conds 不是数组 → unreadable / fail', () => {
+    const m = mark({ conds: [], condsMalformed: true })
+    expect(m.flag).toBe('unreadable')
+    expect(m.tone).toBe('fail')
+  })
+
+  test('说的是「一场都命中不了」，并且点名那个 0 不是「条件写窄了」', () => {
+    const m = mark({ conds: [], condsMalformed: true })
+    expect(m.reasons[0]).toMatch(/一场都命中不了/)
+    expect(m.reasons[0]).toMatch(/不是「条件写窄了」/)
+    // **不许**说成「匹配一切 / 覆盖全部」——那是空数组 conds 的语义，方向正相反
+    expect(m.reasons.join('')).not.toMatch(/匹配一切|覆盖全部|放行全部/)
+  })
+
+  test('某一项条件读不出来 → 同样 unreadable / fail', () => {
+    expect(mark({ conds: [{ f: 'title', op: 'has', v: 'x' }, null, null] }).flag).toBe('unreadable')
+  })
+
+  test('单个条件项写坏了不在行下面再补一行——行内已经指着它写了，也不外推整条的结论', () => {
+    // describeCondition 把「这个条件写坏了」红着写在句子里它自己的位置上，
+    // 比一句「第 2 个条件读不出来」指得更准；「或」连起来时其余条件还可能成立
+    expect(mark({ join: 'or', conds: [{ f: 'title', op: 'has', v: 'x' }, null] }).reasons).toEqual([])
+    expect(mark({ conds: [{ f: 'title', op: 'has', v: 'x' }, null] }).reasons).toEqual([])
+  })
+
+  /* ── 二、conds 是空数组 → 覆盖全部会议，严重度分栈 ─────────
+     写侧 `validateDraft`（src/store/policy.ts）对**所有栈**拒绝空 conds：
+     「空条件在求值器里是『匹配一切』…要写兜底规则，请显式写一个恒真的条件，
+     不能靠『什么都不填』」。所以兜底规则本身正常，靠空 conds 实现兜底不正常。 */
+
+  test('采集权限栈 + 准许 → unconditional / fail：数据无条件出境，这一栈是唯一的闸门', () => {
+    const m = mark({ kind: 'allow', effect: 'allow', conds: [] })
+    expect(m.flag).toBe('unconditional')
+    expect(m.tone).toBe('fail')
+    expect(m.reasons[0]).toMatch(/数据离开企业边界的唯一闸门/)
+    expect(m.reasons[0]).toMatch(/无条件放行/)
+  })
+
+  test('采集权限栈 + 拒绝 → 不挂号：无条件拒绝落在安全侧', () => {
+    const m = mark({ kind: 'allow', effect: 'deny', conds: [] })
+    expect(m.flag).toBeNull()
+    expect(m.tone).toBeNull()
+    expect(m.reasons).toEqual([])
+    // 它挡住的那几行由它们自己的「够不着」说，不记在挡路的这一行上
+    expect(blockedByUnconditional(
+      sortForDisplay([
+        rule({ id: 1, kind: 'allow', effect: 'deny', priority: 200, conds: [] }),
+        rule({ id: 2, kind: 'allow', priority: 100 }),
+      ]),
+    ).get(2)).toBe(1)
+  })
+
+  test('拉取 / 归档栈 → unconditional / warn：意图对、写法不对，而且挡住下面所有规则', () => {
+    for (const kind of ['fetch', 'archive'] as const) {
+      const m = mark({ kind, effect: kind === 'fetch' ? 'all' : 'nas/x/', conds: [] })
+      expect(m.flag).toBe('unconditional')
+      expect(m.tone).toBe('warn')
+      expect(m.reasons[0]).toMatch(/优先级低于它的规则永远轮不到/)
+    }
+  })
+
+  test('三栈的句子都用后端写侧那句话的意思，前端不另发明一套说法', () => {
+    for (const over of [
+      { kind: 'allow', effect: 'allow' },
+      { kind: 'fetch', effect: 'all' },
+      { kind: 'archive', effect: 'nas/x/' },
+    ]) {
+      const m = mark({ ...over, conds: [] })
+      expect(m.reasons[0]).toMatch(/空条件在求值器里是「匹配一切」/)
+      expect(m.reasons[0]).toMatch(/显式写一个恒真的条件/)
+      expect(m.reasons[0]).toMatch(/不能靠「什么都不填」/)
+    }
+  })
+
+  test('allow 栈里正反判不出来 → fail（安全侧），但句子只说判不出来，不下「放行」的断言', () => {
+    // 全局约束是「不许静默放行」：判不出来要落到本栈的安全侧，而采集权限栈的
+    // 安全侧是**假定它在放行**。这里曾经是 warn——等于在唯一的数据出境闸门上，
+    // 把最危险的一种情况按第二档处理。两个猜错方向的代价差着数量级。
+    //
+    // 但档位升到 fail **不等于**可以把话说成"已经确认在放行"：那是另一种谎。
+    // 下面第三条断言钉的就是这一半。
+
+    // schema 读不出来
+    const blind = ruleMark(null, rule({ kind: 'allow', effect: 'allow', conds: [] }), null)
+    expect(blind.flag).toBe('unconditional')
+    expect(blind.tone).toBe('fail')
+    expect(blind.reasons[0]).not.toMatch(/放行|闸门/)
+    expect(blind.reasons[0]).toMatch(/判不出/)
+
+    // effect 不在取值域里
+    const odd = mark({ kind: 'allow', effect: 'sideways', conds: [] })
+    expect(odd.tone).toBe('fail')
+    expect(odd.reasons[0]).not.toMatch(/放行|闸门/)
+
+    // 另两栈不涉及数据出境，判不出来仍然是 warn，不跟着升档
+    for (const kind of ['fetch', 'archive'] as const) {
+      expect(ruleMark(null, rule({ kind, effect: 'whatever', conds: [] }), null).tone).toBe('warn')
+    }
+  })
+
+  test('判定只看 conds 本身，不看 issues 里有没有那句话', () => {
+    // 后端读侧不报空 conds 时（issues 为空），照样挂得出来
+    expect(mark({ kind: 'allow', effect: 'allow', conds: [], issues: [] }).flag).toBe('unconditional')
+  })
+
+  test('停用的无条件规则不挂号——它现在一场都不命中，说它覆盖全部是无中生有', () => {
+    const m = mark({ kind: 'allow', effect: 'allow', conds: [], enabled: false })
+    expect(m.flag).toBeNull()
+    expect(m.reasons).toEqual([])
+  })
+
+  /* ── 三、永不命中（字段没有数据源）→ warn ────────────────── */
+
+  test('永不命中 → ineffective / warn，不是 fail', () => {
+    const m = mark({ conds: [{ f: 'dept', op: 'in', v: ['财务部'] }] })
+    expect(m.flag).toBe('ineffective')
+    expect(m.tone).toBe('warn')
+    expect(m.reasons).toEqual(['永远不会命中：条件用的字段当前都没有数据源。'])
+  })
+
+  test('被上面一条无条件规则挡住 → ineffective，且说得出是哪一条', () => {
+    const m = mark({}, 20)
+    expect(m.flag).toBe('ineffective')
+    expect(m.reasons[0]).toMatch(/够不着：上面的 #20/)
+  })
+
+  test('停用的规则不算「够不着」——它本来就不参与求值', () => {
+    expect(mark({ enabled: false }, 20)).toEqual({ flag: null, tone: null, reasons: [] })
+  })
+
+  test('后端的 issues 逐条原样转发，一条都不挑当摘要', () => {
+    const m = mark({ issues: ['第 1 个条件写不进去', 'priority 必须是整数'] })
+    expect(m.reasons).toEqual(['第 1 个条件写不进去', 'priority 必须是整数'])
+    expect(m.flag).toBe('ineffective')
+  })
+
+  /* ── 挂号之间的优先级与好规则 ─────────────────────────────── */
+
+  test('读不出来压过其它一切：一行只挂一号，挂最严重的那一个', () => {
+    const m = mark({ conds: [null], issues: ['随便一条 issue'] })
+    expect(m.flag).toBe('unreadable')
+    expect(m.tone).toBe('fail')
+    // issues 照旧逐条转发，只是不改变这一行的挂号
+    expect(m.reasons).toEqual(['随便一条 issue'])
+  })
+
+  test('好规则一号都不挂——没有问题的行不挂色条', () => {
+    expect(mark({})).toEqual({ flag: null, tone: null, reasons: [] })
+  })
+
+  test('清单读不出来时不下「永不命中」的断言，但 conds 本身的两种坏照样认得', () => {
+    expect(ruleMark(null, rule({ conds: [{ f: 'dept', op: 'in', v: ['财务部'] }] }), null).flag).toBeNull()
+    expect(ruleMark(null, rule({ condsMalformed: true, conds: [] }), null).flag).toBe('unreadable')
+    expect(ruleMark(null, rule({ conds: [] }), null).flag).toBe('unconditional')
   })
 })

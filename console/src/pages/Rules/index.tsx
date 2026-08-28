@@ -76,8 +76,6 @@ export default function RulesPage() {
         : `${FRONTEND_TEXT.schemaMissing}，新建与编辑暂时不可用`
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [matchesFor, setMatchesFor] = useState<Rule | null>(null)
-  /** 已经问过的命中数。**没问过就不显示数字**——没问过我们说不出来。 */
-  const [hitCounts, setHitCounts] = useState<ReadonlyMap<number, number>>(new Map())
   const [toast, setToast] = useState<string | null>(null)
   const [busyRuleId, setBusyRuleId] = useState<number | null>(null)
 
@@ -86,10 +84,6 @@ export default function RulesPage() {
   const announce = useCallback((text: string) => {
     setToast(text)
     window.setTimeout(() => setToast(null), 4200)
-  }, [])
-
-  const noteHits = useCallback((ruleId: number, n: number) => {
-    setHitCounts((prev) => new Map(prev).set(ruleId, n))
   }, [])
 
   /*
@@ -139,7 +133,6 @@ export default function RulesPage() {
           rules={rules.data}
           schema={schema}
           schemaBlocked={schemaBlocked}
-          hitCounts={hitCounts}
           busyRuleId={busyRuleId}
           onCreate={(kind) => setEditor({ mode: 'create', kind })}
           onEdit={(rule) => setEditor({ mode: 'edit', rule })}
@@ -167,12 +160,7 @@ export default function RulesPage() {
         />
       )}
 
-      <MatchesPanel
-        rule={matchesFor}
-        schema={schema}
-        onClose={() => setMatchesFor(null)}
-        onCount={noteHits}
-      />
+      <MatchesPanel rule={matchesFor} schema={schema} onClose={() => setMatchesFor(null)} />
 
       <Toast open={toast !== null} onClose={() => setToast(null)} message={toast ?? ''} />
     </PageShell>
@@ -187,7 +175,6 @@ interface StacksProps {
   rules: Rule[]
   schema: RulesSchema | null
   schemaBlocked: string | null
-  hitCounts: ReadonlyMap<number, number>
   busyRuleId: number | null
   onCreate: (kind: StackKind) => void
   onEdit: (rule: Rule) => void
@@ -208,7 +195,6 @@ function RuleStacks(props: StacksProps) {
           rules={groups[kind]}
           schema={props.schema}
           schemaBlocked={props.schemaBlocked}
-          hitCounts={props.hitCounts}
           busyRuleId={props.busyRuleId}
           onCreate={props.onCreate}
           onEdit={props.onEdit}
@@ -246,26 +232,33 @@ function UnknownStack({
   const readonly = useReadonly()
   return (
     <section className={styles.group} aria-labelledby="stack-unknown">
-      <h2 id="stack-unknown" className={styles.groupTitle}>
-        认不出的规则
-      </h2>
-      <p className={styles.lede}>
-        这几条不属于三栈中的任何一栈，引擎不让它们参与任何判定。编辑它、选一栈才会生效。
-      </p>
+      <div className={styles.stackHd}>
+        <h2 id="stack-unknown" className={styles.groupTitle}>
+          认不出的规则
+        </h2>
+        <p className={styles.what}>
+          这几条不属于三栈中的任何一栈，引擎不让它们参与任何判定。编辑它、选一栈才会生效。
+        </p>
+      </div>
       <ul className={styles.rules}>
         {rules.map((r) => (
           <li key={r.id} className={styles.unknownRow} aria-label={`认不出的规则 #${r.id}`}>
-            <span className={styles.unknownKind}>类型「{r.kind}」</span>
-            <span className={styles.unknownNote}>{r.note ?? '（没有说明）'}</span>
-            <Button
-              size="sm"
-              variant="quiet"
-              onClick={() => onEdit(r)}
-              disabled={readonly || schemaBlocked !== null}
-              title={readonly ? readonlyTitle(readonly) : (schemaBlocked ?? undefined)}
-            >
-              编辑
-            </Button>
+            <span className={styles.unknownNote}>
+              <span className={styles.unknownKind}>类型「{r.kind}」</span> · {r.note ?? '（没有说明）'}
+            </span>
+            {/* 这一组没有 hover 才浮出来那一套：整组只有一颗按钮，而且这一行
+                本来就是要人去点它的——藏起来等于把唯一的出口藏了 */}
+            <span className={styles.act} data-always="true">
+              <button
+                type="button"
+                className={styles.actBtn}
+                onClick={() => onEdit(r)}
+                disabled={readonly || schemaBlocked !== null}
+                title={readonly ? readonlyTitle(readonly) : (schemaBlocked ?? undefined)}
+              >
+                编辑
+              </button>
+            </span>
           </li>
         ))}
       </ul>
@@ -282,13 +275,15 @@ function LoadingStacks() {
     <div className={styles.stacks} aria-busy="true" aria-label="规则载入中">
       {['一', '二', '三'].map((n, i) => (
         <section key={n} className={styles.group}>
-          <Skeleton width="9em" />
-          <Skeleton width="24em" size="sm" />
+          <div className={styles.stackHd}>
+            <Skeleton width="9em" />
+            <Skeleton width="24em" size="sm" />
+          </div>
           <ul className={styles.rules}>
             {Array.from({ length: i === 2 ? 2 : 3 }, (_, j) => (
               <li key={j} className={styles.skeletonRow}>
                 <Skeleton width="3em" size="sm" />
-                <Skeleton width={j % 2 === 0 ? '70%' : '52%'} />
+                <Skeleton width={j % 2 === 0 ? '70%' : '52%'} size="sm" />
               </li>
             ))}
           </ul>

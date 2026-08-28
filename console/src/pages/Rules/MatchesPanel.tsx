@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback } from 'react'
 import { Drawer } from '@/ui/Drawer'
 import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
@@ -27,6 +27,13 @@ import styles from './Rules.module.css'
  * 「N 场满足这条规则的条件」。「命中」是个能被读成两种意思的词，所以要一段
  * 说明去收窄它；换成一个只有一种读法的说法，那段说明就不用写了。
  *
+ * ## 这个面板不再回填规则行上的那个数
+ *
+ * 规则行右边的命中数现在由 `GET /rules` 每条规则自带的 `matchCount` 给出（口径同上，
+ * 见 `order.ts` 的 `matchStatsOf`），页面一进来就有数，不用先点开这里问一次。
+ * 这个面板只回答「是哪几场」，并且报出**它自己这一次**的考察范围——两处若因为
+ * 扫描批次不同而对不上，那正是要看得见的事，不该由前端挑一个数覆盖另一个。
+ *
  * ## 「标题缺失」与「标题为空」在这里必须分得开（阶段 4 · T13）
  *
  * 后端为此在每一条命中里下发了 `missing`。两者都渲染成一个空格子的话，
@@ -39,42 +46,26 @@ export interface MatchesPanelProps {
   /** 只用来把 effect 读成人话。**读不出来时照直显示原值**，不猜。 */
   schema: RulesSchema | null
   onClose: () => void
-  /** 拿到场次数之后回传，好让规则行显示那个数——**问过之后才显示**。 */
-  onCount: (ruleId: number, n: number) => void
 }
 
-export function MatchesPanel({ rule, schema, onClose, onCount }: MatchesPanelProps) {
+export function MatchesPanel({ rule, schema, onClose }: MatchesPanelProps) {
   return (
     <Drawer
       open={rule !== null}
       onClose={onClose}
       title={rule === null ? '命中的会议' : `命中的会议 · 规则 #${rule.id}`}
     >
-      {rule !== null && (
-        <MatchesBody key={rule.id} rule={rule} schema={schema} onCount={onCount} />
-      )}
+      {rule !== null && <MatchesBody key={rule.id} rule={rule} schema={schema} />}
     </Drawer>
   )
 }
 
-function MatchesBody({
-  rule,
-  schema,
-  onCount,
-}: {
-  rule: Rule
-  schema: RulesSchema | null
-  onCount: (id: number, n: number) => void
-}) {
+function MatchesBody({ rule, schema }: { rule: Rule; schema: RulesSchema | null }) {
   const res = useResource<RuleMatchesResult>(
     useCallback(() => ruleMatches(rule.id), [rule.id]),
     [rule.id],
   )
   const ready = res.state === 'ready' ? res.data : null
-
-  useEffect(() => {
-    if (ready !== null) onCount(rule.id, ready.matches.length)
-  }, [ready, rule.id, onCount])
 
   return (
     <div className={styles.matches}>

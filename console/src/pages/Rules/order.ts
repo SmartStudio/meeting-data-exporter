@@ -23,7 +23,7 @@
  */
 
 import type { Rule, RulesSchema, StackKind } from '../../api/admin/rules'
-import { fieldOf } from './fields'
+import { effectOf, fieldOf, stackOf } from './fields'
 
 export interface StackMeta {
   /** 逐字对应 spec §4.6 的组名。 */
@@ -170,4 +170,223 @@ export function neverMatchesForLackOfDataSource(
     const field = fieldOf(schema, c.f)
     return field !== null && !field.available
   })
+}
+
+/* ── 命中数：口径由后端定，前端只读不算 ───────────────────────── */
+
+/**
+ * `GET /api/v1/admin/rules` 每条规则自带的两个数（后端契约）：
+ *
+ * - `matchCount`   这条规则**自身条件**命中的场次
+ * - `matchScanned` 这次统计考察了多少场会议（口径可回溯）
+ *
+ * 口径与 `GET /api/v1/admin/rules/:id/matches` **完全一致**（后端的 `matchesRule`，
+ * 即这条规则的 conds 匹配，**不是整栈求值的结果**）。停用的规则也照样有数——
+ * 管理员要先看得见「把它开回来会命中什么」。
+ *
+ * ## 读不到就说读不到，不许前端自己算
+ *
+ * 字段缺席（旧后端 / 契约不对）、类型不对、后端那次统计取不到会议全集——三种都是
+ * **读不出来**，`api/admin/rules.ts` 的宽读把它们统一读成 `null`，屏幕上显示 `—`。
+ *
+ * - **不兜成 0**：0 是一个具体的答案，管理员会照着它去删一条其实好好的规则。
+ * - **不前端自己数一遍**：那就是第二份真相，而两份不一致的地方恰好是判定边界
+ *   （`api/admin/rules.ts` 文件头第一节把这条写死了）。
+ */
+
+export interface RuleMatchStats {
+  /** 命中场次。**null = 读不出来**，不是 0。 */
+  count: number | null
+  /** 这次统计考察了多少场会议。null = 读不出来。 */
+  scanned: number | null
+}
+
+/** NaN / Infinity 也算读不出来：它们上屏就是一个不是数的「数」。 */
+function finiteOrNull(v: number | null): number | null {
+  return v !== null && Number.isFinite(v) ? v : null
+}
+
+export function matchStatsOf(rule: Rule): RuleMatchStats {
+  return { count: finiteOrNull(rule.matchCount), scanned: finiteOrNull(rule.matchScanned) }
+}
+
+/**
+ * 一栈的统计范围（给栈头那句「命中按最近 N 场统计」用）。
+ *
+ * 同一次响应里每条规则的 `matchScanned` 是同一次扫描的结果，所以取第一条说得出来的
+ * 就够。一条都说不出来时返回 null，那句话整句不出现——**宁可不说，不编一个数**。
+ */
+export function scannedOf(rules: readonly Rule[]): number | null {
+  for (const r of rules) {
+    const s = matchStatsOf(r).scanned
+    if (s !== null) return s
+  }
+  return null
+}
+
+/* ── 坏规则的挂号 ─────────────────────────────────────────────── */
+
+/**
+ * 一行挂哪一档。**三类坏规则，危险方向不一样**——这一点在界面上曾经是糊的。
+ *
+ * | 挂号 | 库里长什么样 | 引擎怎么判（`src/policy/conds.ts` 的 `evaluateRule`） | 后果 |
+ * | --- | --- | --- | --- |
+ * | `unreadable`    | `conds` 列不是数组 / 某一项不是 `{ f, op, v }` | `matched: false`（**不当成空 conds**） | 一场都命中不了，等于没建 |
+ * | `unconditional` | `conds` 是空数组 `[]` | `matched: true`「规则没有条件，匹配全部会议」 | 命中全部 |
+ * | `ineffective`   | 条件用的字段没有数据源 / 被上面那条挡住 / 后端 issues | —— | 这条是死的 |
+ *
+ * 前两类看起来像同一件事（"条件不对"），实际正好相反：一条什么都不做，一条什么都放过。
+ * `src/store/policy.ts` 的 `CONDS_UNPARSABLE` 注释把这条写死了——「不能当成
+ * 『空 conds → 匹配一切』，那等于让一条坏掉的规则放行全部会议」。
+ *
+ * 所以 `unreadable` 那一行的命中数会是 **0**，而那个 0 **不是「条件写窄了」**；
+ * `unconditional` 那一行的命中数是全部。两者在屏幕上必须分得开，否则管理员看见 0
+ * 会去调宽条件，看见"全部"会以为规则很有效。
+ */
+export type RuleFlag = 'unreadable' | 'unconditional' | 'ineffective'
+
+/** 色条与行底色的档。挂号有三类，档只有两级——同一类挂号的档可以随栈变（见下）。 */
+export type RuleTone = 'fail' | 'warn'
+
+export interface RuleMark {
+  /** 挂哪一号。null = 这一行没有要人处理的事。 */
+  flag: RuleFlag | null
+  /** 色条与行底色。`flag` 为 null 时同为 null。 */
+  tone: RuleTone | null
+  /** 挂在这一行下面的说明句子，按严重程度排。 */
+  reasons: string[]
+}
+
+/** 条件读不出来。写坏的条件项占着位（见 `api/admin/rules.ts` 第二节），所以数得出来。 */
+function condsUnreadable(rule: Rule): boolean {
+  return rule.condsMalformed || rule.conds.some((c) => c === null)
+}
+
+/** 无条件 = `conds` 是**空数组**（不是"读不出来"，那是另一号）。 */
+function isEmptyConds(rule: Rule): boolean {
+  return !rule.condsMalformed && rule.conds.length === 0
+}
+
+/**
+ * 空 conds 那句话。**取后端写侧 `validateDraft` 的原话**
+ *（`src/store/policy.ts`：「conds 是空数组：空条件在求值器里是「匹配一切」，
+ * 这等于一条覆盖全部会议的兜底规则。要写全放行/全拉取的兜底规则，请显式写一个
+ * 恒真的条件，不能靠「什么都不填」」）。
+ *
+ * 前端不另发明一套说法：`api/admin/rules.ts` 文件头写死了两处说的必须是同一件事，
+ * 而这一条正是管理员照着去改规则的那句话——控制台从今往后建不出空 conds 的规则，
+ * 库里还有的那些是历史数据或别的写入者留下的。
+ */
+const EMPTY_CONDS_TEXT =
+  '空条件在求值器里是「匹配一切」，这等于一条覆盖全部会议的兜底规则。' +
+  '要写兜底规则，请显式写一个恒真的条件，不能靠「什么都不填」。'
+
+/**
+ * 无条件规则挂哪一档——**问题在任何栈都成立，严重度分栈**。
+ *
+ * - `allow` 栈 + 正面判定（准许）→ `fail`。这是数据无条件出境，而采集权限栈是唯一的闸门。
+ * - `allow` 栈 + 反面判定（拒绝）→ **不挂**。无条件拒绝落在安全侧。它仍然会把同栈里
+ *   优先级低于它的规则全挡住，但那件事由那几行自己的「够不着」说（`blockedByUnconditional`），
+ *   记在挡路的这一行上等于把同一件事说两遍。
+ * - `fetch` / `archive` → `warn`。意图（兜底）是对的，写法不对；而且它会把同栈里
+ *   优先级低于它的规则全部挡住，那些永远轮不到。
+ * - **`allow` 栈但 effect 的正反判不出来**（`/rules/schema` 读不出来、或 effect 不在取值域里）
+ *   → **`fail`**，句子说清楚是**判不出来**、按最坏情况处理。全局约束是「不许静默放行」，
+ *   判不出来要落到本栈的安全侧；采集权限栈的安全侧是**假定它在放行**。降成 `warn`
+ *   等于在唯一的数据出境闸门上，把最危险的一种情况按第二档处理——猜错的两个方向
+ *   代价差着数量级。注意句子不能写成好像已经确认在放行了，那是另一种谎。
+ *
+ * 正反用的是后端下发的 `withAssetTypes`（= 后端的 `isPositive`），不是前端认 `'allow'`
+ * 这个字符串——认字符串就是把取值域又抄了一份。
+ */
+function unconditionalMark(schema: RulesSchema | null, rule: Rule): { tone: RuleTone; text: string } | null {
+  if (rule.kind !== 'allow') {
+    return { tone: 'warn', text: `${EMPTY_CONDS_TEXT}而且同栈里优先级低于它的规则永远轮不到。` }
+  }
+  const eff = effectOf(stackOf(schema, rule.kind), rule.effect)
+  if (eff === null) {
+    return {
+      tone: 'fail',
+      text:
+        `${EMPTY_CONDS_TEXT}而且判不出它是准许还是拒绝` +
+        '（字段清单读不出来，或这个动作不在取值域里）——采集权限栈按最坏情况处理。',
+    }
+  }
+  if (!eff.withAssetTypes) return null
+  return {
+    tone: 'fail',
+    text: `${EMPTY_CONDS_TEXT}而这一栈是数据离开企业边界的唯一闸门——它现在对这个采集程序无条件放行。`,
+  }
+}
+
+/**
+ * 这一行挂哪一号、哪一档，下面写什么。
+ *
+ * ## 判定只看 `conds` 本身，不看 `issues` 里有没有那句话
+ *
+ * 后端读侧（`describeStackRuleIssues`）与写侧（`validateDraft`）不是同一份检查，
+ * 读侧不报空 conds 的时候，靠 `issues` 判就会整条漏掉。
+ *
+ * ## 说的是**后果**，不重复行内那句话
+ *
+ * 「conds 不是数组」「这个条件写坏了」「所有会议（无条件）」这几件事，
+ * `describeCondition` 已经逐字写在这一行的句子里了。下面这几行写的是行内说不出来的
+ * 那一半：**于是会发生什么**——一场都命中不了 / 覆盖全部会议 / 这条是死的。
+ *
+ * 「一场都命中不了」与「匹配一切」逐字对齐 `evaluateRule` 的两个分支，不是从形状上猜的。
+ *
+ * ## 停用的规则不挂前两号
+ *
+ * 停用的无条件规则现在一场都不命中，说它"正在覆盖全部会议"是无中生有；它的条件那一格
+ * 照旧写着「所有会议（无条件）」，要开回来的人看得见。
+ */
+export function ruleMark(
+  schema: RulesSchema | null,
+  rule: Rule,
+  blockedBy: number | null,
+): RuleMark {
+  const reasons: string[] = []
+  let flag: RuleFlag | null = null
+  let tone: RuleTone | null = null
+
+  if (condsUnreadable(rule)) {
+    flag = 'unreadable'
+    tone = 'fail'
+    // 「conds 不是数组」这五个字行内那句已经写着了，这里只补它说不出来的后果。
+    // **那个 0 尤其要点名**：不点名的话，管理员看见 0 会去把条件调宽，而条件根本
+    // 就没被求值过。
+    //
+    // 单个条件项写坏了**不在这里补一行**：`describeCondition` 已经把「这个条件写坏了」
+    // 红着写在句子里它自己的位置上，那比一句「第 2 个条件读不出来」指得更准；
+    // 结论也不外推——「或」连起来时其余条件还可能成立，那是求值的事。
+    if (rule.condsMalformed) {
+      reasons.push('求值时整条判不成立，这条规则一场都命中不了。它的命中 0 不是「条件写窄了」。')
+    }
+  } else if (rule.enabled && isEmptyConds(rule)) {
+    const mark = unconditionalMark(schema, rule)
+    if (mark !== null) {
+      flag = 'unconditional'
+      tone = mark.tone
+      reasons.push(mark.text)
+    }
+  }
+
+  if (neverMatchesForLackOfDataSource(schema, rule)) {
+    reasons.push('永远不会命中：条件用的字段当前都没有数据源。')
+  }
+
+  if (blockedBy !== null && rule.enabled) {
+    reasons.push(`够不着：上面的 #${blockedBy} 是无条件规则（匹配一切），求值到那里就停了。`)
+  }
+
+  // 后端下发的静态检查结果逐条原样转发，不挑一条当摘要——校验刻意不短路
+  // 就是为了一次把能说的都说完
+  for (const issue of rule.issues) reasons.push(issue)
+
+  if (flag === null && reasons.length > 0) {
+    flag = 'ineffective'
+    tone = 'warn'
+  }
+
+  return { flag, tone, reasons }
 }

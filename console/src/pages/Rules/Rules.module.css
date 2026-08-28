@@ -1,44 +1,85 @@
-/* 自动规则页。色值与尺寸一律走 tokens.css —— 组件里不出现裸值。 */
+/* 自动规则页。色值与尺寸一律走 tokens.css —— 组件里不出现裸值。
+ *
+ * ## 这一页的几何：一把梯子，不是一摞卡片
+ *
+ * 规则的本质是「按优先级降序往下走，第一条命中的说了算」。原来一条规则是一张
+ * 98px 的白卡（1px 边 + 8px 圆角 + 三行内文），十二条竖着排掉 1764px——卡片把
+ * 「谁在谁上面」抹平了，十二条看起来一样重，眼睛没有落点。
+ *
+ * 现在一条规则是一行（约 33px）：四格网格 `优先级 · 条件 → 结果 · 命中 · 动作`，
+ * 行与行之间只有一条 `--line-soft`。列宽用 `em` 而不是像素，且 `.colHd` 与
+ * `.rule` **共用同一个 font-size**——两者的 em 必须解析成同一个数，否则列标题
+ * 与数字对不齐。
+ *
+ * 坏规则不在行里加橙字，而是整行挂 `--s-1` 的内投影色条 + 换软底色。软底色上
+ * `--ink-3` 只有 4.3–4.4:1（不达 AA），所以挂了色条的行里所有次要文字统一抬到
+ * `--ink-2`——见下面 `[data-flag]` 那一组。
+ */
 
 .stacks {
   display: flex;
   flex-direction: column;
-  gap: var(--s-9);
+  gap: var(--s-8);
 }
 
 .group {
   min-width: 0;
 }
 
-.groupTitle {
+/* ── 栈头：栈名 · 这一组管什么 · 统计范围 · 兜底 ─────────────── */
+
+.stackHd {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   flex-wrap: wrap;
-  gap: var(--s-3);
-  font-size: var(--t-lg);
+  gap: var(--s-2) var(--s-4);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.groupTitle {
+  font-size: var(--t-md);
   font-weight: 600;
   color: var(--ink);
   margin: 0;
+  white-space: nowrap;
 }
 
-.lede {
-  font-size: var(--t-sm);
-  color: var(--ink-3);
-  line-height: 1.7;
-  margin: var(--s-2) 0 0;
-  max-width: 68ch;
-}
-
-.fallback {
+.what {
+  margin: 0;
   font-size: var(--t-xs);
   color: var(--ink-3);
-  margin: var(--s-2) 0 0;
+  line-height: 1.6;
+  min-width: 0;
+}
+.sep {
+  color: var(--ink-3);
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.scanned {
+  margin: 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.fall {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+.fall b {
+  color: var(--ink-2);
+  font-weight: 600;
 }
 /* 拉取栈没有启用规则时这一行说的是「现在全拉」——那不是一句背景说明，
    是这一栈此刻真实的处置，所以它要有琥珀的分量，不能和别的兜底一样淡。 */
-.fallback[data-compat='true'] b {
+.fall[data-compat='true'] b {
   color: var(--warn);
-  font-weight: 600;
 }
 
 /* 「建第一条会翻面」贴在新建按钮上方。琥珀而不是红：它不是故障，
@@ -60,90 +101,84 @@
 }
 
 .emptyStack {
-  margin: var(--s-4) 0;
-  padding: var(--s-5);
-  border: 1px dashed var(--line);
-  border-radius: var(--r);
+  margin: var(--s-4) 0 0;
+  padding-left: var(--s-4);
   color: var(--ink-3);
   font-size: var(--t-sm);
   line-height: 1.75;
   max-width: 70ch;
 }
 
+.newRow {
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-3);
+}
+
+/* ── 梯子本体 ─────────────────────────────────────────────────── */
+
 .rules {
   list-style: none;
-  margin: var(--s-4) 0;
+  margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
 }
 
-/* 四段横排：优先级 · 规则本体 · 命中数 · 动作。
-   刻意**不用断点**——规则本体的 flex-basis 给一个 ch 下限，窄到装不下时
-   命中数与动作自己换行。写死一个 720px 的断点既是一个裸像素（令牌只在
-   声明里生效，媒体查询读不到 var()），也会在别的宽度上把按钮推出视口，
-   而推出视口的按钮既看不见也够不着。 */
+/* 列标题给一次，不是每条都写。**不用 uppercase 也不用宽字距**——那是拉丁
+   字母的排版手法，套在方块字上只会让字散开。字号与行本身同档，只靠颜色退后。 */
+.colHd,
 .rule {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: var(--s-4);
-  padding: var(--s-4) var(--s-5);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--surface);
-}
-.rule[data-off='true'] {
-  background: var(--surface-2);
-  border-style: dashed;
+  display: grid;
+  grid-template-columns: 3.6em minmax(0, 1fr) 5.4em 7.2em;
+  column-gap: var(--s-4);
+  align-items: baseline;
+  padding-left: var(--s-4);
+  font-size: var(--t-sm);
 }
 
-/* 优先级：数字 + 它自己的标签。几何刻意和右边的「N 场命中」对称——
-   两边都是「一个数，下面写着它是什么数」。 */
-.priority {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--s-0);
-  min-width: 4ch;
-  padding-top: var(--s-0);
+.colHd {
+  padding-top: var(--s-3);
+  padding-bottom: var(--s-1);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line-soft);
 }
-.priority b {
+.colHd span:first-child,
+.colHd span:nth-child(3) {
+  text-align: right;
+}
+
+.rule {
+  position: relative;
+  padding-top: var(--s-2);
+  padding-bottom: var(--s-2);
+  line-height: 1.55;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+/* hover 只给没挂色条的行：挂了色条的行底色本身就是信息，不该被 hover 覆盖 */
+.rule:hover:not([data-tone]) {
+  background: var(--surface-2);
+}
+
+/* 优先级：等宽、右对齐，读的是刻度不是数值。 */
+.pri {
   font-family: var(--mono);
-  font-size: var(--t-lg);
-  font-weight: 500;
+  font-variant-numeric: tabular-nums;
   color: var(--ink-3);
-}
-.priority span {
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
+  text-align: right;
   white-space: nowrap;
 }
 
-.ruleBody {
-  flex: 1 1 22ch;
+.sent {
   min-width: 0;
-}
-
-.cond {
-  margin: 0;
-  font-size: var(--t-md);
-  color: var(--ink);
-  line-height: 1.7;
   overflow-wrap: anywhere;
 }
-
-.join {
-  color: var(--ink-3);
-  font-weight: 500;
+/* 结果是这一行里唯一要抢眼的东西：条件读完是为了读到它 */
+.sent b {
+  color: var(--ink);
+  font-weight: 600;
 }
 
-.arrow {
-  color: var(--ink-3);
-}
-
+.join,
+.arrow,
 .condAll {
   color: var(--ink-3);
 }
@@ -152,9 +187,10 @@
   color: var(--fail);
 }
 
-.meta {
-  margin: var(--s-2) 0 0;
-  font-size: var(--t-xs);
+/* 出处：谁建的、什么时候、给哪个采集程序。退一档字号——它答的是查起来才要的
+   问题，不该和判定并排。 */
+.prov {
+  font-size: var(--t-2xs);
   color: var(--ink-3);
 }
 
@@ -162,107 +198,274 @@
   color: var(--warn);
 }
 
-.issues {
-  margin: var(--s-3) 0 0;
-  padding-left: var(--s-5);
-  font-size: var(--t-xs);
+/* 命中数：直接显示，同时是一个按钮（点开看是哪几场）。 */
+.hits {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  text-align: right;
+  cursor: pointer;
+}
+.hits:hover {
+  color: var(--brand-text);
+  text-decoration: underline;
+}
+/* 一场都不命中的规则现在什么也没做。这不一定是错（刚建的规则本来就是 0），
+   所以是琥珀不是红。 */
+.hits[data-zero='true'] {
   color: var(--warn);
-  line-height: 1.7;
+}
+/* 「场命中」这三个字在宽屏由列标题说，窄屏没有列标题才现身。
+   按钮自己带 aria-label，藏不藏它都不影响读屏。 */
+.hitsUnit {
+  display: none;
 }
 
-.warnLine {
-  margin: var(--s-2) 0 0;
-  font-size: var(--t-xs);
-  color: var(--warn);
-  line-height: 1.7;
+/* 「编辑 · 停用」十二行常驻就是十二行噪声。只在这一行 hover / focus-within 时
+   浮出来——**只动 opacity，不动布局**，否则整行会在 hover 时抖一下；按钮一直在
+   DOM 里、一直在 Tab 序列里，键盘走过去 :focus-within 就把它点亮。 */
+.act {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--s-1);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.rule:hover .act,
+.rule:focus-within .act,
+.act[data-always='true'] {
+  opacity: 1;
 }
 
-.rowError {
-  margin: var(--s-2) 0 0;
+.actBtn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
   font-size: var(--t-xs);
+  color: var(--ink-3);
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+.actBtn:hover:not(:disabled) {
+  color: var(--ink);
+  text-decoration: underline;
+}
+.actBtn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+.actSep {
+  color: var(--ink-3);
+  font-size: var(--t-xs);
+}
+
+/* 挂在这一行下面的说明句子。**不进第一列**：第一列是刻度，说明是文字。
+   它跟着这一行的档走——一行只有一个严重程度，说明句子不该另立一个。 */
+.why {
+  grid-column: 2 / -1;
+  font-size: var(--t-xs);
+  line-height: 1.6;
+  color: var(--warn);
+}
+.rule[data-tone='fail'] .why {
   color: var(--fail);
 }
 
-/* 命中数：它同时是一个按钮（点开看是哪几场）。 */
-.hits {
-  flex: none;
-  appearance: none;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
+/* ── 坏规则：左侧色条 + 软底色 ────────────────────────────────
+   色条用 inset 投影而不是 border-left：border 会让这一行比别的行窄一条，
+   梯子就不齐了。宽度走 --flag-w：这条线在会议记录 / 自动规则 / 操作审计三页
+   表达同一件事，三处各写各的宽度就是三条粗细不一样的同种线。
+
+   档只有两级（见 order.ts 的 RuleTone），挂号有三类，而且**同一类挂号的档随栈变**
+   （无条件规则在采集权限栈是 fail、在另两栈是 warn）——所以色条只认 data-tone，
+   句子里的标记才认 data-flag。 */
+.rule[data-tone='fail'] {
+  box-shadow: inset var(--flag-w) 0 0 var(--fail);
+  background: var(--fail-soft);
+}
+.rule[data-tone='warn'] {
+  box-shadow: inset var(--flag-w) 0 0 var(--warn);
+  background: var(--warn-soft);
+}
+/* --ink-3 压在 --fail-soft 上 4.31:1、压在 --warn-soft 上 4.44:1，两处都不达 AA。
+   挂了色条的行里次要文字统一抬到 --ink-2（8.8 / 9.0:1）。 */
+.rule[data-tone] :is(.pri, .prov, .arrow, .join, .condAll, .actSep) {
   color: var(--ink-2);
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  padding: var(--s-1) var(--s-3);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s-0);
-  cursor: pointer;
-  transition:
-    background var(--dur-1) var(--ease-out),
-    border-color var(--dur-1) var(--ease-out);
 }
-.hits:hover {
-  background: var(--brand-soft);
-  border-color: var(--brand-line);
-}
-.hits b {
-  font-family: var(--mono);
-  font-size: var(--t-lg);
-  font-weight: 500;
-  color: var(--brand-text);
-}
-.hits span {
-  font-size: var(--t-2xs);
-  /* --ink-2 而不是 --ink-3：hover 时底色换成 --brand-soft，--ink-3 在它上面
-     只有 4.37:1。hover 态不在门槛的扫描范围里，正因如此更要在这里定死。 */
+.rule[data-tone] .hits:not([data-zero='true']) {
   color: var(--ink-2);
-  white-space: nowrap;
+}
+.rule[data-tone] .actBtn:not(:disabled) {
+  color: var(--ink-2);
 }
 
-.ruleActions {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
+/* 两类挂号的分辨标记，都长在句子里——它们的危险方向正好相反：
+   `unconditional` 的「所有会议（无条件）」是**覆盖全部**那一头，
+   `unreadable` 的命中 0 是**一场都不命中**那一头（那个 0 不是"条件写窄了"）。
+   标记跟着这一行的档取色，不自己另定一个。 */
+.rule[data-flag='unconditional'] .condAll {
+  font-weight: 600;
+}
+.rule[data-flag='unconditional'][data-tone='fail'] .condAll {
+  color: var(--fail);
+}
+.rule[data-flag='unconditional'][data-tone='warn'] .condAll {
+  color: var(--warn);
+}
+.rule[data-flag='unreadable'] .hits {
+  color: var(--fail);
 }
 
-/* 认不出 kind 的那一组。底色留 --surface 而不是 --fail-soft：这一行里有一颗
-   quiet 按钮（--ink-3 的字），压在 --fail-soft 上只有 4.32:1，不达 AA。
-   「这里有问题」由虚线红边框和红色的 kind 标签说，不靠一整块底色。 */
+/* 停用：整行退后，但**不许退到看不清**——停用不等于不可读，管理员正是要读它
+   才决定开不开回来。
+   
+   退后靠**颜色**，不靠父级 `opacity`。opacity 是无差别的：它把整行每一处对比度
+   一起压低，包括语义色。--warn 压在 --ground 上满强度只有 4.85:1（几乎没有余量），
+   乘 0.8 就掉到 3.41:1——「· 已停用」这四个字和命中数那个 0 都因此不达 AA。
+   而这两处恰恰是语义，不能靠抬成 --ink-2 来救，那样就不是警示色了。
+   
+   所以：中性文字降到 --ink-3（它本身就是文字梯度的最后一档，正好是"退后"的量），
+   语义色保持满强度。 */
+.rule[data-off='true'] :is(.pri, .prov, .arrow, .join, .condAll, .actSep) {
+  color: var(--ink-3);
+}
+.rule[data-off='true'] .hits:not([data-zero='true']) {
+  color: var(--ink-3);
+}
+.rule[data-off='true'] .actBtn:not(:disabled) {
+  color: var(--ink-3);
+}
+
+/* 停用/启用失败的那句后端错误：它与这一行的挂号无关，永远是红的。
+   放在档规则之后，好让同优先级的它赢。 */
+.rowError,
+.rule[data-tone] .rowError {
+  color: var(--fail);
+}
+
+/* ── 认不出 kind 的那一组 ─────────────────────────────────────
+   同一把梯子的几何，只是没有优先级和命中——它不参与任何判定，那两格本来就
+   没有值。红色条挂在行左侧，和别的坏规则用同一套语言。 */
 .unknownRow {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--s-3);
-  padding: var(--s-4) var(--s-5);
-  border: 1px dashed var(--fail-line);
-  border-radius: var(--r);
-  background: var(--surface);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7.2em;
+  column-gap: var(--s-4);
+  align-items: baseline;
+  padding: var(--s-2) 0 var(--s-2) var(--s-4);
+  border-bottom: 1px solid var(--line-soft);
   font-size: var(--t-sm);
+  line-height: 1.55;
+  box-shadow: inset var(--flag-w) 0 0 var(--fail);
+  background: var(--fail-soft);
 }
 .unknownKind {
   font-family: var(--mono);
   color: var(--fail);
 }
 .unknownNote {
-  flex: 1;
-  min-width: 0;
+  color: var(--ink-2);
+}
+/* 同上：--fail-soft 上不许留 --ink-3 的字 */
+.unknownRow .actBtn:not(:disabled) {
   color: var(--ink-2);
 }
 
 .skeletonRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: 3.6em minmax(0, 1fr);
+  column-gap: var(--s-4);
   align-items: center;
-  gap: var(--s-4);
-  padding: var(--s-4) var(--s-5);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
+  padding: var(--s-2) 0 var(--s-2) var(--s-4);
+  border-bottom: 1px solid var(--line-soft);
 }
 
-/* 错误态：端点名与后端错误码原样显示，好让人直接定位。 */
+/* 列标题只对着屏幕成立；读屏是逐行念的，光念一个 900 说不出它是什么。 */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── 窄屏 / 触屏 ──────────────────────────────────────────────
+   **触屏没有 hover**：宽屏上浮出来的那两颗按钮在这里必须常驻，否则它们在手机上
+   永远看不见，也就等于不存在。同一档里补足 --tap-min——手指点不准 20px 高的字。
+   列也在这里拆开重排：四格挤进 375px 只会把句子压成一条竖柱。 */
+@media (max-width: 56em) {
+  .colHd {
+    display: none;
+  }
+
+  .rule {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: var(--s-1);
+    padding-top: var(--s-3);
+    padding-bottom: var(--s-3);
+  }
+  .pri {
+    grid-column: 1;
+    grid-row: 1;
+    text-align: left;
+    color: var(--ink-3);
+  }
+  /* 列标题没了，那三个字回到数字旁边 */
+  .pri .srOnly {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+  }
+  .hits {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .hitsUnit {
+    display: inline;
+  }
+  .sent {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .act {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-content: flex-start;
+    gap: var(--s-3);
+    opacity: 1;
+  }
+  .why {
+    grid-column: 1 / -1;
+  }
+
+  .actBtn,
+  .hits {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--tap-min);
+  }
+
+  .unknownRow {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--s-1);
+  }
+}
+
+/* ── 错误态：端点名与后端错误码原样显示，好让人直接定位 ──────── */
+
 .error {
   padding: var(--s-6);
   border: 1px solid var(--fail-line);

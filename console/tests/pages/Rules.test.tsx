@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { render, renderAsRole } from '../helpers/session'
@@ -17,7 +19,25 @@ import { RULES_SCHEMA_BODY } from '../helpers/rulesSchema'
  *   前端只要算过一遍就会露馅。
  * - 判定理由一律来自后端；理由是空串时显示「理由缺失」，不留白。
  * - 「标题缺失」与「标题为空」在命中列表里是两句不同的话（阶段 4 · T13）。
+ * - 命中数是后端下发的字段，读不到就显示「—」——前端一次都不自己数。
  */
+
+/**
+ * `Rules.module.css` 的原文。
+ *
+ * jsdom 解析得出 `.act` 的静态 `opacity: 0`（vitest 的 `css: true` 会把 CSS Module
+ * 注进文档），但它的选择器引擎**认不出 `:focus-within`**（实测 `matches(':focus-within')`
+ * 恒为 false），`:hover` 更不可能模拟。于是「悬停 / 聚焦时才浮出来」这条契约
+ * 只能在样式表原文里钉住——比不钉强，也比让它在某次重构里悄悄消失强。
+ */
+const RULES_CSS = readFileSync(rulesCssPath(), 'utf8')
+
+/** vitest 的 `import.meta.url` 不是 file: 协议，所以从工作目录找（`npm test` 在 console/ 下跑）。 */
+function rulesCssPath(): string {
+  const rel = 'src/pages/Rules/Rules.module.css'
+  const here = path.join(process.cwd(), rel)
+  return existsSync(here) ? here : path.join(process.cwd(), 'console', rel)
+}
 
 interface Call {
   url: string
@@ -99,6 +119,9 @@ const ALLOW_RULE = {
   effect: 'allow',
   note: '财务会议给数据组',
 }
+
+/** 后端下发了命中数的那一份（`GET /rules` 每条规则自带 matchCount / matchScanned）。 */
+const ALLOW_RULE_COUNTED = { ...ALLOW_RULE, matchCount: 8, matchScanned: 480 }
 
 const PROGRAMS = [
   {
@@ -434,11 +457,237 @@ describe('命中的会议', () => {
     expect(panel).toHaveTextContent(/480/)
   })
 
-  test('命中数在拿到之前不显示一个数——没问过就说不出来', async () => {
+  test('命中数直接显示，不用先点一下——数字仍然点得开命中列表', async () => {
+    stubList([ALLOW_RULE_COUNTED])
+    reply(/\/rules\/20\/matches/, {
+      rule: ALLOW_RULE_COUNTED,
+      scope: { meetings: 480, meetingsTotal: 480, truncated: false },
+      matches: [],
+    })
+    mount()
+
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    // 一进页面就是数字，不是一颗「?」——`?` 要点一下才知道，那件事本来后端已经说了
+    const hits = within(row).getByRole('button', { name: /8 场命中/ })
+    expect(hits).toHaveTextContent('8')
+    expect(calls.some((c) => /\/matches/.test(c.url))).toBe(false)
+
+    // 数字还是可点的：点开还是那张命中列表
+    await userEvent.click(hits)
+    expect(await screen.findByRole('dialog', { name: /命中的会议/ })).toBeInTheDocument()
+  })
+
+  test('matchScanned 上屏做统计范围的可回溯说明——「8」是在多大一批里数出来的', async () => {
+    stubList([ALLOW_RULE_COUNTED])
+    mount()
+    await screen.findByRole('heading', { name: /三、采集权限规则/ })
+    expect(screen.getByRole('region', { name: /采集权限规则/ })).toHaveTextContent(
+      /命中按最近 480 场统计/,
+    )
+  })
+
+  test('字段读不到（旧后端 / 老响应）时显示「—」，页面照常，且不退回前端自己算', async () => {
+    // ALLOW_RULE 这份响应里根本没有 matchCount / matchScanned 两个键
+    stubList([ALLOW_RULE])
+    mount()
+
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    const hits = within(row).getByRole('button', { name: /查看命中的会议/ })
+    // 「—」而不是 0：0 是一个具体的答案，管理员会照着它去删一条其实好好的规则
+    expect(hits).toHaveTextContent('—')
+    expect(hits).not.toHaveTextContent('0')
+    // 前端没有替它去数一遍：一条 matches 请求都没发
+    expect(calls.some((c) => /\/matches/.test(c.url))).toBe(false)
+    // 统计范围也说不出来，于是那句话整句不出现——不编一个数
+    expect(screen.getByRole('region', { name: /采集权限规则/ })).not.toHaveTextContent(/命中按最近/)
+  })
+
+  test('命中 0 场是一个真的答案，与「读不出来」分得开', async () => {
+    stubList([{ ...ALLOW_RULE, matchCount: 0, matchScanned: 480 }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    const hits = within(row).getByRole('button', { name: /0 场命中/ })
+    expect(hits).toHaveTextContent('0')
+    expect(hits).toHaveAttribute('data-zero', 'true')
+  })
+
+  test('停用的规则照样有命中数——先看得见「把它开回来会命中什么」', async () => {
+    stubList([{ ...ALLOW_RULE, enabled: false, matchCount: 3, matchScanned: 480 }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(row).toHaveAttribute('data-off', 'true')
+    expect(within(row).getByRole('button', { name: /3 场命中/ })).toHaveTextContent('3')
+  })
+})
+
+/* ── 梯子的几何（改版）───────────────────────────────────────── */
+
+describe('一行一条规则：动作不常驻，但键盘走得到', () => {
+  test('「编辑 · 停用」默认不可见（opacity 0），不是十二行常驻的噪声', async () => {
     stubList([ALLOW_RULE])
     mount()
     const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
-    expect(within(row).getByRole('button', { name: /查看命中的会议/ })).toBeInTheDocument()
+    const act = within(row).getByRole('button', { name: '编辑' }).parentElement!
+    expect(getComputedStyle(act).opacity).toBe('0')
+  })
+
+  test('看不见不等于够不着：两颗按钮都在 Tab 序列里，也没被 aria 藏起来', async () => {
+    stubList([ALLOW_RULE])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    const hits = within(row).getByRole('button', { name: /查看命中/ })
+    const edit = within(row).getByRole('button', { name: '编辑' })
+    const off = within(row).getByRole('button', { name: '停用' })
+
+    // 没有 hidden / aria-hidden / tabindex=-1 这类把它排除出 Tab 序列的写法
+    for (const b of [edit, off]) {
+      expect(b).toBeEnabled()
+      expect(b).not.toHaveAttribute('aria-hidden')
+      expect(b).not.toHaveAttribute('tabindex')
+    }
+
+    // 从命中数往后 Tab，下一站就是「编辑」，再一站是「停用」
+    hits.focus()
+    await userEvent.tab()
+    expect(edit).toHaveFocus()
+    await userEvent.tab()
+    expect(off).toHaveFocus()
+  })
+
+  test('浮出来的条件里有 :focus-within，触屏那一档常驻并补足触控高度', () => {
+    // jsdom 认不出 :focus-within（见 RULES_CSS 的注释），这条只能钉样式表原文
+    expect(RULES_CSS).toMatch(/\.rule:hover \.act,\s*\n\.rule:focus-within \.act/)
+    // 触屏没有 hover：窄屏那一档里它们常驻，并且补足 --tap-min
+    const narrow = RULES_CSS.slice(RULES_CSS.indexOf('@media (max-width: 56em)'))
+    expect(narrow).toMatch(/\.act \{[^}]*opacity: 1;/)
+    expect(narrow).toMatch(/min-height: var\(--tap-min\)/)
+  })
+})
+
+describe('三类坏规则用左侧色条挂出来，不在行里加两行橙字', () => {
+  test('conds 读不出来 → 挂 unreadable / fail，说的是「一场都命中不了，等于没建」', async () => {
+    // 后端 evaluateRule 对非数组 conds 判 matched: false —— 这条规则什么都不做
+    stubList([{ ...ALLOW_RULE, conds: { title: '财务' }, matchCount: 0, matchScanned: 480 }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(row).toHaveAttribute('data-flag', 'unreadable')
+    expect(row).toHaveAttribute('data-tone', 'fail')
+    // 「conds 不是数组」写在行内那句话里；行下面那一行补的是**后果**
+    expect(row).toHaveTextContent('条件写坏了（conds 不是数组）')
+    expect(within(row).getByText(/一场都命中不了/)).toBeInTheDocument()
+    // 那个 0 不是「条件写窄了」——这句必须在，否则管理员会去调宽条件
+    expect(row).toHaveTextContent(/不是「条件写窄了」/)
+    // **不许**说成「正在放行全部会议」：那是空数组 conds 的语义，方向正相反
+    expect(row).not.toHaveTextContent(/放行全部|命中全部/)
+  })
+
+  test('采集权限栈 + 无条件准许 → fail：数据无条件出境，这一栈是唯一的闸门', async () => {
+    stubList([{ ...ALLOW_RULE, effect: 'allow', conds: [], matchCount: 480, matchScanned: 480 }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(row).toHaveAttribute('data-flag', 'unconditional')
+    expect(row).toHaveAttribute('data-tone', 'fail')
+    // 句子用后端写侧 validateDraft 那句话的意思，前端不另发明一套说法
+    expect(row).toHaveTextContent(/空条件在求值器里是「匹配一切」/)
+    expect(row).toHaveTextContent(/显式写一个恒真的条件/)
+    expect(row).toHaveTextContent(/数据离开企业边界的唯一闸门/)
+  })
+
+  test('采集权限栈 + 无条件拒绝 → 不标记：无条件拒绝落在安全侧', async () => {
+    stubList([
+      { ...ALLOW_RULE, id: 20, priority: 200, effect: 'deny', assetTypes: [], conds: [] },
+      { ...ALLOW_RULE, id: 21, priority: 100 },
+    ])
+    mount()
+    const blocker = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(blocker).not.toHaveAttribute('data-flag')
+    expect(blocker).not.toHaveAttribute('data-tone')
+    // 但它挡住的那一行照旧说得出来——「不标记」不等于这件事没人说
+    const blocked = screen.getByRole('listitem', { name: /采集权限规则 #21/ })
+    expect(blocked).toHaveAttribute('data-tone', 'warn')
+    expect(blocked).toHaveTextContent(/够不着：上面的 #20/)
+  })
+
+  test('归档栈 + 无条件 → warn：意图（兜底）对、写法不对，而且挡住下面所有规则', async () => {
+    stubList([{ ...FETCH_RULE, id: 30, kind: 'archive', effect: 'nas/x/', conds: [] }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /归档规则 #30/ })
+    expect(row).toHaveAttribute('data-flag', 'unconditional')
+    expect(row).toHaveAttribute('data-tone', 'warn')
+    expect(row).toHaveTextContent(/空条件在求值器里是「匹配一切」/)
+    expect(row).toHaveTextContent(/优先级低于它的规则永远轮不到/)
+    // 不许把归档栈说成数据出境
+    expect(row).not.toHaveTextContent(/闸门|放行/)
+  })
+
+  test('拉取栈 + 无条件 → warn', async () => {
+    stubList([{ ...FETCH_RULE, conds: [] }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /拉取规则 #10/ })
+    expect(row).toHaveAttribute('data-tone', 'warn')
+  })
+
+  test('挂号只看 conds 本身，后端 issues 里没有那句话也照样挂得出来', async () => {
+    stubList([{ ...ALLOW_RULE, effect: 'allow', conds: [], issues: [] }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(row).toHaveAttribute('data-tone', 'fail')
+  })
+
+  test('永不命中（条件用的字段没有数据源）→ 挂 ineffective / warn，不是 fail', async () => {
+    stubList([{ ...ALLOW_RULE, conds: [{ f: 'dept', op: 'in', v: ['财务部'] }] }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(row).toHaveAttribute('data-flag', 'ineffective')
+    expect(row).toHaveAttribute('data-tone', 'warn')
+    expect(within(row).getByText(/永远不会命中/)).toBeInTheDocument()
+  })
+
+  test('色条挂在**出问题的那一行**，好规则那一行一个色条都没有', async () => {
+    stubList([
+      { ...ALLOW_RULE, id: 20, priority: 200, conds: { title: 'x' } },
+      { ...ALLOW_RULE, id: 21, priority: 100 },
+    ])
+    mount()
+    const bad = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    const good = screen.getByRole('listitem', { name: /采集权限规则 #21/ })
+    expect(bad).toHaveAttribute('data-tone', 'fail')
+    expect(good).not.toHaveAttribute('data-tone')
+    expect(good).not.toHaveAttribute('data-flag')
+  })
+
+  test('停用的无条件规则不挂号——它现在一场都不命中，说它覆盖全部是无中生有', async () => {
+    stubList([{ ...ALLOW_RULE, effect: 'allow', conds: [], enabled: false }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(row).not.toHaveAttribute('data-flag')
+    expect(row).toHaveAttribute('data-off', 'true')
+    // 条件那一格照旧写着，要开回来的人看得见
+    expect(row).toHaveTextContent('所有会议（无条件）')
+  })
+
+  test('已停用的行退后靠颜色，不靠 opacity——opacity 会把语义色一起压到不达标', async () => {
+    // 这一条原来断言整行 `opacity` 在 0.75–1 之间。那个做法本身是错的：
+    // 父级 opacity **无差别**压低整行每一处对比度，包括语义色。--warn 压在
+    // --ground 上满强度只有 4.85:1（几乎没有余量），乘 0.8 就掉到 3.41:1——
+    // 「· 已停用」这四个字和命中数那个 0 都因此不达 AA，是 `npm run a11y`
+    // 实测报出来的。而这两处恰恰是语义，不能靠抬成 --ink-2 来救。
+    //
+    // 所以退后改成走颜色（中性文字降到 --ink-3），语义色保持满强度。
+    // 这里钉住两件事：行上不许再有 opacity；内容照样逐字读得到。
+    stubList([{ ...ALLOW_RULE, enabled: false }])
+    mount()
+    const row = await screen.findByRole('listitem', { name: /采集权限规则 #20/ })
+    expect(row).toHaveAttribute('data-off', 'true')
+
+    const o = getComputedStyle(row).opacity
+    expect(o === '' || Number(o) === 1).toBe(true)
+
+    // 停用这件事本身仍然看得见（不是靠"变淡"暗示的）
+    expect(row).toHaveTextContent('已停用')
+    // 条件与结果照样逐字读得到
+    expect(row).toHaveTextContent('会议标题 包含任一「财务」')
+    expect(row).toHaveTextContent('准许采集（ai_minutes）')
   })
 })
 
