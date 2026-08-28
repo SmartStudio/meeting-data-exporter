@@ -39,31 +39,35 @@ export interface StatProps {
   value: ReactNode | null
   /** `value === null` 时显示什么。默认"暂不可得" */
   missingText?: string
-  /** 有值时的语气。fail 用于本身就是坏消息的计数 */
-  tone?: 'plain' | 'fail'
+  /** 有值时的语气。fail / warn 用于本身就是坏消息的计数，其余保持中性 */
+  tone?: 'plain' | 'fail' | 'warn'
   /**
-   * 这一格的口径，挂在标签旁边的 ⓘ 上。**不上正文**——见 `Hint` 的注释。
-   * 每一格的解剖因此是同一个形状：标签（+ⓘ）+ 一个数，没有第三种长相。
+   * 这一格的口径，**一句可见的小字**，挂在数字下面（D-jobs-storage brief：
+   * 7 个 ⓘ 砍到 2 个以内，能写进标签/正文的就写进去，不必都挂悬停）。
+   * 每一格的解剖因此是「标签 / 数字 / 一句注」三行，同一个形状，
+   * 不再需要先悬停才看得到口径。
    */
-  hint?: string
+  note?: ReactNode
 }
 
-/** 统计格。两块面板共用，样式与"拿不到"的处置都收在这里，不各写一遍。 */
-export function Stat({ id, label, value, missingText = '暂不可得', tone = 'plain', hint }: StatProps) {
+/** 统计格。两块面板共用，样式与"拿不到"的处置都收在这里，不各写一遍。
+ *  不再是带边框的盒子——一排靠基线对齐的数字组，列与列之间的分隔线由
+ *  外层 `.stats` 容器画（`border-right` + `--line-soft`），这里只管内容。 */
+export function Stat({ id, label, value, missingText = '暂不可得', tone = 'plain', note }: StatProps) {
   const missing = value === null || value === undefined
   const valueClass = missing
     ? styles.statVMissing
     : tone === 'fail'
       ? styles.statVFail
-      : styles.statV
+      : tone === 'warn'
+        ? styles.statVWarn
+        : styles.statV
 
   return (
     <div className={styles.stat} data-testid={`stat-${id}`}>
-      <div className={styles.statK}>
-        {label}
-        {hint !== undefined && <Hint text={hint} />}
-      </div>
+      <div className={styles.statK}>{label}</div>
       <div className={valueClass}>{missing ? missingText : value}</div>
+      {note !== undefined && <div className={styles.statNote}>{note}</div>}
     </div>
   )
 }

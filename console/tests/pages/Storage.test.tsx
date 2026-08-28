@@ -5,6 +5,8 @@ import { screen, waitFor, within } from '@testing-library/react'
 import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import StoragePage from '../../src/pages/Storage'
+import { buildTimelineRows } from '../../src/pages/Storage/RetentionTimeline'
+import type { AdminMeeting } from '../../src/api/admin/meetings'
 import { fmtBytes, fmtDateTime } from '../../src/lib/format'
 
 /**
@@ -214,16 +216,16 @@ describe('NAS 归档', () => {
     expect(us.getAttribute('class')).toMatch(/segMin/)
   })
 
-  test('容量口径不再是正文——"我们的记账可能对不齐"挂在图例的 ⓘ 上', async () => {
-    // 从前这里有一段话，里面还带着 statfs 这个 syscall 名。技术名词不上屏，
-    // 口径进悬停：删掉它管理员不会做错事，但要查得到。
+  test('容量口径是可见的一句小字——不再挂 ⓘ，statfs 这个 syscall 名已经去掉', async () => {
+    // D-jobs-storage brief：7 个 ⓘ 砍到 2 个以内。这一句原来挂在图例的 ⓘ 上
+    // （悬停才看得到，还带着 statfs 这个技术名词），现在是一行可见的小字——
+    // 技术名词还是不上屏，但口径本身不必再靠悬停。
     await renderReady()
     const cap = screen.getByTestId('nas-capacity')
     expect(cap).not.toHaveTextContent(/statfs/)
-    const hint = within(cap).getByRole('note', { name: /记账/ })
-    // title 与 aria-label 是同一句：鼠标和读屏读到的必须一致
-    expect(hint.getAttribute('title')).toBe(hint.getAttribute('aria-label'))
-    expect(hint).toHaveAccessibleName(/对不齐/)
+    expect(cap).toHaveTextContent(/记账/)
+    expect(cap).toHaveTextContent(/对不齐/)
+    expect(within(cap).queryByRole('note')).toBeNull()
   })
 
   test('归档三态：已归档 / 等待归档 / 归档报错', async () => {
@@ -245,16 +247,20 @@ describe('NAS 归档', () => {
     expect(stat('archive-failed')).toHaveTextContent('归档报错')
   })
 
-  test('两格的口径写在各自的 ⓘ 上，不在正文里——三张卡是同一个形状', async () => {
+  test('三格都有一句可见的口径小字——不再挂 ⓘ，是同一个「标签/数字/注」形状', async () => {
+    // D-jobs-storage brief：8 个 boxed stat 去框，能塞进一句小字的口径不再靠
+    // 悬停才看得到。「等待归档」含着"还没轮到"和"一直归不上去"两种，这件事
+    // 不能丢；「归档报错」说得出自己与会议记录页那个数不是一回事，但不写
+    // 「归档失败」这四个字——那个词这一页已经让给会议记录页分诊条上的同名计数。
     answer('/api/v1/admin/storage', ok(storagePayload({ nas: { failedMeetings: 0, failedMeetingsNote: undefined } })))
     await renderReady()
-    // 「等待归档」含着"还没轮到"和"一直归不上去"两种，这件事不能丢，只是不上正文
-    expect(within(stat('pending')).getByRole('note')).toHaveAccessibleName(/还没轮到/)
-    // 「归档报错」说得出自己与会议记录页那个数的关系
-    expect(within(stat('archive-failed')).getByRole('note')).toHaveAccessibleName(/归档失败/)
-    // 正文一句都没有：卡片解剖是「标签(+ⓘ) + 一个数」，没有第三种长相
-    expect(stat('pending').textContent?.replace(/[\sⓘ]/g, '')).toBe('等待归档2')
-    expect(stat('archived').textContent?.replace(/[\sⓘ]/g, '')).toBe('已归档会议71')
+    expect(stat('pending')).toHaveTextContent(/还没轮到/)
+    expect(stat('archive-failed')).toHaveTextContent(/两个口径/)
+    expect(stat('archived')).toHaveTextContent(/NAS 上有副本/)
+    // 不再靠悬停：这三格里不该再有一个 role=note 的 ⓘ
+    expect(within(stat('pending')).queryByRole('note')).toBeNull()
+    expect(within(stat('archive-failed')).queryByRole('note')).toBeNull()
+    expect(within(stat('archived')).queryByRole('note')).toBeNull()
   })
 
   test('failedMeetings 为 null 时显示「暂不可得」并给出原因，不显示成 0', async () => {
@@ -262,8 +268,9 @@ describe('NAS 归档', () => {
     const failed = stat('archive-failed')
     expect(failed).toHaveTextContent('暂不可得')
     expect(failed).not.toHaveTextContent(/(^|\D)0(\D|$)/)
-    // 拿不到的原因还在，只是挂在 ⓘ 上而不是印成一行小字
-    expect(within(failed).getByRole('note')).toHaveAccessibleName(/尚未落库/)
+    // 拿不到的原因现在是可见的一句小字，不必再悬停才看得到
+    expect(failed).toHaveTextContent('尚未落库')
+    expect(within(failed).queryByRole('note')).toBeNull()
   })
 
   test('A8 接上 job_failures 之后，同一格显示真实数字', async () => {
@@ -352,8 +359,11 @@ describe('本地保留窗口', () => {
     expect(screen.queryByTestId('retention-alert')).toBeNull()
   })
 
-  test('天数一律来自接口，页面上没有写死的 30', async () => {
-    // 管理员把它改成 60 之后，这一页不许还在说 30。
+  test('天数一律来自接口，徽标上没有写死的 30', async () => {
+    // 管理员把它改成 60 之后，默认天数这个徽标不许还在说 30。
+    // （注：这条只查徽标自己那一格——面板下半屏的时间轴刻度固定写着
+    // "0–30 天"，那是坐标轴的量程，跟默认保留天数是不是 30 无关，
+    // 两件事不共用一个"页面上不许出现 30 天"的断言。）
     answer(
       '/api/v1/admin/storage',
       ok(storagePayload({ retention: { defaultDays: 60, defaultDaysRaw: '60' } })),
@@ -361,14 +371,17 @@ describe('本地保留窗口', () => {
     await renderReady()
     const src = screen.getByTestId('retention-default')
     expect(src).toHaveTextContent('60 天')
-    expect(panel('本地保留窗口')).not.toHaveTextContent('30 天')
-    expect(within(src).getByRole('note')).toHaveAccessibleName(/60 天/)
+    expect(src).not.toHaveTextContent('30 天')
+    // 「这个天数是配出来的还是内置默认」现在是徽标旁边一句可见的小字
+    // （D-jobs-storage brief），不必再悬停 ⓘ 才看得到。
+    expect(src).toHaveTextContent('来自配置')
   })
 
-  test('defaultDaysSource=fallback：天数照给，"没配过"降级到 ⓘ 上', async () => {
-    // 从前这里是一段正文，里面还带着 default_retention_days 这个数据库列名。
-    // 判据："删掉它管理员会不会做错事"——不会：天数就在徽标上，改它的按钮
-    // 就在下面，"这个 30 是配出来的还是兜底的"不改变任何一次操作。
+  test('defaultDaysSource=fallback：天数照给，"没配过"是徽标旁一句可见小字', async () => {
+    // 从前这是一段悬停才看得到的正文，里面还带着 default_retention_days 这个
+    // 数据库列名。判据："删掉它管理员会不会做错事"——不会：天数就在徽标上，
+    // 改它的按钮就在下面，"这个 30 是配出来的还是兜底的"不改变任何一次操作，
+    // 所以现在收成一句短小字，不必再悬停，但也不是一整段正文。
     answer(
       '/api/v1/admin/storage',
       ok(storagePayload({ retention: { defaultDaysSource: 'fallback', defaultDaysRaw: null } })),
@@ -378,7 +391,8 @@ describe('本地保留窗口', () => {
     expect(src).toHaveTextContent('30 天')
     expect(screen.queryByTestId('retention-alert')).toBeNull()
     expect(panel('本地保留窗口')).not.toHaveTextContent('default_retention_days')
-    expect(within(src).getByRole('note')).toHaveAccessibleName(/没有被设定过/)
+    expect(src).toHaveTextContent(/内置默认值/)
+    expect(within(src).queryByRole('note')).toBeNull()
   })
 
   test('defaultDaysSource=invalid：脏值原样摆出来，且不谎称系统在用 30 兜底', async () => {
@@ -423,6 +437,158 @@ describe('本地保留窗口', () => {
         '',
       ),
     )
+  })
+})
+
+/* ── 保留窗口时间轴（D-jobs-storage brief：下半屏原来是空的） ─────── */
+
+/**
+ * `buildTimelineRows()` 是纯函数（`src/pages/Storage/RetentionTimeline.tsx`），
+ * 直接单测比每次都挂整个页面快，也更精确地钉住"排序是呈现，不是判定"这条线：
+ * 这里只测 sort / pct / warn 三件呈现层的事，不引入任何新的"会不会被清理"判断。
+ */
+describe('buildTimelineRows() —— 时间轴的行', () => {
+  const NOW = new Date(2026, 7, 28, 12, 0, 0)
+  const nowSec = Math.floor(NOW.getTime() / 1000)
+  const inDays = (d: number): number => nowSec + d * 86400
+
+  function meeting(id: string, title: string, expiresAt: number | null): Pick<AdminMeeting, 'id' | 'title' | 'keep'> {
+    return {
+      id,
+      title,
+      keep: {
+        archivedAt: null,
+        expiresAt,
+        extended: 0,
+        extendedSource: 'none',
+        extendedDays: 0,
+        retentionDays: 30,
+        filesGone: false,
+      },
+    }
+  }
+
+  test('expiresAt 为 null 的会议不进时间轴——窗口还没起算，画出来的时刻是编的', () => {
+    const rows = buildTimelineRows([meeting('a', '还没归档成功', null), meeting('b', '有到期日', inDays(5))], NOW)
+    expect(rows.map((r) => r.id)).toEqual(['b'])
+  })
+
+  test('全部为 null 时不崩，返回空数组', () => {
+    expect(buildTimelineRows([meeting('a', 'x', null), meeting('b', 'y', null)], NOW)).toEqual([])
+  })
+
+  test('按剩余天数升序排——快到期的排最前面', () => {
+    const rows = buildTimelineRows(
+      [meeting('a', '20 天后到期', inDays(20)), meeting('b', '3 天后到期', inDays(3))],
+      NOW,
+    )
+    expect(rows.map((r) => r.id)).toEqual(['b', 'a'])
+  })
+
+  test('7 天内到期标 warn，超过 7 天不标——跟「7 天内到期」那一格同一个门槛', () => {
+    const rows = buildTimelineRows([meeting('a', '', inDays(3)), meeting('b', '', inDays(10))], NOW)
+    expect(rows.find((r) => r.id === 'a')?.warn).toBe(true)
+    expect(rows.find((r) => r.id === 'b')?.warn).toBe(false)
+  })
+
+  test('位置按 0–30 天换算并夹到区间内；超过 30 天的真实天数仍然照实显示，只有位置饱和', () => {
+    const rows = buildTimelineRows([meeting('a', '', inDays(60))], NOW)
+    expect(rows[0]?.pct).toBe(100)
+    expect(rows[0]?.daysLeft).toBe(60)
+  })
+
+  test('刚好今天到期（daysLeft=0）不出负数、位置落在最左端', () => {
+    const rows = buildTimelineRows([meeting('a', '', nowSec - 3600)], NOW)
+    expect(rows[0]?.daysLeft).toBe(0)
+    expect(rows[0]?.pct).toBe(0)
+    expect(rows[0]?.warn).toBe(true)
+  })
+})
+
+/** 组件层面：不加新端点，且真的不会因为拿不到/拿到空数据而崩。 */
+describe('RetentionTimeline（组件）', () => {
+  function timelineMeetingRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: 'm-1|',
+      meetingId: 'm-1',
+      subMeetingId: '',
+      title: '全员大会 · Q3 复盘',
+      code: '000-000-000',
+      startAt: 0,
+      durationSec: 0,
+      host: 'x',
+      hostName: null,
+      missing: [],
+      assets: {},
+      unknownAssetTypes: [],
+      fetch: 'done',
+      archive: 'done',
+      allow: 'allow',
+      grants: [],
+      hand: [],
+      nasPath: null,
+      sizeBytes: null,
+      keep: {
+        archivedAt: null,
+        expiresAt: 1702542000,
+        extended: 0,
+        extendedSource: 'none',
+        extendedDays: 0,
+        retentionDays: 30,
+        filesGone: false,
+      },
+      why: { fetch: { by: '', text: '' }, archive: { by: '', text: '' }, allow: { by: '', text: '' } },
+      history: [],
+      ...over,
+    }
+  }
+
+  test('expiresAt 全为 null 时不崩，时间轴给出空态而不是一片空白', async () => {
+    answer(
+      '/api/v1/admin/meetings',
+      ok({
+        rows: [
+          timelineMeetingRow({ keep: { ...timelineMeetingRow().keep as object, expiresAt: null } }),
+        ],
+        total: 1,
+        limit: 60,
+        offset: 0,
+      }),
+    )
+    await renderReady()
+    const empty = await screen.findByTestId('retention-timeline-empty')
+    expect(empty).toHaveTextContent('没有能定位到期日的会议')
+    expect(screen.queryByTestId('retention-timeline-row')).toBeNull()
+  })
+
+  test('保留期内一场会议都没有时同样给空态，不崩', async () => {
+    answer('/api/v1/admin/meetings', ok({ rows: [], total: 0, limit: 60, offset: 0 }))
+    await renderReady()
+    expect(await screen.findByTestId('retention-timeline-empty')).toBeInTheDocument()
+  })
+
+  test('有到期日的会议渲染成一行，会议名与剩余天数都在', async () => {
+    answer('/api/v1/admin/meetings', ok({ rows: [timelineMeetingRow()], total: 1, limit: 60, offset: 0 }))
+    await renderReady()
+    const row = await screen.findByTestId('retention-timeline-row')
+    expect(row).toHaveTextContent('全员大会 · Q3 复盘')
+    expect(row).toHaveTextContent(/\d+ 天/)
+  })
+
+  test('用的是既有端点 GET /api/v1/admin/meetings?inRetention=true，没有加新端点', async () => {
+    answer('/api/v1/admin/meetings', ok({ rows: [], total: 0, limit: 60, offset: 0 }))
+    await renderReady()
+    await screen.findByTestId('retention-timeline-empty')
+    const call = calls.find((c) => c.url.startsWith('/api/v1/admin/meetings'))
+    expect(call?.url).toContain('inRetention=true')
+  })
+
+  test('这条端点读不到时时间轴单独报错，不把整页拖下水', async () => {
+    answer('/api/v1/admin/meetings', { status: 500, body: { error: 'db_down' } })
+    await renderReady()
+    expect(await screen.findByTestId('retention-timeline-error')).toHaveTextContent('db_down')
+    // 上面的统计数字（来自另一条端点 /api/v1/admin/storage）照常在
+    expect(stat('archived')).toHaveTextContent('71')
   })
 })
 

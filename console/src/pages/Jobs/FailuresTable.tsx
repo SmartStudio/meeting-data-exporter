@@ -65,7 +65,11 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
                   于是表头上方得挂一段话说明「它们会被各自的任务自动捞起来重试、
                   没有逐条的重试按钮」。列名把「自动」写进去，那段话就不用写了。 */}
               <th scope="col">已自动重试</th>
-              <th scope="col">影响</th>
+              {/* 「如果不处理」而不是「影响」：这句话现在只在这张表里、只对真正
+                  失败的那一项写一次（D-jobs-storage brief）。任务卡上原来
+                  常驻的「没跑成的后果：……」四行已经收窄成只在任务真的出问题
+                  时才现身，这张表因此是它唯一稳定的出处。 */}
+              <th scope="col">如果不处理</th>
             </tr>
           </thead>
           <tbody>
@@ -98,7 +102,7 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
                     <span className={styles.escalated}>已到上限 · 需要人工介入</span>
                   )}
                 </td>
-                <td className={styles.impactCell} data-label="影响">{f.impact}</td>
+                <td className={styles.impactCell} data-label="如果不处理">{f.impact}</td>
               </tr>
             ))}
           </tbody>

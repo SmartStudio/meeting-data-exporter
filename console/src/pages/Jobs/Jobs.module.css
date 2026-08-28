@@ -1,7 +1,9 @@
-/* 定时任务页（spec.md §4.8）。
+/* 定时任务页（spec.md §4.8，D-jobs-storage 改版）。
  *
- * 色值与间距一律走 tokens.css。窄屏靠 flex-wrap 折行，不写宽度断点——
- * 这个工程里没有一处按宽度分档的 @media，一个新页面不该开这个头。
+ * 色值与间距一律走 tokens.css。四个任务是一条串起来的链——竖排四张等宽卡片
+ * 把这层因果抹平了，所以 `.chain` 在够宽的视口下是一行四段，段间用一个箭头
+ * 把方向画出来；窄屏退回竖排（见文件底部那条按宽度收窄的媒体查询）。
+ * 这是这个工程里第一处按宽度分档的 @media——理由写在那条规则上面。
  */
 
 /* ── 页面级横幅（落后 / 拉取连续失败）────────────────────────── */
@@ -38,89 +40,183 @@
   color: var(--ink-2);
 }
 
-/* ── 任务格子 ──────────────────────────────────────────────── */
+/* ── 任务链 ────────────────────────────────────────────────── */
 
-.list {
+/* 四段一行，段与段之间只留 1px——用容器的 --line 底色透出来充当分隔线，
+ * 不必再给每一段单独画边框。圆角落在两端，中间的段保持直角。 */
+.chain {
   list-style: none;
-  margin: 0;
+  margin: var(--s-4) 0 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--s-px);
+  background: var(--line);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: visible;
 }
 
 .job {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-5);
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
   padding: var(--s-5);
-  border: var(--s-px) solid var(--line);
-  border-radius: var(--r-lg);
   background: var(--surface);
 }
 
-/* 已经落后 = 调度器多半挂了。这一条要显眼：整格换成告警底，不只是一个小徽标。 */
+/* 四段是一条链，卡片被最高的那一张撑齐。但每段的内容行数不同（第二段多两行
+   失败说明），按钮就散在四个不同的高度上，横着看像四张没对齐的卡。
+   把「立即运行」推到底：多出来的空白落在按钮**之上**，四个按钮于是在同一条
+   基线上，链条读起来才是一条。 */
+.job > button:last-of-type {
+  margin-top: auto;
+}
+
+.job:first-child {
+  border-radius: var(--r-lg) 0 0 var(--r-lg);
+}
+
+.job:last-child {
+  border-radius: 0 var(--r-lg) var(--r-lg) 0;
+}
+
+/* 段间的箭头：一个旋转 45° 的小方块，边框只留右上两条，看起来是个 ›。
+ * 纯 CSS，不额外起 DOM 节点。尺寸取自间距标尺（--s-4），偏移用 calc()
+ * 除以 2 让它正好压在分隔线上——calc(var(...)) 不落在裸像素扫描的正则上。 */
+.job:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: calc(var(--s-4) / -2);
+  margin-top: calc(var(--s-4) / -2);
+  width: var(--s-4);
+  height: var(--s-4);
+  background: var(--surface);
+  border-top: var(--s-px) solid var(--ink-4);
+  border-right: var(--s-px) solid var(--ink-4);
+  transform: rotate(45deg);
+  z-index: 1;
+}
+
+/* 已经落后 / 有失败项 = 这一段是这条链卡住的地方。整段变红，不只是一个小徽标：
+ * --fail-soft 底 + 顶部一条 --fail 色条，一眼看出链从哪一段开始断。 */
 .job[data-alarm='true'] {
   background: var(--fail-soft);
-  border-color: var(--fail-line);
+}
+
+.job[data-alarm='true']::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--s-0);
+  background: var(--fail);
+}
+
+.job[data-alarm='true']:not(:last-child)::after {
+  background: var(--fail-soft);
+  border-color: var(--fail);
 }
 
 /* 换了底就得重新算对比度。浅色主题下 --ink-3 压 --fail-soft 实测只有 4.32:1
- * （要 4.5:1），所以这格里的次要文字整体上提一档到 --ink-2。
+ * （要 4.5:1），所以这段里的次要文字整体上提一档到 --ink-2。
  * 仍然只引用令牌，不在组件里定义新色值。 */
 .job[data-alarm='true'] .ord,
 .job[data-alarm='true'] .last,
 .job[data-alarm='true'] .impact,
 .job[data-alarm='true'] .nextKey,
 .job[data-alarm='true'] .nextGap,
+.job[data-alarm='true'] .healthNote,
 .job[data-alarm='true'] .sumItem::before {
   color: var(--ink-2);
 }
 
-/* 基准宽度用 em 而不是 px：它是"这段文字大约多宽才排得开"，
-   不是一个间距取值，落不到 4pt 标尺上。 */
-.main {
-  flex: 1 1 24em;
-  min-width: 0;
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+
+.ord {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  /* --ink-4 是图形专用（白底 3.72:1）。序号「一二三四」是**文字**——它标的是
+     这条链的第几步，人要读它，所以走文字梯度的最后一档 --ink-3。 */
+  color: var(--ink-3);
+  flex: none;
 }
 
 .name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-3);
   margin: 0;
   font-size: var(--t-md);
   font-weight: 600;
   color: var(--ink);
   overflow-wrap: anywhere;
-}
-
-.ord {
-  color: var(--ink-3);
-  font-weight: 500;
+  min-width: 0;
 }
 
 .what {
-  margin: var(--s-1) 0 0;
-  font-size: var(--t-sm);
+  margin: 0;
+  font-size: var(--t-xs);
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
 
+/* ── 状态点 + 一句话 ──────────────────────────────────────────
+ * 站内这一轮收敛的口径：正常态不进一个彩色框，颜色只用来标"出问题"。
+ * 「正在跑」原来是一个蓝底徽标（Pill tone="brand"）——蓝色留给按钮这类
+ * 主交互，这里视觉上并入中性，不再兼职当状态色。 */
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.statusDot {
+  width: var(--s-2);
+  height: var(--s-2);
+  border-radius: var(--r-pill);
+  background: var(--ink-4);
+  flex: none;
+}
+
+.status[data-tone='fail'] {
+  color: var(--fail);
+  font-weight: 500;
+}
+
+.status[data-tone='fail'] .statusDot {
+  background: var(--fail);
+}
+
+.status[data-tone='warn'] {
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.status[data-tone='warn'] .statusDot {
+  background: var(--warn);
+}
+
 .healthNote {
-  margin: var(--s-1) 0 0;
+  margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: 1.6;
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
 
 .last {
-  margin: var(--s-2) 0 0;
-  font-size: var(--t-sm);
-  line-height: 1.7;
+  margin: 0;
+  font-size: var(--t-xs);
+  line-height: 1.6;
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -146,18 +242,18 @@
 }
 
 .impact {
-  margin: var(--s-2) 0 0;
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
   font-size: var(--t-xs);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
 
-.right {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s-5);
-  margin-left: auto;
+/* 卡住的那一段是红底，脚注挪一个更暗的底色才分得出层次 */
+.job[data-alarm='true'] .impact {
+  background: color-mix(in oklab, var(--fail) 10%, transparent);
 }
 
 /* ── sparkline ────────────────────────────────────────────── */
@@ -194,37 +290,41 @@
 }
 
 .next {
-  text-align: right;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s-0) var(--s-3);
+  align-items: baseline;
 }
 
 .nextKey {
-  display: block;
   font-size: var(--t-2xs);
   color: var(--ink-3);
 }
 
 .nextAt {
-  display: block;
   font-family: var(--mono);
   font-size: var(--t-sm);
   font-weight: 500;
   color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .nextGap {
-  display: block;
+  grid-column: 2;
   font-size: var(--t-2xs);
   color: var(--ink-3);
+  text-align: right;
+  margin-top: calc(var(--s-0) * -1);
 }
 
-/* 手动触发之后那一句。整格宽，排在格子最底下 */
+/* 手动触发之后那一句。 */
 .runNote {
-  flex: 1 1 100%;
   margin: 0;
-  padding: var(--s-3) var(--s-4);
+  padding: var(--s-2) var(--s-3);
   border-radius: var(--r-sm);
-  font-size: var(--t-xs);
-  line-height: 1.7;
+  font-size: var(--t-2xs);
+  line-height: 1.6;
   background: var(--surface-2);
   color: var(--ink-2);
   overflow-wrap: anywhere;
@@ -236,9 +336,18 @@
 }
 
 /* ── 失败项表 ─────────────────────────────────────────────── */
-
+/* 首屏就要看得到（原来要滚很久才见到），所以整块的上边距、以及表格自己的行高
+ * 都收紧了一档。Table 基元的 padding 是 --s-3 --s-5——这里用标签选择器在
+ * `.failures` 这一个子树里把它压到 --s-2，不改 Table.module.css 本身，
+ * 别的页面上的表不受影响。 */
 .failures {
-  margin-top: var(--s-8);
+  margin-top: var(--s-6);
+}
+
+.failures table tbody td,
+.failures table thead th {
+  padding-top: var(--s-2);
+  padding-bottom: var(--s-2);
 }
 
 .h2 {
@@ -363,4 +472,44 @@
   line-height: 1.7;
   color: var(--ink-3);
   overflow-wrap: anywhere;
+}
+
+/* ── 窄屏退回竖排（硬规矩 7：1440 / 1050 / 375 都不许横向溢出）───────
+ *
+ * 四段横排在 1050px 宽（左栏 196px + 页面留白吃掉一截之后，主区不到 900px）
+ * 放不下四段还带得下「上次 · 状态 · sparkline」这些内容——会横向溢出。
+ * 断点写死 72em（1152px）而不是引用令牌：CSS 自定义属性在媒体查询的
+ * **条件部分**不生效（`@media (max-width: var(--x))` 不是合法语法），这是
+ * 规范本身的限制。72em 留了余量：1050px 视口（65.6em）与 375px 视口都在
+ * 这条线以下，退回单列竖排；1440px 视口（90em）在线以上，维持四段横排。
+ * 这个工程里 Table.module.css 已经开过这个先例（56em，同样的理由），
+ * 这是第二处，不是这个页面独有的例外。 */
+@media (max-width: 72em) {
+  .chain {
+    grid-template-columns: 1fr;
+    gap: var(--s-3);
+    background: none;
+    border: none;
+    border-radius: 0;
+  }
+
+  .job {
+    border: var(--s-px) solid var(--line);
+    border-radius: var(--r-lg);
+  }
+
+  .job[data-alarm='true'] {
+    border-color: var(--fail-line);
+  }
+
+  .job:first-child,
+  .job:last-child {
+    border-radius: var(--r-lg);
+  }
+
+  /* 竖排之后段与段之间不再需要那个箭头——上一段的结论是下一段的输入，
+     这层因果交给上下顺序本身去说，不用再画一个方向符号。 */
+  .job::after {
+    display: none;
+  }
 }

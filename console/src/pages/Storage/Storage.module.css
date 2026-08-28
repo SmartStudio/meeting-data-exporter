@@ -66,6 +66,35 @@
   color: var(--ink-3);
 }
 
+/* 状态点 + 一句话（D-jobs-storage brief）：「连通正常」原来是一个蓝描边
+   Pill——这一轮全站收敛的口径是正常态不进彩色框，颜色只用来标"出问题"。
+   蓝色留给按钮这类主交互，不再兼职当状态色。 */
+.statusLine {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: none;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.statusDot {
+  width: var(--s-2);
+  height: var(--s-2);
+  border-radius: var(--r-pill);
+  background: var(--ink-4);
+  flex: none;
+}
+
+.statusLine[data-tone='fail'] {
+  color: var(--fail);
+  font-weight: 500;
+}
+
+.statusLine[data-tone='fail'] .statusDot {
+  background: var(--fail);
+}
+
 /* 口径说明的 ⓘ。它**是文字**——用户要看见它、认出它、点它，所以走 --ink-3
    （文字梯度的最后一档，再浅就过不了 4.5:1），不是 --ink-4。
    --ink-4 在 tokens.css 里写死了「图形专用：描边 / 分隔 / 填充，禁止用于文字」，
@@ -95,11 +124,20 @@
   outline-offset: var(--s-px);
 }
 
-/* 徽标 + 它的 ⓘ。徽标基元不收 title，所以提示标记挂在外面这一层。 */
+/* 徽标 + 它旁边一句可见的来源小字（原来是徽标 + ⓘ，见 describeDefaultDays
+   的注释）。 */
 .pillHint {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
+  gap: var(--s-2);
   flex: none;
+  flex-wrap: wrap;
+}
+
+.sourceNote {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
 .meta {
@@ -125,6 +163,20 @@
 }
 
 .note b {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* 底部说明收成一行脚注（D-jobs-storage brief）：字号比 .note 再降一档，
+   是这一页最后才会读到的一句复述，不是正文块。 */
+.footnote {
+  composes: note;
+  margin-top: var(--s-6);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+}
+
+.footnote b {
   font-weight: 600;
   color: var(--ink-2);
 }
@@ -173,6 +225,16 @@
   gap: var(--s-2);
 }
 
+/* 容量口径的一句注——原来挂在图例的 ⓘ 上，现在是可见的一行小字
+   （D-jobs-storage brief：7 个 ⓘ 砍到 2 个以内）。 */
+.capNote {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .swatch {
   width: var(--s-3);
   height: var(--s-3);
@@ -203,30 +265,39 @@
 
 /* ── 统计格 ───────────────────────────────────────────────────── */
 
-/* 用 flex 而不是 grid 的 minmax：minmax 要一个像素下限，而这一页不该为了
-   四个统计格往 tokens.css 里加一个只有它用的骨架尺寸令牌（那是七个并行任务
-   共用的文件）。`flex: 1 1 14ch` 用相对单位表达同一件事——放得下"保留期内 10"
-   这样一格，放不下就换行，375px 下不会挤成四条竖着的数字。 */
+/* 数字去框（D-jobs-storage brief）：8 个各住一个带边框盒子的 stat，改成一排
+   靠基线对齐的数字组，列与列之间只用一条 --line-soft 竖线分隔，不再是
+   卡中套卡。宽度收不下时整排横向滚动——这是硬规矩 7 明确认可的处理方式
+   （宽内容自己套 overflow-x:auto，页面 body 不跟着横滚），比硬挤成两三行
+   数字更符合"一排"这个形状。 */
 .stats {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-4);
+  align-items: flex-start;
+  overflow-x: auto;
+  gap: 0;
   margin: var(--s-5) 0 0;
+  padding-bottom: var(--s-1);
 }
 
 .stat {
-  flex: 1 1 14ch;
-  border: var(--s-px) solid var(--line-soft);
-  border-radius: var(--r);
-  padding: var(--s-4);
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: 11ch;
+  max-width: 22ch;
+  padding-right: var(--s-5);
+  margin-right: var(--s-5);
+  border-right: var(--s-px) solid var(--line-soft);
+}
+
+.stat:last-child {
+  padding-right: 0;
+  margin-right: 0;
+  border-right: 0;
 }
 
 .statK {
-  display: flex;
-  align-items: center;
   font-size: var(--t-xs);
   color: var(--ink-3);
+  white-space: nowrap;
 }
 
 .statV {
@@ -234,6 +305,7 @@
   font-size: var(--t-2xl);
   font-weight: 600;
   color: var(--ink);
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 
@@ -248,6 +320,23 @@
 .statVFail {
   composes: statV;
   color: var(--fail);
+}
+
+/* 语义色只给「归档报错」和「7 天内到期」——D-jobs-storage brief。 */
+.statVWarn {
+  composes: statV;
+  color: var(--warn);
+}
+
+/* 标签在上、数字在下、一句注在最下：三行是这一页每一格统一的形状。
+   原来分散在 7 个 ⓘ 悬停里的口径，能塞进一句小字的都搬到这里——
+   不必先悬停才看得到。 */
+.statNote {
+  margin-top: var(--s-1);
+  font-size: var(--t-2xs);
+  line-height: 1.5;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
 }
 
 /* ── 动作区 ───────────────────────────────────────────────────── */
@@ -291,6 +380,130 @@
 
 .cleanupStateLabel {
   font-weight: 600;
+}
+
+/* ── 保留窗口时间轴（D-jobs-storage brief）───────────────────────
+ * 下半屏原来是空的。这里回答「7 天内到期」对应的是哪一场、还剩几天、
+ * 离清理线多远。窄轨道自己套 overflow-x:auto（硬规矩 7），会议名一栏很长
+ * 时不会把整页撑宽。 */
+.tl {
+  margin: var(--s-7) 0 0;
+}
+
+.tlHead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+}
+
+.tlTitle {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tlHeadNote {
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.tlStatus {
+  margin: var(--s-4) 0 0;
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+
+.tlList {
+  list-style: none;
+  margin: var(--s-3) 0 0;
+  padding: 0;
+  overflow-x: auto;
+}
+
+.tlRow {
+  display: grid;
+  grid-template-columns: 20ch 1fr 5ch;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-2) 0;
+  border-bottom: var(--s-px) solid var(--line-soft);
+  font-size: var(--t-xs);
+  min-width: 40ch;
+}
+
+.tlRow:last-child {
+  border-bottom: 0;
+}
+
+.tlName {
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 轨道背景的两条竖向分隔线，落在 10 天 / 20 天两个刻度上——用背景渐变画，
+   不额外起 DOM。var(--s-px) 不是裸像素（正则只抓字面量数字+px）。 */
+.tlTrack {
+  position: relative;
+  height: var(--s-5);
+  background-image:
+    linear-gradient(var(--line-soft), var(--line-soft)),
+    linear-gradient(var(--line-soft), var(--line-soft));
+  background-size:
+    var(--s-px) 100%,
+    var(--s-px) 100%;
+  background-position:
+    33.333% 0,
+    66.666% 0;
+  background-repeat: no-repeat;
+}
+
+.tlPip {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--s-3);
+  height: var(--s-2);
+  border-radius: var(--r-xs);
+  background: var(--ink-4);
+}
+
+/* 快到期（D-jobs-storage brief：与「7 天内到期」同一个 7 天门槛）用 --warn
+   画出来——颜色只标"该看一眼了"，不重新判定"会不会被清理"。 */
+.tlPip[data-warn='true'] {
+  background: var(--warn);
+}
+
+.tlRem {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+.tlRem[data-warn='true'] {
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.tlAxis {
+  display: grid;
+  grid-template-columns: 20ch 1fr 5ch;
+  gap: var(--s-4);
+  margin-top: var(--s-1);
+  min-width: 40ch;
+}
+
+.tlAxisTrack {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-4);
 }
 
 /* ── 浮层里的内容 ─────────────────────────────────────────────── */

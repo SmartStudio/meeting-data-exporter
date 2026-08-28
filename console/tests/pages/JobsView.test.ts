@@ -11,6 +11,7 @@ import {
   fmtSpan,
   healthView,
   jobOrdinal,
+  keyMetric,
   overdueJobs,
   runStatusText,
   sparkBars,
@@ -303,6 +304,40 @@ describe('fetchStall() —— tencent-down 的推断，与系统状态条同一�
     expect(fetchStall([job({ name: 'fetch_recordings', recentRuns: withQueued })])?.streak).toBe(n)
     const withSuccess = [run({ id: 99, status: 'succeeded' }), ...failed(n)]
     expect(fetchStall([job({ name: 'fetch_recordings', recentRuns: withSuccess })])).toBeNull()
+  })
+})
+
+describe('keyMetric() —— 链上每一段自己的一个关键数（D-jobs-storage brief）', () => {
+  test('四个内置任务各自映到 summary 里的一个键，中文沿用 SUMMARY_LABEL 那一份', () => {
+    expect(keyMetric(job({ name: 'fetch_recordings', lastRun: run({ summary: { discovered: 19 } }) }))).toEqual({
+      label: '发现资产',
+      value: '19',
+    })
+    expect(keyMetric(job({ name: 'archive_nas', lastRun: run({ summary: { newlyArchived: 3 } }) }))).toEqual({
+      label: '新归档',
+      value: '3',
+    })
+    expect(keyMetric(job({ name: 'cleanup_expired', lastRun: run({ summary: { purged: 0 } }) }))).toEqual({
+      label: '已清理',
+      value: '0',
+    })
+    expect(keyMetric(job({ name: 'refresh_inventory', lastRun: run({ summary: { fetchable: 12 } }) }))).toEqual({
+      label: '可采集',
+      value: '12',
+    })
+  })
+
+  test('没有摘要、summary 里没有那个键、或压根没跑过——value 是 null，不编一个数', () => {
+    expect(keyMetric(job({ name: 'archive_nas', lastRun: null })).value).toBeNull()
+    expect(keyMetric(job({ name: 'archive_nas', lastRun: run({ summary: null }) })).value).toBeNull()
+    expect(keyMetric(job({ name: 'archive_nas', lastRun: run({ summary: { somethingElse: 1 } }) })).value).toBeNull()
+  })
+
+  test('认不出的任务名（四个内置之外）没有关键数，label 是空串', () => {
+    expect(keyMetric(job({ name: 'weird_job', lastRun: run({ summary: { x: 1 } }) }))).toEqual({
+      label: '',
+      value: null,
+    })
   })
 })
 

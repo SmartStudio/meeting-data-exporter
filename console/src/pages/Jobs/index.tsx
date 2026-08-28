@@ -160,7 +160,7 @@ function Ready({
         </div>
       )}
 
-      <ul className={styles.list} aria-label="内置定时任务">
+      <ul className={styles.chain} aria-label="内置定时任务">
         {o.jobs.map((job, i) => (
           <JobCard
             key={job.name}

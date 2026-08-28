@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { render, renderAsRole } from '../helpers/session'
@@ -178,9 +180,26 @@ describe('四个任务格子', () => {
     expect(cards[0]).toHaveTextContent('10 分钟后')
   })
 
-  test('这个任务没跑成的影响写在格子上（spec §4.8 要求明写）', async () => {
-    await mount()
-    const card = (await screen.findAllByTestId('job-card'))[1]!
+  test('「没跑成的后果」不再四张卡常驻——只在这个任务真的出问题时才现身', async () => {
+    // D-jobs-storage 改版：四行常驻的「没跑成的后果：……」收窄成脚注，正常任务
+    // 不再挂这一行；真正卡住的那一段（overdue 或有未处理失败项）仍然要看得到，
+    // 这是失败项表「如果不处理」列之外，唯一还会说这句话的地方。
+    await mount(
+      payload({
+        jobs: [
+          job({ name: 'ok-one', health: 'ok', openFailures: 0 }),
+          job({ name: 'stuck-one', health: 'overdue' }),
+        ],
+      }),
+    )
+    const [okCard, stuckCard] = await screen.findAllByTestId('job-card')
+    expect(okCard).not.toHaveTextContent('未归档，到期会永久丢失')
+    expect(stuckCard).toHaveTextContent('未归档，到期会永久丢失')
+  })
+
+  test('有未处理失败项（即使健康状态本身是 ok）也会现身，不必等到 overdue', async () => {
+    await mount(payload({ jobs: [job({ health: 'ok', openFailures: 2 })] }))
+    const card = (await screen.findAllByTestId('job-card'))[0]!
     expect(card).toHaveTextContent('未归档，到期会永久丢失')
   })
 
@@ -447,9 +466,57 @@ describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
     await mount(payload({ failuresTotal: 1, failures: [failure()] }))
     const row = await screen.findByTestId('failure-row')
     const labels = [...row.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
-    expect(labels).toEqual(['最近失败', '任务', '对象', '原因', '已自动重试', '影响'])
+    // 「影响」改名「如果不处理」（D-jobs-storage brief）：这句话现在只在这张表
+    // 里、只对真正失败的那一项写一次，不再是每张任务卡固定挂的一行。
+    expect(labels).toEqual(['最近失败', '任务', '对象', '原因', '已自动重试', '如果不处理'])
   })
 })
+
+describe('任务链：横排 → 窄屏退回竖排（D-jobs-storage brief）', () => {
+  test('四段挂在同一个 ul[aria-label] 容器里（a11y 门槛认的就是这个选择器）', async () => {
+    await mount()
+    const chain = screen.getByRole('list', { name: '内置定时任务' })
+    expect(chain.tagName).toBe('UL')
+    expect(within(chain).getAllByTestId('job-card')).toHaveLength(4)
+  })
+
+  test('Jobs.module.css 里有一条按宽度收窄的媒体查询，把 .chain 收回单列——\n      1440 / 1050 / 375 三个宽度都不许横向溢出，四段横排在 1050 会溢出', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/pages/Jobs/Jobs.module.css'), 'utf-8')
+    const at = css.search(/@media\s*\(max-width:\s*[\d.]+em\)/)
+    expect(at, '应该有一条按宽度收窄的媒体查询——硬规矩 7 盯着 1050 / 375 不许横向溢出').toBeGreaterThanOrEqual(0)
+    const body = blockAfter(css, at)
+    expect(body, '媒体查询的花括号应该配得平').not.toBeNull()
+    expect(body).toMatch(/\.chain\s*\{[^}]*grid-template-columns:\s*1fr/)
+  })
+})
+
+describe('迷你柱图：没数据就不画，不画假的（D-jobs-storage brief）', () => {
+  test('从没跑过的任务，整段里连 job-spark 容器都不出现', async () => {
+    await mount(payload({ jobs: [job({ recentRuns: [], lastRun: null, health: 'never_ran' })] }))
+    const card = (await screen.findAllByTestId('job-card'))[0]!
+    // 这是 sparkBars([]) 返回空数组（JobsView.test.ts 已经单测过）在组件层面
+    // 的另一半：调用方据此干脆不渲染容器，不是渲染一个空的容器。
+    expect(within(card).queryByTestId('job-spark')).toBeNull()
+  })
+})
+
+/** 取出 `sel {` 之后配对到的那一层花括号内容，与 scripts/a11y-check.ts 的
+ *  同名工具函数同一个写法——嵌套花括号（这里是 .chain{} / .job{} 挨在一起）
+ *  用非贪婪正则配不平，必须真的数深度。 */
+function blockAfter(src: string, from: number): string | null {
+  const open = src.indexOf('{', from)
+  if (open < 0) return null
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    const c = src[i]
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return src.slice(open + 1, i)
+    }
+  }
+  return null
+}
 
 describe('只读账号（spec §11 缺口 1）', () => {
   test('「立即运行」禁用而不是消失，并且说得出为什么', async () => {

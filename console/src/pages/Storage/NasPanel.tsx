@@ -1,9 +1,23 @@
-import { Pill } from '@/ui/Pill'
+import type { ReactNode } from 'react'
 import { ProgressBar } from '@/ui/ProgressBar'
 import { fmtBytes, fmtDateTime } from '@/lib/format'
 import type { NasArchive } from '@/api/admin/storage'
 import { Hint, Stat } from './Stat'
 import styles from './Storage.module.css'
+
+/**
+ * 状态点 + 一句话。这一轮全站收敛的口径（D-jobs-storage brief）：正常态不进
+ * 一个彩色框——「连通正常」原来是一个蓝描边 Pill，蓝色留给按钮这类主交互，
+ * 这里视觉上并入中性；出问题（NAS 不可达）才给 `--fail`。
+ */
+function StatusLine({ tone, children }: { tone: 'neutral' | 'fail'; children: ReactNode }) {
+  return (
+    <span className={styles.statusLine} data-tone={tone}>
+      <span className={styles.statusDot} aria-hidden="true" />
+      {children}
+    </span>
+  )
+}
 
 /**
  * 「这个挂载点是什么协议」。
@@ -67,7 +81,9 @@ export function NasPanel({ nas }: NasPanelProps) {
             </span>
           </p>
         </div>
-        <Pill tone={nas.reachable ? 'brand' : 'fail'}>{nas.reachable ? '连通正常' : '无法连通'}</Pill>
+        <StatusLine tone={nas.reachable ? 'neutral' : 'fail'}>
+          {nas.reachable ? '连通正常' : '无法连通'}
+        </StatusLine>
       </div>
 
       <p className={styles.meta}>
@@ -90,7 +106,6 @@ export function NasPanel({ nas }: NasPanelProps) {
               <span className={styles.capKeyItem}>
                 <i className={`${styles.swatch} ${styles.swatchUs}`} aria-hidden="true" />
                 本系统归档 {fmtBytes(nas.usedByUsBytes)}
-                <Hint text="本系统自己的记账（已归档资产声明的字节数之和），与 NAS 上的真实占用可能对不齐；旁边的已用与剩余则是挂载点报上来的读数。" />
               </span>
               <span className={styles.capKeyItem}>
                 <i className={`${styles.swatch} ${styles.swatchOthers}`} aria-hidden="true" />
@@ -102,6 +117,12 @@ export function NasPanel({ nas }: NasPanelProps) {
               </span>
               <span className={styles.capRest}>总容量 {fmtBytes(nas.totalBytes)}</span>
             </div>
+            {/* 从前这句口径挂在图例的 ⓘ 上（悬停才看得到，还带着 statfs 这个
+                syscall 名）。D-jobs-storage brief 把 7 个 ⓘ 砍到 2 个以内——这句
+                够短，写成一行可见的小字就够了，不必再靠悬停。 */}
+            <p className={styles.capNote}>
+              本系统的记账可能与 NAS 上的真实占用对不齐；已用与剩余以挂载点读数为准。
+            </p>
           </>
         ) : (
           <p className={styles.note}>
@@ -113,13 +134,14 @@ export function NasPanel({ nas }: NasPanelProps) {
       </div>
 
       <div className={styles.stats}>
-        <Stat id="archived" label="已归档会议" value={nas.archivedMeetings} />
-        {/* 「等待归档」与「归档报错」的名字是有来历的，见文件末尾那段注释。 */}
+        <Stat id="archived" label="已归档会议" value={nas.archivedMeetings} note="NAS 上有副本" />
+        {/* 「等待归档」与「归档报错」的名字是有来历的，见文件末尾那段注释。
+            口径以前挂在 ⓘ 上，现在是一句可见的小字（D-jobs-storage brief）。 */}
         <Stat
           id="pending"
           label="等待归档"
           value={nas.pendingMeetings}
-          hint="资产已经下载完、但还没有全部写进 NAS 的场次。含还没轮到的和一直归不上去的两种。"
+          note="含还没轮到的和一直归不上去的"
         />
         <Stat
           id="archive-failed"
@@ -128,11 +150,12 @@ export function NasPanel({ nas }: NasPanelProps) {
           // 0 不该是红的——那是"确实没有报错"，是好消息
           tone={nas.failedMeetings !== null && nas.failedMeetings > 0 ? 'fail' : 'plain'}
           missingText="暂不可得"
-          hint={
+          note={
             nas.failedMeetings === null
-              ? (nas.failedMeetingsNote ?? '后端没有给出这个数，也没说为什么。在它给出之前，这里不编一个数。')
-              : '归档任务自己记下的报错、至今没有恢复的场次，一场会议一条。它是「等待归档」里已经报过错的那一部分；' +
-                '会议记录页的「归档失败」数的是另一件事——超过 6 小时还没归上去的场次，不要求两个数相等。'
+              ? (nas.failedMeetingsNote ?? '后端没有给出这个数，也没说为什么。')
+              // 不用「归档失败」这四个字：那个词这一页已经让给会议记录页
+              // 分诊条上的同名计数，两处口径不同，不该在正文里撞见同一个词。
+              : '与会议记录页的计数是两个口径，不要求相等'
           }
         />
       </div>

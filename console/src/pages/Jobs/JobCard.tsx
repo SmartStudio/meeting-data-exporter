@@ -1,14 +1,15 @@
+import type { ReactNode } from 'react'
 import type { JobItem, JobRun } from '@/api/admin/jobs'
 import { readonlyTitle, useReadonly } from '@/app/session'
 import { fmtDateTime } from '@/lib/format'
 import { Button } from '@/ui/Button'
-import { Pill } from '@/ui/Pill'
 import {
   fmtAfter,
   fmtAgo,
   fmtSpan,
   healthView,
   jobOrdinal,
+  keyMetric,
   runStatusText,
   sparkBars,
   sparkSummaryText,
@@ -21,6 +22,21 @@ export type RunState =
   | { phase: 'pending' }
   | { phase: 'done'; text: string }
   | { phase: 'error'; text: string }
+
+/**
+ * 状态点 + 一句话。这一轮全站收敛的口径（D-jobs-storage brief）：正常态不进
+ * 一个彩色框，颜色只用来标"出问题"——`fail` / `warn` 两档，其余一律中性。
+ * `healthView().tone` 里的 `brand`（"正在跑"）不再单独给一个蓝框：视觉上并入
+ * 中性，蓝色留给按钮这类主交互，不再兼职当状态色。
+ */
+function StatusLine({ tone, children }: { tone: 'neutral' | 'warn' | 'fail'; children: ReactNode }) {
+  return (
+    <p className={styles.status} data-tone={tone}>
+      <span className={styles.statusDot} aria-hidden="true" />
+      {children}
+    </p>
+  )
+}
 
 /**
  * 近期运行的 sparkline（spec.md §4.8：「失败的那次是红的」）。
@@ -110,52 +126,76 @@ export interface JobCardProps {
   onRun: (name: string) => void
 }
 
+/**
+ * 链上的一段（原「竖排卡片」，现在四段横向并排成一条流水——D-jobs-storage
+ * brief）。四个任务是**串起来的一条链**：第一步不跑，后三步就没有输入。
+ * 容器（`ul.chain`，见 `index.tsx`）在 1440 宽是一行四段，段间用一个箭头把
+ * 方向画出来（纯 CSS `::after`，不额外起 DOM）；窄屏（1050 / 375）退回竖排
+ * （见 `Jobs.module.css` 里那条按宽度收窄的媒体查询）——每一段内部本来就是
+ * 单列纵向排布，横排/竖排只是外层容器的 `grid-template-columns` 在切，
+ * 段内布局不用跟着分叉。
+ *
+ * 卡住的那一段（`data-alarm="true"`）整段变红：`--fail-soft` 底 +
+ * 顶部一条 `--fail` 色条（`.job[data-alarm]::before`）。
+ */
 export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
   const hv = healthView(job.health)
   const pending = runState?.phase === 'pending'
   const readonly = useReadonly()
+  // 这个任务是不是真的出了问题——「没跑成的后果」只在这时候才现身（见下）。
+  const trouble = hv.alarm || job.openFailures > 0
+  const statusTone: 'neutral' | 'warn' | 'fail' =
+    job.openFailures > 0 || hv.tone === 'fail' ? 'fail' : hv.tone === 'warn' ? 'warn' : 'neutral'
+  const metric = keyMetric(job)
 
   return (
     <li className={styles.job} data-testid="job-card" data-job={job.name} data-alarm={hv.alarm ? 'true' : 'false'}>
-      <div className={styles.main}>
-        <h3 className={styles.name}>
-          <span className={styles.ord}>{jobOrdinal(index)}、</span>
-          {job.label}
-          <Pill tone={hv.tone}>{hv.label}</Pill>
-          {job.openFailures > 0 && (
-            <Pill tone="fail" solid>
-              {job.openFailures} 项失败
-            </Pill>
-          )}
-        </h3>
-        <p className={styles.what}>
-          {job.schedule} · {job.what}
-        </p>
-        {hv.note !== '' && <p className={styles.healthNote}>{hv.note}</p>}
-        <LastRun job={job} now={now} />
-        {/* 这个任务没跑成的后果。spec §4.8 要求明写，失败项表里也有同一句 */}
-        <p className={styles.impact}>没跑成的后果：{job.impact}</p>
+      <div className={styles.head}>
+        <span className={styles.ord}>{jobOrdinal(index)}</span>
+        <h3 className={styles.name}>{job.label}</h3>
+      </div>
+      <p className={styles.what}>
+        {job.schedule} · {job.what}
+      </p>
+
+      <StatusLine tone={statusTone}>
+        {hv.label}
+        {job.openFailures > 0 && ` · ${job.openFailures} 项失败`}
+      </StatusLine>
+      {hv.note !== '' && <p className={styles.healthNote}>{hv.note}</p>}
+
+      <LastRun job={job} now={now} />
+
+      {/* 一次运行都没有时这里不画：徽标已经说了「从没跑过」，没有柱子本身就是
+          "没有运行记录"，画一条空的会被读成"跑了但什么都没发生"。 */}
+      {job.recentRuns.length > 0 && <Sparkline runs={job.recentRuns} now={now} />}
+
+      <div className={styles.next}>
+        {/* 「下次预计」在任务已经落后时是一句算得出来的空话：调度器停着，
+            它到点也不会跑。所以这一格换标签——「按周期应在」说的是一个算出来
+            的时刻，本来就不是承诺。 */}
+        <span className={styles.nextKey}>{hv.alarm ? '按周期应在' : '下次预计'}</span>
+        <b className={styles.nextAt}>{fmtDateTime(job.nextDueAt, new Date(now * 1000))}</b>
+        <span className={styles.nextGap}>{fmtAfter(job.nextDueAt, now)}</span>
+        {/* 这个任务自己的一个关键数——拿不到就不画这两行，不编一个数出来。 */}
+        {metric.value !== null && (
+          <>
+            <span className={styles.nextKey}>{metric.label}</span>
+            <b className={styles.nextAt}>{metric.value}</b>
+          </>
+        )}
       </div>
 
-      <div className={styles.right}>
-        {/* 一次运行都没有时这里原来写着「从没跑过」——那与左边的健康徽标一字不差。
-            徽标已经说了，sparkline 这一格就空着：没有柱子本身就是"没有运行记录"。 */}
-        {job.recentRuns.length > 0 && <Sparkline runs={job.recentRuns} now={now} />}
-        <div className={styles.next}>
-          {/* 「下次预计」在任务已经落后时是一句算得出来的空话：调度器停着，
-              它到点也不会跑。所以这一格换标签，而不是在页面顶上写一段话去更正它
-              ——「按周期应在」说的是一个算出来的时刻，本来就不是承诺。
-              颜色不动：整格已经是告警底（`.job[data-alarm]`），
-              再叠一层琥珀既压不出对比度，也把两种语义混在一格里。 */}
-          <span className={styles.nextKey}>{hv.alarm ? '按周期应在' : '下次预计'}</span>
-          <b className={styles.nextAt}>{fmtDateTime(job.nextDueAt, new Date(now * 1000))}</b>
-          <span className={styles.nextGap}>{fmtAfter(job.nextDueAt, now)}</span>
-        </div>
-        {/* 只读账号禁用而不是隐藏：藏起来会让人以为这个系统没有手动触发这回事 */}
-        <Button size="sm" onClick={() => onRun(job.name)} disabled={pending || readonly} title={readonlyTitle(readonly)}>
-          {pending ? '排队中…' : '立即运行'}
-        </Button>
-      </div>
+      {/* 「没跑成的后果」是脚注，不是正文：只在这个任务真的出问题时才现身。
+          正常的三个任务不再各自常驻一行一模一样句式的「没跑成的后果：……」；
+          真正失败的那几项，后果已经在下面「失败项 · 需要处理」表的
+          「如果不处理」列里逐条写过一次，这里只补它自己那一句。 */}
+      {trouble && <p className={styles.impact}>没跑成的后果：{job.impact}</p>}
+
+      {/* 只读账号禁用而不是隐藏：藏起来会让人以为这个系统没有手动触发这回事 */}
+      <Button size="sm" onClick={() => onRun(job.name)} disabled={pending || readonly} title={readonlyTitle(readonly)}>
+        {pending ? '排队中…' : '立即运行'}
+      </Button>
 
       {runState !== undefined && runState.phase !== 'pending' && (
         <p

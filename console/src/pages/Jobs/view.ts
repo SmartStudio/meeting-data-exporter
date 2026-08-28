@@ -379,3 +379,45 @@ const CN_ORDINALS = ['一', '二', '三', '四']
 export function jobOrdinal(index: number): string {
   return CN_ORDINALS[index] ?? String(index + 1)
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   链上每一段自己的关键数（D-jobs-storage brief）
+   ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * 四个内置任务各自在 `lastRun.summary` 里最该被单独摆出来的那一个键。
+ *
+ * 不是"摘要里第一个数字"这种通用规则——那要求后端按重要性排列对象键，
+ * 是一个没人保证过的隐含约定。这里按任务语义显式指定，键名与 `SUMMARY_LABEL`
+ * 共用同一份中文，不另造一套叫法。
+ */
+const KEY_METRIC_FIELD: Record<string, string> = {
+  fetch_recordings: 'discovered',
+  archive_nas: 'newlyArchived',
+  cleanup_expired: 'purged',
+  refresh_inventory: 'fetchable',
+}
+
+export interface KeyMetric {
+  /** 认不出的任务名给空串——调用方据此不画这一行 */
+  label: string
+  /** 摘要里没有这个键、或压根没有摘要时是 null，不编一个数出来 */
+  value: string | null
+}
+
+/**
+ * 一个任务这一次运行里，那个只属于它自己的数。**没有就是没有**：
+ * `lastRun` 为 null、`summary` 为 null、或摘要里没有这个键，一律返回
+ * `value: null`——调用方（`JobCard`）据此不画这一格，不是显示一个 0 或 `—`
+ * 冒充"探测过了"。
+ */
+export function keyMetric(job: Pick<JobItem, 'name' | 'lastRun'>): KeyMetric {
+  const field = KEY_METRIC_FIELD[job.name]
+  if (field === undefined) return { label: '', value: null }
+  const label = SUMMARY_LABEL[field] ?? field
+  if (job.lastRun === null) return { label, value: null }
+  const sum = summaryView(job.lastRun.summary)
+  if (sum.kind !== 'pairs') return { label, value: null }
+  const pair = sum.pairs.find((p) => p.key === field)
+  return { label, value: pair === undefined ? null : pair.value }
+}
