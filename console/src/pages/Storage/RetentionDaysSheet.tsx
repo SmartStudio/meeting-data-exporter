@@ -50,7 +50,7 @@ export function RetentionDaysSheet(props: RetentionDaysSheetProps) {
   const shown = localError ?? error
 
   return (
-    <Sheet open={open} onClose={onClose} title="修改默认保留天数">
+    <Sheet size="sm" open={open} onClose={onClose} title="修改默认保留天数">
       <div className={styles.formRow}>
         <label className={styles.formLabel} htmlFor={inputId}>
           默认保留天数

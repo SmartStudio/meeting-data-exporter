@@ -130,7 +130,7 @@ export function Wizard({ open, onDone }: { open: boolean; onDone: (created: bool
   const alertText = createError ?? closeWarn
 
   return (
-    <Sheet open={open} onClose={requestClose} title="接入新的采集程序">
+    <Sheet size="lg" open={open} onClose={requestClose} title="接入新的采集程序">
       <ol className={styles.steps}>
         {STEPS.map((label, i) => (
           <li

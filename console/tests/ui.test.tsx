@@ -8,6 +8,7 @@ import buttonCss from '../src/ui/Button.module.css?raw'
 
 import { Input } from '../src/ui/Input'
 import inputCss from '../src/ui/Input.module.css?raw'
+import sheetCss from '../src/ui/Sheet.module.css?raw'
 
 import { Pill } from '../src/ui/Pill'
 import pillCss from '../src/ui/Pill.module.css?raw'
@@ -462,3 +463,46 @@ describe('焦点环只有一层', () => {
     expect(bare).toBe(false)
   })
 })
+
+describe('Sheet：宽屏是居中对话框，窄屏才贴底', () => {
+  /**
+   * 底部升起是**移动端**的模式。九处编辑/确认都走这个基元，于是桌面上每一次
+   * 改密码、改保留天数、确认停用，都是从 1900px 宽的屏幕底边升起一整条，
+   * 离鼠标和触发它的那个菜单项都最远，中间一千多像素是空的。
+   *
+   * jsdom 不跑媒体查询也不做真实布局，所以这里查的是 CSS 源码本身：
+   * 默认块必须是居中（inset+margin:auto+限宽），贴底只出现在窄屏媒体查询里。
+   * 真实两种形态的几何在 scripts/a11y-check.ts 的视口扫描里量。
+   */
+  test('默认（宽屏）是居中限宽，不是贴底铺满', () => {
+    const panel = /\.panel\s*\{[^}]*\}/.exec(sheetCss)?.[0] ?? ''
+    expect(panel).toMatch(/inset:\s*0/)
+    expect(panel).toMatch(/margin:\s*auto/)
+    expect(panel).toMatch(/width:\s*min\(92vw,\s*var\(--dialog-w\)\)/)
+    // 贴底的那三条不许出现在默认块里
+    expect(panel).not.toMatch(/bottom:\s*0/)
+    expect(panel).not.toMatch(/translateY\(100%\)/)
+  })
+
+  test('贴底形态只活在窄屏媒体查询里', () => {
+    const idx = sheetCss.indexOf('@media (max-width: 56em)')
+    expect(idx).toBeGreaterThan(0)
+    const narrow = sheetCss.slice(idx)
+    expect(narrow).toMatch(/translateY\(100%\)/)
+    expect(narrow).toMatch(/inset:\s*auto 0 0 0/)
+    // 断点与 ui/Table 切卡片形态的那个一致，两者说的是同一件事
+    expect(tableCssBreakpoint()).toBe('56em')
+  })
+
+  test('三档宽度都从令牌来，没有裸像素', () => {
+    for (const t of ['--dialog-w-sm', '--dialog-w', '--dialog-w-lg']) {
+      expect(tokensCss).toContain(t)
+    }
+    expect(/\.sm\s*\{[^}]*--dialog-w-sm/.test(sheetCss)).toBe(true)
+    expect(/\.lg\s*\{[^}]*--dialog-w-lg/.test(sheetCss)).toBe(true)
+  })
+})
+
+function tableCssBreakpoint(): string {
+  return /@media \(max-width:\s*([\d.]+em)\)/.exec(tableCss)?.[1] ?? ''
+}

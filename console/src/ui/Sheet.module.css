@@ -1,23 +1,35 @@
-/* 底部面板：--dur-3（260ms，与 Drawer 同档——两者都是「抽屉类」大幅位移，
- * 不是轻量浮层）。translateY(100%) 对贴底面板本身已经够用（面板自身高度就是
- * 位移基准），但仍然按 §8 的教训同时压 opacity + pointer-events，不单靠
- * transform 数字自证。
+/* 这个基元有**两种形态**，按视口分：
+ *
+ *   宽屏（> 56em）  居中模态对话框
+ *   窄屏（≤ 56em）  从底部升起的面板
+ *
+ * 原来只有后一种。底部升起是**移动端**的模式：拇指够得着、视口矮、一次只做
+ * 一件事。搬到 1900px 宽的桌面上，一个三输入框的改密码表单会铺满整条底边，
+ * 离鼠标和触发它的那个菜单项都最远，而中间 1400px 是空的。九处编辑/确认
+ * 全走这个基元，所以九处都是那个样子。
+ *
+ * 居中用 `inset: 0 + margin: auto`，不用 `top/left: 50% + translate(-50%,-50%)`
+ * ——后者会把 transform 占掉，而进场动画要用它。
+ *
+ * 动效档位 --dur-3（260ms，与 Drawer 同档）。两种形态都同时压 opacity +
+ * pointer-events，不单靠 transform 数字自证（§8 的教训）。
  */
 
 .panel {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
+  margin: auto;
+  width: min(92vw, var(--dialog-w));
+  height: max-content;
   max-height: var(--sheet-max-h);
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border-top: var(--s-px) solid var(--line);
-  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-lg);
   z-index: var(--z-panel);
-  transform: translateY(100%);
+  transform: translateY(var(--s-3)) scale(.99);
   opacity: 0;
   pointer-events: none;
   transition:
@@ -25,11 +37,35 @@
     opacity var(--dur-3) var(--ease-in);
 }
 
+.sm { width: min(92vw, var(--dialog-w-sm)); }
+.lg { width: min(92vw, var(--dialog-w-lg)); }
+
 .panel[data-state='open'] {
-  transform: translateY(0);
+  transform: none;
   opacity: 1;
   pointer-events: auto;
   transition-timing-function: var(--ease-out);
+}
+
+/* 窄屏回到底部升起。断点与 `ui/Table` 切卡片形态的那个一致（56em），
+   两者说的是同一件事：这个宽度以下，桌面版式不成立了。 */
+@media (max-width: 56em) {
+  .panel,
+  .sm,
+  .lg {
+    inset: auto 0 0 0;
+    margin: 0;
+    width: auto;
+    height: auto;
+    border: 0;
+    border-top: var(--s-px) solid var(--line);
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    transform: translateY(100%);
+  }
+
+  .panel[data-state='open'] {
+    transform: translateY(0);
+  }
 }
 
 .header {

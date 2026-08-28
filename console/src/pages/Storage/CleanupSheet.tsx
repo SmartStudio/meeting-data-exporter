@@ -38,7 +38,7 @@ export function CleanupSheet({ open, onClose, phase, onConfirm }: CleanupSheetPr
   const running = phase.kind === 'preview' && phase.running
 
   return (
-    <Sheet open={open} onClose={onClose} title="立即清理已到期文件">
+    <Sheet size="sm" open={open} onClose={onClose} title="立即清理已到期文件">
       {phase.kind === 'loading' && (
         <>
           <p className={styles.lede}>正在算这一轮会删掉哪些文件……</p>

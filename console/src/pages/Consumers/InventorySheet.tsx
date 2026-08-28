@@ -33,7 +33,7 @@ export function InventorySheet({
   const granted = inv.fetchableCount + inv.blockedCount
 
   return (
-    <Sheet open={open} onClose={onClose} title={`${programName} 现在能取走什么`}>
+    <Sheet size="lg" open={open} onClose={onClose} title={`${programName} 现在能取走什么`}>
       <p className={styles.note}>
         已授权 {granted} 场，其中现在能取到 <b>{inv.fetchableCount}</b> 场。
       </p>

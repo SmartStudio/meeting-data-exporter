@@ -132,7 +132,7 @@ export function ProgramActions({
 
       {/* ── 二次确认（两个动作共用一个面板，内容按 confirm 分支）─────── */}
 
-      <Sheet
+      <Sheet size="sm"
         open={confirm !== null}
         onClose={() => setConfirm(null)}
         title={confirmTitle(confirm, program)}
@@ -183,7 +183,7 @@ export function ProgramActions({
 
       {/* ── 一次性展示 ───────────────────────────────────────── */}
 
-      <Sheet open={rotated !== null} onClose={closeRotated} title={`「${program.name}」的新凭据`}>
+      <Sheet size="sm" open={rotated !== null} onClose={closeRotated} title={`「${program.name}」的新凭据`}>
         {rotated !== null && (
           <div className={styles.confirmBody} data-testid="rotated-secret">
             <p className={styles.confirmLead} data-testid="rotated-note">
