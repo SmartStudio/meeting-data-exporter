@@ -55,12 +55,30 @@
   --accent-invert: #6BA3FF;   /* 压在 --fail 实底上的字。深色模式下 --fail 变浅，
                                这里必须跟着翻黑，否则白字压浅红只有 2.52:1 */
 
-  --ground:    #F1F4F9;
+  /* 中性梯度**去蓝**。原来这一组带明显蓝味（--ground 通道极差 8、--line 16），
+     配上「白卡 + 1px 边 + 8px 圆角」这套复合，整屏只剩一种材质，什么都在浮，
+     什么都不重要。这里把它们压回近乎无彩，层级交给 --nav 那条暗带和留白去分。
+     不改成暖灰：scripts/a11y-check.ts 的语义色守卫要求中性色是「品牌蓝抽掉
+     饱和度」的冷灰（190–262°），暖纸色相 60° 会被它拦下——那条守卫在防的正是
+     中性色随手改成彩色，比这里的色温偏好更值得留着。 */
+  --ground:    #F2F3F5;
   --surface:   #FFFFFF;
-  --surface-2: #F7F9FC;
-  --rail:      #E9EDF4;
-  --line:      #DCE2EC;
-  --line-soft: #E9EDF3;
+  --surface-2: #F8F9FA;
+  --rail:      #E9EDF4;   /* 骨架屏与审计页的**填充块**用色，不是左栏底色（左栏见 --nav） */
+  --line:      #E1E3E7;
+  --line-soft: #EBECEF;
+
+  /* ── 暗带 ────────────────────────────────────────────
+     左栏是一条暗带，主区是纸面。这一层不参与上面的中性梯度：
+     导航压暗之后，内容区成为整屏唯一的亮面，眼睛第一落点就固定了。
+     --nav-ink-3 与 --ink-4 同性质：压在 --nav 上 5.1:1，可做次要文字，
+     但不要拿它写正文。 */
+  --nav:       #15191F;
+  --nav-2:     #1F252E;
+  --nav-line:  #2C333E;
+  --nav-ink:   #EAEDF2;
+  --nav-ink-2: #9BA5B4;   /* 压在 --nav 上 7.15:1 */
+  --nav-ink-3: #808A9B;   /* 压在 --nav 上 5.11:1 */
 
   --ink:   #080A0F;
   --ink-2: #39414F;
@@ -209,7 +227,8 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #3D86FF; --on-brand: #04101F;
-    --ground: #080B11; --surface: #10151D; --surface-2: #161C26; --rail: #0B0F16; --line: #232B37; --line-soft: #1A212B;
+    --ground: #0B0C0E; --surface: #16181C; --surface-2: #1C1F24; --rail: #0B0F16; --line: #2A2D33; --line-soft: #212429;
+    --nav: #0A0C10; --nav-2: #14181E; --nav-line: #22262D; --nav-ink: #EAEDF2; --nav-ink-2: #9BA5B4; --nav-ink-3: #808A9B;
     --ink: #EDF0F5; --ink-2: #B7BFCC; --ink-3: #87909F; --ink-4: #6A7484;
     --warn: #E3A653; --warn-soft: #33270F; --warn-line: #5E4820;
     --fail: #F0857A; --fail-soft: #351815; --fail-line: #63302B; --on-fail: #300D08; --accent-invert: #0050CC;
@@ -219,7 +238,8 @@
 }
 :root[data-theme="dark"] {
   --brand: #3D86FF; --brand-press: #6BA3FF; --brand-soft: #0E2148; --brand-line: #21437F; --brand-text: #3D86FF; --on-brand: #04101F;
-  --ground: #080B11; --surface: #10151D; --surface-2: #161C26; --rail: #0B0F16; --line: #232B37; --line-soft: #1A212B;
+  --ground: #0B0C0E; --surface: #16181C; --surface-2: #1C1F24; --rail: #0B0F16; --line: #2A2D33; --line-soft: #212429;
+  --nav: #0A0C10; --nav-2: #14181E; --nav-line: #22262D; --nav-ink: #EAEDF2; --nav-ink-2: #9BA5B4; --nav-ink-3: #808A9B;
   --ink: #EDF0F5; --ink-2: #B7BFCC; --ink-3: #87909F; --ink-4: #6A7484;
   --warn: #E3A653; --warn-soft: #33270F; --warn-line: #5E4820;
   --fail: #F0857A; --fail-soft: #351815; --fail-line: #63302B; --on-fail: #300D08; --accent-invert: #0050CC;
