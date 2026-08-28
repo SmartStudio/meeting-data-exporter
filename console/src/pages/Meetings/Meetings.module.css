@@ -9,11 +9,38 @@
   margin-bottom: var(--s-4);
 }
 
-.search {
-  /* 放得下"搜标题 / 会议号 / 主持人"这句占位文案，不写死像素。
+/* 输入框 + 右侧那枚键位提示。<kbd> 绝对定位在这个容器里，
+   所以它的位置由容器右边界决定，不由 placeholder 里塞几个空格决定。 */
+.searchWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  /* 放得下"搜标题 / 会议号 / 主持人"这句占位文案，**外加右边那枚 <kbd> 的位置**
+     （`.search` 的 padding-right）。不写死像素。
      用 min() 兜底：窄屏下内容列可能比这句话还窄，硬给下限就会顶出去
      ——而外壳的 overflow-x: clip 会把顶出去的部分直接切掉、够不着。 */
-  min-width: min(26ch, 100%);
+  min-width: min(32ch, 100%);
+}
+
+.search {
+  /* 给 <kbd> 让出右边一格，输入的文字不会钻到它底下 */
+  padding-right: var(--s-9);
+}
+
+.searchKey {
+  position: absolute;
+  right: var(--s-3);
+  /* 纯装饰的提示，不接受指针事件——点在它身上应该聚焦输入框 */
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  line-height: 1;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: var(--s-px) solid var(--line);
+  border-bottom-width: var(--s-0);
+  border-radius: var(--r-xs);
+  padding: var(--s-1) var(--s-2);
 }
 
 .spacer {
@@ -120,24 +147,7 @@
   overflow-wrap: anywhere;
 }
 
-/* ── 图例 ─────────────────────────────────────────────────── */
-
-.legend {
-  display: flex;
-  gap: var(--s-6);
-  flex-wrap: wrap;
-  align-items: center;
-  margin-top: var(--s-4);
-  padding: var(--s-3) var(--s-4);
-  border: var(--s-px) solid var(--line-soft);
-  border-radius: var(--r);
-  background: var(--surface);
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-}
-
-.legendItem {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-}
+/* 圆点图例整块删掉了（阶段 6）：它是"某个控件自己没说清楚"的补丁——
+   一张需要去页面底部查表才读得懂的状态列，在窄屏卡片形态下那张表甚至不在
+   同一屏。状态现在由格子自己用文字说（`MeetingRow` 的 `.stageLine`），
+   对照表因此没有存在的理由。 */

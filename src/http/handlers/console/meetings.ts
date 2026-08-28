@@ -159,6 +159,10 @@ type AllowState = 'allow' | 'deny'
  *
  * `missing` 尤其不该被裁掉——它回答的是「这场会议的标题是空的，还是元数据没拉回来」，
  * 而这两件事在界面上长得一模一样。
+ *
+ * `hostName`（阶段 6）同理：`host` 是一串机器 id，界面拿它当人名渲染过一轮。
+ * 这个字段回答「查得到姓名吗」，`null` 时界面走降级渲染而**不是**把 id 摆上去。
+ * 它由 store 给（见 `ConsoleMeetingRow.hostName`），本文件一个字都不改它。
  */
 interface ApiMeeting extends ConsoleMeetingRow {
   allow: AllowState

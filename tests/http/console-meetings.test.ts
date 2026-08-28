@@ -45,6 +45,7 @@ function row(over: Partial<ConsoleMeetingRow> = {}): ConsoleMeetingRow {
     durationSec: 3600,
     // E-b：库里只有 host_userid，下发原值，不编中文占位名
     host: 'zouyanjian',
+    hostName: null,
     missing: [],
     assets: { ai_minutes: { got: 3, total: 3 } },
     unknownAssetTypes: [],

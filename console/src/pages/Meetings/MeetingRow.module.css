@@ -11,7 +11,11 @@
   cursor: pointer;
 }
 
-/* 标题是进入内容预览的入口，所以要看起来可点。 */
+/* 标题是进入内容预览的入口，所以**静止状态下就要看起来可点**。
+   此前它静止时和普通文本一模一样（正文色、无下划线），只有 hover 才变样——
+   于是页头不得不加一句加粗的「点标题看录像与纪要内容」去补这个缺口。
+   那句话删掉了，可供性由这里给：常驻一条淡下划线说"这是个链接"，
+   hover 时下划线转成品牌色说"就是这一条"。 */
 .title {
   background: none;
   border: 0;
@@ -21,11 +25,17 @@
   color: var(--ink);
   cursor: pointer;
   text-align: left;
+  text-decoration: underline;
+  /* --ink-4 是图形专用色（描边 / 分隔 / 填充），下划线正是一条描边——
+     不承载文字信息。用 --line 试过：1px 的 #DCE2EC 压在白底上几乎看不见，
+     那等于这条可供性没做。 */
+  text-decoration-color: var(--ink-4);
+  text-decoration-thickness: var(--s-px);
+  text-underline-offset: var(--s-0);
 }
 .title:hover {
   color: var(--brand-text);
-  text-decoration: underline;
-  text-underline-offset: var(--s-0);
+  text-decoration-color: currentColor;
 }
 .title:active {
   opacity: .7;
@@ -59,6 +69,26 @@ tr[data-dim='true'] .title {
   white-space: nowrap;
 }
 
+/* 主持人。查到姓名时是正文色的一段名字；查不到时是一句"未知主持人"加一截
+   id 尾巴——两者的字重与颜色必须分得开，否则"未知主持人"又会被当成人名读。 */
+.hostText {
+  font-size: var(--t-sm);
+  color: var(--ink-3);
+}
+.hostText[data-resolved='true'] {
+  font-size: inherit;
+  color: var(--ink);
+}
+
+/* 尾巴：它不是名字的一部分，是"用来把两行区分开"的那截编号。
+   等宽 + 更淡，读起来就是一个编号。 */
+.hostId {
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
 .assets {
   font-family: var(--mono);
   font-size: var(--t-sm);
@@ -78,24 +108,80 @@ tr[data-dim='true'] .title {
   color: var(--ink-3);
 }
 
+/* 两个阶段各占一行。宽度按"放得下『归档 规则不执行』"给——最长的那个状态文案
+   决定这一列的下限，写死像素的话换个字号就折行。 */
 .stage {
-  width: 14ch;
+  width: 17ch;
 }
 
-.stageRow {
+.stageStack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+}
+
+/* 一行 = 一个阶段的开关。整行可点（而不是只有那个 18px 的圆点可点），
+   触屏上这是唯一够得着的做法。 */
+.stageLine {
   display: flex;
   align-items: center;
+  gap: var(--s-1);
+  font: inherit;
+  font-size: var(--t-xs);
+  text-align: left;
+  background: none;
+  border: var(--s-px) solid transparent;
+  border-radius: var(--r-sm);
+  padding: var(--s-px) var(--s-1);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.stageLine:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+.stageLine:active:not(:disabled) {
+  transform: translateY(var(--s-px));
+}
+.stageLine:disabled {
+  cursor: not-allowed;
 }
 
-/* 两阶段之间的连线。实线＝拉取已完成，虚线＝还没轮到归档。 */
-.link {
-  width: var(--s-7);
-  height: var(--s-px);
+.stageIcon {
+  display: inline-flex;
+  line-height: 0;
   flex: none;
-  background: var(--line);
 }
-.link[data-done='true'] {
-  background: var(--ink-2);
+
+/* 阶段名比状态淡一档：一列里五十行都写着"拉取 / 归档"，真正在变的是右边那半。 */
+.stageName {
+  color: var(--ink-3);
+  flex: none;
+}
+
+.stageState {
+  color: var(--ink);
+}
+
+/* 失败＝一个月后永久丢失，是本系统最严重的状态（design-system.md §2.2）。
+   圆点已经是红的，文字跟上——颜色不是唯一的信息载体。 */
+.stageLine[data-state='failed'] .stageState {
+  color: var(--fail);
+  font-weight: 600;
+}
+/* 未执行 / 规则不执行 / 无录制都是"没发生"，不需要人做什么 */
+.stageLine[data-state='off'] .stageState,
+.stageLine[data-state='blocked'] .stageState,
+.stageLine[data-state='none'] .stageState {
+  color: var(--ink-3);
+}
+
+/* 琥珀圈的文字版。琥珀在 §2.2 里只有一个含义：有人手动改写了规则。 */
+.handMark {
+  font-size: var(--t-2xs);
+  color: var(--warn);
+  flex: none;
 }
 
 .keep {
@@ -264,6 +350,7 @@ tr[data-cursor='true'] .detailBtn,
   .check,
   .keep,
   .grant,
+  .stage,
   .act {
     width: auto;
   }
@@ -273,6 +360,11 @@ tr[data-cursor='true'] .detailBtn,
   .host,
   .meta {
     white-space: normal;
+  }
+
+  /* 阶段那两行在卡片形态下是主要的可点目标，给足手指的高度 */
+  .stageLine {
+    min-height: var(--tap-min);
   }
 
   /* **触屏没有 hover**。「＋30 天」和详情箭头在宽屏上是 hover 才浮出来的，

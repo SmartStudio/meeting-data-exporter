@@ -149,6 +149,7 @@ function specRow(s: MeetingSpec): ConsoleMeetingRow {
     startAt: start,
     durationSec: end > start ? end - start : 0,
     host: s.host ?? 'host-1',
+    hostName: null,
     missing: [],
     assets: {},
     unknownAssetTypes: [],

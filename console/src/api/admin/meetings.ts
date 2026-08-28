@@ -92,6 +92,15 @@ export interface AdminMeeting {
   durationSec: number
   /** **主持人的 userid，不是姓名**（企微通讯录未接） */
   host: string
+  /**
+   * 主持人的显示名。**查不到时是 `null`，而且这是常态**——身份映射表
+   * （网关侧的 `identity_map`）在本部署里一行都没有。
+   *
+   * 所以「查不到」那条路径是唯一会跑到的路径，展示层必须把 `host` 降级成
+   * 能区分行、又不会被误读成姓名的样子（见 `pages/Meetings/display.ts` 的
+   * `hostView`）。把 `host` 原样摆上去是这个字段存在的原因。
+   */
+  hostName: string | null
   /** 哪几列在库里是 NULL。空数组 = 每一列都有真实值 */
   missing: string[]
   /** 各类资产已拿到 / 应有。不适用的类**不出现在对象里** */
@@ -256,6 +265,10 @@ function readMeeting(r: R, raw: unknown, where: string): AdminMeeting {
     startAt: r.num(o, 'startAt', where),
     durationSec: r.num(o, 'durationSec', where),
     host: r.str(o, 'host', where),
+    // **宽读**：字段缺席与 `null` 在这里是同一个意思——「没查到姓名」，
+    // 展示层对两者走同一条降级路径。为它抛一个形状错，会让一整页会议
+    // （状态、资产、NAS 路径）因为一个显示名读不出来而全部看不见。
+    hostName: typeof o.hostName === 'string' && o.hostName !== '' ? o.hostName : null,
     missing: r.strList(o, 'missing', where),
     assets: readAssets(r, o, p),
     unknownAssetTypes: r.strList(o, 'unknownAssetTypes', where),

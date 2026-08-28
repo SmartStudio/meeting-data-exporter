@@ -5,7 +5,7 @@ import { daysLeft, fmtDateTime } from '@/lib/format'
 import { Button } from '@/ui/Button'
 import { Pill } from '@/ui/Pill'
 import { Sheet } from '@/ui/Sheet'
-import { assetTotals, grantSkipReason, meetingTitle } from './display'
+import { assetTotals, grantSkipReason, hostLabel, meetingTitle } from './display'
 import styles from './GrantPicker.module.css'
 
 export interface GrantPickerProps {
@@ -77,7 +77,7 @@ export function GrantPicker({
               <div className={styles.meetingMain}>
                 <div className={styles.meetingTitle}>{meetingTitle(m)}</div>
                 <div className={styles.meetingMeta}>
-                  {m.host} · {fmtDateTime(m.startAt, now)} · {got} 项资产
+                  {hostLabel(m)} · {fmtDateTime(m.startAt, now)} · {got} 项资产
                 </div>
               </div>
               {skip ? (

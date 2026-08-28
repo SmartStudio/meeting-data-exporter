@@ -173,6 +173,7 @@ function row(over: Partial<ConsoleMeetingRow> = {}): ConsoleMeetingRow {
     startAt: START,
     durationSec: 3600,
     host: 'zouyanjian',
+    hostName: null,
     missing: [],
     assets: { ai_minutes: { got: 1, total: 1 } },
     unknownAssetTypes: [],

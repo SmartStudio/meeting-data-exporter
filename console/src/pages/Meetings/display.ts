@@ -25,6 +25,14 @@ export type Stage = 'fetch' | 'archive'
 /** 阶段名。与原型的 `STAGE_LABEL` 逐字一致，不另造叫法。 */
 export const STAGE_NAME: Record<Stage, string> = { fetch: '拉取', archive: '归档到 NAS' }
 
+/**
+ * 表格里那一格用的短名。列头已经写着「拉取 · 归档」，格子里再写一遍
+ * 「归档到 NAS」会把这一列撑宽一倍，而 NAS 这三个字母在这里不携带新信息
+ * （去哪儿归档是详情抽屉回答的事）。**只在表格里短**——详情抽屉、人工改写面板
+ * 一律仍用 `STAGE_NAME`。
+ */
+export const STAGE_SHORT: Record<Stage, string> = { fetch: '拉取', archive: '归档' }
+
 /** 界面上的阶段状态。`'unknown'` 不是后端的取值，是「后端给了个我们不认识的取值」。 */
 export type DotState = StatusDotState | 'unknown'
 
@@ -96,6 +104,79 @@ export function whyTone(by: string): WhyTone {
   if (by === 'fail') return 'fail'
   if (by === 'hand') return 'warn'
   return 'neutral'
+}
+
+/* ── 主持人这一栏 ─────────────────────────────────────────────── */
+
+/**
+ * 主持人一格该显示什么。
+ *
+ * ## 为什么需要这个函数
+ *
+ * `m.host` 是主持人的 **userid**，真实取值长这样：
+ * `woaJARCQAAt_hKBw--YKZeVjEaIMGFQQ`。这一列此前直接渲染它，于是每一行都有
+ * 一串 32 位机器码，占掉表格约五分之一的宽度，而且**这些行带批量勾选框**
+ * ——只认得 id 的人没法在勾选前确认自己勾的是谁的会议。
+ *
+ * ## 三条路径，且中间那条是常态
+ *
+ * 1. 库里就没有主持人（`missing` 里有 `host`）→ 说「未取到」，不是空白；
+ * 2. **查不到姓名**（`hostName === null`）→ 降级：说清这是「未知主持人」，
+ *    再挂一截 id 的尾巴让两行区分得开，全量 id 放进 `title` 供复制。
+ *    身份映射在本部署里一行都没有，所以**这条就是当前唯一会跑到的路径**；
+ * 3. 查到了 → 显示姓名，全量 id 仍进 `title`（排查时只有它有用）。
+ *
+ * ## 为什么降级不是「直接显示 id」，也不是「显示一个占位符」
+ *
+ * 直接显示 id：那正是要修的问题——一串主键被当成人名读。
+ * 只显示「未知主持人」：一屏里十几行长得一模一样，分不出这是不是同一个人，
+ * 而「这几场是不是同一个人主持的」恰好是勾选前要判断的事。
+ * 所以取尾 6 位——足够把不同的人分开，又短到不会被误读成姓名。
+ */
+export interface HostView {
+  /** 主文本。姓名，或者「未知主持人」/「未取到」 */
+  text: string
+  /** 跟在主文本后面那截 id 尾巴。查到姓名或压根没有 id 时是 null */
+  tail: string | null
+  /** 原生 title：全量 id 供复制。没有 id 可给时是 null */
+  title: string | null
+  /** `text` 是不是一个真的姓名。样式据它决定，别让「未知主持人」长得像人名 */
+  resolved: boolean
+}
+
+/** 尾巴取几位。6 位 base64 ≈ 3.6 万种取值，一屏之内撞车的概率可以忽略 */
+const HOST_TAIL_LEN = 6
+/** 短到这个长度以内的 id 整串显示——给它掐头去尾反而更难认 */
+const HOST_SHORT_MAX = 12
+
+export function shortHostId(host: string): string {
+  return host.length <= HOST_SHORT_MAX ? host : `…${host.slice(-HOST_TAIL_LEN)}`
+}
+
+export const HOST_MISSING_LABEL = '未取到'
+export const HOST_UNKNOWN_LABEL = '未知主持人'
+
+export function hostView(m: AdminMeeting): HostView {
+  if (m.missing.includes('host') || m.host === '') {
+    return { text: HOST_MISSING_LABEL, tail: null, title: null, resolved: false }
+  }
+  if (m.hostName !== null && m.hostName !== '') {
+    return { text: m.hostName, tail: null, title: `主持人 ID：${m.host}`, resolved: true }
+  }
+  return {
+    text: HOST_UNKNOWN_LABEL,
+    tail: shortHostId(m.host),
+    title: `主持人 ID：${m.host}\n姓名查不到——企业通讯录还没有同步过来`,
+    resolved: false,
+  }
+}
+
+/** 一行文本形式的主持人。用在详情、授权面板这类不分两段排版的地方 */
+export function hostLabel(m: AdminMeeting): string {
+  const v = hostView(m)
+  // 离开「主持人」那一列之后就没有列头了，光说「未取到」不知道说的是哪一样东西
+  if (v.text === HOST_MISSING_LABEL) return `主持人${HOST_MISSING_LABEL}`
+  return v.tail === null ? v.text : `${v.text} · ${v.tail}`
 }
 
 /* ── 「已授权给」这一栏画哪一种 ───────────────────────────────── */

@@ -62,17 +62,46 @@ export interface TriageBarProps {
  *
  * 副标常驻、不随状态改写：一句只在打架那一刻才冒出来的解释，自己就成了
  * 第二个会说谎的东西；而且加载中那一支也要占住同样的高度，否则数据一到整页往下跳。
+ *
+ * **「一次只能筛一格」那句删了**（阶段 6）：它解释的是控件自己的行为约束，
+ * 而那种约束该由控件的样子说出来。五格现在各带一个单选圆圈——单选就是单选的
+ * 样子，不必再写一句话教人怎么用。
  */
-const SCOPE_NOTE = '这五个数字统计全部会议，不受下面的搜索、筛选与分页影响。一次只能筛一格。'
+const SCOPE_NOTE = '这五个数字统计全部会议，不受下面的搜索、筛选与分页影响。'
+
+/** 折叠成一行的那几格，末尾跟的那句。 */
+const ZERO_TAIL = '：均为 0'
 
 /**
  * 加载中用**骨架卡**而不是把整排收起来（spec.md §8）：这一排占着 100 多像素高，
  * 数据一到再冒出来，整页会往下跳一大段。骨架的职责就是占住真实的位置。
+ *
+ * ## 0 不配占一整张卡（阶段 6）
+ *
+ * 真实数据下这一排是「1 归档失败 / 0 7天内到期 / 0 待授权 / 0 处理中 / 0 仅存 NAS」
+ * ——五张等宽等重的卡片里四张不携带任何信息，而它们占着首屏最显眼的一整行。
+ * 于是：**计数为 0 的格子折叠成下面一行细文字**，仍然点得动（它是一个筛选项，
+ * 不是一个数字展示），版面让给真正非零的那几格。五格全是 0 时整排就是那一行字。
+ *
+ * **读不到计数（`n === null`）的格子不折叠**：不知道是不是 0，把它折进
+ * 「均为 0」那一行等于替后端说了「没有」——而这一排里最贵的那格是「归档失败」。
  */
 export function TriageBar({ counts, active, onToggle, loading = false, unreadable = false }: TriageBarProps) {
   const skeleton = loading || (counts === null && !unreadable)
+  const countOf = (def: TriageDef): number | null => (counts === null ? null : counts[def.bucket])
+  const carded = skeleton ? TRIAGE_DEFS : TRIAGE_DEFS.filter((d) => countOf(d) !== 0)
+  const zeros = skeleton ? [] : TRIAGE_DEFS.filter((d) => countOf(d) === 0)
+
   return (
-    <div className={styles.bar} data-testid="triage-bar" data-loading={skeleton ? 'true' : undefined}>
+    // `role="group"` 把五个选项绑成一组，读屏念得出它们是同一套筛选，
+    // 而不是五个各不相干的按钮
+    <div
+      className={styles.bar}
+      data-testid="triage-bar"
+      role="group"
+      aria-label="按处理状态筛选会议"
+      data-loading={skeleton ? 'true' : undefined}
+    >
       {skeleton
         ? TRIAGE_DEFS.map((def) => (
             <div key={def.id} className={styles.card} data-skeleton="true">
@@ -81,17 +110,17 @@ export function TriageBar({ counts, active, onToggle, loading = false, unreadabl
               <Skeleton width="78%" size="sm" />
             </div>
           ))
-        : TRIAGE_DEFS.map((def) => {
-            const n = counts === null ? null : counts[def.bucket]
+        : carded.map((def) => {
+            const n = countOf(def)
             const on = active === def.id
             return (
               <button
                 key={def.id}
                 type="button"
                 className={styles.card}
-                // 计数为 0 时不上语义色——0 场归档失败不该还画着红字。
-                // 读不到时同样不上色：那个"？"不是一次告警，是一次未知。
-                data-tone={n === null || n === 0 ? 'zero' : def.tone}
+                // 读不到时不上语义色：那个"？"不是一次告警，是一次未知。
+                // （计数为 0 的那一支已经不在这里了，它折进下面那行字。）
+                data-tone={n === null ? 'zero' : def.tone}
                 aria-pressed={on}
                 // 读不到计数时这一格点了也没意义（筛出来的数对不上任何数字），
                 // 但**不隐藏**：藏起来等于说"没有归档失败这回事"。
@@ -112,6 +141,28 @@ export function TriageBar({ counts, active, onToggle, loading = false, unreadabl
               </button>
             )
           })}
+
+      {zeros.length > 0 && (
+        <p className={styles.zeros} data-testid="triage-zeros">
+          {zeros.map((def, i) => (
+            <span key={def.id}>
+              {i > 0 && <span aria-hidden="true"> · </span>}
+              <button
+                type="button"
+                className={styles.zeroItem}
+                aria-pressed={active === def.id}
+                data-testid={`triage-${def.id}`}
+                title={`全部会议里有 0 场${def.label}`}
+                onClick={() => onToggle(def.id)}
+              >
+                {def.label}
+              </button>
+            </span>
+          ))}
+          {ZERO_TAIL}
+        </p>
+      )}
+
       <p className={styles.scope} data-testid="triage-scope">
         {unreadable ? '五格计数读不到，显示的是"？"而不是 0——0 会被读成"没有需要处理的"。' : SCOPE_NOTE}
       </p>

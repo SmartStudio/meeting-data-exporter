@@ -13,14 +13,15 @@ import {
   dotState,
   extendedText,
   grantCellKind,
+  hostLabel,
   meetingTitle,
   programName,
   STAGE_NAME,
   stateLabel,
+  type Stage,
+  WHY_MISSING_TEXT,
   whyLabel,
   whyTone,
-  WHY_MISSING_TEXT,
-  type Stage,
 } from './display'
 import { wkey } from './writes'
 import styles from './MeetingDetail.module.css'
@@ -92,7 +93,9 @@ export function MeetingDetail(props: MeetingDetailProps) {
       <p className={styles.meta}>
         {m.missing.includes('code') ? '会议号未取到' : m.code} ·{' '}
         {m.missing.includes('startAt') ? '时间未取到' : fmtDateTime(m.startAt, now)} ·{' '}
-        {fmtDuration(m.durationSec)} · {m.missing.includes('host') ? '主持人未取到' : m.host}
+        {/* 主持人：查不到姓名时降级成「未知主持人 · 尾号」，
+            **不把 userid 原样摆上去**。同一份判定在表格那一列也用着 */}
+        {fmtDuration(m.durationSec)} · {hostLabel(m)}
       </p>
 
       {detail.state === 'error' && (

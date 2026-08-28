@@ -13,7 +13,6 @@ import { Drawer } from '@/ui/Drawer'
 import { Input } from '@/ui/Input'
 import { PageShell } from '@/ui/PageShell'
 import { Popover } from '@/ui/Popover'
-import { StatusDot, STATUS_DOT_LABEL, type StatusDotState } from '@/ui/StatusDot'
 import { Toast } from '@/ui/Toast'
 import { BatchBar, type BatchAction } from './BatchBar'
 import { grantCellKind, meetingTitle, refOf, type Stage } from './display'
@@ -528,12 +527,12 @@ export default function MeetingsPage() {
   return (
     <PageShell
       title="会议记录"
-      description={
-        <>
-          归档成功后本地保留一段时间（每场自己的保留天数在详情里），这段时间内被授权的程序可以取走；
-          到期后本地文件删除，只留记录和 NAS 路径。<b>点标题看录像与纪要内容。</b>
-        </>
-      }
+      // 此前这里是三行散文，末尾还加粗了一句「点标题看录像与纪要内容」——
+      // 那是在用文案补一个可供性的缺口：需要被告知去点，说明标题没长成可点的样子。
+      // 那句话删了，标题改成看得出可点的链接样式（`MeetingRow.module.css` 的 `.title`）。
+      // 剩下这一句留着，因为删掉它人会做错事：不知道"本地会删、NAS 不删"的人
+      // 会把「仅存 NAS」读成"数据丢了"。
+      description="归档到 NAS 之后本地文件还会留一段时间，被授权的程序在这段时间里可以取走；到期后本地删除，记录与 NAS 路径永久保留。"
     >
       <TriageBar
         counts={triageCounts}
@@ -545,15 +544,24 @@ export default function MeetingsPage() {
 
       {toolbarVisible && (
         <div className={styles.toolbar}>
-          <Input
-            ref={searchRef}
-            type="search"
-            className={styles.search}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            placeholder="搜标题 / 会议号 / 主持人      /"
-            aria-label="搜索会议"
-          />
+          {/* 键位提示**不在 placeholder 里**。此前是 `"…主持人      /"`——
+              用六个空格把那个斜杠顶到右边，换一次字号就错位，而且渲染出来
+              看着像一个没写完的字符串。现在它是输入框右侧一枚独立的 <kbd>，
+              位置由布局决定，不由空格数决定。 */}
+          <span className={styles.searchWrap}>
+            <Input
+              ref={searchRef}
+              type="search"
+              className={styles.search}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="搜标题 / 会议号 / 主持人"
+              aria-label="搜索会议"
+            />
+            <kbd className={styles.searchKey} aria-hidden="true">
+              /
+            </kbd>
+          </span>
           {TRI_FILTERS.map((f) => (
             <Chip key={f.key} active={query[f.key] !== undefined} onClick={() => setFilterOpen(true)}>
               {f.label}
@@ -663,8 +671,6 @@ export default function MeetingsPage() {
         onRevoke={revoke}
       />
 
-      <Legend />
-
       <BatchBar
         count={selected.size}
         offPage={offPage}
@@ -724,23 +730,3 @@ export default function MeetingsPage() {
   )
 }
 
-/** 圆点的图例。颜色不是唯一信息载体，但一张密度这么高的表还是需要一份对照。 */
-function Legend() {
-  const items: Array<{ state: StatusDotState; overridden?: boolean; text: string }> = [
-    { state: 'done', text: STATUS_DOT_LABEL.done },
-    { state: 'off', text: STATUS_DOT_LABEL.off },
-    { state: 'blocked', text: STATUS_DOT_LABEL.blocked },
-    { state: 'failed', text: '失败 · 到期会永久丢失' },
-    { state: 'done', overridden: true, text: '人工改写过' },
-  ]
-  return (
-    <div className={styles.legend}>
-      {items.map((it, i) => (
-        <span key={i} className={styles.legendItem}>
-          <StatusDot state={it.state} label="图例" overridden={it.overridden} />
-          {it.text}
-        </span>
-      ))}
-    </div>
-  )
-}

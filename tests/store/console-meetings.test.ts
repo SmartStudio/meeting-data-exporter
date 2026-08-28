@@ -293,6 +293,89 @@ test('list 拼装一行：标题/会议号/主持人/时长/资产/授权/改写
   }
 })
 
+/** `identity_map` 的一行。姓名列不存在——这张表能给的最接近姓名的东西是 email */
+async function seedIdentity(
+  pool: Pool,
+  input: { wecomUserId: string; tmUserId: string; email?: string | null; updatedAt?: number },
+): Promise<void> {
+  const { wecomUserId, tmUserId, email = null, updatedAt = 1000 } = input
+  await pool.execute(
+    `INSERT INTO identity_map (wecom_userid, tm_userid, email, updated_at) VALUES (?, ?, ?, ?)`,
+    [wecomUserId, tmUserId, email, updatedAt],
+  )
+}
+
+test('hostName：identity_map 命中时给邮箱的本地部分，host 仍是原始 userid', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', hostUserId: 'woaJARCQAAt_hKBw' })
+    await seedIdentity(pool, {
+      wecomUserId: 'zhangsan',
+      tmUserId: 'woaJARCQAAt_hKBw',
+      email: 'zhang.san@corp.com',
+    })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    expect(rows[0]!.hostName).toBe('zhang.san')
+    // 原始 userid **不被替换掉**：界面要拿它做 title 供复制，排查时也只有它有用
+    expect(rows[0]!.host).toBe('woaJARCQAAt_hKBw')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('hostName：identity_map 是空表时为 null——那是本部署当前唯一会跑到的那条路径', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', hostUserId: 'woaJARCQAAt_hKBw' })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    // null 是「不知道他叫什么」。**不许**退回 host_userid：那样一来界面就分不出
+    // 「这是姓名」和「这是主键」，而它现在正把主键当人名渲染
+    expect(rows[0]!.hostName).toBeNull()
+    expect(rows[0]!.host).toBe('woaJARCQAAt_hKBw')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('hostName：有映射行但 email 是 NULL 时仍是 null，不退回 wecom_userid', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', hostUserId: 'tm-1' })
+    await seedIdentity(pool, { wecomUserId: 'zhangsan', tmUserId: 'tm-1', email: null })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    // 「表里有这个人」不等于「知道他叫什么」。退回 wecom_userid 只是换一串机器 id
+    expect(rows[0]!.hostName).toBeNull()
+  } finally {
+    await cleanup()
+  }
+})
+
+test('hostName：同一个 tm_userid 撞了两行时取最新的，且会议行不被复制成两行', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', hostUserId: 'tm-1' })
+    // tm_userid 上没有唯一约束（主键是 wecom_userid），重复是可能出现的脏数据。
+    // 这条测试同时钉两件事：取哪一条（最新），以及**分页行数不受它影响**
+    // ——LEFT JOIN 的写法会在这里把 total 变成 2。
+    await seedIdentity(pool, { wecomUserId: 'old', tmUserId: 'tm-1', email: 'old@corp.com', updatedAt: 1000 })
+    await seedIdentity(pool, { wecomUserId: 'new', tmUserId: 'tm-1', email: 'new@corp.com', updatedAt: 2000 })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows, total } = await store.list({ now: NOW })
+    expect(total).toBe(1)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.hostName).toBe('new')
+  } finally {
+    await cleanup()
+  }
+})
+
 test('不适用的资产类不出现在 assets 里，而不是 {got:0,total:0}', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
@@ -980,7 +1063,7 @@ test('数延长次数不是 N+1：30 场都延长过时，查询数与 3 场时�
     expect(big.rows.every((r) => r.keep.extended === 2)).toBe(true)
     expect(bigQueries).toBe(smallQueries)
     // 比 T1 那条上界只多一次：整页一条审计聚合查询，不是逐行查
-    expect(smallQueries).toBeLessThanOrEqual(6)
+    expect(smallQueries).toBeLessThanOrEqual(7)
   } finally {
     await cleanup()
   }
@@ -1123,7 +1206,8 @@ test('N+1 不许有：列 3 行与列 30 行发出去的查询数完全相同', 
     expect(small.rows).toHaveLength(3)
     expect(big.rows).toHaveLength(30)
     expect(bigQueries).toBe(smallQueries)
-    // 顺带钉住量级：拼一页要读五张表，再多就是有人偷偷加了逐行查询
+    // 顺带钉住量级：分页 1 + 计数 1 + 资产/授权/改写各 1 + 主持人姓名 1，
+    // 再多就是有人偷偷加了逐行查询
     expect(smallQueries).toBeLessThanOrEqual(6)
   } finally {
     await cleanup()

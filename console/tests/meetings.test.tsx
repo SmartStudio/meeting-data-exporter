@@ -1079,7 +1079,7 @@ describe('窄屏一行一张卡片', () => {
       '资产',
       '拉取 · 归档',
       '本地保留',
-      '已授权给',
+      '可取走的程序',
     ])
   })
 
@@ -1200,5 +1200,277 @@ describe('只读账号', () => {
     await waitFor(() => {
       expect(calls.some((c) => c.method === 'POST' && c.path.endsWith('/extend'))).toBe(true)
     })
+  })
+})
+
+/* ══════════════════════════════════════════════════════════════════
+   阶段 6 · 信息设计（拿 77 场真实会议跑出来的那批问题）
+   ══════════════════════════════════════════════════════════════════ */
+
+/** 真实数据里主持人那一列长这样：一串 32 位机器 id，每一行都是 */
+const REAL_HOST = 'woaJARCQAAt_hKBw--YKZeVjEaIMGFQQ'
+
+describe('主持人这一列不再是 32 位机器 id', () => {
+  test('查不到姓名时不把主键当人名摆上去，但两个不同的主持人仍然区分得开', async () => {
+    // 身份映射表目前 0 行，所以 hostName 恒为 null——**这就是当前唯一会跑到的路径**
+    handler = defaultHandler([
+      meeting({ id: 'm1', meetingId: 'm1', host: REAL_HOST, hostName: null }),
+      meeting({
+        id: 'm2',
+        meetingId: 'm2',
+        title: '技术评审',
+        host: 'woaJARCQAAt_hKBw--YKZeVjEaIMlj1lkQ',
+        hostName: null,
+      }),
+    ])
+    renderPage()
+    await ready()
+
+    const a = screen.getByTestId('host-m1')
+    const b = screen.getByTestId('host-m2')
+
+    // 这条是这一轮的硬判据：渲染出来的东西**不能是那串 id 原样**
+    expect(a.textContent).not.toBe(REAL_HOST)
+    expect(a).not.toHaveTextContent(REAL_HOST)
+    expect(a).toHaveTextContent('未知主持人')
+
+    // 但一屏之内两个不同的主持人必须分得开——否则勾选之前判断不了
+    // "这几场是不是同一个人主持的"
+    expect(a.textContent).not.toBe(b.textContent)
+
+    // 全量 id 仍然够得着（title 可复制），排查时只有它有用
+    expect(a).toHaveAttribute('title', expect.stringContaining(REAL_HOST))
+  })
+
+  test('后端解析到姓名时就显示姓名，id 退到 title 里', async () => {
+    handler = defaultHandler([meeting({ host: REAL_HOST, hostName: 'zhang.san' })])
+    renderPage()
+    await ready()
+
+    const cell = screen.getByTestId('host-m1')
+    expect(cell).toHaveTextContent('zhang.san')
+    expect(cell).not.toHaveTextContent('未知主持人')
+    expect(cell).toHaveAttribute('title', expect.stringContaining(REAL_HOST))
+  })
+
+  test('库里压根没有主持人：说「未取到」，不是一个破折号也不是空白', async () => {
+    handler = defaultHandler([meeting({ host: '', hostName: null, missing: ['host'] })])
+    renderPage()
+    await ready()
+    const cell = screen.getByTestId('host-m1')
+    expect(cell).toHaveTextContent('未取到')
+    expect(cell.textContent).not.toBe('—')
+  })
+
+  test('后端没下发 hostName 这个字段时按「查不到」处理，不是整页读取失败', async () => {
+    const raw = meeting({ host: REAL_HOST })
+    delete (raw as Record<string, unknown>).hostName
+    handler = defaultHandler([raw])
+    renderPage()
+    await ready()
+    expect(screen.getByTestId('host-m1')).toHaveTextContent('未知主持人')
+  })
+})
+
+describe('「拉取 · 归档」不再是三个没有图例的圆点', () => {
+  test('每个阶段自己带文字状态，不需要去别处查一张对照表', async () => {
+    renderPage()
+    await ready()
+    const row = screen.getByTestId('row-m1')
+    // m1 是 fetch: done / archive: done
+    expect(row).toHaveTextContent('拉取')
+    expect(row).toHaveTextContent('归档')
+    expect(within(row).getByRole('button', { name: '拉取：已完成' })).toHaveTextContent('已完成')
+  })
+
+  test('归档失败那一行把「失败」两个字写出来，不只靠一个红点', async () => {
+    renderPage()
+    await ready()
+    const row = screen.getByTestId('row-m3')
+    expect(within(row).getByRole('button', { name: '归档：失败' })).toHaveTextContent('失败')
+  })
+
+  test('人工改写过的阶段把「人工」写出来，不只靠一圈琥珀', async () => {
+    handler = defaultHandler([meeting({ fetch: 'off', hand: ['fetch'] })])
+    renderPage()
+    await ready()
+    const btn = within(screen.getByTestId('row-m1')).getByRole('button', {
+      name: '拉取：未执行 · 人工改写',
+    })
+    expect(btn).toHaveTextContent('人工')
+  })
+
+  test('页面底部那块圆点图例删掉了——格子自己说清楚了就不需要对照表', async () => {
+    renderPage()
+    await ready()
+    const src = css('src/pages/Meetings/index.tsx')
+    expect(stripTs(src)).not.toMatch(/function Legend\(/)
+    // 图例里那句"到期会永久丢失"是它独有的文案，页面上不该再有第二处
+    expect(screen.queryByText('失败 · 到期会永久丢失')).toBeNull()
+  })
+})
+
+describe('「可取走的程序」：列头与格子回答同一个命题', () => {
+  test('列头不再问"授权给了谁"——那是格子答不上来的问题', async () => {
+    renderPage()
+    await ready()
+    expect(screen.getByRole('columnheader', { name: '可取走的程序' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: '已授权给' })).toBeNull()
+  })
+
+  test('规则禁止是默认态，用极淡的行内灰字，不再占一枚 pill', async () => {
+    handler = defaultHandler([meeting({ allow: 'deny', grants: [] })])
+    renderPage()
+    await ready()
+    const cell = screen.getByTestId('grant-m1')
+    expect(cell).toHaveTextContent('规则禁止')
+    // pill 那种强调留给真的有授权的行——最常见的默认态不许占最强的视觉重量
+    expect(cell.querySelector('[class*="pill"]')).toBeNull()
+  })
+
+  test('真的有授权的行仍然是 pill——强调留给"数据真的在外面"', async () => {
+    renderPage()
+    await ready()
+    const cell = screen.getByTestId('grant-m1')
+    expect(cell).toHaveTextContent('知识库索引器')
+    expect(cell.querySelector('[class*="pill"]')).not.toBeNull()
+  })
+})
+
+describe('「本地保留」的进度条与旁边那行字说同一件事', () => {
+  test('刚归档 = 条是满的（还剩很多），不是空的（快没了）', async () => {
+    const archivedAt = nowSec() - 60 // 一分钟前刚归档
+    handler = defaultHandler([
+      meeting({
+        keep: {
+          archivedAt,
+          expiresAt: archivedAt + 30 * DAY,
+          extended: 0,
+          extendedSource: 'none',
+          extendedDays: 0,
+          retentionDays: 30,
+          filesGone: false,
+        },
+      }),
+    ])
+    renderPage()
+    await ready()
+
+    const cell = screen.getByTestId('keep-m1')
+    expect(cell).toHaveTextContent('剩 30 天')
+    const bar = within(cell).getByRole('progressbar')
+    // 文字说"剩 30 天"，条就得是满的。此前这里画的是"已用 0%"——
+    // 一整列几乎空的浅灰条，读出来是"快没了"
+    expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThan(95)
+  })
+
+  test('快到期 = 条快见底', async () => {
+    const archivedAt = nowSec() - 27 * DAY
+    handler = defaultHandler([
+      meeting({
+        keep: {
+          archivedAt,
+          expiresAt: archivedAt + 30 * DAY,
+          extended: 0,
+          extendedSource: 'none',
+          extendedDays: 0,
+          retentionDays: 30,
+          filesGone: false,
+        },
+      }),
+    ])
+    renderPage()
+    await ready()
+    const cell = screen.getByTestId('keep-m1')
+    expect(cell).toHaveTextContent('剩 3 天')
+    const bar = within(cell).getByRole('progressbar')
+    expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(15)
+  })
+})
+
+describe('分诊条：0 不占一整张卡', () => {
+  const oneNonZero = { archiveFailed: 1, expiringIn7d: 0, awaitingGrant: 0, inProgress: 0, nasOnly: 0 }
+
+  function withTriage(counts: Record<string, number>): (c: Call) => Reply | undefined {
+    const base = defaultHandler()
+    return (c) =>
+      c.path === '/api/v1/admin/meetings/triage' ? { status: 200, body: counts } : base(c)
+  }
+
+  test('四个 0 折叠成一行细字，非零的那格仍是卡片', async () => {
+    handler = withTriage(oneNonZero)
+    renderPage()
+    await ready()
+
+    expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('1')
+    const zeros = screen.getByTestId('triage-zeros')
+    expect(zeros).toHaveTextContent('均为 0')
+    for (const id of ['soon', 'ungranted', 'running', 'nasonly']) {
+      expect(screen.queryByTestId(`triage-count-${id}`)).toBeNull()
+      // 但它们仍然是筛选项，点得动
+      expect(screen.getByTestId(`triage-${id}`)).toBeEnabled()
+    }
+  })
+
+  test('折叠掉的那几格照样能点出筛选', async () => {
+    handler = withTriage(oneNonZero)
+    const user = userEvent.setup()
+    renderPage()
+    await ready()
+    await user.click(screen.getByTestId('triage-nasonly'))
+    await waitFor(() => expect(lastQuery('/api/v1/admin/meetings')?.get('triage')).toBe('nasOnly'))
+  })
+
+  test('五格全是 0 时整排就是一行字，一张卡都不占', async () => {
+    handler = withTriage({ archiveFailed: 0, expiringIn7d: 0, awaitingGrant: 0, inProgress: 0, nasOnly: 0 })
+    renderPage()
+    await ready()
+    expect(screen.getByTestId('triage-zeros')).toHaveTextContent('均为 0')
+    for (const def of TRIAGE_DEFS) {
+      expect(screen.queryByTestId(`triage-count-${def.id}`)).toBeNull()
+    }
+  })
+
+  test('计数读不到的格子**不折叠**——"？"不是 0', async () => {
+    const base = defaultHandler()
+    handler = (c) =>
+      c.path === '/api/v1/admin/meetings/triage' ? { status: 500, body: { error: 'boom' } } : base(c)
+    renderPage()
+    await ready()
+    await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toHaveTextContent('？'))
+    expect(screen.queryByTestId('triage-zeros')).toBeNull()
+  })
+
+  test('「一次只能筛一格」那句话删了，改由单选圆圈说', async () => {
+    renderPage()
+    await ready()
+    expect(screen.getByTestId('triage-scope')).not.toHaveTextContent('一次只能筛一格')
+    const barCss = css('src/pages/Meetings/TriageBar.module.css')
+    // 单选外观：一圈空心环，选中时填实
+    expect(barCss).toMatch(/\.label::before/)
+    expect(barCss).toMatch(/\.card\[aria-pressed='true'\] \.label::before/)
+  })
+})
+
+describe('页头与工具条：不用文案补可供性', () => {
+  test('「点标题看录像与纪要内容」删了，标题自己长成可点的样子', async () => {
+    renderPage()
+    await ready()
+    expect(screen.queryByText(/点标题看录像与纪要内容/)).toBeNull()
+    // 可供性落在样式上：静止状态就带下划线，不是只有 hover 才像链接
+    const rowCss = css('src/pages/Meetings/MeetingRow.module.css')
+    const title = /\.title \{[^}]*\}/.exec(rowCss)?.[0] ?? ''
+    expect(title).toMatch(/text-decoration:\s*underline/)
+  })
+
+  test('搜索框的键位提示不再是 placeholder 尾巴上那个孤立的斜杠', async () => {
+    renderPage()
+    await ready()
+    const box = screen.getByLabelText('搜索会议')
+    expect(box.getAttribute('placeholder')).toBe('搜标题 / 会议号 / 主持人')
+    // 提示挪成输入框右侧独立的一枚 <kbd>，位置由布局定，不由空格数定
+    const src = css('src/pages/Meetings/index.tsx')
+    expect(src).toMatch(/<kbd/)
+    expect(stripTs(src)).not.toMatch(/placeholder="[^"]*  /)
   })
 })

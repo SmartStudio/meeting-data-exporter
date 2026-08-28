@@ -54,6 +54,13 @@ import { createPolicyStore, type PolicyStore } from './policy'
  * `action = 'issue_download_url'` 的记录里）。会议操作历史仍然只有
  * `AuditQueryStore.listForMeeting` 一份实现。
  *
+ * ## 第六张表：`identity_map`，而且**不 JOIN**（阶段 6）
+ *
+ * `meetings.host_userid` 是一串机器 id，直接摆上屏幕没人认得出那是谁——而那些行
+ * 是带批量勾选框的。`hostName` 把它翻成人看得懂的名字，来源是 `identity_map`。
+ * 它**没有跟着 `FROM_SQL` 一起 JOIN**：那张表的 `tm_userid` 上没有唯一约束，
+ * 撞上重复行会把会议行复制一份、把分页算错。做法见 `loadHostNames`。
+ *
  * 因此 `fetch` / `archive` 两个阶段状态本模块给的是**库里看得见的那一半**：
  * `'off'`（有人工改写把这一阶段关掉）给得出来，`'blocked'`（规则做的决定）给不出来。
  * 契约对这两个取值的分工是明写的——`off` 是人关的，`blocked` 是规则关的——所以
@@ -214,6 +221,23 @@ export interface ConsoleMeetingRow {
    * 字段仍叫 `host`：将来接上通讯录只换来源、不换形状，前端一行不改。
    */
   host: string
+  /**
+   * 主持人的**显示名**，取不到时 `null`（阶段 6 · 会议记录页信息设计）。
+   *
+   * 来源是 `identity_map`：那张表是身份映射表（企微 userid ↔ 腾讯会议 userid ↔
+   * 邮箱），**没有姓名列**，所以这里能给出的最接近姓名的东西是邮箱的本地部分
+   * （`zhangsan@corp.com` → `zhangsan`）。将来接上企微通讯录时换的是这个字段的
+   * 来源，不是它的形状。
+   *
+   * **`null` 是常态，不是异常**：本部署的 `identity_map` 目前一行都没有。所以
+   * 界面上「取不到姓名」那条路径才是真正会跑到的那条，它必须把 `host`
+   * （一串 32 位机器 id）降级成「能区分行、又不假装是姓名」的样子，
+   * 而不是把主键当人名摆上去。
+   *
+   * 为什么不在这里就把降级文案拼好：那是展示，换一次措辞就要动网关。
+   * 这里只回答「查到了没有」。
+   */
+  hostName: string | null
   /** 哪几列在库里是 NULL。空数组表示每一列都有真实值 */
   missing: MeetingNullField[]
   /**
@@ -506,6 +530,12 @@ interface MeetingSqlRow extends RowDataPacket {
   last_completed_at: number | string | null
 }
 
+/** `identity_map` 里一条按腾讯会议 userid 命中的映射。姓名列不存在，只有邮箱 */
+interface HostIdentityRow extends RowDataPacket {
+  tm_userid: string
+  email: string | null
+}
+
 interface AssetAggRow extends RowDataPacket {
   meeting_id: string
   sub_meeting_id: string
@@ -704,6 +734,20 @@ function isStageOff(kind: 'fetch' | 'archive', override: PolicyOverride | null |
 const HAND_ORDER: HandKind[] = ['fetch', 'archive', 'allow']
 
 /**
+ * 邮箱的本地部分。`identity_map` 没有姓名列，这是那张表里最接近姓名的东西。
+ *
+ * **拿不到就返回 null，不返回整串邮箱、更不返回 userid**：这个字段的契约是
+ * 「这是一个可以当人名读的东西」，塞一串带 `@` 的地址或一个机器 id 进去，
+ * 界面就会把它当姓名渲染——那正是这一轮要修掉的问题。
+ */
+function emailLocalPart(email: string | null): string | null {
+  if (email === null) return null
+  const at = email.indexOf('@')
+  const local = at < 0 ? email.trim() : email.slice(0, at).trim()
+  return local === '' ? null : local
+}
+
+/**
  * 「延长过几次」的两层判据，实现见 `ConsoleKeepWindow` 的说明。
  *
  * `auditCount` 传 0 有两种来源——审计里真的一条都没有，或者压根没去查（
@@ -730,6 +774,7 @@ function assembleRow(
   grantIds: readonly string[],
   overrides: MeetingOverrideSet,
   auditExtendCount: number,
+  hostName: string | null,
 ): ConsoleMeetingRow {
   const missing: MeetingNullField[] = []
   if (r.subject === null) missing.push('title')
@@ -809,6 +854,7 @@ function assembleRow(
     startAt,
     durationSec,
     host: r.host_userid ?? '',
+    hostName,
     missing,
     assets,
     unknownAssetTypes: unknown,
@@ -979,6 +1025,54 @@ export function createConsoleMeetingsStore(
     return out
   }
 
+  /**
+   * 这一页主持人的显示名（阶段 6）。
+   *
+   * ## 为什么是单独一条查询，不是 `FROM_SQL` 里再加一个 LEFT JOIN
+   *
+   * `identity_map.tm_userid` **没有唯一约束**（主键是 `wecom_userid`）。同一个
+   * 腾讯会议 userid 出现两行是可能的（离职账号回收、身份同步竞态写入），
+   * 而 JOIN 一旦撞上重复行就会把那场会议在列表里复制成两行——分页的
+   * `total` 与实际行数从此对不上，而且没有任何东西会报错。单独一条查询在
+   * 内存里按「最新的映射生效」收敛，行数不受它影响。
+   *
+   * ## 「最新的映射生效」与登录那条路径同一口径
+   *
+   * `updated_at` 降序、`wecom_userid` 升序做稳定 tie-break——与
+   * `src/store/auth.ts` 的 `lookupIdentityByEmail` 逐字同一条排序。两处对同一张
+   * 表给出不同的人，是这套映射最难查的一类故障。
+   *
+   * ## 查询数
+   *
+   * **一条，与行数无关**；而且这一页一个主持人 userid 都没有（全是 NULL）时
+   * 一条都不发。`identity_map` 上没有 `tm_userid` 索引，所以这是一次小表扫描——
+   * 一张按人建的映射表规模是「公司人数」，不是「会议数」。真需要索引时那是一条
+   * 纯增量的 migration，不改这里任何一行。
+   */
+  async function loadHostNames(rows: readonly MeetingSqlRow[]): Promise<Map<string, string>> {
+    const ids = [...new Set(rows.map((r) => r.host_userid).filter((v): v is string => v !== null && v !== ''))]
+    if (ids.length === 0) return new Map()
+
+    const [found] = await pool.query<HostIdentityRow[]>(
+      `SELECT tm_userid, email
+         FROM identity_map
+        WHERE tm_userid IN (${ids.map(() => '?').join(', ')})
+        ORDER BY updated_at DESC, wecom_userid ASC`,
+      ids,
+    )
+
+    const out = new Map<string, string>()
+    for (const r of found) {
+      // 先到先得 = 最新的那条（上面已按 updated_at 降序排过）
+      if (out.has(r.tm_userid)) continue
+      const name = emailLocalPart(r.email)
+      // 有映射行但 email 是 NULL：我们知道这个人在表里，但仍然不知道他叫什么。
+      // 这时**不许**退回 wecom_userid——那只是换了一串机器 id 摆上屏幕。
+      if (name !== null) out.set(r.tm_userid, name)
+    }
+    return out
+  }
+
   async function assemble(rows: readonly MeetingSqlRow[], now: number): Promise<ConsoleMeetingRow[]> {
     if (rows.length === 0) return []
     const keys: MeetingKey[] = rows.map((r) => ({
@@ -996,14 +1090,17 @@ export function createConsoleMeetingsStore(
         since: num(r.archived_at),
       }))
 
-    // 四条查询并发发出去，且**每条都是整页一次**——这是「N+1 不许有」那条验收
-    // 的落点。想知道列一页发了几次查询，数这里就够了：分页 1 + 计数 1 + 这里 3，
-    // 外加这一页真有会议被延长过时的第 4 条（延长次数，见 loadExtendCounts）。
-    const [assetsByKey, grantsByKey, overrideRows, extendCounts] = await Promise.all([
+    // 五条查询并发发出去，且**每条都是整页一次**——这是「N+1 不许有」那条验收
+    // 的落点。想知道列一页发了几次查询，数这里就够了：分页 1 + 计数 1 + 这里 3
+    // （资产 / 授权 / 改写），外加两条按需的：这一页真有会议被延长过时的延长次数
+    // （`loadExtendCounts`），以及这一页至少有一个主持人 userid 时的姓名映射
+    // （`loadHostNames`）。**都与行数无关**。
+    const [assetsByKey, grantsByKey, overrideRows, extendCounts, hostNames] = await Promise.all([
       loadAssets(keys),
       loadGrants(keys),
       grantsStore.listActiveOverridesForMeetings([...keys]),
       loadExtendCounts(extendKeys),
+      loadHostNames(rows),
     ])
 
     const overridesByKey = new Map<string, PolicyOverride[]>()
@@ -1026,6 +1123,8 @@ export function createConsoleMeetingsStore(
         indexOverrides(overridesByKey.get(k) ?? []),
         // 没去数（extended_days === 0）与数出来是 0 在这里同义，见 extendedCountOf
         extendCounts.get(k) ?? 0,
+        // 查不到映射就是 null——**不回退成 host_userid**，见 ConsoleMeetingRow.hostName
+        (r.host_userid === null ? undefined : hostNames.get(r.host_userid)) ?? null,
       )
     })
   }
