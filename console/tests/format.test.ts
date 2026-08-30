@@ -11,10 +11,31 @@ describe('format', () => {
     const t = new Date(2025, 11, 31, 9, 5).getTime() / 1000
     expect(fmtDateTime(t, new Date(2026, 7, 23))).toBe('2025-12-31 09:05')
   })
-  test('fmtDuration 用 时:分，不足一小时也补 0', () => {
-    expect(fmtDuration(6720)).toBe('1:52')
-    expect(fmtDuration(2820)).toBe('0:47')
-    expect(fmtDuration(0)).toBe('0:00')
+  /**
+   * `fmtDuration` 原来输出 `时:分`（`0:05`）。2026-08-28 换成带单位的中文,
+   * 因为 `时:分` 在这一页上被读错了两次，而且都是硬错：
+   *
+   * 1. **和时间码撞脸**。内容预览页抬头写「时长 0:05」，同一屏下面的走时条写
+   *    「2:46 / 5:32」——同一个 332 秒，一个是「0 时 05 分」一个是「5 分 32 秒」。
+   *    人只会把「0:05」读成 5 秒。
+   * 2. **短会议显示成零**。`fmtDuration(59)` 是 `'0:00'`，而库里最短的会议是
+   *    7 秒——那几场在界面上时长写着「0:00」，读起来是「这场会议没开」。
+   *
+   * `fmtClock` 不动：它报的是「录像走到哪一秒」，`分:秒` 是时间码的通用写法,
+   * 而且预览页三处联动全靠它对得上。两个函数从此**连形状都不一样**，
+   * 再也顶替不了对方。
+   */
+  test('fmtDuration 带单位，不与时间码撞脸', () => {
+    expect(fmtDuration(6720)).toBe('1 小时 52 分')
+    expect(fmtDuration(2820)).toBe('47 分 0 秒')
+    expect(fmtDuration(332)).toBe('5 分 32 秒')
+    expect(fmtDuration(0)).toBe('0 秒')
+  })
+
+  test('不足一分钟的会议报得出真实秒数——不是 0', () => {
+    // 库里最短的一场是 7 秒。旧实现按整分钟截断，这一场显示成「0:00」
+    expect(fmtDuration(7)).toBe('7 秒')
+    expect(fmtDuration(59)).toBe('59 秒')
   })
   test('fmtBytes 三位有效数字，二进制单位', () => {
     expect(fmtBytes(23907140)).toBe('22.8 MB')
@@ -38,10 +59,12 @@ describe('format', () => {
   // ── 下面是简报之外补充的边界覆盖 ──
 
   test('fmtDuration 进位边界：59 秒 / 60 秒 / 3599 秒 / 3600 秒', () => {
-    expect(fmtDuration(59)).toBe('0:00') // 不足一分钟，按整分钟截断
-    expect(fmtDuration(60)).toBe('0:01')
-    expect(fmtDuration(3599)).toBe('0:59') // 差 1 秒不到一小时，不进位
-    expect(fmtDuration(3600)).toBe('1:00')
+    expect(fmtDuration(59)).toBe('59 秒') // 不足一分钟就报秒，不再截成 0
+    expect(fmtDuration(60)).toBe('1 分 0 秒')
+    expect(fmtDuration(3599)).toBe('59 分 59 秒') // 差 1 秒不到一小时，不进位
+    // 满一小时之后丢掉秒：一场两小时的会议，末尾那 13 秒不是任何人要的信息
+    expect(fmtDuration(3600)).toBe('1 小时 0 分')
+    expect(fmtDuration(3613)).toBe('1 小时 0 分')
   })
 
   test('fmtBytes 量级切换边界：1023/1024 B，1048575/1048576 字节', () => {
@@ -70,9 +93,9 @@ describe('format', () => {
 /**
  * `fmtClock` —— 播放位置 / 转写时间戳专用（F6 内容预览页）。
  *
- * 它与 `fmtDuration` 是两件事，不能互相顶替：`fmtDuration(65)` 是 `0:01`
- * （一场 65 秒的会议开了「不到一分钟」），而转写里第 65 秒那一段必须显示
- * `1:05`。把时长格式套到时间戳上，点开的就是另一个位置。
+ * 它与 `fmtDuration` 是两件事，不能互相顶替：`fmtDuration(65)` 是「1 分 5 秒」
+ * （这场会议开了多久），而转写里第 65 秒那一段必须显示 `1:05`（走到哪一秒）。
+ * 把时长格式套到时间戳上，点开的就是另一个位置。
  */
 describe('fmtClock（播放位置 / 转写时间戳）', () => {
   test('一小时以内是 分:秒，秒补零、分不补', () => {
@@ -89,7 +112,7 @@ describe('fmtClock（播放位置 / 转写时间戳）', () => {
   })
 
   test('与 fmtDuration 不是一回事：同一个 65 秒，一个是时长一个是时间戳', () => {
-    expect(fmtDuration(65)).toBe('0:01')
+    expect(fmtDuration(65)).toBe('1 分 5 秒')
     expect(fmtClock(65)).toBe('1:05')
   })
 

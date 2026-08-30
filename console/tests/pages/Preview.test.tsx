@@ -674,6 +674,44 @@ describe('右下角是「这场会议的资产与去向」', () => {
 
 /* ── 留痕与受限查看 ───────────────────────────────────────────────── */
 
+/**
+ * 后端好几段说明文字里带 Markdown 的粗体记号（`**不入库**`）。原样打印出来就是
+ * 一串星号——看起来像个 bug，而它出现的位置恰恰是最需要被信任的地方。
+ *
+ * `Emphasis` 就是为这件事写的，但 2026-08-30 在真实数据上发现它**只套在
+ * `access.banner` 上**：右下角的 `media.text` 直接把「录像与音频**不入库、也不由
+ * 本接口代理内容**（T10 验收 3）」原样印了出来。
+ *
+ * 所以这条断言不盯某一个字段，盯**整页**：屏幕上任何位置都不许出现字面的 `**`。
+ * 后端将来在哪一段文案里加粗体，这条都拦得住。
+ */
+describe('后端下发的 **强调** 一律渲染成粗体，屏幕上不出现字面的星号', () => {
+  test('整页任何位置都没有字面的 **', async () => {
+    const user = userEvent.setup()
+    routes.unshift({
+      match: /\/content$/,
+      status: 200,
+      body: {
+        ...INDEX,
+        access: ACCESS_DENY,
+        local: { ...INDEX.local, text: '本地文件**还在**，保留期到 2026-09-01。' },
+        media: { ...INDEX.media, text: '录像与音频**不入库、也不由本接口代理内容**。' },
+      },
+    })
+    renderPreview()
+    await ready()
+    expect(document.body.textContent).not.toContain('**')
+    // 粗体真的渲染出来了，不是把星号连同文字一起吞掉
+    expect(screen.getByText('不入库、也不由本接口代理内容').tagName).toBe('STRONG')
+    expect(screen.getByText('还在').tagName).toBe('STRONG')
+
+    // 展开一组资产，明细里的后端理由同样不许漏星号
+    const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
+    await openAssetGroup(user, panel, /完整转写/)
+    expect(document.body.textContent).not.toContain('**')
+  })
+})
+
 describe('只读留痕（spec §2）', () => {
   test('被规则禁止采集的会议：顶部挂琥珀警示条，并说清这次查看已留痕', async () => {
     routes.unshift({ match: /\/content$/, status: 200, body: { ...INDEX, access: ACCESS_DENY } })
@@ -737,6 +775,27 @@ describe('加载 / 失败 / 空', () => {
 /* ── 样式 ─────────────────────────────────────────────────────────── */
 
 describe('样式令牌', () => {
+  /**
+   * 琥珀警示条**不许是 flex 容器**。
+   *
+   * 后端下发的 banner 里带 `**禁止采集**`，`Emphasis` 把它渲染成
+   * `文本节点 + <strong> + 文本节点`。父容器一旦是 flex，这三段各自成为一个
+   * flex item——`<strong>禁止采集</strong>` 被挤成一根四个字的竖条，整条警示
+   * 变成三列：「这场会议按当前的采集权限规则是 / 禁止采集 / 的。管理员仍然能看……」。
+   *
+   * 2026-08-30 在真实数据上撞见。它在宽屏单行时看不出来——右栏一挤就现形，
+   * 而这条恰恰是全站最需要被读懂的一句话。
+   */
+  test('警示条是普通文本流，不是 flex —— 后端下发的 **强调** 会被挤成竖条', () => {
+    const css = readFileSync(
+      resolve(process.cwd(), 'src/pages/Preview/Preview.module.css'),
+      'utf-8',
+    )
+    const block = /\.warn \{([^}]*)\}/.exec(css)
+    expect(block, '找不到 .warn 规则').not.toBeNull()
+    expect(block![1]).not.toMatch(/display:\s*flex/)
+  })
+
   // 文件名原来是写死的两个。改成扫目录：这一页拆过一次组件（资产面板搬进了自己的
   // 样式表），写死的清单当场就漏掉了新文件——而漏掉的那一刻这条测试仍然是绿的。
   // 一个**报告"通过"却什么都没检查**的门禁比没有这个门禁更糟（同 a11y 的空扫描保护）。

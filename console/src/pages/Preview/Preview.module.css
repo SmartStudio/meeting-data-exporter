@@ -83,9 +83,11 @@
 }
 
 /* 琥珀警示条：spec §2 点名要它。琥珀在这套设计里只有一个含义——「这需要你看一眼」 */
+/* **不是 flex**。后端下发的 banner 带 `**禁止采集**`，`Emphasis` 渲染成
+   「文本节点 + <strong> + 文本节点」；父容器一旦是 flex，这三段各自成为一个
+   flex item，`<strong>` 被挤成一根四个字的竖条，整条警示裂成三列。
+   它要的是普通文本流——一段会换行的话。 */
 .warn {
-  display: flex;
-  gap: var(--s-3);
   margin-top: var(--s-4);
   padding: var(--s-3) var(--s-4);
   border: 1px solid var(--warn-line);

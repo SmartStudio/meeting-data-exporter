@@ -3,7 +3,7 @@ import type { ChaptersView } from '@/api/admin/content'
 import { assetLabel } from '@/api/admin/content'
 import { fmtClock } from '@/lib/format'
 import { Skeleton } from '@/ui/Skeleton'
-import { currentCueIndex, useFollowCurrent } from './text'
+import { Emphasis, currentCueIndex, useFollowCurrent } from './text'
 import styles from './Preview.module.css'
 
 /**
@@ -35,6 +35,21 @@ export interface TimelineTabProps {
   position: number
   onSeek: (sec: number) => void
   onRetry: () => void
+}
+
+/**
+ * 后端认出的转写时间戳格式。**不落回原值**：`speaker` / `bracket` 这种枚举名混在
+ * 一句中文里，读的人只会以为界面出了错。认不出的格式（后端将来新增的）仍然落回
+ * 原值——那时屏幕上出现一个陌生的英文词，正是「这里该加一条」的信号。
+ */
+const FORMAT_LABEL: Record<string, string> = {
+  srt: '认出的是字幕格式（带起止时刻）',
+  bracket: '认出的是行首时间戳',
+  speaker: '认出的是「发言人(时间戳)」',
+}
+
+function formatLabel(format: string): string {
+  return FORMAT_LABEL[format] ?? `认出的格式是 ${format}`
 }
 
 export function TimelineTab({ data, loading, error, position, onSeek, onRetry }: TimelineTabProps) {
@@ -75,12 +90,14 @@ export function TimelineTab({ data, loading, error, position, onSeek, onRetry }:
         任何一列装它。所以下面这一列是<b>按转写时间戳切分</b>的转写分段，不是章节——
         它们的时间是真的，点一下就能把位置对过去。
       </p>
-      <p className={styles.backendText}>{data.text}</p>
+      <p className={styles.backendText}>
+        <Emphasis text={data.text} />
+      </p>
 
       {from !== null && (
         <p className={styles.hint}>
           分段来自 {assetLabel(from.assetKey, from.assetType)} · {from.fileType} ·
-          {from.format === 'none' ? ' 认不出时间戳格式' : ` 认出的格式是 ${from.format}`} ·
+          {from.format === 'none' ? ' 认不出时间戳格式' : ` ${formatLabel(from.format)}`} ·
           共 {from.total} 段
         </p>
       )}

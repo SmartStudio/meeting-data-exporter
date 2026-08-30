@@ -11,7 +11,7 @@ import { useResource } from '@/lib/useResource'
 import { fmtBytes, fmtDay } from '@/lib/format'
 import { Skeleton } from '@/ui/Skeleton'
 import RadioRow from './RadioRow'
-import { pickDefaultTemplate } from './text'
+import { Emphasis, pickDefaultTemplate } from './text'
 import styles from './Preview.module.css'
 
 /**
@@ -115,12 +115,12 @@ function SelectedBody({
       {empty ? (
         <div className={styles.emptyDoc}>
           <p className={styles.emptyDocText} data-state={selected.state}>
-            {selected.text}
+            <Emphasis text={selected.text} />
           </p>
         </div>
       ) : (
         <p className={styles.stateText} data-state={selected.state}>
-          {selected.text}
+          <Emphasis text={selected.text} />
         </p>
       )}
 
@@ -133,7 +133,11 @@ function SelectedBody({
             {seg.chars !== null && <span className={styles.mono}>{seg.chars} 字</span>}
             <span className={styles.segState}>{availabilityLabel(seg.availability)}</span>
           </header>
-          {seg.reason !== null && <p className={styles.reason}>{seg.reason}</p>}
+          {seg.reason !== null && (
+            <p className={styles.reason}>
+              <Emphasis text={seg.reason} />
+            </p>
+          )}
           {seg.content !== null && <pre className={styles.doc}>{seg.content}</pre>}
           {seg.nasPath !== null && <code className={styles.path}>{seg.nasPath}</code>}
         </article>

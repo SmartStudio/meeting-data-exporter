@@ -3,7 +3,7 @@ import { assetLabel, availabilityLabel } from '@/api/admin/content'
 import type { Resource } from '@/lib/useResource'
 import { daysLeft, fmtBytes, fmtDay } from '@/lib/format'
 import { Pill } from '@/ui/Pill'
-import { WHY_LABEL } from './text'
+import { Emphasis, WHY_LABEL } from './text'
 import styles from './AssetPanel.module.css'
 
 /**
@@ -126,7 +126,7 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
           </b>
           {/* 判定必须可追溯到是哪条规则判的——这一条一个字都不许简化 */}
           <span className={styles.why}>
-            {WHY_LABEL[access.why.by] ?? access.why.by} · {access.why.text}
+            {WHY_LABEL[access.why.by] ?? access.why.by} · <Emphasis text={access.why.text} />
           </span>
         </dd>
 
@@ -156,7 +156,9 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
               ? `本地文件已在 ${local.purgedAt === null ? '到期时' : fmtDay(local.purgedAt)}清理，只能去 NAS 取`
               : `本地文件还在，还剩 ${daysLeft(local.expiresAt)} 天`}
           {/* 后端文案。它是补充说明，视觉上比上面那句结论弱一档 */}
-          <span className={styles.soft}>{local.text}</span>
+          <span className={styles.soft}>
+            <Emphasis text={local.text} />
+          </span>
         </dd>
 
         <dt>NAS 路径</dt>
@@ -222,7 +224,7 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
                     {reasons.map((r) => (
                       <li key={r.text} className={styles.reason}>
                         {labelled && <span className={styles.reasonWho}>{r.types.join(' / ')}：</span>}
-                        {r.text}
+                        <Emphasis text={r.text} />
                       </li>
                     ))}
                   </ul>
@@ -300,7 +302,11 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
           不是某一组的。放进每一组的展开区里，就是把这次要修的那种重复原样复刻一遍
           （video + audio 两组各说一遍同一句话）。所以它在这里出现一次，且不必展开
           就能看到：「控制台没有可播放的媒体源」是人该在第一眼知道的事。 */}
-      {media.assets.length > 0 && <p className={styles.mediaNote}>{media.text}</p>}
+      {media.assets.length > 0 && (
+        <p className={styles.mediaNote}>
+          <Emphasis text={media.text} />
+        </p>
+      )}
     </section>
   )
 }
