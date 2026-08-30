@@ -32,6 +32,7 @@ import { createRecordsApi } from '../tencent/records'
 import { createArchivesStore, type ArchivesStore } from '../store/archives'
 import { createGrantsStore, type GrantsStore } from '../store/grants'
 import { createPolicyStore, type PolicyStore } from '../store/policy'
+import { createContentsStore, type ContentsStore } from '../store/contents'
 import { archivePendingMeetings, type ArchiveDeps } from './archive'
 import { discoverWithFetchPolicy } from './fetch-policy'
 import { createInProcSource } from './source-inproc'
@@ -81,6 +82,25 @@ export interface WorkerDeps extends FetchRoundDeps {
   localRoot: string
   /** 归档目的地根目录（MDE_NAS_ROOT，NAS 挂载点） */
   nasRoot: string
+  /**
+   * 文本类资产的**正文入库**口（`asset_contents`）。归档成功的那一刻把正文读进库,
+   * 到期清理删掉本地文件之后内容预览页仍然读得到（spec §4.9 · §4.4）。
+   *
+   * ## 为什么这里是**必填**，而 `ArchiveDeps.contents` 是可选的
+   *
+   * 因为它漏过一次，代价是整整一页功能。2026-08-28：一次性 worker 归档了 375 个
+   * 资产，`asset_contents` **一行都没有**——预览页的纪要 / 时间轴 / 转写三个 tab
+   * 全空，资产那一栏如实写着「已归档，正文未入库」。`scheduler.ts` 传了它，
+   * 这里没传，而 `ArchiveDeps.contents` 是可选的，所以**编译器一声不吭**。
+   *
+   * `ingestAssetContent` 那条「没接线就 warn 一句」的兜底确实每次都喊了——375 次,
+   * 一次也没人读。日志拦不住装配漏项，类型可以：这里做成必填之后，再想漏掉它
+   * 就必须先让仓库编译不过。
+   *
+   * `ArchiveDeps.contents` 保持可选不动：那一层有别的调用方（回填脚本、只测归档
+   * 本身的用例）真的不需要正文入库。**收紧要收在装配这一层**，不是流水线那一层。
+   */
+  contents: ContentsStore
 }
 
 export interface FetchRound {
@@ -267,6 +287,14 @@ export async function runWorkerOnce(
     listArchiveRules: () => deps.policy.listEnabledStackRules('archive'),
     // 改写同样每轮取一次、整批取。归档目录被人工改写过的会议不受规则支配（spec §5.4）
     listArchiveOverrides: (keys) => deps.grants.listActiveOverridesForMeetings(keys),
+    // 正文入库。漏掉这一行的代价见 WorkerDeps.contents 的注释——归档到 NAS
+    // 与「预览页读得到」是两件事，第二件全靠这一行。
+    contents: deps.contents,
+    // `recordFailure` **刻意不接**：它写的是 `job_failures`，那是「定时任务」的
+    // 失败账本（spec §4.8），每一行都挂在一个 jobName 上。一次性的 `bun run worker`
+    // 不是任何一个定时任务的一次运行，把它的失败记进 archive_nas 的账本里，
+    // 控制台的定时任务页就会显示出一次根本没发生过的调度失败。CLI 的失败留在
+    // 退出码与 stderr 上（见 archivePendingMeetings 的逐会议 catch）。
   }
   const archived = await archivePendingMeetings(archiveDeps, now)
 
@@ -581,6 +609,9 @@ async function main(): Promise<number> {
     const archives = createArchivesStore(pool)
     const policy = createPolicyStore(pool)
     const grants = createGrantsStore(pool)
+    // 正文入库口。与 scheduler.ts 同一个 store，同一个理由：归档到 NAS 之后
+    // 预览页要读得到正文，而本地文件到期就会被清掉。
+    const contents = createContentsStore(pool)
 
     const tencentClient = createTencentClient(config.tencent, {
       fetch,
@@ -624,7 +655,7 @@ async function main(): Promise<number> {
     const res = await runWorkerOnce(
       {
         store, source, storage, concurrency: args.concurrency, leaseSec: DEFAULT_LEASE_SEC,
-        archives, policy, grants, localRoot: archiveRoot, nasRoot,
+        archives, policy, grants, localRoot: archiveRoot, nasRoot, contents,
       },
       args.sel,
       args.keys,

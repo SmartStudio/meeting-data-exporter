@@ -771,12 +771,24 @@ export interface TranscriptCue {
   text: string
 }
 
-export type TranscriptFormat = 'srt' | 'bracket' | 'none'
+export type TranscriptFormat = 'srt' | 'bracket' | 'speaker' | 'none'
 
 /** `(时):分:秒[.毫秒]`。小时段可省（腾讯的短会转写常写成 `03:21`） */
 const TS = String.raw`(?:(\d{1,3}):)?(\d{1,2}):(\d{2})(?:[.,](\d{1,3}))?`
 const CUE_ARROW = new RegExp(`^\\s*${TS}\\s*-->\\s*${TS}`)
 const CUE_LEAD = new RegExp(`^\\s*[\\[(]?${TS}[\\])]?[\\s　]*`)
+/**
+ * 腾讯会议实际导出的那一种：**发言人在前、时间戳在括号里**——`曾慧(00:00:21): 正文`。
+ *
+ * 上面两条都要求时间戳**在行首**，而平台给的不是。2026-08-28 的真实故障：库里
+ * 95 份转写正文全部判成 `none`、零分段，时间轴 tab 空、进度条没有标记、没有字幕。
+ *
+ * 人名段落用 `[^()（）\[\]]` 而不是 `.`：人名里不会有括号，而用 `.{1,32}?` 会让
+ * 正文里任何一处「……(1:23)……」都能凑出一次匹配，把一整段正文切成两半。
+ * 结尾的冒号是可选的——`曾慧(00:00:21) 正文` 这种没有冒号的写法同样认。
+ */
+const CUE_SPEAKER_LEAD = new RegExp(`^\\s*([^()（）\\[\\]:：]{1,32})[(（]${TS}[)）][：:]?[\\s　]*`)
+
 /** SRT 的序号行。它不是正文，续行时要停在这儿——否则「2」会被并进上一段的文本 */
 const INDEX_LINE = /^\d{1,6}$/
 /** 发言人切分。非贪婪 + 32 字符上限：正文里的冒号很常见，切太狠会把半句话当人名 */
@@ -802,7 +814,12 @@ function splitSpeaker(rest: string): { speaker: string | null; text: string } {
 export function parseTranscriptCues(raw: string): { format: TranscriptFormat; cues: TranscriptCue[] } {
   const lines = raw.split(/\r?\n/)
   if (lines.some((l) => CUE_ARROW.test(l))) return { format: 'srt', cues: parseSrt(lines) }
+  // bracket 先于 speaker 判：`[01:05] 张三：正文` 的行首是括号，人名段落要求至少
+  // 一个非括号字符，所以它进不了 speaker——但把顺序倒过来就说不清了，别倒。
   if (lines.some((l) => CUE_LEAD.test(l))) return { format: 'bracket', cues: parseBracket(lines) }
+  if (lines.some((l) => CUE_SPEAKER_LEAD.test(l))) {
+    return { format: 'speaker', cues: parseSpeakerLead(lines) }
+  }
   return { format: 'none', cues: [] }
 }
 
@@ -843,6 +860,35 @@ function parseBracket(lines: readonly string[]): TranscriptCue[] {
     }
     const { speaker, text } = splitSpeaker(line.slice(m[0].length).trim())
     cues.push({ at: toSec(m[1], m[2]!, m[3]!), endAt: null, speaker, text })
+  }
+  return cues
+}
+
+/**
+ * `发言人(时间戳): 正文`。续行的处理与 `parseBracket` 完全一致——没有时间戳的行
+ * 并进上一段，丢掉它等于把一段长发言截成第一句。
+ *
+ * 发言人**不走 `splitSpeaker`**：这里的人名是正则第 1 组捕出来的，已经确定；
+ * 再让 `splitSpeaker` 去正文里找冒号，会把「他说：我不同意」的「他说」当成第二个
+ * 人名，覆盖掉真的那个。
+ */
+function parseSpeakerLead(lines: readonly string[]): TranscriptCue[] {
+  const cues: TranscriptCue[] = []
+  for (const line of lines) {
+    const m = CUE_SPEAKER_LEAD.exec(line)
+    if (m === null) {
+      const prev = cues[cues.length - 1]
+      const t = line.trim()
+      if (prev !== undefined && t !== '') prev.text = prev.text === '' ? t : `${prev.text}\n${t}`
+      continue
+    }
+    const speaker = m[1]!.trim()
+    cues.push({
+      at: toSec(m[2], m[3]!, m[4]!),
+      endAt: null,
+      speaker: speaker === '' ? null : speaker,
+      text: line.slice(m[0].length).trim(),
+    })
   }
   return cues
 }

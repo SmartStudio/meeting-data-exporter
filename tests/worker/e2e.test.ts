@@ -27,6 +27,7 @@ import type { RecordsApi } from '../../src/tencent/records'
 import { createArchivesStore } from '../../src/store/archives'
 import { createGrantsStore } from '../../src/store/grants'
 import { createPolicyStore } from '../../src/store/policy'
+import { createContentsStore } from '../../src/store/contents'
 import { createInProcSource } from '../../src/worker/source-inproc'
 import { createMysqlStore } from '../../src/worker/store-mysql'
 import { createJobsStore } from '../../src/store/jobs'
@@ -217,6 +218,9 @@ function makeDeps(
     policy: createPolicyStore(pool),
     localRoot: root,
     nasRoot,
+    // 正文入库（`asset_contents`）。**必填**，理由见 WorkerDeps.contents——
+    // 它漏过一次，代价是内容预览页整页空白。
+    contents: createContentsStore(pool),
     ...rest,
   }
 }
@@ -279,6 +283,37 @@ async function withRig(
 const FILES = { '/file/f-sum-1': TRANSCRIPT_BODY, '/file/f-video-1': VIDEO_BODY }
 
 describe('runWorkerOnce', () => {
+  /**
+   * 归档到 NAS **不等于**预览页读得到。
+   *
+   * 2026-08-28 的真实故障：一次性 worker 归档了 375 个资产，`asset_contents` 一行
+   * 都没有——内容预览页的纪要 / 时间轴 / 转写三个 tab 全空，而资产那一栏如实写着
+   * 「已归档，正文未入库」。根因是 `runWorkerOnce` 组装 `ArchiveDeps` 时没有传
+   * `contents`（`scheduler.ts` 传了），`ingestAssetContent` 于是走 `undefined`
+   * 那条分支，warn 一句就返回。
+   *
+   * 那个缺口当时是**知道**的，写在 `archive.ts` 的一行注释里（「本任务的文件边界
+   * 不含 src/worker/index.ts」）。注释拦不住任何人——这条测试才拦得住。
+   */
+  test('一轮跑完，文本类资产的正文进了 asset_contents —— 归档到 NAS 不等于预览页读得到', async () => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
+      const now = () => START + 100
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+
+      await runWorkerOnce(deps, RANGE_SEL, KEYS, now)
+
+      const [rows] = await pool.query<RowDataPacket[]>(
+        'SELECT asset_type, file_type, status, content FROM asset_contents',
+      )
+      // 录像不入库（不是文本，单个可以有几个 GB），所以只有转写这一条
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.asset_type).toBe('meeting_summary')
+      expect(rows[0]!.file_type).toBe('txt')
+      expect(rows[0]!.status).toBe('parsed')
+      expect(rows[0]!.content).toBe(TRANSCRIPT_BODY)
+    })
+  })
+
   test('一轮把一场会议的两个资产拉进归档区，状态与哈希落进 MySQL', async () => {
     await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
       const now = () => START + 100

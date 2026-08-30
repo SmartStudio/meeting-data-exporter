@@ -644,6 +644,51 @@ test('parseTranscriptCues 认 mm:ss 与带方括号的时间戳，续行并进�
   expect(r.cues[1]!.speaker).toBeNull()
 })
 
+/**
+ * 腾讯会议**真实**导出的转写格式：发言人在前，时间戳在括号里。
+ *
+ * 2026-08-28 的真实故障：库里 95 份转写正文全部解析成 `none`、零分段——时间轴 tab
+ * 空、进度条上没有标记、也没有字幕。原因是这两个解析器都要求**时间戳在行首**
+ * （SRT 的箭头行、`[01:05]` 的引导括号），而平台给的是 `曾慧(00:00:21): 正文`。
+ *
+ * 界面上当时如实写着「没有转写分段」——它没说谎，是解析器不认这个格式。
+ *
+ * 下面这段是从 `/tmp/mde-nas/.../transcript.txt` 逐字取的真实样例（人名保留,
+ * 内容截断）。
+ */
+test('parseTranscriptCues 认「发言人(时间戳): 正文」——腾讯真实导出的那一种', () => {
+  const raw = [
+    '曾慧(00:00:21): 打了鹏哥。这个需求不行，后面？',
+    '',
+    '刘振鹏(00:00:29): 喂喂他们，他那个不不具备的，',
+    '这一行没有时间戳，是上一段的续行',
+    '',
+    '曾慧(00:00:31): 问题。',
+  ].join('\n')
+  const r = parseTranscriptCues(raw)
+  expect(r.format).toBe('speaker')
+  expect(r.cues.length).toBe(3)
+  expect(r.cues[0]).toMatchObject({ at: 21, endAt: null, speaker: '曾慧', text: '打了鹏哥。这个需求不行，后面？' })
+  expect(r.cues[1]!.at).toBe(29)
+  expect(r.cues[1]!.speaker).toBe('刘振鹏')
+  // 续行并进上一段——丢掉它等于把长发言截成第一句
+  expect(r.cues[1]!.text).toContain('这一行没有时间戳')
+  expect(r.cues[2]!.at).toBe(31)
+})
+
+test('「发言人(时间戳)」不许抢走行首时间戳那两种格式', () => {
+  // 行首中括号仍然判 bracket：`[01:05]` 前面没有人名
+  expect(parseTranscriptCues('[01:05] 张三：第一句').format).toBe('bracket')
+  // SRT 的箭头行仍然判 srt
+  expect(parseTranscriptCues('1\n00:00:01,000 --> 00:00:05,500\n大家好').format).toBe('srt')
+})
+
+test('正文里出现「（三点五）」这类括号不会被当成时间戳分段', () => {
+  const r = parseTranscriptCues('这句话里有个(3.5)的括号，不是时间戳\n另一句也没有时间')
+  expect(r.format).toBe('none')
+  expect(r.cues).toEqual([])
+})
+
 test('parseTranscriptCues 对没有时间戳的文本返回 none，不硬凑一个 0:00', () => {
   const r = parseTranscriptCues('纯文字纪要\n没有任何时间')
   expect(r.format).toBe('none')
