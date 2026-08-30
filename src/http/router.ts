@@ -46,6 +46,10 @@ import type { ContentLookup } from './handlers/console/content'
 import * as consoleJobsHandlers from './handlers/console/jobs'
 import type { JobsDeps } from './handlers/console/jobs'
 import type { JobsStore } from '../store/jobs'
+// 阶段 6 · 管理端媒体流（A6 内容预览的录像/音频那一半）新增的一条依赖与一条路由。
+// 同样只追加，不动上面任何一行。
+import * as consoleMediaHandlers from './handlers/console/media'
+import type { MediaDeps } from './handlers/console/media'
 
 /**
  * 聚合全部前置任务的模块实例，供路由层组装。测试用 stub 注入，
@@ -179,6 +183,15 @@ export interface AppDeps {
    * 四个任务各跑 N 份意味着 N 个实例同时对同一批本地文件执行不可逆删除。
    */
   jobs: JobsDeps
+  /**
+   * 已归档录像/音频的流式读出（阶段 6）。**只有一个 NAS 挂载点**，形状与理由见
+   * `handlers/console/media.ts` 的 `MediaDeps`。
+   *
+   * 它的 `nasRoot` **必须与 `storage.nasRoot` 是同一个 `MDE_NAS_ROOT`**——
+   * `src/index.ts` 读一次、给两个字段，与 `jobsStore` 一个实例给两处同一条约定。
+   * 各读各的环境变量，归档存储页会说「NAS 可达」而这条端点同时报「没挂 NAS」。
+   */
+  media: MediaDeps
 }
 
 export interface RouteCtx {
@@ -314,6 +327,20 @@ const ROUTES: Route[] = [
   // 两者不会互相吃掉
   compile('GET', '/api/v1/admin/jobs', consoleJobsHandlers.listJobs),
   compile('POST', '/api/v1/admin/jobs/:name/run', consoleJobsHandlers.runJob),
+  // A6 内容预览的录像/音频那一半（阶段 6）。spec §4.4。
+  //
+  // **它推翻了 T10 验收 3 的一半**：那条禁的是「从腾讯 CDN 转发」，不是「读一个
+  // 已经归档在本机 NAS 目录里的文件」——完整的区分写在 handlers/console/media.ts
+  // 的文件头，不许只留一句「改了」。
+  //
+  // 六段路径，与上面 `/:meetingId/content`（四段）、`/:meetingId`（三段）都不打架：
+  // compile 出来的 `[^/]+` 不跨段，段数不同就是另一条路由。
+  // 走 requireAdminAuth 而不是 requireAdminWrite：看内容是只读角色该有的权限。
+  compile(
+    'GET',
+    '/api/v1/admin/meetings/:meetingId/media/:assetType/:remoteId/:fileType',
+    consoleMediaHandlers.getMedia,
+  ),
 ]
 
 /**

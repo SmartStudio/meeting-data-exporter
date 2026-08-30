@@ -742,13 +742,19 @@ function buildMedia(src: AssetSources, local: LocalState): {
     })
   }
   return {
+    // `proxied` 说的是**这条端点**（`GET .../content`）下不下发媒体字节，答案仍然
+    // 是不。2026-08-30 新开的 `GET .../media/...` 是另一条端点、另一套 Range 语义,
+    // 它不改变这一条的事实——把这个字段翻成 true 会让「内容索引里带着录像的字节」
+    // 成为一句谎话。控制台判断能不能播用的是资产自己的 `nasPath` + 容器类型
+    // （见 console 的 `pickPlayableMedia`），不读这个字段。
     proxied: false,
     text:
-      '录像与音频**不入库、也不由本接口代理内容**（T10 验收 3）：它们不是文本，单个可以有几个 GB，' +
-      '让多实例的网关去转发一份等于把网关当 CDN 用。播放器要的直链仍然由既有端点签发：' +
-      'POST /api/v1/assets/:assetId/download-url。' +
+      '录像与音频**不进正文库**（`asset_contents` 是文本表），也**不由本条端点下发字节**：' +
+      '单个可以有几个 GB，塞进内容索引的 JSON 里没有意义。' +
+      '控制台里的播放走另一条端点 `GET .../media/:assetType/:remoteId/:fileType`——' +
+      '它读的是**已经归档到 NAS 的那份文件**，带 Range，所以能拖动；起播记一行审计。' +
       (local.filesGone
-        ? `本地文件已到期清理，直链签不出来了，只能按 NAS 路径去取${local.nasDir === null ? '' : `（${local.nasDir}）`}。`
+        ? `本地文件已到期清理，平台直链也早就失效，能播的只剩 NAS 上那一份${local.nasDir === null ? '' : `（${local.nasDir}）`}。`
         : ''),
     assets,
   }

@@ -262,6 +262,13 @@ async function main(): Promise<void> {
     // （src/store/contents.ts，由 worker 与回填脚本使用）分成两个面：网关进程
     // 只读、只按三段键取正文，写侧那套 NAS 读文件 + 哈希校验一行都用不上
     contents: createContentLookup(pool),
+    // 阶段 6 · 管理端媒体流（内容预览页的录像/音频）。
+    // **`nasRoot` 与上面 storage 那个是同一个局部变量、同一次 process.env 读取**
+    // ——各读各的会让归档存储页说「NAS 可达」而这条端点同时报「没挂 NAS」，
+    // 两句话都出自本进程，谁也说不清该信哪一句（同 jobsStore 一个实例给两处）。
+    // 空串照旧折成 null：端点据此返回 503 并说清是挂载/配置问题，而不是静默 404
+    // ——那会让人以为是文件不见了。
+    media: { nasRoot: nasRoot === '' ? null : nasRoot },
     // 阶段 4 · T11（A4 定时任务）——**只装读侧与手动触发的排队**。
     // 调度器本身在 worker 进程里（src/worker/scheduler.ts），网关一行都不碰：
     // 网关是多实例的，四个任务各跑 N 份意味着 N 个实例同时对同一批本地文件

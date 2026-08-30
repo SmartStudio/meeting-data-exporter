@@ -288,6 +288,36 @@ function contentPath(id: string, suffix = ''): string {
   return `${BASE}/meetings/${encodeURIComponent(id)}/content${suffix}`
 }
 
+/**
+ * 已归档媒体的**流式地址**（2026-08-30 起）。
+ *
+ * 这条端点读的是 NAS 上那份已经归档的文件，不是从腾讯 CDN 转发——两件事的区别
+ * 见后端 `handlers/console/media.ts` 的文件头。它带 Range，所以 `<video>` 能拖动。
+ *
+ * 三段路径参数逐段 `encodeURIComponent`：`remoteId` 是平台给的串，不保证只有数字。
+ */
+export function mediaUrl(id: string, a: MediaAsset): string {
+  const seg = [a.assetType, a.remoteId, a.fileType].map(encodeURIComponent).join('/')
+  return `${BASE}/meetings/${encodeURIComponent(id)}/media/${seg}`
+}
+
+/**
+ * 浏览器直接放得动的容器。**认不出的一律不播**——摆一个点了没反应的播放器,
+ * 比老老实实说「这一类在控制台里放不了、去 NAS 取」更糟。
+ */
+const PLAYABLE: ReadonlySet<string> = new Set(['mp4', 'm4a', 'mp3', 'wav', 'webm'])
+
+/**
+ * 挑一个能播的：**录像优先于音频**，且必须已经归档到 NAS（端点从那儿读）。
+ *
+ * 没有归档的不给播不是偷懒：本地那份到期就会被清理（spec §4.9），拿本地路径当
+ * 播放源等于做一个过几天就坏掉的功能，而坏的时候界面上什么都不会说。
+ */
+export function pickPlayableMedia(assets: readonly MediaAsset[]): MediaAsset | null {
+  const ok = assets.filter((a) => PLAYABLE.has(a.fileType) && a.nasPath !== null)
+  return ok.find((a) => a.assetType === 'video') ?? ok[0] ?? null
+}
+
 /* ── 校验 ───────────────────────────────────────────────────────── */
 
 function readMeeting(r: FieldReader, raw: unknown, where: string): ContentMeeting {

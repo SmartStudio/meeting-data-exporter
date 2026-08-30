@@ -1,5 +1,5 @@
 import type { KeyboardEvent, MouseEvent } from 'react'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ContentMeeting, TranscriptCue } from '@/api/admin/content'
 import { fmtClock } from '@/lib/format'
 import { currentCueIndex } from './text'
@@ -8,20 +8,26 @@ import styles from './Player.module.css'
 /**
  * 贯穿三个 tab 的联动区（spec §4.4 的「播放器」）——一条**走时条**。
  *
- * ## 它为什么不播放录像
+ * ## 它现在真的会播（2026-08-30）
  *
- * `GET .../content` 的 `media.proxied` **恒为 false**：录像与音频不入库、本接口
- * 也不代理内容（单个可以有几个 GB，代理一份等于把网关当 CDN）。而唯一能签直链的
- * 端点 `POST /api/v1/assets/:assetId/download-url` 走的是采集程序的 JWT
- * （`requireAuth`），**管理员会话签不出来**，响应里也没有它要的 assetId。
+ * 此前这里**只有一条走时游标、没有画面**：`media.proxied` 恒为 false，而唯一能
+ * 签直链的 `POST /api/v1/assets/:assetId/download-url` 走采集程序的 JWT,
+ * 管理员会话签不出来。用户报「画面看不到、声音听不到」之后翻了这条案——
+ * 新开的 `GET .../media/:assetType/:remoteId/:fileType` 读的是**已经归档在 NAS 上
+ * 的那份文件**，不是从腾讯 CDN 转发（两件事的区别见后端 `console/media.ts` 文件头）。
  *
- * 也就是说：这一轮控制台**拿不到任何可播放的媒体源**。于是这里不画一个点了
- * 没反应的播放器，只保留真正做得出来的那部分：**一条走时的位置游标**。
- * 三处联动（点时间轴跳转、点转写跳转、走时高亮跟随）全都挂在这个位置上，
- * 它们是真的。
+ * ## 为什么不用原生 `<video controls>`
  *
- * 画中画与全屏两个按钮**没有做**：它们只对一个真实的 `<video>` 元素成立，
- * 做成假的就是「留着一个点了弹『还没做』的按钮」——比没有这个按钮更差（G-g）。
+ * 原生控件放不下**转写分段标记**——进度条上那些竖线是这一页的重点之一，它让人
+ * 一眼看出「这场会议在哪几个时刻有人说话」。所以 `<video>` 不带 `controls`,
+ * 由下面这条既有的走时条驱动它：播放/暂停、拖动、倍速、字幕全部沿用，
+ * 只是位置的**来源**从一个 `setInterval` 换成了视频自己的 `timeupdate`。
+ *
+ * 拿不到可播放源时（没归档、或格式认不出）**回到原来那条走时条**，一个画面都不画:
+ * 摆一个点了没反应的播放器，比老实说「这一类在控制台里放不了」更糟。
+ *
+ * 画中画与全屏**仍然没有做**：留到有人真的要的时候再说，现在加等于凭空多两个
+ * 要维护的状态。
  *
  * ## 为什么从「舞台」收成一条横条
  *
@@ -56,6 +62,11 @@ export const RATES: readonly number[] = [0.5, 1, 1.25, 1.5, 2]
 
 export interface PlayerProps {
   meeting: ContentMeeting
+  /**
+   * 可播放的媒体地址。`null` = 这场会议没有能在浏览器里放的东西（没归档、或格式
+   * 认不出），此时整块退回成一条纯走时条。
+   */
+  src: string | null
   cues: readonly TranscriptCue[]
   /** 转写分段那一条请求的状态。取失败要说出来，不能显示成"这场会议没有转写" */
   cuesError: Error | null
@@ -70,14 +81,49 @@ export interface PlayerProps {
   onToggleCc: () => void
 }
 
+/**
+ * 位置回灌的死区。`timeupdate` 每秒来三四次，每次都把 `currentTime` 写回去会和
+ * 视频自己的走时打架（写回 → 触发 seeking → 再来一次 timeupdate），画面一顿一顿。
+ * 只有当外面的 `position` 与视频真实位置差出一秒以上时才认为「这是一次真的跳转」。
+ */
+const SEEK_EPSILON_SEC = 1
+
 export function Player(props: PlayerProps) {
-  const { meeting, cues, position, playing, rate, cc } = props
+  const { meeting, src, cues, position, playing, rate, cc } = props
   const duration = Math.max(1, meeting.durationSec)
   const trackRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  /** 媒体自己报的错（404 / 编码放不动）。不吞掉——吞掉就是一块永远黑着的画面 */
+  const [mediaErr, setMediaErr] = useState(false)
   const cur = currentCueIndex(cues, position)
   const current = cur < 0 ? null : cues[cur]!
 
   const clamp = (sec: number): number => Math.max(0, Math.min(duration, Math.round(sec)))
+
+  // 播放/暂停：状态在外面（三个 tab 共用），元素在这里。`play()` 返回 Promise,
+  // 被浏览器的自动播放策略拒绝时会 reject——那时把状态推回「暂停」，
+  // 而不是让按钮显示成正在播、画面却不动。
+  useEffect(() => {
+    const el = videoRef.current
+    if (el === null) return
+    if (playing) void el.play().catch(() => props.onTogglePlay())
+    else el.pause()
+  }, [playing])
+
+  // 外面改了位置（点时间轴 / 点转写 / 键盘）→ 视频跟过去。带死区，见上面。
+  useEffect(() => {
+    const el = videoRef.current
+    if (el === null) return
+    if (Math.abs(el.currentTime - position) > SEEK_EPSILON_SEC) el.currentTime = position
+  }, [position])
+
+  useEffect(() => {
+    const el = videoRef.current
+    if (el !== null) el.playbackRate = rate
+  }, [rate])
+
+  // 换了一场会议 / 换了源，错误状态要跟着清掉，否则上一场的黑屏会留在这一场
+  useEffect(() => setMediaErr(false), [src])
 
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>): void {
     const map: Record<string, number> = {
@@ -108,6 +154,32 @@ export function Player(props: PlayerProps) {
 
   return (
     <section className={styles.player} aria-label="播放位置与联动">
+      {src !== null && !mediaErr && (
+        <video
+          ref={videoRef}
+          className={styles.video}
+          src={src}
+          // 不给 controls：原生控件放不下进度条上的转写分段标记，见文件头
+          playsInline
+          preload="metadata"
+          aria-label={`${meeting.title} 的录像`}
+          // 视频是位置的**来源**，不是它的镜子——所以这里回灌，上面那个 effect 带死区
+          onTimeUpdate={(e) => props.onSeek(e.currentTarget.currentTime)}
+          onEnded={() => playing && props.onTogglePlay()}
+          onError={() => setMediaErr(true)}
+        />
+      )}
+
+      {src !== null && mediaErr && (
+        <p className={styles.mediaErr}>
+          录像取不回来。文件已经归档到 NAS，但这次读不到它——可能是 NAS 没挂上，
+          也可能是那份副本被删了。去向仍然在右边的资产清单里。
+        </p>
+      )}
+
+      {/* 只有这条控制带 sticky，视频**不**跟着钉住：一块 400 多像素高的画面钉在
+          视口顶上，正文就没地方看了。三处联动靠的是位置，位置在这条带上。 */}
+      <div className={styles.strip}>
       <div className={styles.ctl}>
         <div
           ref={trackRef}
@@ -138,7 +210,7 @@ export function Player(props: PlayerProps) {
         <button
           type="button"
           className={`${styles.btn} ${styles.play}`}
-          aria-label={playing ? '暂停走时' : '开始走时'}
+          aria-label={src === null ? (playing ? '暂停走时' : '开始走时') : playing ? '暂停' : '播放'}
           onClick={props.onTogglePlay}
         >
           {playing ? (
@@ -179,7 +251,7 @@ export function Player(props: PlayerProps) {
 
         <select
           className={styles.rate}
-          aria-label="走时倍速"
+          aria-label={src === null ? '走时倍速' : '倍速'}
           value={rate}
           onChange={(e) => props.onRate(Number(e.target.value))}
         >
@@ -216,6 +288,7 @@ export function Player(props: PlayerProps) {
       {!props.cuesLoading && props.cuesError === null && cues.length === 0 && (
         <p className={styles.state}>没有转写分段，条上没有标记，也没有字幕——详情见时间轴 tab。</p>
       )}
+      </div>
     </section>
   )
 }

@@ -218,6 +218,11 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
       // 同一张 job_failures、同一个实例（阶段 5 · A8）
       jobFailures: jobsStore,
     } satisfies StorageDeps,
+    // 阶段 6 · 管理端媒体流。跟随 src/index.ts：**与 storage.nasRoot 是同一个值**。
+    // 这里没有 NAS 挂载点，所以是 null——端点据此返回 503 nas_root_unset（一条
+    // handler 的显式降级分支），而不是静默 404 让人以为是文件不见了。
+    // 真要跑流式读的用例在 tests/http/console-media.test.ts 里注入自己的临时目录。
+    media: { nasRoot: null },
     // 审计读侧（阶段 4 · A5）：与 auditRecorder 同源，装配方式跟随 src/index.ts
     auditQuery: auditStore,
     auditMeetings: createAuditMeetingLookup(pool),

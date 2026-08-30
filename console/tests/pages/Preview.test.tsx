@@ -276,21 +276,32 @@ afterEach(() => {
 /* ── 打开时的初始状态（明确写死的规则）────────────────────────────── */
 
 describe('打开时的初始状态', () => {
-  test('落在会议中段，不是 0:00——三处联动当场就对得上', async () => {
+  /**
+   * 2026-08-30 翻案：**打开时落在 0:00**，不再是会议中段。
+   *
+   * 原来那条写在 spec §4.4 里，理由是「字幕、时间轴、转写三处当场对得上，不用等
+   * 走两分钟才看出它们是联动的」——那是**给静态原型截图看的**理由。接上真实数据
+   * 之后它变成一个纯粹的坑：用户打开一场会议，进度条已经在正中间，前一半像是
+   * 被跳过了。用户原话：「播放时都是进度是从中间一半开始播不是从头开始」。
+   *
+   * 联动本身仍然是真的，只是不再靠一个假的起始位置去演示它。
+   */
+  test('落在 0:00 —— 打开一场会议就是从头开始', async () => {
     renderPreview()
     await ready()
     const slider = screen.getByRole('slider', { name: '播放位置' })
-    expect(slider).toHaveAttribute('aria-valuenow', String(MIDPOINT))
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
     expect(slider).toHaveAttribute('aria-valuemax', String(DURATION))
-    expect(slider).toHaveAttribute('aria-valuetext', expect.stringContaining('30:00'))
+    expect(slider).toHaveAttribute('aria-valuetext', expect.stringContaining('0:00'))
   })
 
-  test('字幕、发言人小窗当场对上中段那一段——不用等走两分钟', async () => {
+  test('0:00 就落在第一段上，字幕与发言人当场有东西', async () => {
     renderPreview()
     await ready()
     const player = screen.getByRole('region', { name: /播放/ })
-    expect(within(player).getByText('RDS 白名单我早上开了。')).toBeInTheDocument()
-    expect(within(player).getByText('陈运维')).toBeInTheDocument()
+    // CUES[0] 的 at 是 0，所以开头这一段本来就是当前段
+    expect(within(player).getByText('今天主要过一下联调结果。')).toBeInTheDocument()
+    expect(within(player).getByText('邹研发')).toBeInTheDocument()
   })
 
   test('默认停在纪要 tab，三个 tab 都在', async () => {
@@ -422,11 +433,29 @@ describe('三处联动', () => {
     expect(turn).toHaveAttribute('aria-current', 'true')
   })
 
-  test('走时推进 → 当前分段跟着换，字幕跟着换', async () => {
+  /**
+   * 没有可播放录像时才有「走时」这回事——它是一条模拟的时钟，专门给拿不到媒体源
+   * 的会议用（没归档、或格式认不出）。所以这条用例显式把 media 清空。
+   *
+   * 有录像时位置的来源是视频自己的 `timeupdate`，两个时钟同时推同一个位置会互相
+   * 打架：定时器把位置推快半拍，视频再把它拽回来，画面和字幕一直在抖。
+   * 那条路径由下面「录像能放」那一组盯着。
+   */
+  test('没有可播录像时，走时推进 → 当前分段跟着换，字幕跟着换', async () => {
+    const user = userEvent.setup()
+    routes.unshift({
+      match: /\/content$/,
+      status: 200,
+      body: { ...INDEX, media: { ...INDEX.media, assets: [] } },
+    })
     renderPreview()
     await ready()
-    // 从中段（1800）开始，走 31 秒就跨进 1830 那一段
+    // 起点是 0:00（2026-08-30 起），所以先跳到中段那一段上——这条测的是「推进」,
+    // 不是「起点在哪」。用时间轴点过去，走的是真实的跳转路径。
+    await user.click(screen.getByRole('tab', { name: /时间轴/ }))
+    await user.click(await screen.findByRole('button', { name: /RDS 白名单我早上开了/ }))
     const slider = screen.getByRole('slider', { name: '播放位置' })
+    expect(slider).toHaveAttribute('aria-valuenow', String(MIDPOINT))
     vi.useFakeTimers()
     await act(async () => {
       screen.getByRole('button', { name: '开始走时' }).click()
@@ -435,6 +464,93 @@ describe('三处联动', () => {
       vi.advanceTimersByTime(31 * 1000)
     })
     expect(Number(slider.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(MIDPOINT + 30)
+    const player = screen.getByRole('region', { name: /播放/ })
+    expect(within(player).getByText('那这周先把文档回写补上。')).toBeInTheDocument()
+  })
+})
+
+/* ── 录像 ─────────────────────────────────────────────────────────── */
+
+/**
+ * 2026-08-30 之前这一页**没有画面**：`media.proxied` 恒为 false，唯一能签直链的
+ * 端点走采集程序的 JWT，管理员会话签不出来。用户报「画面看不到、声音听不到」
+ * 之后新开了 `GET .../media/:assetType/:remoteId/:fileType`——读的是已经归档在
+ * NAS 上的那份文件，不是从腾讯 CDN 转发。
+ */
+describe('录像能放（左栏，走时条当控制器）', () => {
+  test('已归档的 mp4 → 页面上有一个 <video>，src 指向管理端媒体端点', async () => {
+    const { container } = renderPreview()
+    await ready()
+    const video = container.querySelector('video')
+    expect(video).not.toBeNull()
+    expect(video!.getAttribute('src')).toBe(
+      '/api/v1/admin/meetings/m-1/media/video/r-9/mp4',
+    )
+    // 不给原生 controls：进度条上的转写分段标记原生控件放不下（见 Player 文件头）
+    expect(video!.hasAttribute('controls')).toBe(false)
+  })
+
+  test('没归档的录像不给播——本地那份到期会被清掉，拿它当播放源是个过几天就坏的功能', async () => {
+    routes.unshift({
+      match: /\/content$/,
+      status: 200,
+      body: {
+        ...INDEX,
+        media: {
+          ...INDEX.media,
+          assets: INDEX.media.assets.map((a) => ({ ...a, nasPath: null, archivedAt: null })),
+        },
+      },
+    })
+    const { container } = renderPreview()
+    await ready()
+    expect(container.querySelector('video')).toBeNull()
+    // 退回成一条纯走时条，控制器仍然在
+    expect(screen.getByRole('slider', { name: '播放位置' })).toBeInTheDocument()
+  })
+
+  test('认不出的容器不给播——摆一个点了没反应的播放器比说清楚更糟', async () => {
+    routes.unshift({
+      match: /\/content$/,
+      status: 200,
+      body: {
+        ...INDEX,
+        media: {
+          ...INDEX.media,
+          assets: INDEX.media.assets.map((a) => ({ ...a, fileType: 'avi' })),
+        },
+      },
+    })
+    const { container } = renderPreview()
+    await ready()
+    expect(container.querySelector('video')).toBeNull()
+  })
+
+  test('视频报错不吞掉：说清「已归档但这次读不到」，去向仍在资产清单里', async () => {
+    const { container } = renderPreview()
+    await ready()
+    const video = container.querySelector('video')!
+    await act(async () => {
+      video.dispatchEvent(new Event('error'))
+    })
+    expect(container.querySelector('video')).toBeNull()
+    expect(screen.getByText(/录像取不回来/)).toBeInTheDocument()
+    // 走时条不受影响——联动是位置的事，不是画面的事
+    expect(screen.getByRole('slider', { name: '播放位置' })).toBeInTheDocument()
+  })
+
+  test('位置的来源是视频自己的 timeupdate，不是模拟时钟', async () => {
+    const { container } = renderPreview()
+    await ready()
+    const video = container.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: MIDPOINT + 30, writable: true })
+    await act(async () => {
+      video.dispatchEvent(new Event('timeupdate'))
+    })
+    expect(screen.getByRole('slider', { name: '播放位置' })).toHaveAttribute(
+      'aria-valuenow',
+      String(MIDPOINT + 30),
+    )
     const player = screen.getByRole('region', { name: /播放/ })
     expect(within(player).getByText('那这周先把文档回写补上。')).toBeInTheDocument()
   })
@@ -449,10 +565,14 @@ describe('键盘可达（spec §9 是硬要求）', () => {
     await ready()
     const slider = screen.getByRole('slider', { name: '播放位置' })
     slider.focus()
-    await user.keyboard('{ArrowRight}')
-    expect(slider).toHaveAttribute('aria-valuenow', String(MIDPOINT + 15))
+    // 起点是 0:00，往回退会被夹到 0，两个方向都要能量出来——所以先往前走两格
+    await user.keyboard('{ArrowRight}{ArrowRight}')
+    expect(slider).toHaveAttribute('aria-valuenow', '30')
+    await user.keyboard('{ArrowLeft}')
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+    // 负数夹到 0，不是「负 15 秒」
     await user.keyboard('{ArrowLeft}{ArrowLeft}')
-    expect(slider).toHaveAttribute('aria-valuenow', String(MIDPOINT - 15))
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
     await user.keyboard('{Home}')
     expect(slider).toHaveAttribute('aria-valuenow', '0')
     await user.keyboard('{End}')

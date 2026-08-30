@@ -482,16 +482,22 @@ test('?type=video 直接 400，不代理二进制资产的内容', async () => {
   expect(b.detail).toContain('直链')
 })
 
-test('media 块只给去向（NAS 路径 / 直链端点），没有任何正文字段', async () => {
+test('media 块只给去向（NAS 路径 + 播放端点），没有任何正文字段', async () => {
   const h = harness({
     archivedAssets: [archivedAsset({ assetType: 'video', fileType: 'mp4', remoteId: 'v-1', nasPath: '/nas/x/video.mp4' })],
   })
   const b = await body(await getContent(req(), h.ctx))
+  // `proxied` 说的是**这条端点**下不下发媒体字节，2026-08-30 新开的
+  // `GET .../media/...` 是另一条端点，不改变这一条的事实
   expect(b.media.proxied).toBe(false)
   expect(b.media.assets.length).toBe(1)
   expect(b.media.assets[0]).not.toHaveProperty('content')
   expect(b.media.assets[0].nasPath).toBe('/nas/x/video.mp4')
-  expect(b.media.text).toContain('/api/v1/assets/')
+  // 这句话原来写的是「播放器要的直链仍然由 POST /api/v1/assets/:assetId/download-url
+  // 签发」。2026-08-30 起它是**假的**：那条端点走采集程序的 JWT，管理员会话签不出来,
+  // 而且本地文件按 §4.10 清理之后平台那份也早就没了。控制台的播放走管理端媒体端点。
+  expect(b.media.text).toContain('/media/:assetType/:remoteId/:fileType')
+  expect(b.media.text).not.toContain('download-url')
 })
 
 // ── 只有 txt 入了库：未解析 ≠ 查无此物 ───────────────────────────────────

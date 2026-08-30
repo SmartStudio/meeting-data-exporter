@@ -14,14 +14,47 @@
    贴 0 会被它盖掉半条。
    祖先链上没有 overflow: hidden（base.css 用的是 overflow-x: clip，注释里写着
    正是为了不破坏 sticky），所以这条真的生效。 */
+/* 外层只管排版。**不许给它 overflow: hidden**：里面的 .strip 是 sticky 的,
+   而破坏粘性的正是祖先的 overflow——两者不能同时要。 */
 .player {
+  display: grid;
+  gap: var(--s-3);
+  margin: var(--s-4) 0 0;
+}
+
+/* 高度不写死宽高比：`height: auto` 让元素取视频自己的比例（这一批是 2:1 的
+   双画面录制，将来换成 16:9 也不用改这里），`max-height` 只管别让它吃掉整屏,
+   `object-fit: contain` 负责在被压扁时留黑边而不是拉伸人脸。 */
+.video {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 46vh;
+  object-fit: contain;
+  background: var(--video-ground);
+  border: var(--s-px) solid var(--line);
+  border-radius: var(--r);
+}
+
+.mediaErr {
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border: var(--s-px) solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--t-xs);
+  line-height: 1.7;
+}
+
+.strip {
   position: sticky;
   top: var(--gbar-h);
-  margin: var(--s-4) 0 0;
+  z-index: var(--z-sticky);
   border: var(--s-px) solid var(--line);
   border-radius: var(--r);
   background: var(--surface);
-  /* 圆角要切住底下那条 .err 的实底；sticky 元素**自己**的 overflow 不影响
+  /* 圆角要切住底下那条 .err 的实底。sticky 元素**自己**的 overflow 不影响
      自己的粘性（破坏粘性的是祖先的 overflow），所以这里可以放心切。 */
   overflow: hidden;
 }

@@ -2,7 +2,14 @@ import type { CSSProperties, KeyboardEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import type { ChaptersView, ContentIndex } from '@/api/admin/content'
-import { CUES_LIMIT, fetchChapters, fetchContentIndex, fetchMeetingGrantIds } from '@/api/admin/content'
+import {
+  CUES_LIMIT,
+  fetchChapters,
+  fetchContentIndex,
+  fetchMeetingGrantIds,
+  mediaUrl,
+  pickPlayableMedia,
+} from '@/api/admin/content'
 import { useResource, type Resource } from '@/lib/useResource'
 import { fmtDateTime, fmtDuration } from '@/lib/format'
 import { hostLabel, hostView } from '@/lib/host'
@@ -132,15 +139,23 @@ function Body({ index, chapters, grants }: BodyProps) {
   const cues = chapters.state === 'ready' ? chapters.data : null
   const duration = Math.max(1, meeting.durationSec)
 
-  // 走时。**不是播放**：控制台拿不到可播放的媒体源（见 Player 的文件头），
-  // 走的是时间轴上的位置，三处联动挂在它上面。
+  /**
+   * 能播的那一份（2026-08-30 起）。挑法与「为什么必须已归档」见
+   * `api/admin/content.ts` 的 `pickPlayableMedia`。
+   */
+  const playable = pickPlayableMedia(index.media.assets)
+  const src = playable === null ? null : mediaUrl(meeting.id, playable)
+
+  // 走时。**只在没有可播放源时才走**：有视频的时候位置的来源是视频自己的
+  // `timeupdate`，两个时钟同时推同一个位置会互相打架——定时器把位置推快半拍,
+  // 视频再把它拽回来，画面和字幕就一直在抖。
   useEffect(() => {
-    if (!playing) return
+    if (!playing || src !== null) return
     const timer = setInterval(() => {
       setPosition((p) => Math.min(duration, p + (TICK_MS / 1000) * rate))
     }, TICK_MS)
     return () => clearInterval(timer)
-  }, [playing, rate, duration])
+  }, [playing, rate, duration, src])
 
   // 走到头就停。放在 effect 里而不是塞进上面那个 updater：在状态更新函数里改
   // 另一个状态是一次隐藏的副作用，React 严格模式下会跑两次。
@@ -253,6 +268,7 @@ function Body({ index, chapters, grants }: BodyProps) {
               理由就是这个。 */}
           <Player
             meeting={meeting}
+            src={src}
             cues={cues?.cues ?? []}
             cuesLoading={chapters.state === 'loading'}
             cuesError={chapters.state === 'error' ? chapters.error : null}
