@@ -211,7 +211,7 @@ function accessBlock(m: Meeting): Record<string, unknown> {
     // 与真网关的 RESTRICTED_BANNER 同一版：只说屏幕上没有的那件事（你为什么能看）,
     // 「禁止采集」和「已记审计」抬头各有一个标记，不在这里再说第三遍。
     banner: restricted
-      ? '**这场会议的内容不允许出企业边界**。你能在这里看，是为了判断规则拦得对不对；这次查看已记审计。'
+      ? '**采集程序取不走这场会议**。你能在这里看，是为了判断这条规则拦得对不对；这次查看已记审计。'
       : null,
     audit: { logged: true, action: restricted ? 'view_restricted_content' : 'view_content' },
   }

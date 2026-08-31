@@ -76,7 +76,7 @@ const ACCESS_DENY = {
   allow: 'deny',
   restricted: true,
   why: { by: 'deny', text: '标题含「面试」，规则 #7 禁止采集' },
-  banner: '**这场会议的内容不允许出企业边界**。你能在这里看，是为了判断规则拦得对不对；这次查看已记审计。',
+  banner: '**采集程序取不走这场会议**。你能在这里看，是为了判断这条规则拦得对不对；这次查看已记审计。',
   audit: { logged: true, action: 'view_restricted_content' },
 }
 
@@ -945,8 +945,15 @@ describe('只读留痕（spec §2）', () => {
      * **你为什么能看**。审计仍然提一句（那是这句话的后半截，不是重复），判定本身
      * 交给抬头的 Pill 和右栏「采集判定」那一行。
      */
-    expect(within(note).getByText(/不允许出企业边界/)).toBeInTheDocument()
-    expect(within(note).getByText(/判断规则拦得对不对/)).toBeInTheDocument()
+    /*
+     * **主语必须在**。第一稿写的是「这场会议的内容不允许出企业边界」，用户当场问
+     * 「这个是什么意思，是不能采集走吗？」——问的人正是这句话唯一的读者。
+     * 「出企业边界」是 spec §1.4 里我们自己的抽象说法；屏幕上要说的是具体那件事:
+     * 取不走它的是**采集程序**，而看这一页的人恰恰是那个例外。
+     */
+    expect(within(note).getByText(/采集程序取不走/)).toBeInTheDocument()
+    expect(within(note).getByText(/判断这条规则拦得对不对/)).toBeInTheDocument()
+    expect(note.textContent, '抽象说法不上屏，屏幕上说具体的事').not.toContain('企业边界')
     expect(note.textContent).toContain('已记审计')
     // 判定本身不在警示条里说第三遍，但屏幕上仍然有——两个地方各一次
     expect(screen.getAllByText('规则禁止采集').length).toBe(1)
