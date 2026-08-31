@@ -9,12 +9,19 @@
  * 选中的那一段因此看起来是"从基线上长出来的"，而不是浮在上面。
  */
 
+/* 负的上外边距抵掉 `.seg` 自己的 8px 上内边距——与下面 `.seg:first-child` 的
+   `padding-left: 0` 是同一件事，只是换了个轴：分段条是内容的一部分，第一段的
+   **文字**要跟内容的上边缘对齐，不是它的内边距盒。
+   不直接把 `.seg` 的 padding-top 改成 0，是因为那 8px 还在撑这一条的高度和
+   点击区域；挪的是整条的位置，不是它内部的几何。
+   实测（1440，顶栏底边往下第一个着色像素）：不抵消时会议记录是 28px，而只有
+   一句说明的页面是 19–20px——差的正好是这 8px 加上两种字号的半行距。 */
 .bar {
   display: flex;
   align-items: stretch;
   flex-wrap: wrap;
   border-bottom: var(--s-px) solid var(--line);
-  margin: 0 0 var(--s-4);
+  margin: calc(-1 * var(--s-3)) 0 var(--s-4);
 }
 
 .seg {

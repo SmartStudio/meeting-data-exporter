@@ -1464,6 +1464,7 @@ const CHECK_TITLES: Array<[string, string]> = [
   ['3 横向溢出', '1440 / 1050 / 375 无横向溢出且元素可达'],
   ['4 裸值', 'module.css 无裸 px / hex / rgb'],
   ['5 媒体查询', 'reduced-motion 与三态主题真的生效'],
+  ['6 起笔对齐', '七页内容区第一个着色像素都落在同一条带子里'],
 ]
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1683,13 +1684,116 @@ function report(): number {
   return 1
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   检查 6：起笔对齐
+   ══════════════════════════════════════════════════════════════════
+
+   量的是**第一个着色像素**，不是第一个元素的盒顶。
+
+   为什么必须量像素：这条规则被违反过两次，两次都是元素几何完全正确、看着却
+   不齐。第一次是 `PageShell` 给一个高度 0 的空页头照发 20px 下外边距——盒顶在
+   16px，但那 16px 底下还有 20px 是空的。第二次是分诊条第一段自带 8px 上内边距、
+   预览页返回链接自带 6px 上内边距——盒顶都在 16px，起笔却分别在 28px 和 26px。
+   一个"量盒顶"的门禁两次都会报通过。
+
+   带子取 14–22px：内容区上留白是 `--s-5`（16px），
+   - 以边框/底色开头的页面（归档存储的卡片、采集授权的按钮）起笔就是 16；
+   - 以文字开头的页面多出半行距，实测 19–20。
+   两类都在带子里，而被这条门禁抓过的三个值（26 / 26 / 28）都在带子外。
+
+   PNG 解码借页面自己的 canvas：把截图 base64 塞回去 `createImageBitmap`，
+   省掉一个只为门禁引入的解码依赖。 */
+
+const TOP_ALIGN_MIN = 14
+const TOP_ALIGN_MAX = 22
+
+const TOP_ALIGN_SCENES: Scene[] = [
+  { id: 'ok', why: '会议记录', route: '/meetings' },
+  { id: 'consumers', why: '采集授权', route: '/consumers', expect: ['[class*="tallyItem"]'] },
+  { id: 'rules', why: '自动规则', route: '/rules', expect: ['li[data-tone="fail"]'] },
+  { id: 'jobs', why: '定时任务', route: '/jobs', expect: ['[data-testid="job-card"]'] },
+  { id: 'storage', why: '归档存储', route: '/storage', expect: ['[data-testid="stat-archived"]'] },
+  { id: 'audit', why: '操作审计', route: '/audit', expect: ['[data-testid="audit-window"]'] },
+  {
+    id: 'preview',
+    why: '内容预览',
+    route: '/preview/m1',
+    expect: ['[role="tablist"][aria-label="内容视图"]'],
+  },
+]
+
+/** 截图里第一条含"非背景"像素的行。背景取第 0 行的众数色。 */
+const FIRST_INK_JS = `(async (b64, xMax) => {
+  const blob = await (await fetch('data:image/png;base64,' + b64)).blob()
+  const img = await createImageBitmap(blob)
+  const c = new OffscreenCanvas(img.width, img.height)
+  const ctx = c.getContext('2d')
+  ctx.drawImage(img, 0, 0)
+  const d = ctx.getImageData(0, 0, img.width, img.height).data
+  const at = (x, y) => { const i = (y * img.width + x) * 4; return [d[i], d[i + 1], d[i + 2]] }
+  const tally = new Map()
+  for (let x = 0; x < img.width; x += 3) {
+    const k = at(x, 0).join(',')
+    tally.set(k, (tally.get(k) ?? 0) + 1)
+  }
+  let bg = null, best = -1
+  for (const [k, n] of tally) if (n > best) { best = n; bg = k.split(',').map(Number) }
+  const wide = Math.min(img.width, xMax)
+  for (let y = 0; y < img.height; y++) {
+    for (let x = 0; x < wide; x++) {
+      const p = at(x, y)
+      if (Math.max(Math.abs(p[0] - bg[0]), Math.abs(p[1] - bg[1]), Math.abs(p[2] - bg[2])) > 10) {
+        return { y, x }
+      }
+    }
+  }
+  return null
+})`
+
+async function runPageTop(page: Page): Promise<void> {
+  for (const s of TOP_ALIGN_SCENES) {
+    await open(page, s.route, s.waitFor)
+    await assertLive(page, s, '6 起笔对齐', s.why)
+    const box = (await page.evaluate(`(() => {
+      const bar = document.querySelector('header').getBoundingClientRect()
+      const main = document.querySelector('main').getBoundingClientRect()
+      return { top: Math.round(bar.bottom), left: Math.round(main.left), right: Math.round(main.right) }
+    })()`)) as { top: number; left: number; right: number }
+    const shot = await page.screenshot({
+      clip: { x: box.left, y: box.top, width: box.right - box.left, height: 120 },
+    })
+    const b64 = shot.toString('base64')
+    /* 量两次：一次全宽，一次只量左侧文字栏。右侧主操作那颗按钮的边框恒在 16px，
+       只量全宽的话，说明句被压低 10px 也照样报通过——采集授权正是这样漏过一次。 */
+    for (const [scope, xMax] of [['全宽', box.right - box.left], ['左侧文字栏', 640]] as const) {
+      const ink = (await page.evaluate(`${FIRST_INK_JS}(${JSON.stringify(b64)}, ${xMax})`)) as
+        | { y: number; x: number }
+        | null
+      if (ink === null) {
+        fail('6 起笔对齐', s.why, `${scope}：顶栏底下 120px 内一个着色像素都没有`, '    这一屏没渲染出内容，量到的"通过"不作数')
+        continue
+      }
+      bump('起笔样点', 1)
+      if (ink.y < TOP_ALIGN_MIN || ink.y > TOP_ALIGN_MAX) {
+        fail(
+          '6 起笔对齐',
+          s.why,
+          `${scope}：第一个着色像素在顶栏底下 ${ink.y}px（要 ${TOP_ALIGN_MIN}–${TOP_ALIGN_MAX}）`,
+          `    x=${ink.x}。内容区上留白是 --s-5(16px)：以边框开头就是 16，以文字开头多半行距是 19–20。`,
+          '    偏大多半是第一个控件自带上内边距（把它用负外边距抵掉，见 TriageBar.module.css）。',
+        )
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const tf = await readTokens()
   bump('令牌总数', tf.names.length)
 
   if (enabled('4')) await checkNakedValues(tf)
 
-  const needsBrowser = ['1', '2', '3', '5'].some((k) => enabled(k))
+  const needsBrowser = ['1', '2', '3', '5', '6'].some((k) => enabled(k))
 
   /* 构建产物里的裸 outline 复位也归第 4 项——它同样是"文本扫描"，
      只是扫的是打包之后的 CSS：那条规则赢没赢，只有在产物里才看得出来。 */
@@ -1729,6 +1833,7 @@ async function main(): Promise<void> {
     if (enabled('2')) await runTabAndFocus(page, context)
     if (enabled('3')) await runLayout(page)
     if (enabled('5')) await runMedia(page, tf)
+    if (enabled('6')) await runPageTop(page)
   } finally {
     await context.close()
     await browser.close()
