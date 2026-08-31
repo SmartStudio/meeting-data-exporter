@@ -286,10 +286,17 @@ function stamp(sec: number): string {
   return `${new Date(sec * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC`
 }
 
-/** 三段自然键（会议维度已经确定），用 NUL 分隔——理由同 `archiveStateKey`：
- *  用可打印字符分隔会让 `("a:b","")` 与 `("a","b")` 撞成同一个键 */
+/**
+ * 三段自然键（会议维度已经确定），用 NUL 分隔——理由同 `archiveStateKey`：
+ * 用可打印字符分隔会让 `("a:b","")` 与 `("a","b")` 撞成同一个键。
+ *
+ * 写成 `\u0000` 转义，**不写成字面的 NUL 字节**。上一版是真的往源文件里放了两个
+ * 0x00，于是 `grep` 判定整个文件是二进制，`grep -rn` 扫全仓时**整整 1236 行直接
+ * 被跳过**——2026-08-31 因此在这个文件里搜不到自己刚看过的字符串。行为完全一样,
+ * 区别只在这个文件搜不搜得到。
+ */
 function assetKeyOf(assetType: string, remoteId: string, fileType: string): string {
-  return `${assetType} ${remoteId} ${fileType}`
+  return `${assetType}\u0000${remoteId}\u0000${fileType}`
 }
 
 // ===========================================================================
@@ -402,10 +409,30 @@ function withProgram(programId: string, reason: string): string {
   return programId === '' ? reason : `采集程序「${programId}」：${reason}`
 }
 
+/**
+ * 受限查看的琥珀警示条。
+ *
+ * ## 只说屏幕上没有的那一件事
+ *
+ * 上一版 89 个字，说了四件事，其中三件预览页上已经各有各的位置：
+ *
+ * | 上一版说的 | 屏幕上已有的 |
+ * | --- | --- |
+ * | 「禁止采集」 | 抬头的 Pill + 右栏「采集判定」那一行（带是哪条规则判的） |
+ * | 「已经记进操作审计」 | 抬头的「已记审计」标记 |
+ * | 「动作 view_restricted_content」 | 同一个标记的 `title`——机器名的既定处置 |
+ * | 「（spec §2）」「留痕是…的对价，不是可选项」 | **这是写给要删掉这行审计的人看的**，不是给管理员的 |
+ *
+ * 最后一行是这段文案真正的问题：它在跟一个不在场的读者辩论。spec §1.4 已经为
+ * 同一类错误定过案（右下角那块「向这场会议提问 —— 刻意不做」），那里的原话是
+ * 「拿管理员的注意力去养一条产品笔记」。这一条更深一层，养的是架构决策笔记。
+ *
+ * 留下的是唯一一件屏幕上没有、而管理员真的需要知道的事：**他为什么能看**。
+ * 「判断规则拦得对不对」还顺带说明了他被期望做什么，那是一句有用的话。
+ */
 const RESTRICTED_BANNER =
-  '这场会议按当前的采集权限规则是**禁止采集**的。管理员仍然能看——他要判断这条规则拦对了没有' +
-  '（spec §2）——但这次查看已经记进操作审计（动作 view_restricted_content）。' +
-  '留痕就是「管理员仍然能看」这条豁免的对价，不是可选项。'
+  '**这场会议的内容不允许出企业边界**。你能在这里看，是为了判断规则拦得对不对；' +
+  '这次查看已记审计。'
 
 // ===========================================================================
 // 留痕
@@ -652,8 +679,9 @@ function localState(rec: MeetingArchiveRecord | null): LocalState {
       expiresAt: null,
       nasDir: null,
       text:
-        '这场会议还没有归档到 NAS，保留窗口也就还没开始计时。纪要正文入库发生在归档那一刻，' +
-        '所以此刻库里读到的正文可能不全——本地文件在不在，看会议详情里的拉取/归档两个阶段。',
+        // 「还没归档、窗口没开始计时」是行值自己就说得出的，这里只说行值说不出的：
+        // 正文可能不全，以及去哪看进度。
+        '正文在归档那一刻入库，所以现在读到的可能不全——拉取到哪一步看会议详情。',
     }
   }
   const due = expiresAt(rec)
@@ -665,9 +693,10 @@ function localState(rec: MeetingArchiveRecord | null): LocalState {
       purgedAt: null,
       expiresAt: due,
       nasDir: rec.nasDir,
-      text:
-        `本地文件还在，保留期到 ${stamp(due)}。NAS 上的副本在 ${rec.nasDir}。` +
-        `到期后只删本地文件，数据库记录（含这里读到的纪要正文）永久保留（spec §4.9）。`,
+      // 「还剩几天」由界面按 expiresAt 自己算，「NAS 上的副本在哪」自己就是一行——
+      // 这里两样都不再重复一遍。留下的是那个数字本身说不出、而看到「还剩 27 天」
+      // 的人第一个会问的问题：到期删的是什么。
+      text: '到期只删本地文件；纪要正文与归档记录留着。',
     }
   }
   return {
@@ -677,12 +706,9 @@ function localState(rec: MeetingArchiveRecord | null): LocalState {
     purgedAt: rec.localPurgedAt,
     expiresAt: due,
     nasDir: rec.nasDir,
-    // §4.10 的原话（「本地已到期，请去 NAS 取」）与 visibility.ts 那条 blocker 同源
-    text:
-      `本地文件已于 ${stamp(rec.localPurgedAt)} 到期清理（保留期到 ${stamp(due)}）,` +
-      `NAS 上的副本在 ${rec.nasDir}。**本页读到的纪要正文不受影响**——它在归档时就已经` +
-      `入库，数据库记录永久保留（spec §4.9），这正是内容入库而不是预览时现读文件的理由。` +
-      `录像与音频不入库，本地既然已清理，就只能按上面这个路径去 NAS 取。`,
+    // 清理日期与 NAS 路径都各自有位置了（行值 +「NAS 路径」那一行）。剩下这一句
+    // 是唯一会让人松一口气、而屏幕上没有的：文件没了不等于内容没了。
+    text: '**纪要正文不受影响**——它在归档时就入了库。录像去上面那个 NAS 路径取。',
   }
 }
 
@@ -748,14 +774,25 @@ function buildMedia(src: AssetSources, local: LocalState): {
     // 成为一句谎话。控制台判断能不能播用的是资产自己的 `nasPath` + 容器类型
     // （见 console 的 `pickPlayableMedia`），不读这个字段。
     proxied: false,
-    text:
-      '录像与音频**不进正文库**（`asset_contents` 是文本表），也**不由本条端点下发字节**：' +
-      '单个可以有几个 GB，塞进内容索引的 JSON 里没有意义。' +
-      '控制台里的播放走另一条端点 `GET .../media/:assetType/:remoteId/:fileType`——' +
-      '它读的是**已经归档到 NAS 的那份文件**，带 Range，所以能拖动；起播记一行审计。' +
-      (local.filesGone
-        ? `本地文件已到期清理，平台直链也早就失效，能播的只剩 NAS 上那一份${local.nasDir === null ? '' : `（${local.nasDir}）`}。`
-        : ''),
+    /**
+     * **正常情况下是空串。**
+     *
+     * 上一版这里是四句话，讲的全是这条 API 为什么长这样：`asset_contents` 是文本表、
+     * 单个文件几个 GB、播放走哪条端点、带 Range 所以能拖动。没有一句是管理员能拿去
+     * 做事的——而这四句话占了右栏面板的整个底部。
+     *
+     * 屏幕上早就有更短的版本：录像那一组的行尾写着「不入库，只给去向」，每一个 mp4
+     * 都列着自己的 NAS 路径，左边还有一个正在播的播放器。
+     *
+     * 那段话原来的理由（写在 `AssetPanel` 里）是「『控制台没有可播放的媒体源』是人
+     * 该在第一眼知道的事」。2026-08-30 开了管理端媒体端点之后，这句话不成立了——
+     * 有源，而且就在左边播着。理由过期了，文字就该跟着走。
+     *
+     * 只有本地已清理时才留一句：那时「去哪儿取」是真的会被问到的。
+     */
+    text: local.filesGone
+      ? `本地已清理，能播的是 NAS 上那一份${local.nasDir === null ? '' : `（${local.nasDir}）`}。`
+      : '',
     assets,
   }
 }

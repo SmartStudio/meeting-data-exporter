@@ -434,7 +434,10 @@ describe('内容预览', () => {
     expect(idx.assets.some((a) => a.availability !== 'parsed' && a.reason !== null)).toBe(true)
     expect(idx.selected).toBeNull()
     expect(idx.media.proxied).toBe(false)
-    expect(idx.media.text).not.toBe('')
+    // `media.text` 在保留期内是**空串**（2026-08-31）：「不入库，只给去向」写在录像
+    // 那一组的行尾，每个文件自己列着 NAS 路径，左边还有一个正在播的播放器——再写一段
+    // 说明是同一件事的第四遍。只有本地清理之后才有一句「去哪儿取」。
+    expect(idx.media.text).toBe('')
   })
 
   test('选中一类正文：有正文的给正文，没解析的如实说没解析', async () => {

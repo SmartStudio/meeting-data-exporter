@@ -429,6 +429,63 @@ test('被规则禁止采集的会议：仍然 200 能看，但 restricted=true�
   expect(h.audits[0]!.matchedRuleId).toBe(100)
 })
 
+/**
+ * 界面文案里不许出现内部标识与规格引用（2026-08-31）。
+ *
+ * 这三个字段（`access.banner` / `local.text` / `media.text`）会被控制台**逐字上屏**,
+ * 所以它们是给管理员写的，不是给读代码的人写的。上一版三段全都不是：
+ *
+ * - banner：`（spec §2）`、`（动作 view_restricted_content）`，外加一整句
+ *   「留痕就是…的对价，不是可选项」——那是在跟一个想删掉这行审计的开发者辩论。
+ * - local.text：`（spec §4.9）`，以及把同一格行值里的「本地文件还在」和下一行的
+ *   NAS 路径又各说了一遍。
+ * - media.text：`` `asset_contents` 是文本表 ``、`GET .../media/:assetType/...`,
+ *   四句话全在讲这条 API 为什么长这样。
+ *
+ * spec §1.4 已经为同一类错误定过案（右下角那块「刻意不做」的问答框），原话是
+ * 「拿管理员的注意力去养一条产品笔记」。这一条更深一层，养的是架构决策笔记。
+ *
+ * 钉的是**规则**不是措辞：将来怎么改文案都行，规格章节号、`snake_case` 的机器名、
+ * 端点模板、反引号里的代码标识，一个都不许再上屏。
+ */
+test('上屏的三段文案里没有规格引用 / 机器名 / 端点模板 / 反引号代码', async () => {
+  const forbidden: Array<[RegExp, string]> = [
+    [/spec\s*§/, '规格章节号——管理员手里没有 spec'],
+    [/view_(restricted_)?content|asset_contents|local_purged_at/, '机器名，它的位置是 title 或审计流'],
+    [/`[^`]+`/, '反引号里的代码标识'],
+    [/GET\s|\/:\w+/, 'HTTP 端点模板'],
+  ]
+  const check = (label: string, text: string | null): void => {
+    if (text === null) return
+    for (const [re, why] of forbidden) {
+      expect(re.test(text), `${label} 里出现了${why}：${text}`).toBe(false)
+    }
+  }
+
+  // 三种保留状态各来一次：文案是按状态分支写的，只测一条会漏掉另外两条
+  const deny = await body(
+    await getContent(req(), harness({ allowRules: [allowRule({ effect: 'deny' })] }).ctx),
+  )
+  check('banner', deny.access.banner)
+  check('local.text', deny.local.text)
+  check('media.text', deny.media.text)
+
+  const purged = await body(
+    await getContent(
+      req(),
+      harness({
+        archive: archiveRecord({ localPurgedAt: 1700300000 }),
+        archivedAssets: [archivedAsset({ assetType: 'video', fileType: 'mp4', remoteId: 'v-1' })],
+      }).ctx,
+    ),
+  )
+  check('local.text（已清理）', purged.local.text)
+  check('media.text（已清理）', purged.media.text)
+
+  const fresh = await body(await getContent(req(), harness({ archive: null }).ctx))
+  check('local.text（未归档）', fresh.local.text)
+})
+
 test('留痕失败时不返回正文：审计写不进去就没有「豁免的对价」，整个请求失败', async () => {
   const h = harness({ allowRules: [allowRule({ effect: 'deny' })] })
   ;(h.ctx.deps as unknown as { auditStore: { record: () => Promise<void> } }).auditStore = {
@@ -493,11 +550,20 @@ test('media 块只给去向（NAS 路径 + 播放端点），没有任何正文�
   expect(b.media.assets.length).toBe(1)
   expect(b.media.assets[0]).not.toHaveProperty('content')
   expect(b.media.assets[0].nasPath).toBe('/nas/x/video.mp4')
-  // 这句话原来写的是「播放器要的直链仍然由 POST /api/v1/assets/:assetId/download-url
-  // 签发」。2026-08-30 起它是**假的**：那条端点走采集程序的 JWT，管理员会话签不出来,
-  // 而且本地文件按 §4.10 清理之后平台那份也早就没了。控制台的播放走管理端媒体端点。
-  expect(b.media.text).toContain('/media/:assetType/:remoteId/:fileType')
-  expect(b.media.text).not.toContain('download-url')
+  /*
+   * `media.text` 在保留期内是**空串**（2026-08-31）。
+   *
+   * 它上一版是四句「这条 API 为什么不下发媒体字节」——`asset_contents` 是文本表、
+   * 单个几个 GB、播放走哪条端点、带 Range 所以能拖动。那四句占了预览页右栏面板的
+   * 整个底部，而管理员拿不走任何一句去做事：屏幕上早有更短的版本（录像那一组行尾
+   * 的「不入库，只给去向」、每个 mp4 自己的 NAS 路径、以及左边正在播的播放器）。
+   *
+   * 这条断言换成钉**事实**而不是钉那句话：不管文案怎么写，都不许再出现
+   * `download-url`。那是 2026-08-30 之前的谎——那条端点走采集程序的 JWT，管理员
+   * 会话签不出来，本地文件按 §4.10 清理之后平台那份也早就没了。
+   */
+  expect(b.media.text).toBe('')
+  expect(JSON.stringify(b.media)).not.toContain('download-url')
 })
 
 // ── 只有 txt 入了库：未解析 ≠ 查无此物 ───────────────────────────────────

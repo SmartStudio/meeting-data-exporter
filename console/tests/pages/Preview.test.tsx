@@ -76,7 +76,7 @@ const ACCESS_DENY = {
   allow: 'deny',
   restricted: true,
   why: { by: 'deny', text: '标题含「面试」，规则 #7 禁止采集' },
-  banner: '这场会议按当前的采集权限规则是**禁止采集**的。管理员仍然能看，但这次查看已记进操作审计。',
+  banner: '**这场会议的内容不允许出企业边界**。你能在这里看，是为了判断规则拦得对不对；这次查看已记审计。',
   audit: { logged: true, action: 'view_restricted_content' },
 }
 
@@ -87,7 +87,7 @@ const LOCAL = {
   purgedAt: null,
   expiresAt: Math.floor(Date.now() / 1000) + 3 * 86400,
   nasDir: '/nas/2026/08/m-1',
-  text: '本地文件还在，保留期到 2026-09-01。',
+  text: '到期只删本地文件；纪要正文与归档记录留着。',
 }
 
 function asset(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -109,7 +109,9 @@ function asset(over: Record<string, unknown> = {}): Record<string, unknown> {
 
 const MEDIA = {
   proxied: false,
-  text: '录像与音频不入库、也不由本接口代理内容：它们不是文本，单个可以有几个 GB。',
+  // 保留期内是**空串**（2026-08-31）：「不入库，只给去向」在录像那一组的行尾，
+  // 每个文件自己列着 NAS 路径，左边还有正在播的播放器——再写一段是第四遍。
+  text: '',
   assets: [
     {
       assetType: 'video',
@@ -796,15 +798,19 @@ describe('右下角是「这场会议的资产与去向」', () => {
     expect(within(panel).getByText(/文件在 NAS 上/)).toBeVisible()
   })
 
-  test('录像给去向不给内容：说清不代理，并给出 NAS 路径', async () => {
+  /**
+   * 2026-08-31 改写：这条原来断言面板上常驻一句「录像与音频不由本接口代理内容」。
+   * 那句话（连同它后面三句「为什么」）已经删掉——它讲的是这条 API 为什么长这样,
+   * 管理员拿不走。**它保护的事实没有变**，只是换了更短的载体：录像那一组行尾的
+   * 「不入库，只给去向」+ 每个文件自己的 NAS 路径。这条断言跟着钉到那两样上。
+   */
+  test('录像给去向不给内容：行尾说清不入库，并给出 NAS 路径', async () => {
     const user = userEvent.setup()
     renderPreview()
     await ready()
     // 录像这一路整个搬进了资产面板（走时条不再管媒体，它只管位置）
     const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
-    // 「为什么不代理内容」是整个 media 块的口径，常驻一句，不折进任何一组——
-    // video / audio 会分成两组，塞进每组就是把这次要修的那种重复原样复刻一遍
-    expect(within(panel).getByText(/不由本接口代理内容/)).toBeVisible()
+    expect(within(panel).getByText('不入库，只给去向')).toBeVisible()
     await openAssetGroup(user, panel, /录像/)
     expect(within(panel).getByText('/nas/2026/08/m-1/video.mp4')).toBeVisible()
   })
@@ -851,6 +857,54 @@ describe('右下角是「这场会议的资产与去向」', () => {
  * 所以这条断言不盯某一个字段，盯**整页**：屏幕上任何位置都不许出现字面的 `**`。
  * 后端将来在哪一段文案里加粗体，这条都拦得住。
  */
+/**
+ * 上屏的文字是给管理员的，不是给读代码的人的（2026-08-31）。
+ *
+ * 用户报「这两个红框里的文字描述非常奇怪，从面向客户的交互视角这些信息都非常多余」。
+ * 圈的是琥珀警示条和右栏面板，两处加起来近 200 字，里面有 `spec §2`、`spec §4.9`、
+ * `view_restricted_content`、`` `asset_contents` 是文本表 ``、
+ * `GET .../media/:assetType/:remoteId/:fileType`——全是给读代码的人写的。
+ *
+ * 后端那一侧有一条同名的门禁（`tests/http/console-content.test.ts`）盯着这三个字段
+ * 本身。这一条盯的是**整页**：不管哪个字段、将来加哪个新字段，只要它上了屏，就受
+ * 这条约束。机器名仍然可以走 `title`（审计动作名、主持人的 userid、精确到期时刻
+ * 都是这个处置），所以这里读的是 `textContent`——它不含属性。
+ */
+describe('屏幕上不出现规格引用 / 机器名 / 反引号代码', () => {
+  test('受限查看的整页文字里一个都没有', async () => {
+    const user = userEvent.setup()
+    routes.unshift({ match: /\/content$/, status: 200, body: { ...INDEX, access: ACCESS_DENY } })
+    renderPreview()
+    await ready()
+    const seen = (): string => document.body.textContent ?? ''
+    for (const [re, why] of [
+      [/spec\s*§/, '规格章节号——管理员手里没有 spec'],
+      [/view_(restricted_)?content|asset_contents|local_purged_at/, '机器名，它的位置是 title'],
+      [/`/, '反引号'],
+    ] as Array<[RegExp, string]>) {
+      expect(re.test(seen()), `屏幕上出现了${why}`).toBe(false)
+    }
+    // 机器名没有被丢掉，只是挪进了 title
+    expect(screen.getByTitle('动作 view_restricted_content')).toBeInTheDocument()
+
+    // 展开资产明细，后端逐条写的理由同样受这条约束
+    const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
+    await openAssetGroup(user, panel, /完整转写/)
+    expect(/spec\s*§|`/.test(seen())).toBe(false)
+  })
+
+  /**
+   * 空的 `media.text` 不许画成一个空段落——它仍然吃掉一行外边距，在面板底部留出
+   * 一条说不清的空白（这一页为「空洞」返工过三轮）。
+   */
+  test('media.text 是空串时，面板底部不多出一个空段落', async () => {
+    renderPreview()
+    await ready()
+    const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
+    expect(panel.querySelector('[class*="mediaNote"]')).toBeNull()
+  })
+})
+
 describe('后端下发的 **强调** 一律渲染成粗体，屏幕上不出现字面的星号', () => {
   test('整页任何位置都没有字面的 **', async () => {
     const user = userEvent.setup()
@@ -884,10 +938,23 @@ describe('只读留痕（spec §2）', () => {
     renderPreview()
     await ready()
     const note = screen.getByRole('note')
-    expect(within(note).getByText(/禁止采集/)).toBeInTheDocument()
-    expect(within(note).getByText(/已记进操作审计|已记入操作审计/)).toBeInTheDocument()
+    /*
+     * 2026-08-31 改写。原来这里断言警示条里同时有「禁止采集」和「已记进操作审计」
+     * ——而这两件事抬头上各有一个标记（Pill「规则禁止采集」+「● 已记审计」），
+     * 警示条把它们再说一遍就是同一屏第三次。现在警示条只说屏幕上没有的那件事：
+     * **你为什么能看**。审计仍然提一句（那是这句话的后半截，不是重复），判定本身
+     * 交给抬头的 Pill 和右栏「采集判定」那一行。
+     */
+    expect(within(note).getByText(/不允许出企业边界/)).toBeInTheDocument()
+    expect(within(note).getByText(/判断规则拦得对不对/)).toBeInTheDocument()
+    expect(note.textContent).toContain('已记审计')
+    // 判定本身不在警示条里说第三遍，但屏幕上仍然有——两个地方各一次
+    expect(screen.getAllByText('规则禁止采集').length).toBe(1)
+    expect(within(screen.getByRole('region', { name: '这场会议的资产与去向' })).getByText('禁止采集')).toBeVisible()
     // 后端下发的 `**强调**` 不能原样打印出星号
     expect(note.textContent).not.toContain('**')
+    // 一句话，不是一段。上一版 89 个字，四句里三句屏幕上已经有了
+    expect(note.textContent!.length).toBeLessThan(60)
   })
 
   test('页面上说得出这次查看记了哪个动作', async () => {

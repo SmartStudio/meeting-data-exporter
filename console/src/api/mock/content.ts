@@ -168,10 +168,11 @@ function mediaBlock(m: Meeting, shiftSec: number): Record<string, unknown> {
   return {
     // 录像与音频不入库、本接口也不代理内容：几个 GB 的文件，代理一份等于把网关当 CDN
     proxied: false,
-    text:
-      assets.length === 0
-        ? '这场会议没有录像或音频的归档记录。'
-        : '录像与音频不入库，控制台也不代理它们的内容——下面给的是文件的去向，取用请直接去 NAS。',
+    // 与真网关同一版：保留期内是**空串**。「不入库，只给去向」写在录像那一组的行尾,
+    // 每个文件自己列着 NAS 路径，左边还有一个正在播的播放器——这里再写一段是第四遍。
+    text: m.keep.filesGone
+      ? `本地已清理，能播的是 NAS 上那一份${m.nasPath === null ? '' : `（${m.nasPath}）`}。`
+      : '',
     assets,
   }
 }
@@ -179,13 +180,15 @@ function mediaBlock(m: Meeting, shiftSec: number): Record<string, unknown> {
 function localBlock(m: Meeting, shiftSec: number): Record<string, unknown> {
   const archived = m.keep.archivedAt !== null
   const shift = (n: number | null): number | null => (n === null ? null : n + shiftSec)
+  // 与真网关同一版：行值已经说了「还剩几天 / 已清理 / 没归档」，NAS 路径自己是一行,
+  // 这里只补它们说不出的那一件事。
   let text: string
   if (!archived) {
-    text = '还没有归档到 NAS。保留窗口要等归档成功才开始计时，现在只有本地这一份。'
+    text = '正文在归档那一刻入库，所以现在读到的可能不全——拉取到哪一步看会议详情。'
   } else if (m.keep.filesGone) {
-    text = '保留期已经结束，本地文件被到期清理删掉了。NAS 上的副本还在，取用请去 NAS。'
+    text = '**纪要正文不受影响**——它在归档时就入了库。录像去上面那个 NAS 路径取。'
   } else {
-    text = '本地文件还在保留期内，NAS 上也有一份副本。到期之后本地会被清理，NAS 那份不动。'
+    text = '到期只删本地文件；纪要正文与归档记录留着。'
   }
   return {
     archived,
@@ -205,8 +208,10 @@ function accessBlock(m: Meeting): Record<string, unknown> {
     allow: m.allow,
     restricted,
     why: m.why.allow,
+    // 与真网关的 RESTRICTED_BANNER 同一版：只说屏幕上没有的那件事（你为什么能看）,
+    // 「禁止采集」和「已记审计」抬头各有一个标记，不在这里再说第三遍。
     banner: restricted
-      ? '这场会议**按采集规则禁止采集**，外部程序一份都取不到。管理员在控制台仍然可以看——**这次查看已经记进审计**。'
+      ? '**这场会议的内容不允许出企业边界**。你能在这里看，是为了判断规则拦得对不对；这次查看已记审计。'
       : null,
     audit: { logged: true, action: restricted ? 'view_restricted_content' : 'view_content' },
   }

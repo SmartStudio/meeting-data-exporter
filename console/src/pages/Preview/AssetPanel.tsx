@@ -1,7 +1,7 @@
 import type { ContentAsset, ContentIndex } from '@/api/admin/content'
 import { assetLabel, availabilityLabel } from '@/api/admin/content'
 import type { Resource } from '@/lib/useResource'
-import { daysLeft, fmtBytes, fmtDay } from '@/lib/format'
+import { daysLeft, fmtBytes, fmtDateTime, fmtDay } from '@/lib/format'
 import { Pill } from '@/ui/Pill'
 import { Emphasis, WHY_LABEL } from './text'
 import styles from './AssetPanel.module.css'
@@ -149,16 +149,25 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
         <dt>本地保留</dt>
         <dd>
           {/* 天数不切成独立元素：它是一句话里的数，不是一列要对齐的数字
-              （tabular-nums 挂在 .kv dd 上就够）。切开会把这一句拆成三个文本节点。 */}
-          {local.expiresAt === null
-            ? '还没有归档到 NAS，保留窗口还没开始计时'
-            : local.filesGone
-              ? `本地文件已在 ${local.purgedAt === null ? '到期时' : fmtDay(local.purgedAt)}清理，只能去 NAS 取`
-              : `本地文件还在，还剩 ${daysLeft(local.expiresAt)} 天`}
-          {/* 后端文案。它是补充说明，视觉上比上面那句结论弱一档 */}
-          <span className={styles.soft}>
-            <Emphasis text={local.text} />
+              （tabular-nums 挂在 .kv dd 上就够）。切开会把这一句拆成三个文本节点。
+
+              精确到期时刻（`2026-09-27 02:22:10 UTC`）挂 `title`，不上屏。它和主持人
+              那串 userid、审计动作名同一个处置：**机器精度的东西给需要它的人留个入口,
+              不占人人都要读的那一行**。上一版它印在下面那段说明里，而那一行的结论
+              「还剩 27 天」才是人真正要的数——两个数并排，反而要多读一遍才知道该看哪个。 */}
+          <span title={local.expiresAt === null ? undefined : `保留期到 ${fmtDateTime(local.expiresAt)}`}>
+            {local.expiresAt === null
+              ? '还没有归档到 NAS，保留窗口还没开始计时'
+              : local.filesGone
+                ? `本地文件已在 ${local.purgedAt === null ? '到期时' : fmtDay(local.purgedAt)}清理，只能去 NAS 取`
+                : `本地文件还在，还剩 ${daysLeft(local.expiresAt)} 天`}
           </span>
+          {/* 后端文案。它是补充说明，视觉上比上面那句结论弱一档 */}
+          {local.text !== '' && (
+            <span className={styles.soft}>
+              <Emphasis text={local.text} />
+            </span>
+          )}
         </dd>
 
         <dt>NAS 路径</dt>
@@ -298,11 +307,12 @@ export function AssetPanel({ index, grants, onRetryGrants }: AssetPanelProps) {
         ))}
       </div>
 
-      {/* `media.text` 说的是「为什么录像不代理内容」——它是**整个 media 块**的口径，
-          不是某一组的。放进每一组的展开区里，就是把这次要修的那种重复原样复刻一遍
-          （video + audio 两组各说一遍同一句话）。所以它在这里出现一次，且不必展开
-          就能看到：「控制台没有可播放的媒体源」是人该在第一眼知道的事。 */}
-      {media.assets.length > 0 && (
+      {/* `media.text` 是**整个 media 块**的口径，不是某一组的，所以只在这里出现一次。
+          它现在通常是**空串**：上一版那四句「为什么这条 API 不下发媒体字节」占了整个
+          面板底部，而屏幕上早有更短的版本——录像那一组行尾的「不入库，只给去向」、
+          每个 mp4 自己的 NAS 路径、以及左边那个正在播的播放器。
+          空串就什么都不画：一个空的 `<p>` 仍然吃掉一行外边距。 */}
+      {media.assets.length > 0 && media.text !== '' && (
         <p className={styles.mediaNote}>
           <Emphasis text={media.text} />
         </p>
