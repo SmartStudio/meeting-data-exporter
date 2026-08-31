@@ -156,6 +156,7 @@ export function useFollowCurrent(ref: RefObject<HTMLElement | null>, position: n
  * |---|---|---|
  * | 切模板 AI 纪要 → 发言人纪要 | 1088 → **1007** → 1611 | 188 → **107** → 188 |
  * | 切文件格式 全部 → txt（前后同高） | 1611 → **1007** → 1611 | 188 → **107** → 188 |
+ * | 切大 tab 转写文字 → 纪要 | 2194 → **1007** → 1088 | 185 → **107** → 185 |
  *
  * 中间那一列就是骨架屏：`useResource` 每次 deps 变都先 `setRes({ state: 'loading' })`,
  * 已经排好的正文整块被换成一个 151px 的骨架，面板矮下去几百 px，页面跟着变矮,
@@ -181,21 +182,34 @@ export function useFollowCurrent(ref: RefObject<HTMLElement | null>, position: n
  * jsdom 不做排版，`offsetHeight` 恒 0。记下 0 会让 `min-height: 0px` 一路挂在真实
  * 的 style 上，看着像生效其实什么都没冻——**一个报告"通过"却什么都没做的开关**。
  * 只认正数，真浏览器里高度为 0 本来也没有冻的必要。
+ *
+ * ## 高度记在**外面**
+ *
+ * `memory` 由调用方持有，不是这个 hook 自己的 `useRef`。第一版记在里面，于是
+ * 「从转写文字切回纪要」照样抖 78px（y 185 → 107 → 185）——那一下 `MinutesTab`
+ * 是**重新挂载**的，组件内的记忆跟着上一次卸载一起没了，冻无可冻。
+ *
+ * 记忆挂在 `Preview/index.tsx` 的 `Body` 上：它跨 tab 切换活着，换会议时才随
+ * `index` 回到 loading 一起卸掉——所以不会拿上一场会议的高度冻这一场。视口改过
+ * 之后那个数会偏，但它只是一次取数期间的 `min-height`，数据一到就撤，偏一点也
+ * 只是让那 150ms 的骨架屏高一些或矮一些，不会留在界面上。
  */
-export function useHeightFloor(loading: boolean): {
+export function useHeightFloor(
+  loading: boolean,
+  memory: RefObject<number | null>,
+): {
   ref: RefObject<HTMLDivElement | null>
   style: CSSProperties | undefined
 } {
   const ref = useRef<HTMLDivElement>(null)
-  const last = useRef<number | null>(null)
   useLayoutEffect(() => {
     if (loading) return
     const h = ref.current?.offsetHeight ?? 0
-    if (h > 0) last.current = h
+    if (h > 0) memory.current = h
   })
   return {
     ref,
-    style: loading && last.current !== null ? { minHeight: `${last.current}px` } : undefined,
+    style: loading && memory.current !== null ? { minHeight: `${memory.current}px` } : undefined,
   }
 }
 

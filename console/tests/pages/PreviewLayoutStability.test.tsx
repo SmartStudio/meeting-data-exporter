@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import type { RefObject } from 'react'
 import { useRef, useState } from 'react'
 import { act, render } from '@testing-library/react'
 import { useFollowCurrent, useHeightFloor } from '../../src/pages/Preview/text'
@@ -136,8 +137,8 @@ describe('走时跟随只滚自己那个框', () => {
  * jsdom 不做排版，`offsetHeight` 恒 0，所以这一组也得自己注几何——注不进去的话
  * 这几条就是「报告通过却什么都没量」的门禁（同上面那一组）。
  */
-function Floor({ loading, h }: { loading: boolean; h: number }) {
-  const floor = useHeightFloor(loading)
+function Floor({ loading, h, memo }: { loading: boolean; h: number; memo: RefObject<number | null> }) {
+  const floor = useHeightFloor(loading, memo)
   return (
     <div ref={floor.ref} style={floor.style} data-testid="slot" data-h={h}>
       {loading ? '骨架屏' : '正文'}
@@ -158,26 +159,42 @@ function withHeight(): void {
 describe('取新数据时正文槽的高度冻住', () => {
   test('ready 时量到高度 → 下一次 loading 冻在那个高度上', () => {
     withHeight()
-    const { getByTestId, rerender } = render(<Floor loading={false} h={755} />)
+    const memo = { current: null as number | null }
+    const { getByTestId, rerender } = render(<Floor loading={false} h={755} memo={memo} />)
     expect(getByTestId('slot').style.minHeight, 'ready 时不该有 min-height').toBe('')
-    rerender(<Floor loading h={0} />)
+    rerender(<Floor loading h={0} memo={memo} />)
     expect(getByTestId('slot').style.minHeight).toBe('755px')
     // 新数据到了就撤掉——留着它会把一个更矮的正文垫出一段空白
-    rerender(<Floor loading={false} h={232} />)
+    rerender(<Floor loading={false} h={232} memo={memo} />)
     expect(getByTestId('slot').style.minHeight).toBe('')
   })
 
   test('首次加载（还没量到过）不冻 —— 那时页面本来就没有内容会被塌掉', () => {
     withHeight()
-    const { getByTestId } = render(<Floor loading h={0} />)
+    const { getByTestId } = render(<Floor loading h={0} memo={{ current: null }} />)
     expect(getByTestId('slot').style.minHeight).toBe('')
   })
 
   test('量到 0 不记 —— 记了会挂一个 `min-height: 0px`，看着生效其实什么都没冻', () => {
     withHeight()
-    const { getByTestId, rerender } = render(<Floor loading={false} h={0} />)
-    rerender(<Floor loading h={0} />)
+    const memo = { current: null as number | null }
+    const { getByTestId, rerender } = render(<Floor loading={false} h={0} memo={memo} />)
+    rerender(<Floor loading h={0} memo={memo} />)
     expect(getByTestId('slot').style.minHeight).toBe('')
+  })
+
+  /**
+   * 这一条是「点纪要页面塌一下又弹回来」的最后一段：切到别的 tab 时 `MinutesTab`
+   * 会被**卸载**，记在组件里的高度跟着没了，切回来冻无可冻（实测 y 185 → 107 → 185）。
+   * 所以记忆由页面持有——卸载再挂载，它必须还在。
+   */
+  test('记忆活过卸载 —— 切走再切回来，冻的还是上次那个高度', () => {
+    withHeight()
+    const memo = { current: null as number | null }
+    const first = render(<Floor loading={false} h={640} memo={memo} />)
+    first.unmount()
+    const again = render(<Floor loading h={0} memo={memo} />)
+    expect(again.getByTestId('slot').style.minHeight).toBe('640px')
   })
 })
 
@@ -210,5 +227,21 @@ describe('冻高度的那个槽真的套在正文外面', () => {
     const block = /\.docSlot \{([^}]*)\}/.exec(css)
     expect(block, '找不到 .docSlot 规则').not.toBeNull()
     expect(block![1]).toMatch(/align-content:\s*start/)
+  })
+})
+
+describe('纪要正文槽的高度记忆由页面持有', () => {
+  test('MinutesTab 只收记忆，不自己造一个', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/pages/Preview/MinutesTab.tsx'), 'utf-8')
+    expect(src).toMatch(/heightMemo/)
+    expect(src, '组件内不许再自己 useRef 存高度 —— 卸载一次就没了').not.toMatch(
+      /useRef<number \| null>/,
+    )
+  })
+
+  test('页面把记忆传下去了', () => {
+    const src = readFileSync(resolve(process.cwd(), 'src/pages/Preview/index.tsx'), 'utf-8')
+    expect(src).toMatch(/const minutesH = useRef<number \| null>\(null\)/)
+    expect(src).toMatch(/heightMemo=\{minutesH\}/)
   })
 })

@@ -1,3 +1,4 @@
+import type { RefObject } from 'react'
 import { useState } from 'react'
 import type { ContentAsset, SelectedContent } from '@/api/admin/content'
 import {
@@ -36,9 +37,15 @@ export interface MinutesTabProps {
   /** 索引里的资产，用来挑一个"真的有正文"的模板当默认值 */
   assets: readonly ContentAsset[]
   archivedAt: number | null
+  /**
+   * 正文槽上一次量到的高度。**由页面持有，不是本组件的 state**——切到别的 tab
+   * 时本组件会被卸载，记在里面的高度跟着没了，切回来就又是那次 78px 的塌陷。
+   * 理由与实测数字在 `text.tsx` 的 `useHeightFloor` 头上。
+   */
+  heightMemo: RefObject<number | null>
 }
 
-export function MinutesTab({ meetingId, assets, archivedAt }: MinutesTabProps) {
+export function MinutesTab({ meetingId, assets, archivedAt, heightMemo }: MinutesTabProps) {
   const [tpl, setTpl] = useState(() => pickDefaultTemplate(assets))
   /** 空串 = 不筛格式。**不是** `?format=`——那是一次真实取值（"文件类型为空串"） */
   const [fmt, setFmt] = useState('')
@@ -50,7 +57,7 @@ export function MinutesTab({ meetingId, assets, archivedAt }: MinutesTabProps) {
   // 换模板 / 换格式时，正文槽的高度冻在上一次量到的高度上——理由（含实测数字）
   // 在 text.tsx 的 useHeightFloor 头上。工具条**不在槽里**：它高度恒定，
   // 把它一起冻住只会在它和正文之间多出一段说不清的空白。
-  const floor = useHeightFloor(res.state === 'loading')
+  const floor = useHeightFloor(res.state === 'loading', heightMemo)
 
   return (
     <div className={styles.tabBody}>

@@ -135,6 +135,13 @@ function Body({ index, chapters, grants }: BodyProps) {
   /** 左栏占比。右栏删掉舞台与那两段说明之后只剩资产面板，不需要 42% */
   const [split, setSplit] = useState(64)
   const tabsRef = useRef<HTMLDivElement>(null)
+  /**
+   * 纪要正文槽上一次量到的高度。**记在这里，不在 `MinutesTab` 里**：切到时间轴
+   * 再切回来，那个组件是重新挂载的，组件内的记忆早没了——而那正是「点纪要页面塌
+   * 一下又弹回来」的最后一段。`Body` 跨 tab 切换活着，换会议时才随 `index` 一起
+   * 卸掉，所以也不会拿上一场会议的高度来冻这一场。
+   */
+  const minutesH = useRef<number | null>(null)
 
   const cues = chapters.state === 'ready' ? chapters.data : null
   const duration = Math.max(1, meeting.durationSec)
@@ -288,6 +295,7 @@ function Body({ index, chapters, grants }: BodyProps) {
                 meetingId={meeting.id}
                 assets={index.assets}
                 archivedAt={index.local.archivedAt}
+                heightMemo={minutesH}
               />
             )}
             {tab === 'timeline' && (
