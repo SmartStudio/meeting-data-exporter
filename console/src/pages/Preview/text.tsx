@@ -1,5 +1,5 @@
-import type { ReactNode, RefObject } from 'react'
-import { useEffect } from 'react'
+import type { CSSProperties, ReactNode, RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { WhyKind } from '@/api/types'
 import type { ContentAsset, TranscriptCue } from '@/api/admin/content'
 import { MINUTES_TEMPLATES } from '@/api/admin/content'
@@ -142,6 +142,61 @@ export function useFollowCurrent(ref: RefObject<HTMLElement | null>, position: n
     if (r.top <= b.top && r.bottom >= b.bottom) return
     box.scrollTop += r.top < b.top ? r.top - b.top : r.bottom - b.bottom
   }, [ref, position])
+}
+
+/**
+ * 取新数据的那一帧，把容器高度冻在**上一次量到的高度**上。
+ *
+ * ## 这修的是什么
+ *
+ * 用户报「点纪要里的模板 / 文件格式，整个预览页会抖动一下、像重新加载了」。
+ * 1440×900 真浏览器实测，抖的是布局，不是加载：
+ *
+ * | 动作 | 文档高度 | `window.scrollY` |
+ * |---|---|---|
+ * | 切模板 AI 纪要 → 发言人纪要 | 1088 → **1007** → 1611 | 188 → **107** → 188 |
+ * | 切文件格式 全部 → txt（前后同高） | 1611 → **1007** → 1611 | 188 → **107** → 188 |
+ *
+ * 中间那一列就是骨架屏：`useResource` 每次 deps 变都先 `setRes({ state: 'loading' })`,
+ * 已经排好的正文整块被换成一个 151px 的骨架，面板矮下去几百 px，页面跟着变矮,
+ * 浏览器把滚动位置**钳**到新的最大可滚量（188 → 107），150ms 后正文回来页面变高,
+ * 滚动位置又被拉回去。一次点击 = 两次布局跳变。
+ *
+ * 最后一行是决定性的：`全部 → txt` 前后内容**完全一样高**，净变化 0，照样抖一次。
+ * 所以抖动与"内容变了"无关，纯粹是 loading 那一帧造成的。
+ *
+ * 录像**没有**重新加载：同一个 DOM 节点，`currentTime` 不变，`loadstart` /
+ * `emptied` / `loadeddata` 三个事件计数全是 0。"重新加载"是这个缺陷造出来的观感。
+ *
+ * ## 为什么不是「切换时先留着上一次的正文」
+ *
+ * 那是这一页最不能做的一件事：单选已经跳到「发言人纪要」，下面挂着的却是 AI 纪要
+ * 的正文——在一个「判定理由必须可回溯」的产品里，150ms 的谎也是谎。冻的是高度,
+ * 不是内容：旧正文照常撤走，骨架屏照常转，只是脚下的地不塌。
+ *
+ * 请求与留痕一条都不少（spec §2「每调一次就写一行审计」），这里没有引入任何缓存。
+ *
+ * ## 量到 0 就不记
+ *
+ * jsdom 不做排版，`offsetHeight` 恒 0。记下 0 会让 `min-height: 0px` 一路挂在真实
+ * 的 style 上，看着像生效其实什么都没冻——**一个报告"通过"却什么都没做的开关**。
+ * 只认正数，真浏览器里高度为 0 本来也没有冻的必要。
+ */
+export function useHeightFloor(loading: boolean): {
+  ref: RefObject<HTMLDivElement | null>
+  style: CSSProperties | undefined
+} {
+  const ref = useRef<HTMLDivElement>(null)
+  const last = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    if (loading) return
+    const h = ref.current?.offsetHeight ?? 0
+    if (h > 0) last.current = h
+  })
+  return {
+    ref,
+    style: loading && last.current !== null ? { minHeight: `${last.current}px` } : undefined,
+  }
 }
 
 /**

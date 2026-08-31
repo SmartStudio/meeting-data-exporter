@@ -11,7 +11,7 @@ import { useResource } from '@/lib/useResource'
 import { fmtBytes, fmtDay } from '@/lib/format'
 import { Skeleton } from '@/ui/Skeleton'
 import RadioRow from './RadioRow'
-import { Emphasis, pickDefaultTemplate } from './text'
+import { Emphasis, pickDefaultTemplate, useHeightFloor } from './text'
 import styles from './Preview.module.css'
 
 /**
@@ -47,6 +47,10 @@ export function MinutesTab({ meetingId, assets, archivedAt }: MinutesTabProps) {
     () => fetchContentSelection(meetingId, { type: tpl, format: fmt === '' ? undefined : fmt }),
     [meetingId, tpl, fmt],
   )
+  // 换模板 / 换格式时，正文槽的高度冻在上一次量到的高度上——理由（含实测数字）
+  // 在 text.tsx 的 useHeightFloor 头上。工具条**不在槽里**：它高度恒定，
+  // 把它一起冻住只会在它和正文之间多出一段说不清的空白。
+  const floor = useHeightFloor(res.state === 'loading')
 
   return (
     <div className={styles.tabBody}>
@@ -71,28 +75,28 @@ export function MinutesTab({ meetingId, assets, archivedAt }: MinutesTabProps) {
         />
       </div>
 
-      {res.state === 'loading' && (
-        <div className={styles.skel} role="status" aria-label="正在读取这一类纪要">
-          <Skeleton width="40%" />
-          <Skeleton />
-          <Skeleton width="88%" />
-          <Skeleton width="72%" />
-        </div>
-      )}
+      <div ref={floor.ref} style={floor.style} className={styles.docSlot}>
+        {res.state === 'loading' && (
+          <div className={styles.skel} role="status" aria-label="正在读取这一类纪要">
+            <Skeleton width="40%" />
+            <Skeleton />
+            <Skeleton width="88%" />
+            <Skeleton width="72%" />
+          </div>
+        )}
 
-      {res.state === 'error' && (
-        <p className={styles.err}>取失败：{res.error.message}</p>
-      )}
+        {res.state === 'error' && <p className={styles.err}>取失败：{res.error.message}</p>}
 
-      {res.state === 'ready' && res.data.selected === null && (
-        <p className={styles.err}>
-          后端没有返回 selected —— 这次请求带了 type，响应里却没有对应的正文块。
-        </p>
-      )}
+        {res.state === 'ready' && res.data.selected === null && (
+          <p className={styles.err}>
+            后端没有返回 selected —— 这次请求带了 type，响应里却没有对应的正文块。
+          </p>
+        )}
 
-      {res.state === 'ready' && res.data.selected !== null && (
-        <SelectedBody selected={res.data.selected} archivedAt={archivedAt} />
-      )}
+        {res.state === 'ready' && res.data.selected !== null && (
+          <SelectedBody selected={res.data.selected} archivedAt={archivedAt} />
+        )}
+      </div>
     </div>
   )
 }
