@@ -104,16 +104,43 @@ export function pickDefaultTemplate(assets: readonly ContentAsset[]): string {
 /* ── 当前分段 ────────────────────────────────────────────────────── */
 
 /**
- * 走时时让当前那一段自己滚进视野（spec §4.4「播放时转写自动高亮并跟随滚动」）。
+ * 走时时让当前那一段滚进视野（spec §4.4「播放时转写自动高亮并跟随滚动」）。
  *
- * `scrollIntoView` 在 jsdom 里压根不存在，所以这里是可选调用——测试环境缺一个
- * 浏览器 API 不该让整棵树崩掉。`block: 'nearest'` 是关键：用默认的 `start`
- * 会把整页也一起滚动，人正在看的纪要会被拽走。
+ * ## 为什么**不能**用 `scrollIntoView`
+ *
+ * 上一版是 `el.scrollIntoView({ block: 'nearest' })`，注释里写着「`nearest` 就不会
+ * 把整页也滚走」。**这句话是错的**，而且是这一页最贵的一个错误：
+ *
+ * `scrollIntoView` 会沿祖先链把**每一个**可滚动容器都滚一遍，一直滚到文档本身。
+ * `block: 'nearest'` 决定的是每个滚动容器**滚多少**（够看见就停），不是**滚哪几个**。
+ * 分段列表自己是 `max-height: 60vh; overflow-y: auto` 没错，但列表滚完之后浏览器
+ * 继续往上走，把 window 也滚了。
+ *
+ * 1440×900 下实测（真 Chromium、真构建产物、114 段）：
+ *
+ * - 一按播放，`window.scrollY` 在 3.75 秒内从 0 被推到 544——录像被顶出屏幕，
+ *   人没滚过一下。
+ * - 人手动滚回顶部想看画面，**下一段一到就被拽回 544**。这就是「一直在抖动」:
+ *   不是列表在抖，是页面和人在抢滚动条。
+ *
+ * ## 现在的做法
+ *
+ * 只写容器自己的 `scrollTop`。给 `scrollTop` 赋值**不会**波及祖先，这是它和
+ * `scrollIntoView` 唯一但决定性的区别。对齐算法照抄 `nearest` 的语义：整段已经
+ * 在框里就一动不动（走时每秒一次，反复写同一个值会打断人正在进行的惯性滚动）;
+ * 上边出界贴上边，下边出界贴下边；比框还高的一段已经占满了框，也不动——
+ * 强行对齐会在人读到一半时把它跳走。
  */
 export function useFollowCurrent(ref: RefObject<HTMLElement | null>, position: number): void {
   useEffect(() => {
-    const el = ref.current?.querySelector('[aria-current="true"]')
-    el?.scrollIntoView?.({ block: 'nearest' })
+    const box = ref.current
+    const el = box?.querySelector<HTMLElement>('[aria-current="true"]')
+    if (box == null || el == null) return
+    const b = box.getBoundingClientRect()
+    const r = el.getBoundingClientRect()
+    if (r.top >= b.top && r.bottom <= b.bottom) return
+    if (r.top <= b.top && r.bottom >= b.bottom) return
+    box.scrollTop += r.top < b.top ? r.top - b.top : r.bottom - b.bottom
   }, [ref, position])
 }
 

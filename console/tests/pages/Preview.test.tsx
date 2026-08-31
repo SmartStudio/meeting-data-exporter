@@ -467,6 +467,52 @@ describe('三处联动', () => {
     const player = screen.getByRole('region', { name: /播放/ })
     expect(within(player).getByText('那这周先把文档回写补上。')).toBeInTheDocument()
   })
+
+  /**
+   * 跟随滚动**一次都不许碰 `scrollIntoView`**（2026-08-31，用户报「一播放整个页面
+   * 就被拉下来、一直在抖」）。
+   *
+   * `scrollIntoView` 会沿祖先链把每一个可滚动容器都滚一遍，一直滚到文档本身;
+   * `block: 'nearest'` 管的是每个容器滚多少，不是滚哪几个。1440×900 实测：
+   * 一按播放 `window.scrollY` 3.75 秒内被推到 544，人手动滚回去下一段又拽回来。
+   * 推理与两次实测都在 `Preview/text.tsx` 的 `useFollowCurrent` 头上。
+   *
+   * jsdom 压根没有 `scrollIntoView`，所以旧实现在这里**是静默空转的**——测试全绿,
+   * 真浏览器上那 544px 一路没人拦。这条测试就是补那个洞：把它装上再数调用次数。
+   */
+  test('走时跟随不碰 scrollIntoView —— 它会把整页也一起滚走', async () => {
+    const user = userEvent.setup()
+    routes.unshift({
+      match: /\/content$/,
+      status: 200,
+      body: { ...INDEX, media: { ...INDEX.media, assets: [] } },
+    })
+    const spy = vi.fn()
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: spy,
+      configurable: true,
+      writable: true,
+    })
+    try {
+      renderPreview()
+      await ready()
+      await user.click(screen.getByRole('tab', { name: /转写文字/ }))
+      await user.click(await screen.findByRole('button', { name: /RDS 白名单我早上开了/ }))
+      vi.useFakeTimers()
+      await act(async () => {
+        screen.getByRole('button', { name: '开始走时' }).click()
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(31 * 1000)
+      })
+      expect(
+        Number(screen.getByRole('slider', { name: '播放位置' }).getAttribute('aria-valuenow')),
+      ).toBeGreaterThanOrEqual(MIDPOINT + 30)
+      expect(spy, 'scrollIntoView 被调用了 —— 它会连带把 window 一起滚').not.toHaveBeenCalled()
+    } finally {
+      delete (Element.prototype as unknown as Record<string, unknown>).scrollIntoView
+    }
+  })
 })
 
 /* ── 录像 ─────────────────────────────────────────────────────────── */
@@ -929,6 +975,27 @@ describe('样式令牌', () => {
       expect(decls, file).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
       expect(decls, file).not.toMatch(/\brgba?\(/)
       expect(decls.replace(/\b[01]px\b/g, ''), file).not.toMatch(/\b\d+px\b/)
+    }
+  })
+
+  /**
+   * `scrollIntoView` 在这一页是**被禁用的 API**，不是"尽量别用"。
+   *
+   * 它没有"只滚这一个容器"的写法：沿祖先链每一个可滚动容器都会被滚，文档本身也算
+   * 一个。这一页同时有三层可滚动的东西（分段列表 60vh、原文 `<pre>` 60vh、页面本身）,
+   * 用它就等于把 window 交出去。要跟随就自己写容器的 `scrollTop`——赋值不波及祖先。
+   *
+   * 上面那条只数了它在**跑到的那条路径**上没被调用；这条扫全目录，新加的组件也拦得住。
+   */
+  test('Preview 目录里不许出现 scrollIntoView', () => {
+    const dir = resolve(process.cwd(), 'src/pages/Preview')
+    const files = readdirSync(dir).filter((f) => f.endsWith('.tsx') || f.endsWith('.ts'))
+    expect(files.length, '一个源文件都没扫到，说明这条门禁在空转').toBeGreaterThan(0)
+    for (const file of files) {
+      const src = readFileSync(resolve(dir, file), 'utf-8')
+      // 注释里可以提它（`text.tsx` 整段推理就写在那儿），代码里不行
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      expect(code, file).not.toMatch(/scrollIntoView/)
     }
   })
 })
