@@ -4,11 +4,15 @@
 }
 
 /* 窄屏（375px 下内容列只剩 179px）时标题与动作区改成上下排：
-   横排会把动作区推出视口，而推出视口的按钮既看不见也够不着。 */
+   横排会把动作区推出视口，而推出视口的按钮既看不见也够不着。
+
+   `align-items` 从 flex-end 改成 center：可见的标题已经搬去顶栏了，这一行里
+   只剩「一句说明」和「一颗按钮」。底对齐是给"标题+说明"那个高块用的，现在
+   它把 22px 的说明句压到 34px 按钮的下沿，说明句因此比没有按钮的页面低 6px。 */
 .head {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: var(--s-4);
   margin: 0 0 var(--s-6);
@@ -26,11 +30,14 @@
   overflow-wrap: anywhere;
 }
 
+/* 上外边距曾经是 6px，用来把说明句和它上面那行可见标题隔开。标题搬进顶栏
+   （`.titleHidden`）之后它上面已经什么都没有了——那 6px 是为一个看不见的东西
+   留的空。 */
 .desc {
   font-size: var(--t-sm);
   color: var(--ink-3);
   line-height: 1.7;
-  margin: var(--s-2) 0 0;
+  margin: 0;
   max-width: 62ch;
   overflow-wrap: anywhere;
 }
@@ -43,10 +50,9 @@
 }
 
 /* 只读账号的说明条。中性色而不是琥珀：只读不是一个需要处理的异常，是这个账号
-   本来的样子——琥珀的唯一含义是「这需要你看一眼并做点什么」，而这里什么都不用做。
-   负的上外边距是去掉 .head 的下外边距，让这一条紧贴页头、看起来属于页头。 */
+   本来的样子——琥珀的唯一含义是「这需要你看一眼并做点什么」，而这里什么都不用做。 */
 .readonly {
-  margin: calc(-1 * var(--s-6)) 0 var(--s-6);
+  margin: 0 0 var(--s-6);
   padding: var(--s-3) var(--s-4);
   background: var(--surface);
   border: var(--s-px) solid var(--line);
@@ -55,6 +61,14 @@
   color: var(--ink-2);
   line-height: 1.7;
   overflow-wrap: anywhere;
+}
+
+/* 负的上外边距是去掉 .head 的下外边距，让这一条紧贴页头、看起来属于页头。
+   只在真有页头时才挂（`PageShell.tsx` 的 `hasHead`）：页头不在的两页
+   （会议记录、归档存储）没有那 20px 可抵消，挂上去只会把这一条拽进内容区的
+   上留白里，压在顶栏底下。 */
+.readonlyUnderHead {
+  margin-top: calc(-1 * var(--s-6));
 }
 
 /* 标题的视觉隐藏形态。见 PageShell.tsx 里那段注释：可见的标题在顶栏，

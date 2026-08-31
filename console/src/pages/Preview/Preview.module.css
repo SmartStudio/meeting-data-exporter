@@ -8,7 +8,18 @@
  * 窄屏（<=56em）改成上下两段并把拖动手柄收起来：一个 5px 宽的拖动条在触屏上
  * 既够不着也没意义，而 375px 下强行维持两列必然横向溢出（a11y 门槛检查 3）。 */
 
+/* 返回链接自己一行，左对齐（理由见 `index.tsx` 里 `PageShell` 上面那段）。
+   下外边距 12px 与 `.head` 的上外边距 16px 相邻，外边距合并后取 16px；
+   loading / error 两个分支没有那条 `.head`，就用这 12px。 */
+.backLine {
+  margin: 0 0 var(--s-4);
+}
+
+/* 负的左外边距把链接的**文字**推回内容左边缘：`.back` 自带 8px 的左内边距
+   （悬停时那块底色要靠它撑开），不抵消掉的话这一行会比下面的会议标题右移 8px。 */
 .back {
+  display: inline-flex;
+  margin-left: calc(-1 * var(--s-3));
   font-size: var(--t-sm);
   color: var(--ink-3);
   text-decoration: none;

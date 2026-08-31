@@ -1974,9 +1974,11 @@ describe('页头与工具条：不用文案补可供性', () => {
     expect(note).toHaveTextContent('归档到 NAS 之后本地文件还会留一段时间')
     expect(note).toHaveTextContent('记录与 NAS 路径永久保留')
 
-    // 但它不在页头里了：h1 的兄弟节点里没有这句话
-    const head = screen.getByRole('heading', { name: '会议记录', level: 1 }).parentElement!
-    expect(head.textContent).not.toContain('归档到 NAS 之后')
+    // 但它不在页头里了——这一页现在**根本没有页头**：`ui/PageShell` 只在有
+    // 说明或有主操作时才画那条带子，两样都没有的会议记录页连 `<header>` 都不出，
+    // 顶栏底下那 36px 空带跟着没了（见 `tests/pages/shells.test.tsx`）。
+    const h1 = screen.getByRole('heading', { name: '会议记录', level: 1 })
+    expect(h1.closest('header'), '会议记录又长回一条页头').toBeNull()
     // 位置在表格之后
     const table = screen.getByRole('table')
     expect(table.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

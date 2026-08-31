@@ -60,6 +60,41 @@ describe('PageShell', () => {
     expect(screen.getAllByTestId('readonly-banner').length).toBe(1)
   })
 
+  /**
+   * 页头这条带子按它装的东西高，装不下东西就没有带子。
+   *
+   * 「不留空节点」上面那条已经写了，但它只查了按钮和文字**没有渲染出来**——
+   * 空的 `<header>` 连同它 20px 的下外边距照样在，查不到。1440 实测：会议记录
+   * 与归档存储两页顶栏底下 36px 什么都没有，而有说明的页面同一位置是 64–86px、
+   * 装着一句话。所以这里查的是那个节点本身。
+   */
+  test('说明与动作区都没有时，连 <header> 都不渲染（那 20px 下外边距跟着走）', () => {
+    const { container, rerender } = render(<PageShell title="会议记录" />)
+    expect(container.querySelector('header'), '空页头仍然占着 20px 的下外边距').toBeNull()
+    // 标题不能跟着页头一起消失——`aria-labelledby` 指着它
+    expect(screen.getByRole('region', { name: '会议记录' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '会议记录', level: 1 })).toBeInTheDocument()
+
+    // 只有动作、没有说明也算"有话说"：内容预览那颗返回链接曾经就是这样
+    rerender(<PageShell title="会议记录" actions={<button type="button">接入</button>} />)
+    expect(container.querySelector('header')).not.toBeNull()
+    rerender(<PageShell title="会议记录" description="一句说明" />)
+    expect(container.querySelector('header')).not.toBeNull()
+  })
+
+  /**
+   * 只读条那条负的上外边距是用来抵消页头下外边距的。页头可以整条不存在，
+   * 那时它没有东西可抵消，挂上去就是把自己拽进内容区的上留白里。
+   */
+  test('只读条的负外边距只在真有页头时挂', () => {
+    const { rerender } = renderAsRole(<PageShell title="会议记录" />, 'readonly')
+    const bare = screen.getByTestId('readonly-banner').className
+    rerender(<PageShell title="会议记录" description="一句说明" />)
+    const underHead = screen.getByTestId('readonly-banner').className
+    expect(underHead.split(' ').length).toBe(bare.split(' ').length + 1)
+    expect(underHead.startsWith(bare)).toBe(true)
+  })
+
   test('CSS 里没有裸值——色值与间距一律走令牌', () => {
     // a11y 门槛的「检查 4 裸值扫描」跑在构建产物上，这里在单测里先拦一道，
     // 免得改样式时要等一次完整构建才知道踩线。

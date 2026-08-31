@@ -1003,6 +1003,42 @@ describe('加载 / 失败 / 空', () => {
     await ready()
   })
 
+  /**
+   * 返回链接以前挂在 `PageShell` 的 `actions` 上，于是这一页有两条抬头上下摞着，
+   * 上面那条里只有一个右对齐的链接、左边九成宽是空的（1440 实测 34px 的空壳）。
+   * 现在它是内容区的第一行，三个状态都在——读不出来的时候最想做的就是回列表。
+   */
+  test('加载中也有返回链接，而且它不再自己占一条页头', () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Promise<Response>(() => {})))
+    const { container } = renderPreview()
+    expect(screen.getByRole('link', { name: '返回会议列表' })).toBeInTheDocument()
+    // 这一页自己有一条抬头（`Body` 的 `.head`）；`PageShell` 那条只装得下这个
+    // 链接，左边九成宽是空的。它现在没有了 —— 三个状态下都不该再出现。
+    expect(
+      container.querySelector('header'),
+      '返回链接又回到 PageShell 的 actions 里去了',
+    ).toBeNull()
+  })
+
+  test('读不出来的时候返回链接还在 —— 那时最想做的就是回列表', async () => {
+    routes.unshift({ match: /\/content$/, status: 404, body: { error: 'meeting_not_found' } })
+    renderPreview()
+    expect(await screen.findByText(/meeting_not_found/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '返回会议列表' })).toBeInTheDocument()
+  })
+
+  test('正常渲染时返回链接排在会议抬头前面，不跟抬头挤同一行', async () => {
+    const { container } = renderPreview()
+    await ready()
+    const link = screen.getByRole('link', { name: '返回会议列表' })
+    expect(link.closest('header')).toBeNull()
+    const head = container.querySelector('header')
+    expect(head, '会议抬头没了').not.toBeNull()
+    expect(
+      link.compareDocumentPosition(head!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
   test('时间轴取失败不拖垮整页：播放器仍在，那一块说自己取失败了', async () => {
     routes.unshift({ match: /\/content\/chapters/, status: 500, body: { error: 'cue_boom' } })
     renderPreview()

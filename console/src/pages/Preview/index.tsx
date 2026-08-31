@@ -70,14 +70,20 @@ export default function PreviewPage() {
   const grants = useResource(() => fetchMeetingGrantIds(id), [id])
 
   return (
-    <PageShell
-      title="内容预览"
-      actions={
+    /* 返回链接**不走 `PageShell` 的 `actions`**。这一页自己就有一条抬头
+       （下面 `Body` 里的 `.head`：会议标题 + 时间/会议号/主持人 + 判定标记），
+       页头再来一条，就是两条抬头上下摞着——而上面那条里只有一个右对齐的链接，
+       左边九成宽是空的（1440 实测：顶栏底下 70px，其中 34px 归这个空壳）。
+       它现在是内容区的第一行，左对齐，跟内容一条边——返回链接本来就该在那里。
+       放在三个状态分支**之前**而不是里面：读不出来（error）时最想做的事就是
+       回列表，而那时 `Body` 整个不渲染。 */
+    <PageShell title="内容预览">
+      <p className={styles.backLine}>
         <Link to="/meetings" className={styles.back}>
           返回会议列表
         </Link>
-      }
-    >
+      </p>
+
       {index.state === 'loading' && (
         <div className={styles.skel} role="status" aria-label="正在读取这场会议的内容">
           <Skeleton width="38%" />
