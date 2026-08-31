@@ -60,6 +60,7 @@ import {
   type AuditRecord,
 } from '../../../store/audit'
 import { auditActionLabel, unlabeledActions } from '../../../audit/actions'
+import { ASSET_LABEL } from '../../../domain/asset-labels'
 
 // ---------------------------------------------------------------------------
 // 映射表：全项目唯一一份
@@ -411,7 +412,15 @@ interface AuditRowJson {
   id: number
   /** unix 秒 */
   at: number
-  actor: { kind: AuditActorKind | 'unknown'; type: string; id: string }
+  /**
+   * 谁干的。
+   *
+   * `name` 是**人名**，只有管理员账号解析得出（`admin_accounts.username`）,
+   * 解析不出时为 null——**绝不拿 id 冒充人名**，那和拿会议 id 冒充标题
+   * （见 `toRowJson` 的 object）、拿 userid 冒充主持人（`console/src/lib/host.ts`）
+   * 是同一条：一个看着像名字的 id 会让人以为这个人就叫这个。
+   */
+  actor: { kind: AuditActorKind | 'unknown'; type: string; id: string; name: string | null }
   action: string
   actionLabel: string | null
   object: AuditObjectRef | null
@@ -492,13 +501,44 @@ function resultOf(r: AuditRecord, detail: string | null): AuditRowJson['result']
   return { decision: r.decision, kind: 'deny', reason: null }
 }
 
-function toRowJson(r: AuditRecord, objects: Map<string, AuditObjectRef>): AuditRowJson {
+/**
+ * 这一页记录里那些管理员账号的人名。
+ *
+ * 抽屉里每一行原来都以一串 uuid 开头（`35e7d5ad-9d2d-4989-b437-4f72f733b72b`）,
+ * 占掉大半行宽、每行还都一样——用户因此把一列本来各不相同的记录读成了「重复数据」。
+ *
+ * 只查**去重之后**的管理员 id：同一页历史通常只有一两个人，一页 200 行也就是
+ * 一两次点查。查不到就留 null（账号可能已经删了），读侧退回显示 id。
+ */
+async function resolveActorNames(
+  ctx: RouteCtx,
+  rows: readonly AuditRecord[],
+): Promise<Map<string, string>> {
+  const ids = new Set(rows.filter((r) => r.actorType === 'admin').map((r) => r.actorId))
+  const out = new Map<string, string>()
+  for (const id of ids) {
+    const acc = await ctx.deps.adminStore.findById(id)
+    if (acc !== null) out.set(id, acc.username)
+  }
+  return out
+}
+
+function toRowJson(
+  r: AuditRecord,
+  objects: Map<string, AuditObjectRef>,
+  names: Map<string, string> = new Map(),
+): AuditRowJson {
   const asset = assetOf(r)
   const detail = detailOf(r)
   return {
     id: r.id,
     at: r.occurredAt,
-    actor: { kind: actorKindOf(r.actorType), type: r.actorType, id: r.actorId },
+    actor: {
+      kind: actorKindOf(r.actorType),
+      type: r.actorType,
+      id: r.actorId,
+      name: names.get(r.actorId) ?? null,
+    },
     action: r.action,
     actionLabel: auditActionLabel(r.action),
     object:
@@ -530,6 +570,38 @@ function toRowJson(r: AuditRecord, objects: Map<string, AuditObjectRef>): AuditR
  * 想按列渲染就用字段，想照契约直接渲染就用 `text`。
  * 用同一份映射表拼，不会与列表页说的话不一致。
  */
+/**
+ * 明细第一行里的机器名换成中文资产名。
+ *
+ * `recordView` 写进 detail 的第一行是 `查看 content:ai_minutes` / 
+ * `播放录像 media:video/2092980003051892737/mp4` 这种形状——`content:<assetKey>` 与
+ * `media:<assetType>/<remoteId>/<fileType>`。它对得回 `ASSET_LABEL`（spec §6.2 那张
+ * 表，全项目唯一一份），所以在读侧翻成人话，不用改写侧、更不用回填 584 行历史。
+ *
+ * `index` 与 `chapters` 不是资产，它们是**视图**，单独给名字。
+ *
+ * **认不出的原样带出**：将来新增的 target 形状会以机器名的样子出现在界面上,
+ * 那正是它该有的样子——一个自己会喊的缺口，比悄悄显示成别的东西强。
+ */
+const VIEW_TARGET_LABEL: Record<string, string> = {
+  index: '资产索引',
+  chapters: '时间轴',
+}
+
+function translateTarget(line: string): string {
+  return line
+    .replace(/content:([a-z_]+)/g, (whole, key: string) => {
+      const view = VIEW_TARGET_LABEL[key]
+      if (view !== undefined) return view
+      const label = (ASSET_LABEL as Record<string, string | undefined>)[key]
+      return label ?? whole
+    })
+    .replace(/media:([a-z_]+)\/[^/\s]+\/([a-z0-9]+)/gi, (whole, type: string, ext: string) => {
+      const label = (ASSET_LABEL as Record<string, string | undefined>)[type]
+      return label === undefined ? whole : `${label}（${ext}）`
+    })
+}
+
 function describeRow(row: AuditRowJson): string {
   // 没登记标签时**不回退成裸原值**：那句话读起来与一个真的叫这个名字的动作
   // 一模一样，于是漏登记永远不会被人发现（阶段 5 · A9）。带上「未登记标签」
@@ -544,7 +616,23 @@ function describeRow(row: AuditRowJson): string {
         : row.result.reason === null
           ? '拒绝'
           : `拒绝 · ${row.result.reason}`
-  return `${row.actor.id} · ${what}${asset} · ${result}`
+
+  /*
+   * **看的是哪一份**必须进这句话。
+   *
+   * 用户 2026-08-31 报「操作历史里有很多重复的数据」——查了库，那一批行的
+   * `detail` 各不相同（`content:index` / `content:chapters` / `content:ai_minutes` /
+   * `content:transcript` / `media:video/…`），是这句话把唯一的区分字段丢了：
+   * 十种不同的事件在屏幕上长得一模一样。`detail` 后端一直在下发，只是没人用。
+   *
+   * 只取第一行（`detailText` 的既定约定）：第二行是紧凑 JSON 附文，把它拼进这句
+   * 话等于在操作历史里甩一段代码。被拒绝的记录里第一行是拒绝原因，`result` 已经
+   * 带着它，所以这里**只在 allow 时补**——deny 时补一遍就是同一句话说两遍。
+   */
+  const target = row.result.kind === 'allow' ? detailText(row.detail) : null
+  const what2 = target === null ? what : `${what} · ${translateTarget(target)}`
+  // 人名在前。解析不出时退回 id——它仍然是一条真线索，比留空强
+  return `${row.actor.name ?? row.actor.id} · ${what2}${asset} · ${result}`
 }
 
 // ---------------------------------------------------------------------------
@@ -593,9 +681,10 @@ export async function listAudit(req: Request, ctx: RouteCtx): Promise<Response> 
   const objects = await ctx.deps.auditMeetings.resolveObjects(
     page.rows.map((r) => r.meetingId).filter((id): id is string => id !== null),
   )
+  const names = await resolveActorNames(ctx, page.rows)
 
   return json(200, {
-    rows: page.rows.map((r) => toRowJson(r, objects)),
+    rows: page.rows.map((r) => toRowJson(r, objects, names)),
     total: page.total,
     limit: query.limit,
     offset: query.offset,
@@ -637,6 +726,7 @@ export async function meetingHistory(req: Request, ctx: RouteCtx): Promise<Respo
   const objects = await ctx.deps.auditMeetings.resolveObjects(
     rows.map((r) => r.meetingId).filter((id): id is string => id !== null),
   )
+  const names = await resolveActorNames(ctx, rows)
 
   return json(200, {
     // 元数据查不到不代表这场会议没有操作记录，所以是 200 + meeting: null，不是 404。
@@ -644,7 +734,7 @@ export async function meetingHistory(req: Request, ctx: RouteCtx): Promise<Respo
     // 而「记录还在不在」正是审计要回答的问题。
     meeting,
     rows: rows.map((r) => {
-      const row = toRowJson(r, objects)
+      const row = toRowJson(r, objects, names)
       return { ...row, text: describeRow(row) }
     }),
     window: {

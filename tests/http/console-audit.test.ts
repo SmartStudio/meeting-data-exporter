@@ -101,9 +101,22 @@ function fakeCtx(opts: {
     },
   }
 
+  // 管理员账号表：审计行里的 actor_id 是账号 uuid，读侧要把它换成人名
+  // （抽屉里每行原来都以一串 35e7d5ad-… 开头，占掉大半行宽还每行都一样）。
+  // 这里给两个真账号 + 一个查不到的：查不到时读侧必须退回显示 id，
+  // **不许拿 id 冒充人名**。
+  const adminStore = {
+    findById: async (id: string) =>
+      id === 'admin-1'
+        ? { id, username: '陈运维', role: 'admin' }
+        : id === 'admin-2'
+          ? { id, username: '邹研发', role: 'admin' }
+          : null,
+  }
   const deps = {
     now: () => NOW,
     adminAuth: fakeAdminAuth(),
+    adminStore,
     auditQuery,
     auditMeetings,
   } as unknown as AppDeps
@@ -291,7 +304,8 @@ test('一行审计带齐 spec §4.10 的五个字段', async () => {
   const row = body.rows[0]!
 
   expect(row.at).toBe(NOW - 300)
-  expect(row.actor).toEqual({ kind: 'prog', type: 'service_account', id: 'svc-1' })
+  // `name` 只有管理员账号解析得出；采集程序不是账号，恒为 null
+  expect(row.actor).toEqual({ kind: 'prog', type: 'service_account', id: 'svc-1', name: null })
   expect(row.action).toBe('issue_download_url')
   expect(row.actionLabel).toBe('签发下载链接')
   expect(row.object).toMatchObject({ title: '产品周会', code: '123-456' })
@@ -301,8 +315,8 @@ test('一行审计带齐 spec §4.10 的五个字段', async () => {
 test('认不出的 actor_type 走 unknown 色块，且原值照带', async () => {
   const { ctx } = fakeCtx({ rows: [record({ actorType: 'ghost', actorId: 'x' })] })
   const res = await listAudit(req('/api/v1/admin/audit'), ctx)
-  const body = await res.json() as { rows: Array<{ actor: { kind: string; type: string; id: string } }> }
-  expect(body.rows[0]?.actor).toEqual({ kind: 'unknown', type: 'ghost', id: 'x' })
+  const body = await res.json() as { rows: Array<{ actor: Record<string, unknown> }> }
+  expect(body.rows[0]?.actor).toEqual({ kind: 'unknown', type: 'ghost', id: 'x', name: null })
 })
 
 test('认不出的 decision 既不算准许也不算拒绝', async () => {
@@ -467,6 +481,102 @@ test('会议历史的每一行都能当 { at, text } 用', async () => {
   expect(body.rows[0]?.at).toBe(NOW - 100)
   expect(body.rows[0]?.text).toContain('拒绝')
   expect(body.rows[0]?.text).toContain('#7')
+})
+
+/**
+ * 抽屉里那几十行「重复数据」（用户 2026-08-31 报的）。
+ *
+ * 查库之后：那一批行的 `detail` 各不相同——`content:index` / `content:chapters` /
+ * `content:ai_minutes` / `content:transcript` / `media:video/…`，是这句话把唯一的
+ * 区分字段丢了，十种事件在屏幕上长得一模一样。`detail` 后端一直在下发，只是
+ * `describeRow` 没用它。
+ */
+test('同一场会议的不同查看，text 各不相同 —— 区分字段是 detail', async () => {
+  const targets = ['content:index', 'content:chapters', 'content:ai_minutes', 'content:transcript']
+  const { ctx } = fakeCtx({
+    meeting: { id: 'm-1', title: '周会', code: '1', startAt: NOW - DAY, source: 'meetings' },
+    historyRows: targets.map((t, i) =>
+      record({
+        id: i + 1,
+        actorType: 'admin',
+        actorId: 'admin-1',
+        action: 'view_restricted_content',
+        assetType: null,
+        assetId: null,
+        detail: `查看 ${t}\n{"target":"${t}"}`,
+      }),
+    ),
+  })
+  ctx.params = { meetingId: 'm-1' }
+  const body = (await (await meetingHistory(req('/api/v1/admin/meetings/m-1/history'), ctx)).json()) as {
+    rows: Array<{ text: string }>
+  }
+  const texts = body.rows.map((r) => r.text)
+  expect(new Set(texts).size, `四次不同的查看渲染成了同一句话：${texts[0]}`).toBe(4)
+  // 机器名翻成 spec §6.2 那张表上的中文；index / chapters 不是资产，是视图
+  expect(texts.join(' ')).toContain('AI 纪要')
+  expect(texts.join(' ')).toContain('完整转写')
+  expect(texts.join(' ')).toContain('资产索引')
+  expect(texts.join(' ')).toContain('时间轴')
+  expect(texts.join(' '), '机器名不上屏').not.toContain('content:')
+})
+
+/**
+ * 每行开头那串 uuid（`35e7d5ad-9d2d-4989-b437-4f72f733b72b`）占掉大半行宽、
+ * 每行还都一样——它是用户把一列各不相同的记录读成「重复」的一半原因。
+ * 换成人名；**查不到时退回显示 id，不许拿 id 冒充人名**（同 object 那一条：
+ * 一个看着像名字的 id 会让人以为这个人就叫这个）。
+ */
+test('发起者显示人名，查不到才退回 id', async () => {
+  const mk = async (actorId: string): Promise<string> => {
+    const { ctx } = fakeCtx({
+      meeting: { id: 'm-1', title: '周会', code: '1', startAt: NOW - DAY, source: 'meetings' },
+      historyRows: [record({ actorType: 'admin', actorId, detail: null })],
+    })
+    ctx.params = { meetingId: 'm-1' }
+    const b = (await (await meetingHistory(req('/api/v1/admin/meetings/m-1/history'), ctx)).json()) as {
+      rows: Array<{ text: string; actor: { name: string | null } }>
+    }
+    return b.rows[0]!.text
+  }
+  expect(await mk('admin-1')).toContain('陈运维')
+  expect(await mk('admin-1')).not.toContain('admin-1')
+  // 账号已经删掉的历史记录：id 仍然是一条真线索，比留空强
+  expect(await mk('admin-gone')).toContain('admin-gone')
+})
+
+/**
+ * 认不出的 target 形状**原样带出**。将来新增一种 target，它会以机器名的样子
+ * 出现在界面上——那正是它该有的样子：一个自己会喊的缺口，比悄悄显示成别的东西强
+ * （同「未登记标签」那一条）。
+ */
+test('认不出的 target 原样带出，不吞掉也不编一个名字', async () => {
+  const { ctx } = fakeCtx({
+    meeting: { id: 'm-1', title: '周会', code: '1', startAt: NOW - DAY, source: 'meetings' },
+    historyRows: [record({ actorType: 'admin', actorId: 'admin-1', detail: '查看 content:brand_new_kind' })],
+  })
+  ctx.params = { meetingId: 'm-1' }
+  const b = (await (await meetingHistory(req('/api/v1/admin/meetings/m-1/history'), ctx)).json()) as {
+    rows: Array<{ text: string }>
+  }
+  expect(b.rows[0]!.text).toContain('content:brand_new_kind')
+})
+
+/**
+ * 被拒绝的记录里 detail 第一行**就是拒绝原因**（`buildAuditDetail` 的约定，
+ * spec §4.10）。`result` 已经带着它，所以 deny 时不许再补一遍——那是同一句话
+ * 在同一行里说两遍。
+ */
+test('deny 的行不把拒绝原因说两遍', async () => {
+  const { ctx } = fakeCtx({
+    meeting: { id: 'm-1', title: '周会', code: '1', startAt: NOW - DAY, source: 'meetings' },
+    historyRows: [record({ decision: 'deny', matchedRuleId: 7, detail: '规则 #7 禁止采集' })],
+  })
+  ctx.params = { meetingId: 'm-1' }
+  const b = (await (await meetingHistory(req('/api/v1/admin/meetings/m-1/history'), ctx)).json()) as {
+    rows: Array<{ text: string }>
+  }
+  expect(b.rows[0]!.text.match(/规则 #7/g)?.length ?? 0).toBe(1)
 })
 
 test('会议历史的 limit 超过上限当场说清楚', async () => {
