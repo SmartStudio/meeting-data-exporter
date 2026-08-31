@@ -14,6 +14,8 @@ import {
   dotState,
   extendedText,
   grantCellKind,
+  groupHistory,
+  historyAtText,
   parseWhy,
   programAbbr,
   rowFlag,
@@ -22,6 +24,7 @@ import {
   whyTone,
   WHY_MISSING_LABEL,
 } from '../src/pages/Meetings/display'
+import { fmtDateTime } from '../src/lib/format'
 import { batchSummary, failureOf, tally } from '../src/pages/Meetings/writes'
 import { isActivationTarget, isTypingTarget, resolveMeetingKey } from '../src/lib/keys'
 
@@ -1070,6 +1073,97 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
     expect(screen.getByTestId('history-rows')).toHaveTextContent('未登记标签')
   })
 
+  /* ── 连续重复的行折成一行 ──────────────────────────────────────
+
+     dev 下 React 的 StrictMode 让每个 useResource 的 effect 跑两次，于是每次
+     取数写两行审计（生产没有 StrictMode，不双写）。折叠是界面的事，但**次数
+     和时间跨度一个都不能丢**：把「一分钟内取了两次」显示成「取了一次」正是
+     审计页明令禁止的那件事（见 pages/Audit/AuditRow.tsx 文件头）。 */
+
+  const MIN = 60
+
+  function historyBody(rows: unknown[]): unknown {
+    return {
+      meeting: { id: 'm1', title: '产品周会', code: '881', startAt: nowSec(), source: 'meetings' },
+      rows,
+      window: { since: 1, sinceSource: 'meetings', text: null },
+      unlabeledActions: [],
+    }
+  }
+
+  function serveHistory(rows: unknown[]): void {
+    const base = defaultHandler()
+    handler = (c) =>
+      /\/history$/.test(c.path) ? { status: 200, body: historyBody(rows) } : base(c)
+  }
+
+  /** 整分钟基准。fmtDateTime 只到分钟，带上秒会让"是否同一分钟"随运行时刻漂移 */
+  function minuteBase(): number {
+    return Math.floor(Date.now() / 1000 / MIN) * MIN
+  }
+
+  const hm = (s: string): string => s.slice(s.lastIndexOf(' ') + 1)
+
+  test('连续几十行一模一样折成一行，右侧写明发生了几次', async () => {
+    const t0 = minuteBase()
+    const same = '管理员 查看被规则禁止采集的会议内容 · 准许'
+    serveHistory([
+      { id: 9, at: t0 - 10 * MIN, actionLabel: '查看', result: { decision: 'allow' }, clientKind: 'console', text: same },
+      { id: 8, at: t0 - 11 * MIN, actionLabel: '查看', result: { decision: 'allow' }, clientKind: 'console', text: same },
+      { id: 7, at: t0 - 12 * MIN, actionLabel: '查看', result: { decision: 'allow' }, clientKind: 'console', text: same },
+      { id: 6, at: t0 - 30 * MIN, actionLabel: '归档', result: { decision: 'allow' }, clientKind: 'sys', text: '归档成功，19 个文件' },
+    ])
+    await openDrawer()
+    const rows = await screen.findByTestId('history-rows')
+    const items = within(rows).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    // 折叠掉而不说发生了几次，等于把审计记录抹掉
+    expect(items[0]!).toHaveTextContent('×3')
+    // 没折叠的那一行不许凭空多一个 ×1
+    expect(items[1]!.textContent).not.toMatch(/×/)
+  })
+
+  test('折叠后的时刻是组里最早的那一条；跨了分钟就显示成区间', async () => {
+    const t0 = minuteBase()
+    const same = '管理员 查看被规则禁止采集的会议内容 · 准许'
+    serveHistory([
+      { id: 9, at: t0 - 10 * MIN, actionLabel: '查看', result: { decision: 'allow' }, clientKind: 'console', text: same },
+      { id: 8, at: t0 - 12 * MIN, actionLabel: '查看', result: { decision: 'allow' }, clientKind: 'console', text: same },
+      // 同一分钟内的两条（t0 是整分钟，所以 +51s / +20s 落在同一分钟里）：
+      // 区间两端会渲染成同一个串，那时不该多出一个破折号
+      { id: 5, at: t0 - 40 * MIN + 51, actionLabel: '查看', result: { decision: 'allow' }, clientKind: 'console', text: '另一句' },
+      { id: 4, at: t0 - 40 * MIN + 20, actionLabel: '查看', result: { decision: 'allow' }, clientKind: 'console', text: '另一句' },
+    ])
+    await openDrawer()
+    const rows = await screen.findByTestId('history-rows')
+    const items = within(rows).getAllByRole('listitem')
+    const spanned = within(items[0]!).getByTestId('history-at').textContent ?? ''
+    // 最早的在前——显示一个时刻却掩掉两分钟的跨度是这一页最不能做的事
+    expect(spanned.startsWith(fmtDateTime(t0 - 12 * MIN))).toBe(true)
+    expect(spanned).toContain('–')
+    expect(spanned.endsWith(hm(fmtDateTime(t0 - 10 * MIN)))).toBe(true)
+
+    const oneMinute = within(items[1]!).getByTestId('history-at').textContent ?? ''
+    expect(oneMinute).toBe(fmtDateTime(t0 - 40 * MIN))
+  })
+
+  test('一组里只要有一条被拒，整组仍然标红', async () => {
+    const t0 = minuteBase()
+    // 后端眼下把判定结果拼进了 text，deny 与 allow 因此折不进同一组——
+    // 这里刻意造出「text 相同、判定不同」，就是不许实现依赖那个巧合
+    const same = '知识库索引器 取用 AI 纪要'
+    serveHistory([
+      { id: 3, at: t0 - MIN, actionLabel: '签发下载链接', result: { decision: 'allow' }, clientKind: 'program', text: same },
+      { id: 2, at: t0 - 2 * MIN, actionLabel: '签发下载链接', result: { decision: 'deny' }, clientKind: 'program', text: same },
+    ])
+    await openDrawer()
+    const rows = await screen.findByTestId('history-rows')
+    const items = within(rows).getAllByRole('listitem')
+    expect(items).toHaveLength(1)
+    expect(items[0]!).toHaveAttribute('data-deny', 'true')
+    expect(items[0]!).toHaveTextContent('×2')
+  })
+
   test('详情端点挂了不白屏：仍显示列表那一行，并说明它可能不是最新的', async () => {
     const base = defaultHandler()
     handler = (c) =>
@@ -1902,5 +1996,78 @@ describe('页头与工具条：不用文案补可供性', () => {
     const src = css('src/pages/Meetings/index.tsx')
     expect(src).toMatch(/<kbd/)
     expect(stripTs(src)).not.toMatch(/placeholder="[^"]*  /)
+  })
+})
+
+describe('操作历史 · 连续重复怎么折（纯函数）', () => {
+  const NOW = new Date(2026, 7, 31, 15, 0, 0)
+  const at = (d: number, h: number, m: number, sec = 0): number =>
+    Math.floor(new Date(2026, 7, d, h, m, sec).getTime() / 1000)
+
+  const row = (id: number, atSec: number, text: string, decision: string | null = 'allow') => ({
+    id,
+    at: atSec,
+    text,
+    actionLabel: '查看',
+    decision,
+    clientKind: 'console',
+  })
+
+  test('只折连续的：中间夹了别的行就不折——顺序是审计的一部分', () => {
+    const g = groupHistory([
+      row(4, at(31, 14, 20), 'A'),
+      row(3, at(31, 14, 19), 'B'),
+      row(2, at(31, 14, 18), 'A'),
+      row(1, at(31, 14, 17), 'A'),
+    ])
+    expect(g.map((x) => [x.text, x.count])).toEqual([
+      ['A', 1],
+      ['B', 1],
+      ['A', 2],
+    ])
+  })
+
+  test('key 用这一组第一行的 id，两端时刻取组里的极值', () => {
+    const g = groupHistory([
+      row(9, at(31, 14, 25), 'A'),
+      row(8, at(31, 14, 18), 'A'),
+      row(7, at(31, 14, 21), 'A'),
+    ])
+    expect(g).toHaveLength(1)
+    expect(g[0]!.id).toBe(9)
+    expect(g[0]!.count).toBe(3)
+    // 不靠"倒序列表的最后一行最早"这条排序约定，按 at 取极值
+    expect(g[0]!.earliestAt).toBe(at(31, 14, 18))
+    expect(g[0]!.latestAt).toBe(at(31, 14, 25))
+  })
+
+  test('一组里只要有 deny 就标红，不靠「deny 的 text 天然不同」这个巧合', () => {
+    const g = groupHistory([row(2, at(31, 14, 20), 'A'), row(1, at(31, 14, 19), 'A', 'deny')])
+    expect(g).toHaveLength(1)
+    expect(g[0]!.deny).toBe(true)
+    expect(groupHistory([row(1, at(31, 14, 19), 'A')])[0]!.deny).toBe(false)
+  })
+
+  test('空列表折出空列表', () => {
+    expect(groupHistory([])).toEqual([])
+  })
+
+  test('同一分钟内只写一个时刻，跨了分钟必须写成区间', () => {
+    const one = { earliestAt: at(31, 14, 18, 3), latestAt: at(31, 14, 18, 51) }
+    expect(historyAtText(one, NOW)).toBe('8-31 14:18')
+
+    const span = { earliestAt: at(31, 14, 18), latestAt: at(31, 14, 25) }
+    expect(historyAtText(span, NOW)).toBe('8-31 14:18–14:25')
+  })
+
+  test('跨天时右端也写日期——只写时分会读成时间倒流', () => {
+    const g = { earliestAt: at(30, 23, 59), latestAt: at(31, 0, 2) }
+    expect(historyAtText(g, NOW)).toBe('8-30 23:59–8-31 00:02')
+  })
+
+  test('跨年时两端都带年份（fmtDateTime 的同年规则照旧生效）', () => {
+    const nextYear = new Date(2027, 0, 5, 10, 0, 0)
+    const g = { earliestAt: at(31, 14, 18), latestAt: at(31, 14, 25) }
+    expect(historyAtText(g, nextYear)).toBe('2026-08-31 14:18–14:25')
   })
 })

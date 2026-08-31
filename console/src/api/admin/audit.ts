@@ -79,6 +79,14 @@ export interface AuditActor {
   kind: string
   type: string
   id: string
+  /**
+   * 人名。只有管理员账号解析得出（后端查 `admin_accounts`），其余一律 null。
+   *
+   * **null 时显示 `id`，不许拿 id 冒充人名**——同 `AuditObjectRef.title`
+   * 补不齐时不拿 id 顶上是同一条：一个看着像名字的 id 会让人以为这个人就叫这个。
+   * 账号删掉之后它的历史记录仍然只有 id，那时 id 就是仅有的线索。
+   */
+  name: string | null
 }
 
 /**
@@ -217,7 +225,24 @@ type R = ReturnType<typeof reader>
 function readActor(r: R, o: Record<string, unknown>, where: string): AuditActor {
   const a = r.object(o.actor, `${where}.actor`)
   const at = `${where}.actor`
-  return { kind: r.str(a, 'kind', at), type: r.str(a, 'type', at), id: r.str(a, 'id', at) }
+  return {
+    kind: r.str(a, 'kind', at),
+    type: r.str(a, 'type', at),
+    id: r.str(a, 'id', at),
+    /*
+     * **这一处是宽读**，本文件其余字段一律严格。
+     *
+     * `name` 是 2026-08-31 加的键。用 `r.strOrNull` 的话，键**缺失**（老网关）
+     * 也会打成形状错，于是一个只是版本不齐的后端会让整页审计显示「读取失败」——
+     * 而这个字段只影响「显示人名还是显示 id」，两种都能看。缺了就当没有,
+     * 退回显示 id（那正是它上一版的样子）。
+     *
+     * 代价是 `name: 123` 这种脏值也会被读成 null 而不是报错。对一个纯展示字段
+     * 这是对的取舍：判定与可回溯性一个都不依赖它。同 `admin/meetings.ts` 的
+     * `readWhy`——那里也是全文件唯一一处宽容，理由一样。
+     */
+    name: typeof a.name === 'string' ? a.name : null,
+  }
 }
 
 function readObject(r: R, o: Record<string, unknown>, where: string): AuditObjectRef | null {

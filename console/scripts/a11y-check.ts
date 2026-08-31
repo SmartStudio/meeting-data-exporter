@@ -469,7 +469,20 @@ const SCENES: Scene[] = [
   { id: 'empty', why: '一场会议都没有', route: '/meetings', setup: (p) => setState(p, 'empty') },
   { id: 'row-hover', why: 'hover 才浮出的「＋30 天」/ 详情按钮', route: '/meetings', setup: hoverRow },
   { id: 'selected', why: '选中若干行 → 批量条（反相表面）', route: '/meetings', setup: selectRows },
-  { id: 'drawer', why: '详情抽屉打开', route: '/meetings', setup: openDrawer },
+  {
+    id: 'drawer',
+    why: '详情抽屉打开',
+    route: '/meetings',
+    setup: openDrawer,
+    /* 折叠过的历史行（`[data-repeat]`）比普通行多一列 `×N`，375px 下是这一屏
+       最容易溢出的形状。演示世界里 m1 的前三条历史刻意是连续同句的
+       （`api/mock/meetings.ts`，那里写了为什么不许删）。
+
+       钉这个选择器，是因为**没有它这一项会安静地降级**：哪天演示数据改了、
+       三条重复没了，第 3 项照样报"通过"——扫的却是两列的普通行，折叠态一次
+       都没被看过。那正是这个仓库反复在防的「报告通过却什么都没检查」。 */
+    expect: ['[data-testid="history-rows"] [data-repeat]'],
+  },
   { id: 'popover', why: '时间范围菜单打开', route: '/meetings', setup: openPopover },
   { id: 'grant', why: '授权面板打开', route: '/meetings', setup: openGrant },
   { id: 'toast', why: '延长保留期后的 toast', route: '/meetings', setup: fireToast },

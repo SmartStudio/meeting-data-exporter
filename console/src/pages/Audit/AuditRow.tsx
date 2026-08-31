@@ -13,6 +13,21 @@ import styles from './Audit.module.css'
  * 一样的记录就是发生过两次，把它们并成「×2」会让"同一个程序在一分钟内取了
  * 两次"变成"取了一次"，而那正是事后要查的东西。
  *
+ * ### 会议详情抽屉从 2026-08-31 起**折**，这一页仍然不折
+ *
+ * 抽屉底部那段历史会把连续且逐字相同的行折成一行（`Meetings/display.ts` 的
+ * `groupHistory`）。**那不是这条规矩的例外**：上面禁的是「把两次显示成一次」,
+ * 而那边把 `×N` 和时间区间都摆在行上，次数与跨度一个没丢。
+ *
+ * 两页仍然分开处理，理由是它们的读法不同：
+ *
+ * - 抽屉是**一场会议的摘要**，回答「谁动过它」，一屏之内读完，没有逐行展开;
+ * - 这一页是**总账**，一行行读，每一行都能展开看自己的 `detail`、自己的规则
+ *   快照。折叠之后「展开的是哪一行的 detail」当场就答不上来——折叠会毁掉这一页
+ *   真正的能力，而抽屉根本没有那个能力可毁。
+ *
+ * 想把两边改成一样之前，先回答这个问题。
+ *
  * ## 缺的字段显示成缺，不填默认值
  *
  * `detail` 为 NULL（迁移 008 之前的历史记录）显示「无细节」而不是留空——
@@ -106,9 +121,15 @@ export function AuditRow({ row, now, expanded, onToggle, colSpan }: AuditRowProp
               {kind.letter}
             </span>
             {/* 小方块 + 两行副文本压成一行：色块已经是概括，id 与
-                `actor_type` 原值（能对回库里那一行的东西）跟在它后面就够。 */}
+                `actor_type` 原值（能对回库里那一行的东西）跟在它后面就够。
+
+                有人名就显示人名，uuid 退到 `title`（同主持人 userid、审计动作名
+                的既定处置）。**解析不出时仍然显示 id**——它是仅有的线索，
+                拿它冒充人名才是不许的那件事，留空不是更诚实而是更糟。 */}
             <span className={styles.actorText}>
-              <span className={styles.main}>{row.actor.id}</span>
+              <span className={styles.main} title={row.actor.name === null ? undefined : row.actor.id}>
+                {row.actor.name ?? row.actor.id}
+              </span>
               {' · '}
               {kind.label} · {row.actor.type}
             </span>

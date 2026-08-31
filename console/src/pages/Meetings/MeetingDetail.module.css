@@ -364,3 +364,20 @@
 .historyRow[data-deny='true'] .historyText {
   color: var(--fail);
 }
+
+/* 折叠过的行才多一列。三列写死在 .historyRow 上的话，没折叠的行右边也会
+   多一道 gap 的空——一屏几十行，那道空会被读成"这里本该有点什么"。 */
+.historyRow[data-repeat] {
+  grid-template-columns: auto 1fr auto;
+}
+
+/* ×N 和左边的时刻是同一类东西（这一行的元信息），所以跟着 .historyAt 走，
+   不跟正文走：把次数染成正文色，它就成了那句话的一部分。
+   等宽数字是因为这一列右对齐——×2 / ×13 不等宽时右边缘会锯齿。 */
+.historyCount {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

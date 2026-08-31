@@ -1,8 +1,8 @@
-import type { AdminMeeting } from '@/api/admin/meetings'
+import type { AdminMeeting, MeetingHistoryRow } from '@/api/admin/meetings'
 import type { ServiceProgram } from '@/api/admin/grants'
 import type { StatusDotState } from '@/ui/StatusDot'
 import { STATUS_DOT_LABEL } from '@/ui/StatusDot'
-import { daysLeft } from '@/lib/format'
+import { daysLeft, fmtDateTime } from '@/lib/format'
 
 /**
  * 会议记录页的**纯展示映射**。这个文件是 `write.ts` 的遗产：那个文件同时装着
@@ -384,4 +384,101 @@ export function extendedText(keep: AdminMeeting['keep']): string | null {
 /** 一场会议的写操作定位。周期性会议靠 `subMeetingId` 区分场次。 */
 export function refOf(m: AdminMeeting): { meetingId: string; subMeetingId: string } {
   return { meetingId: m.meetingId, subMeetingId: m.subMeetingId }
+}
+
+/* ── 操作历史：连续重复的行折成一行 ─────────────────────────────
+
+   详情抽屉底部那段历史里会连着出现几十行逐字相同的记录。成因有两个，
+   只有一个归界面：
+
+   1. **每行 `text` 把区分字段丢了**——同一分钟的四条其实是 content:index /
+      chapters / ai_minutes / transcript 四类资产。那半边由后端的 `describeRow`
+      补上资产名，不在这里补：前端拿 `detail` 反推资产名等于再造一份后端的映射表。
+   2. **真重复**。dev 下 React StrictMode 让每个 `useResource` 的 effect 跑两次，
+      于是每次取数写两行审计（生产没有 StrictMode，不双写）。
+
+   第 2 条归这里。做法是**折叠，不是去重**：审计页（`pages/Audit/AuditRow.tsx`
+   文件头）禁的是把「同一个程序一分钟内取了两次」显示成「取了一次」——只要
+   次数和时间跨度都留在界面上，被禁的那件事就没发生。所以 `count` 与
+   `earliestAt` / `latestAt` 是这组数据的全部理由，少一个就该退回逐行渲染。 */
+
+export interface HistoryGroup {
+  /** 这一组第一行的 id。`key` 用它 */
+  id: number
+  /** 组内逐字相同的那句话 */
+  text: string
+  /** 这句话连着发生了几次。1 = 这一行没被折叠 */
+  count: number
+  /** 组里最早的一条 */
+  earliestAt: number
+  /** 组里最晚的一条 */
+  latestAt: number
+  /** 组里**有没有**被拒的 */
+  deny: boolean
+}
+
+/**
+ * 把连续且 `text` 逐字相同的几行合成一组。
+ *
+ * ## 只折连续的
+ *
+ * 顺序是审计的一部分。中间夹了别的行还合并，等于把一段时间线揉成假象：
+ * 「A B A A」并成「A×3 B」之后，读的人会以为那三次 A 挨着发生，而其中一次
+ * 在 B 之前。跨行合并省下的那一行，代价是一个读不出来的错。
+ *
+ * ## 两端时刻按 `at` 取极值，不取「组的第一行 / 最后一行」
+ *
+ * 这段列表眼下是倒序的，最早的那条在组的末尾。但那是调用方的排序约定，
+ * 不是这个函数的前提——按位置取，哪天列表改成正序，区间就会被说反。
+ *
+ * ## deny 是「组里有没有」，不是「第一行是不是」
+ *
+ * 后端把判定结果拼进了 `text`（「…，被拒绝」），deny 行与 allow 行的 `text`
+ * 因此天然不同、本来就折不进同一组。但那是**当前拼法的巧合**：靠它成立，
+ * 后端哪天把结果挪出 `text`，一条被拒的记录就会悄悄折进一组准许里，还不再标红。
+ */
+export function groupHistory(rows: readonly MeetingHistoryRow[]): HistoryGroup[] {
+  const out: HistoryGroup[] = []
+  for (const r of rows) {
+    const last = out[out.length - 1]
+    if (last !== undefined && last.text === r.text) {
+      last.count += 1
+      last.earliestAt = Math.min(last.earliestAt, r.at)
+      last.latestAt = Math.max(last.latestAt, r.at)
+      last.deny = last.deny || r.decision === 'deny'
+      continue
+    }
+    out.push({
+      id: r.id,
+      text: r.text,
+      count: 1,
+      earliestAt: r.at,
+      latestAt: r.at,
+      deny: r.decision === 'deny',
+    })
+  }
+  return out
+}
+
+/**
+ * 折叠后那一组显示成什么时刻。
+ *
+ * `fmtDateTime` 只到分钟，所以判据是**两端会不会渲染成不同的串**，不是两端的
+ * 秒数是否相等：同一分钟内的两条渲染成 `8-31 14:18–14:18` 是纯噪声，而跨了
+ * 分钟却只显示最早那一条，是拿一个时刻掩掉整段跨度——这一页最不能做的事。
+ *
+ * 同一天时右端只写时分（`8-31 14:18–14:25`）：日期在左端已经写过，重复一遍
+ * 会把这一列撑宽近一倍，而抽屉只有 420px。**跨天则两端都写全**
+ * （`8-30 23:59–8-31 00:02`）——右端只剩 `00:02` 会读成时间倒流。
+ *
+ * 日期与时分的切分按最后一个空格来，不按字符数：`fmtDateTime` 同年不补年份，
+ * 两种输出的日期段长度不一样。
+ */
+export function historyAtText(g: { earliestAt: number; latestAt: number }, now?: Date): string {
+  const from = fmtDateTime(g.earliestAt, now)
+  const to = fmtDateTime(g.latestAt, now)
+  if (from === to) return from
+  const cut = to.lastIndexOf(' ')
+  const sameDay = to.slice(0, cut) === from.slice(0, from.lastIndexOf(' '))
+  return `${from}–${sameDay ? to.slice(cut + 1) : to}`
 }

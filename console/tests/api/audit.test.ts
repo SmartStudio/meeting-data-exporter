@@ -170,7 +170,8 @@ describe('listAudit —— 响应的读法', () => {
     expect(row).toEqual<AuditRow>({
       id: 123,
       at: 1_700_000_000,
-      actor: { kind: 'prog', type: 'service_account', id: 'svc-1' },
+      // `name` 只有管理员账号解析得出；采集程序不是账号，恒为 null
+      actor: { kind: 'prog', type: 'service_account', id: 'svc-1', name: null },
       action: 'issue_download_url',
       actionLabel: '签发下载链接',
       object: {

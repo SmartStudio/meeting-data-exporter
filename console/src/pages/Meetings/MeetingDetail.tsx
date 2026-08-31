@@ -13,6 +13,8 @@ import {
   dotState,
   extendedText,
   grantCellKind,
+  groupHistory,
+  historyAtText,
   hostLabel,
   meetingTitle,
   parseWhy,
@@ -597,11 +599,35 @@ function HistorySection({
           {history.data.rows.length === 0 ? (
             <p className={styles.text}>还没有任何操作记录。</p>
           ) : (
+            /* 连续且逐字相同的几行折成一行（`display.groupHistory`）。
+               dev 的 StrictMode 让每次取数写两行审计，一屏几十行长得一模一样，
+               真正不同的那几条就淹在里面了。
+
+               **折叠不是去重**：`×N` 和时间区间都要上屏。少了 `×N`，
+               「一分钟内取了两次」就成了「取了一次」；少了区间，一个时刻会
+               掩掉整段跨度——两者都是把审计记录改写掉，比不折叠糟得多。 */
             <ol className={styles.history} data-testid="history-rows">
-              {history.data.rows.map((r) => (
-                <li key={r.id} className={styles.historyRow} data-deny={r.decision === 'deny'}>
-                  <span className={styles.historyAt}>{fmtDateTime(r.at, now)}</span>
-                  <span className={styles.historyText}>{r.text}</span>
+              {groupHistory(history.data.rows).map((g) => (
+                <li
+                  key={g.id}
+                  className={styles.historyRow}
+                  data-deny={g.deny}
+                  // 折叠过的行才多出 ×N 那一列；不折叠的行给了这个属性就会
+                  // 平白多留一道 gap 的空
+                  data-repeat={g.count > 1 ? g.count : undefined}
+                >
+                  <span className={styles.historyAt} data-testid="history-at">
+                    {historyAtText(g, now)}
+                  </span>
+                  <span className={styles.historyText}>{g.text}</span>
+                  {g.count > 1 && (
+                    <span
+                      className={styles.historyCount}
+                      title={`连续 ${g.count} 条一模一样的记录折成了这一行，一条都没有删。`}
+                    >
+                      ×{g.count}
+                    </span>
+                  )}
                 </li>
               ))}
             </ol>
