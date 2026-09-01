@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "a11y": "bun scripts/a11y-check.ts"
+    "a11y": "bun scripts/a11y-check.ts",
+    "vqa": "bun scripts/vqa.ts"
   },
   "dependencies": {
     "react": "^19.0.0",

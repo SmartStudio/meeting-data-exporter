@@ -1,0 +1,4 @@
+# 视觉验收量具（scripts/vqa.ts）的截图与测量 JSON——几十兆量级，且每次跑
+# 构建都会重新生成，不进版本库。构建产物本身落在 node_modules/.vqa-dist，
+# 已经被仓库根 .gitignore 的 node_modules/ 规则挡住，不需要在这里重复。
+.vqa/
