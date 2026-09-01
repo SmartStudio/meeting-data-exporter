@@ -174,8 +174,13 @@ export function RetentionPanel(props: RetentionPanelProps) {
         <Button variant="quiet" onClick={onExport} disabled={anyBusy} aria-busy={busy === 'export'}>
           导出可采集清单
         </Button>
+        {/* 这一颗不走 quiet。quiet 是最轻的一档，而它原本和「导出可采集清单」同挂在
+            那一档上——一个是导出一份清单（无害），一个是删掉本地文件（不可逆），
+            入口这一层长得一模一样。提到 default（描边档）与导出拉开一档就够了：
+            **不上 danger**，破坏性的表达留在下面那个二次确认弹层里，那一步本来就是对的，
+            把红色前移到入口只会让整面板天天在喊。
+            这样这组四颗按钮就有了三档，每一档对应一种后果量级。 */}
         <Button
-          variant="quiet"
           onClick={onCleanup}
           disabled={anyBusy || readonly}
           title={roTitle}
