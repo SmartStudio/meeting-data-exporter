@@ -2,13 +2,28 @@
  * 每个变体都显式写 color——<button> 不继承页面文字色，漏写在深色模式下就是黑字压深底。
  */
 
+/* ── 高度给死，不让它由继承来的行高推出来 ──────────────────────────
+ * 此前 `.btn` 没有任何高度声明，实测 34.15px 是一串继承值的乘积：
+ * 13px（--t-sm）× 1.55（body 行高）+ 6px×2 纵向内距 + 1px×2 边框。两个后果：
+ *   1. 谁改了全站行高，全站按钮就跟着变高。按钮多高是一个设计决策，
+ *      不该是别处一次排版调整的副产品；
+ *   2. 34.15 / 28.6 都不落在 4pt 标尺上，而按钮是全站出现最多的控件——
+ *      它不在标尺上，挨着它排的东西也就都不在。
+ * 改成 min-height 给高、纵向内距归零：`.btn` 本身是 inline-flex +
+ * align-items:center，文字行盒在固定高度里自己居中，高度于是只由这里的令牌
+ * 决定。内距留 0 而不是留一个小值——min-height 一旦接管，那个值就不再参与
+ * 高度计算，留着只会看起来像还在起作用。内容真比 min-height 还高时盒子照样
+ * 会长，那是对的兜底（当前全部按钮都只装一行不折行的文字）。
+ * 32 / 28 眼下借 4pt 间距标尺表达。它们其实是构件尺寸不是间距，应当各有
+ * 一个名（--btn-h / --btn-h-sm），已在报告里提请加——本轮不许动 tokens.css。 */
 .btn {
   font: inherit;
   font-size: var(--t-sm);
   font-weight: 500;
   border: var(--s-px) solid var(--line);
   border-radius: var(--r);
-  padding: var(--s-2) var(--s-4);
+  min-height: var(--btn-h);
+  padding: 0 var(--s-4);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -31,9 +46,12 @@
   cursor: not-allowed;
 }
 
+/* 28px = 24 + 4：4pt 标尺在 24 与 32 之间没有档，这里用两档相加把它表达出来，
+ * 而不是写一个裸 28px（tokens.css 第 1 条硬规矩）。见 .btn 上那段令牌请求。 */
 .sm {
   font-size: var(--t-xs);
-  padding: var(--s-1) var(--s-3);
+  min-height: var(--btn-h-sm);
+  padding: 0 var(--s-3);
   border-radius: var(--r-sm);
 }
 
