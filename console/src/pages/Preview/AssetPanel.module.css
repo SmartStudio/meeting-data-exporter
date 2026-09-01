@@ -58,7 +58,7 @@
   min-width: 0;
   margin: 0;
   color: var(--ink-2);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   font-variant-numeric: tabular-nums;
 }
 
@@ -79,7 +79,7 @@
   display: block;
   margin: var(--s-0) 0 0;
   font-size: var(--t-2xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
@@ -112,7 +112,7 @@
   border-bottom: var(--s-px) solid var(--line-soft);
   background: var(--surface-2);
   font-size: var(--t-xs);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 
@@ -227,7 +227,7 @@
 
 .state {
   font-size: var(--t-2xs);
-  line-height: 1.5;
+  line-height: var(--lh);
   color: var(--warn);
   overflow-wrap: anywhere;
 }
@@ -249,6 +249,8 @@
   align-self: center;
   justify-self: end;
   font-size: var(--t-xs);
+  /* 展开箭头，靠 transform: rotate(90deg) 翻转。旋转的原点是这个盒子的中心，
+     行高把盒子撑高多少，箭头旋转后就偏出多少——这里必须是字形自己的方框。 */
   line-height: 1;
   color: var(--ink-3);
   transition: transform var(--dur-1) var(--ease-out);
@@ -279,7 +281,7 @@
 .reason {
   margin: 0;
   font-size: var(--t-2xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -336,7 +338,7 @@
   flex-basis: 100%;
   min-width: 0;
   font-size: var(--t-2xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
@@ -350,7 +352,7 @@
   margin: 0;
   font-family: var(--mono);
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -360,7 +362,7 @@
   padding: var(--s-3) var(--s-4);
   border-top: var(--s-px) solid var(--line-soft);
   font-size: var(--t-2xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 

@@ -49,7 +49,7 @@
   margin: 0;
   font-size: var(--t-xs);
   color: var(--ink-3);
-  line-height: 1.6;
+  line-height: var(--lh);
   min-width: 0;
 }
 .sep {
@@ -92,8 +92,8 @@
   background: var(--warn-soft);
   color: var(--ink-2);
   font-size: var(--t-xs);
-  line-height: 1.75;
-  max-width: 74ch;
+  line-height: var(--lh-loose);
+  max-width: var(--measure);
 }
 .compat b {
   color: var(--warn);
@@ -105,8 +105,8 @@
   padding-left: var(--s-4);
   color: var(--ink-3);
   font-size: var(--t-sm);
-  line-height: 1.75;
-  max-width: 70ch;
+  line-height: var(--lh-loose);
+  max-width: var(--measure);
 }
 
 .newRow {
@@ -149,7 +149,7 @@
   position: relative;
   padding-top: var(--s-2);
   padding-bottom: var(--s-2);
-  line-height: 1.55;
+  line-height: var(--lh);
   color: var(--ink-2);
   border-bottom: 1px solid var(--line-soft);
 }
@@ -272,7 +272,10 @@
 .why {
   grid-column: 2 / -1;
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
+  /* 跨到最后一列是为了不进第一列那条刻度，不是为了占满整行——1440 下它实测
+     1125px，一句话拉成一条横线，读完找不回下一行的行首。 */
+  max-width: var(--measure);
   color: var(--warn);
 }
 .rule[data-tone='fail'] .why {
@@ -362,7 +365,7 @@
   padding: var(--s-2) 0 var(--s-2) var(--s-4);
   border-bottom: 1px solid var(--line-soft);
   font-size: var(--t-sm);
-  line-height: 1.55;
+  line-height: var(--lh);
   box-shadow: inset var(--flag-w) 0 0 var(--fail);
   background: var(--fail-soft);
 }
@@ -471,7 +474,7 @@
   border: 1px solid var(--fail-line);
   border-radius: var(--r);
   background: var(--fail-soft);
-  max-width: 74ch;
+  max-width: var(--measure);
 }
 .errorTitle {
   margin: 0;
@@ -483,7 +486,7 @@
   margin: var(--s-2) 0 var(--s-4);
   font-size: var(--t-sm);
   color: var(--ink-2);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   overflow-wrap: anywhere;
 }
 
@@ -550,5 +553,5 @@
   margin: var(--s-2) 0 0;
   font-size: var(--t-xs);
   color: var(--warn);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }

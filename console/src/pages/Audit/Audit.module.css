@@ -69,14 +69,16 @@
 }
 
 .field {
+  /* 控件宽，不是行长：限的是「操作者 / 动作」这两个输入框能有多宽，
+     里面装的是一个标识符，不是要连着读的句子。所以不走 --measure。 */
   max-width: 26ch;
 }
 
 .hint {
   font-size: var(--t-xs);
   color: var(--ink-3);
-  line-height: 1.6;
-  max-width: 52ch;
+  line-height: var(--lh);
+  max-width: var(--measure-narrow);
 }
 
 /* ── 「未知身份筛不出来」这句提醒 ──────────────────────────────── */
@@ -93,8 +95,8 @@
   background: var(--warn-soft);
   color: var(--warn);
   font-size: var(--t-sm);
-  line-height: 1.5;
-  max-width: 78ch;
+  line-height: var(--lh);
+  max-width: var(--measure);
 }
 
 .caveat b {
@@ -124,7 +126,7 @@
   margin: 0 0 var(--s-3);
   font-size: var(--t-xs);
   color: var(--ink-3);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .windowRange {
@@ -142,7 +144,8 @@
   margin: var(--s-4) 0 0;
   font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.5;
+  line-height: var(--lh);
+  max-width: var(--measure);
 }
 
 /* ── 表 ─────────────────────────────────────────────────────────── */
@@ -166,7 +169,7 @@
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--t-xs);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink-2);
   white-space: nowrap;
 }
@@ -180,14 +183,14 @@
 
 .main {
   font-size: var(--t-sm);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink);
   overflow-wrap: anywhere;
 }
 
 .sub {
   font-size: var(--t-2xs);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -195,14 +198,14 @@
 .mono {
   font-family: var(--mono);
   font-size: var(--t-2xs);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink-3);
   white-space: nowrap;
 }
 
 .link {
   font-size: var(--t-sm);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--brand-text);
   text-decoration: underline;
   text-underline-offset: var(--s-0);
@@ -213,7 +216,7 @@
    所以给一句话 + 中性偏灰，绝不留空白——空白让人以为是渲染坏了。 */
 .missing {
   font-size: var(--t-2xs);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink-3);
   font-style: italic;
 }
@@ -231,7 +234,7 @@
    没变（色块是概括，id 与 actor_type 原值仍然都在），只是不再逐行堆叠。 */
 .actorText {
   font-size: var(--t-sm);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink-3);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -276,7 +279,7 @@
    普通文字，无框无底，字重也不加粗——加粗同样是一种强调，默认值不配拥有。 */
 .resultLabel {
   font-size: var(--t-sm);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink-3);
 }
 
@@ -295,7 +298,7 @@
 /* 拒绝原因跟着红——它是这一行的重点（spec §4.10）。 */
 .denyNote {
   font-size: var(--t-2xs);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--fail);
   overflow-wrap: anywhere;
 }
@@ -303,7 +306,7 @@
 /* 存疑的原因跟着琥珀，同一个道理。 */
 .warnNote {
   font-size: var(--t-2xs);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--warn);
   overflow-wrap: anywhere;
 }
@@ -322,7 +325,7 @@
 
 .detail {
   font-size: var(--t-sm);
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
@@ -392,7 +395,7 @@
   background: var(--surface);
   font-family: var(--mono);
   font-size: var(--t-2xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -417,8 +420,8 @@
   margin: 0 auto var(--s-5);
   font-size: var(--t-sm);
   color: var(--ink-3);
-  line-height: 1.7;
-  max-width: 52ch;
+  line-height: var(--lh-loose);
+  max-width: var(--measure-narrow);
 }
 
 .bigText b {
@@ -444,7 +447,7 @@
   font-family: var(--mono);
   font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.6;
+  line-height: var(--lh);
   overflow-wrap: anywhere;
 }
 

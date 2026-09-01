@@ -72,6 +72,8 @@
   color: inherit;
   cursor: pointer;
   font-size: var(--t-xs);
+  /* 徽标里的 ✕：行盒必须等于字形本身的高度。给它任何 >1 的行高，圆角药丸
+     就会被这一个字符撑高，同一行里带 ✕ 和不带 ✕ 的两枚徽标从此不一样高。 */
   line-height: 1;
   border-radius: var(--r-pill);
   transition: background-color var(--dur-1) var(--ease-out);

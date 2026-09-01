@@ -43,7 +43,7 @@
    就是一整行的高度。 */
 .main {
   min-width: 0;
-  line-height: 1.35;
+  line-height: var(--lh-tight);
 }
 
 /* 标题是进入内容预览的入口，所以**静止状态下就要看起来可点**。
@@ -57,7 +57,7 @@
   padding: 0;
   font: inherit;
   font-weight: 500;
-  line-height: 1.35;
+  line-height: var(--lh-tight);
   color: var(--ink);
   cursor: pointer;
   text-align: left;
@@ -82,6 +82,10 @@ tr[data-dim='true'] .title {
 
 .meta {
   font-size: var(--t-2xs);
+  /* 单行、nowrap，它只是标题底下那截会议号。行高在这里不影响可读性（没有
+     第二行），只影响行高——本页的密度目标写在文件顶部：单行 ≈46px，一屏
+     20 行，其中"两行文字 33px"就含这一条。换成 --lh-tight 每行长 1.65px，
+     20 行就是一屏少掉半行。密度是这一页的规格，不是审美。 */
   line-height: 1.2;
   color: var(--ink-3);
   font-family: var(--mono);
@@ -403,6 +407,8 @@ tr[data-cursor='true'] .extendBtn,
   display: grid;
   place-items: center;
   font-size: var(--t-lg);
+  /* 行尾那枚图标按钮，尺寸被 --s-7 的方格定死。行高大于 1 时字形的行盒会超出
+     方格，place-items 居中的是溢出的行盒，图标看上去偏下半像素。 */
   line-height: 1;
   opacity: 0;
   transition: opacity var(--dur-1) var(--ease-out);

@@ -29,7 +29,7 @@
   min-width: 0;
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.65;
+  line-height: var(--lh);
 }
 
 .text b {

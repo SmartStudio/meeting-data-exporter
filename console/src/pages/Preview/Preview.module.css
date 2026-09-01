@@ -63,6 +63,7 @@
   font-family: var(--mono);
   font-size: var(--t-xs);
   color: var(--ink-3);
+  max-width: var(--measure);
 }
 
 /* 抬头右侧那一组标记。判定（Pill）在前，留痕在后——前者是这场会议的属性，
@@ -108,7 +109,7 @@
   background: var(--warn-soft);
   color: var(--warn);
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .warn strong {
@@ -118,7 +119,7 @@
 .warnLine {
   margin: var(--s-3) 0 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--warn);
 }
 
@@ -266,7 +267,7 @@
 .hint {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
@@ -279,7 +280,7 @@
   border-radius: var(--r);
   background: var(--surface-2);
   font-size: var(--t-xs);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 
@@ -291,14 +292,14 @@
 .backendText {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
 .stateText {
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 
@@ -309,8 +310,9 @@
 .reason {
   margin: var(--s-1) 0 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
+  max-width: var(--measure);
 }
 
 .err {
@@ -321,7 +323,7 @@
   background: var(--fail-soft);
   color: var(--fail);
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   word-break: break-word;
 }
 
@@ -394,9 +396,9 @@
 
 .emptyDocText {
   margin: 0;
-  max-width: 44ch;
+  max-width: var(--measure-narrow);
   font-size: var(--t-sm);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 
@@ -475,7 +477,7 @@
 
 .cueText {
   font-size: var(--t-md);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--ink);
 }
 
@@ -527,7 +529,7 @@
   word-break: break-word;
   font: inherit;
   font-size: var(--t-md);
-  line-height: 1.85;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 

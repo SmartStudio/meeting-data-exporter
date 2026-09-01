@@ -64,7 +64,7 @@
 .whoRole {
   font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.5;
+  line-height: var(--lh);
 }
 
 /* 主题三选，从 GlobalBar 搬来的（见 UserMenu.tsx 的 ThemeGroup）。跟 .who
@@ -152,14 +152,14 @@
 .lead {
   margin: 0;
   font-size: var(--t-md);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink);
 }
 
 .note {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
@@ -182,7 +182,7 @@
 .hint {
   margin: 0;
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
 }
 
@@ -190,7 +190,7 @@
 .errorSlot {
   min-height: var(--s-5);
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--fail);
   overflow-wrap: anywhere;
 }

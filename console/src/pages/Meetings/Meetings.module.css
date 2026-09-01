@@ -34,6 +34,8 @@
   pointer-events: none;
   font-family: var(--mono);
   font-size: var(--t-2xs);
+  /* 输入框右侧那枚 <kbd> 键帽。它的高度由自己的内边距定死，好压在输入框的
+     垂直中线上；行高只要大于 1，键帽就会比设计的高，中线也跟着偏。 */
   line-height: 1;
   color: var(--ink-3);
   background: var(--surface-2);
@@ -101,7 +103,7 @@
   padding: var(--s-3);
   border-top: var(--s-px) solid var(--line-soft);
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
   max-width: var(--popover-max-w);
   white-space: normal;
@@ -123,7 +125,7 @@
   background: var(--fail-soft);
   color: var(--fail);
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .writeHint {
@@ -162,7 +164,7 @@
 .lifecycleNote {
   margin: var(--s-3) 0 0;
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
-  max-width: 72ch;
+  max-width: var(--measure);
 }

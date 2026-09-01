@@ -59,7 +59,7 @@
 .lede {
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.8;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
@@ -71,7 +71,7 @@
 .note {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
@@ -79,7 +79,7 @@
   margin: 0 0 var(--s-4);
   padding: var(--s-3) var(--s-4);
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--fail);
   background: var(--fail-soft);
   border: 1px solid var(--fail-line);
@@ -104,14 +104,17 @@
 .hint {
   margin: 0;
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
+  /* 面板是 --dialog-w-lg（720px），不是窄容器，所以走正文行长而不是
+     --measure-narrow：后者在 11px 下只有 23 个汉字宽，一句提示会碎成四行。 */
+  max-width: var(--measure);
 }
 
 .fieldError {
   margin: 0;
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--fail);
 }
 
@@ -147,7 +150,7 @@
   border-radius: var(--r);
   font-family: var(--mono);
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   overflow-x: auto;
   white-space: pre;
 }

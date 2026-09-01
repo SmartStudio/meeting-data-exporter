@@ -31,7 +31,7 @@
 .bannerText {
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink);
   overflow-wrap: anywhere;
 }
@@ -208,7 +208,7 @@
 .healthNote {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
@@ -216,7 +216,7 @@
 .last {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -324,7 +324,7 @@
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-sm);
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   background: var(--surface-2);
   color: var(--ink-2);
   overflow-wrap: anywhere;
@@ -365,7 +365,7 @@
   border-radius: var(--r-sm);
   background: var(--warn-soft);
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink);
   overflow-wrap: anywhere;
 }
@@ -451,9 +451,9 @@
 
 .errorText {
   margin: var(--s-3) auto 0;
-  max-width: 60ch;
+  max-width: var(--measure);
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
@@ -466,10 +466,10 @@
 
 .errorDetail {
   margin: var(--s-5) auto 0;
-  max-width: 72ch;
+  max-width: var(--measure);
   font-family: var(--mono);
   font-size: var(--t-2xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }

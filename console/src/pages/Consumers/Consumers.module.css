@@ -88,7 +88,7 @@
 .reachLine {
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.6;
+  line-height: var(--lh);
 }
 
 /* 数字/状态词本身：这一格唯一的强调手段是字号字重，不是底色。 */
@@ -119,14 +119,14 @@
 .reachReason {
   margin: 0 0 var(--s-2);
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   overflow-wrap: anywhere;
 }
 
 .reachNote {
   margin: var(--s-1) 0 0;
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
 }
 
@@ -161,7 +161,7 @@
   align-items: baseline;
   gap: var(--s-2);
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
 }
 
@@ -232,7 +232,7 @@
 .actionError {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--fail);
   overflow-wrap: anywhere;
 }
@@ -255,7 +255,7 @@
 .emptyLead {
   margin: 0;
   font-size: var(--t-md);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 
@@ -280,7 +280,7 @@
 .pageErrorText {
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--fail);
   overflow-wrap: anywhere;
 }
@@ -296,7 +296,7 @@
 .confirmLead {
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.8;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 
@@ -308,7 +308,7 @@
 .confirmNote {
   margin: 0;
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 
@@ -325,7 +325,7 @@
   border: 1px solid var(--fail-line);
   border-radius: var(--r);
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--fail);
 }
 

@@ -18,7 +18,7 @@
   margin: 0;
   font-size: var(--t-sm);
   color: var(--ink-3);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
 }
 
 .section {
@@ -43,7 +43,7 @@
   margin: var(--s-3) 0 0;
   font-size: var(--t-xs);
   color: var(--ink-3);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 .hint code {
   font-family: var(--mono);
@@ -239,7 +239,7 @@
   font-size: var(--t-xs);
   /* 选中态的底是 --brand-soft，--ink-3 在它上面只有 4.37:1，不达 AA */
   color: var(--ink-2);
-  line-height: 1.6;
+  line-height: var(--lh);
 }
 
 .assets {
@@ -268,7 +268,7 @@
   margin: var(--s-2) 0 0;
   font-size: var(--t-xs);
   color: var(--warn);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .warnBox {
@@ -279,7 +279,7 @@
   background: var(--warn-soft);
   color: var(--ink-2);
   font-size: var(--t-xs);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
 }
 .warnBox code {
   font-family: var(--mono);
@@ -291,7 +291,7 @@
   border-radius: var(--r-sm);
   background: var(--fail-soft);
   font-size: var(--t-xs);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
   color: var(--ink-2);
 }
 .issueTitle {
@@ -374,6 +374,9 @@
   font-family: var(--mono);
   font-size: var(--t-3xl);
   font-weight: 500;
+  /* 26px 的大号数字，靠 `.number` 的 align-items: baseline 跟后面的单位对齐。
+     行高等于 1 时行盒贴着字形，数字与单位之间不会因为半行距而错开；换成
+     --lh-tight 会在这个数字上下各加 4.5px，一排指标的基线就散了。 */
   line-height: 1;
   color: var(--ink);
 }
@@ -392,7 +395,7 @@
   margin: var(--s-3) 0 0;
   font-size: var(--t-xs);
   color: var(--ink-2);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .previewNeutral {
@@ -412,7 +415,7 @@
   padding-left: var(--s-5);
   font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .invalidNote {
@@ -427,7 +430,7 @@
   background: var(--warn-soft);
   color: var(--ink-2);
   font-size: var(--t-xs);
-  line-height: 1.75;
+  line-height: var(--lh-loose);
 }
 .amber p {
   margin: 0;
@@ -503,12 +506,12 @@
   margin: var(--s-1) 0 0;
   font-size: var(--t-2xs);
   color: var(--ink-2);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .changeReason {
   margin: var(--s-1) 0 0;
   font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }

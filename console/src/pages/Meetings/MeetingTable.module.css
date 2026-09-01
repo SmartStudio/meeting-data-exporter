@@ -54,8 +54,8 @@
   margin: 0 auto var(--s-5);
   font-size: var(--t-sm);
   color: var(--ink-3);
-  line-height: 1.7;
-  max-width: 46ch;
+  line-height: var(--lh-loose);
+  max-width: var(--measure-narrow);
 }
 
 .bigText b {
@@ -81,7 +81,7 @@
   font-family: var(--mono);
   font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.6;
+  line-height: var(--lh);
 }
 
 /* ── 三态：小空态（筛没了 / 时间范围之外）──────────────────── */

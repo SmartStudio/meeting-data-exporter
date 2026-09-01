@@ -108,6 +108,8 @@
   margin-left: var(--s-1);
   font-family: var(--sans);
   font-size: var(--t-xs);
+  /* ⓘ 是单个字形，靠 inline-flex + center 压在它旁边那行标题的中线上。
+     行高一旦大于 1，居中的就是行盒不是字形，圆圈会往下掉半个行距。 */
   line-height: 1;
   color: var(--ink-3);
   cursor: help;
@@ -144,7 +146,7 @@
   margin: var(--s-3) 0 0;
   font-size: var(--t-xs);
   color: var(--ink-3);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   overflow-wrap: anywhere;
 }
 
@@ -157,8 +159,8 @@
   margin: var(--s-3) 0 0;
   font-size: var(--t-sm);
   color: var(--ink-3);
-  line-height: 1.8;
-  max-width: 70ch;
+  line-height: var(--lh-loose);
+  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 
@@ -173,7 +175,7 @@
   composes: note;
   margin-top: var(--s-6);
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .footnote b {
@@ -190,8 +192,8 @@
   border-radius: var(--r);
   font-size: var(--t-sm);
   color: var(--warn);
-  line-height: 1.8;
-  max-width: 70ch;
+  line-height: var(--lh-loose);
+  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 
@@ -231,7 +233,8 @@
   margin: var(--s-2) 0 0;
   font-size: var(--t-2xs);
   color: var(--ink-3);
-  line-height: 1.5;
+  line-height: var(--lh);
+  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 
@@ -282,6 +285,8 @@
 .stat {
   flex: 0 0 auto;
   min-width: 11ch;
+  /* 控件宽，不是行长：这一对 min/max 限的是数字槽本身能有多宽，
+     配合上面的 min-width 让相邻两格的数字对得上，不走 --measure。 */
   max-width: 22ch;
   padding-right: var(--s-5);
   margin-right: var(--s-5);
@@ -334,7 +339,7 @@
 .statNote {
   margin-top: var(--s-1);
   font-size: var(--t-2xs);
-  line-height: 1.5;
+  line-height: var(--lh);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -369,7 +374,7 @@
   background: var(--surface-2);
   font-size: var(--t-sm);
   color: var(--ink-2);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 
 .cleanupPaused {
@@ -520,6 +525,8 @@
 }
 
 .daysInput {
+  /* 控件宽，不是行长：保留天数是个两三位的数，输入框按内容收窄，
+     不该跟着正文行长走 --measure。 */
   max-width: 12ch;
 }
 
@@ -538,7 +545,7 @@
   border-radius: var(--r);
   font-size: var(--t-sm);
   color: var(--fail);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   overflow-wrap: anywhere;
 }
 
@@ -546,7 +553,7 @@
   margin: 0;
   font-size: var(--t-sm);
   color: var(--ink-2);
-  line-height: 1.8;
+  line-height: var(--lh-loose);
 }
 
 .lede b {
@@ -562,7 +569,7 @@
   border-radius: var(--r);
   font-size: var(--t-sm);
   color: var(--brand-text);
-  line-height: 1.8;
+  line-height: var(--lh-loose);
 }
 
 .itemList {
@@ -605,7 +612,7 @@
   margin: var(--s-3) 0 0;
   font-size: var(--t-sm);
   color: var(--ink-2);
-  line-height: 1.8;
+  line-height: var(--lh-loose);
 }
 
 .resultFail {
@@ -628,7 +635,7 @@
   border-radius: var(--r-lg);
   color: var(--fail);
   font-size: var(--t-sm);
-  line-height: 1.8;
+  line-height: var(--lh-loose);
   overflow-wrap: anywhere;
 }
 

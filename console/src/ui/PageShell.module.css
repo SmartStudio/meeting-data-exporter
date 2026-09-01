@@ -39,9 +39,9 @@
 .desc {
   font-size: var(--t-sm);
   color: var(--ink-3);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   margin: 0;
-  max-width: 62ch;
+  max-width: var(--measure);
   overflow-wrap: anywhere;
 }
 
@@ -62,7 +62,7 @@
   border-radius: var(--r);
   font-size: var(--t-xs);
   color: var(--ink-2);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   overflow-wrap: anywhere;
 }
 

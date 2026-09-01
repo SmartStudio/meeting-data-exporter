@@ -76,12 +76,17 @@
   /* 等宽数字是「中文不用负字距」的唯一例外（design-system.md §3.2）。 */
   letter-spacing: -.02em;
   font-variant-numeric: tabular-nums;
+  /* 数字与标签同在一行（`.seg` 是 align-items: baseline），这一条的高度由这里
+     的行盒决定，而整条的目标高度 42px 是实测出来的——18px 换成 --lh-tight
+     一段就长 2.7px，上面那段抵消 8px 上内边距的注释里的实测值也跟着作废。
+     两者共用 1.2：同一条基线上不该出现两种半行距。 */
   line-height: 1.2;
   color: var(--ink-2);
 }
 
 .label {
   font-size: var(--t-xs);
+  /* 与 `.count` 同一个数，理由见上——它们是一行里的两截，不是两行。 */
   line-height: 1.2;
 }
 
@@ -135,7 +140,7 @@
   white-space: normal;
   padding: var(--s-2) 0 0;
   font-size: var(--t-2xs);
-  line-height: 1.5;
+  line-height: var(--lh);
   color: var(--ink-3);
 }
 

@@ -44,7 +44,8 @@
   background: var(--warn-soft);
   color: var(--warn);
   font-size: var(--t-xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
+  max-width: var(--measure);
 }
 
 .strip {
@@ -123,6 +124,9 @@
   border-radius: var(--r-sm);
   background: none;
   color: var(--ink-2);
+  /* 图标按钮：可点面积由上面的 --tap-min 撑，图标由 place-items 居中。
+     留着行内基线撑杆的话，44px 的方格里居中的是"图标 + 一截空行"，
+     图标看上去会偏上。这里归 0 是为了让 grid 只需要居中图标本身。 */
   line-height: 0;
   cursor: pointer;
 }
@@ -191,7 +195,7 @@
   padding: var(--s-2) var(--s-4) var(--s-3);
   border-top: var(--s-px) solid var(--line-soft);
   font-size: var(--t-sm);
-  line-height: 1.6;
+  line-height: var(--lh);
 }
 
 .nowTime {
@@ -237,7 +241,7 @@
   padding: var(--s-2) var(--s-4);
   border-top: var(--s-px) solid var(--line-soft);
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
 }
 
@@ -247,7 +251,7 @@
   padding: var(--s-2) var(--s-4);
   border-top: var(--s-px) solid var(--fail-line);
   font-size: var(--t-xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--fail);
   background: var(--fail-soft);
   word-break: break-word;

@@ -113,7 +113,7 @@
   display: flex;
   align-items: center;
   font-size: var(--t-sm);
-  line-height: 1.4;
+  line-height: var(--lh-tight);
   color: var(--fail);
 }
 

@@ -4,7 +4,7 @@
   margin: 0 0 var(--s-4);
   font-size: var(--t-sm);
   color: var(--ink-3);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
 }
 .lead b {
   font-weight: 600;
@@ -118,7 +118,7 @@
 .empty {
   margin: 0;
   font-size: var(--t-sm);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 

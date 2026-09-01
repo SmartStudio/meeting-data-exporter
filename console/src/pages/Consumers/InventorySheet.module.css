@@ -3,7 +3,7 @@
 .note {
   margin: 0 0 var(--s-5);
   font-size: var(--t-sm);
-  line-height: 1.8;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
 }
 .note b {
@@ -62,7 +62,7 @@
 .reason {
   margin-top: var(--s-px);
   font-size: var(--t-2xs);
-  line-height: 1.6;
+  line-height: var(--lh);
   color: var(--ink-3);
   overflow-wrap: anywhere;
 }
@@ -100,6 +100,7 @@
 .foot {
   margin: 0;
   font-size: var(--t-2xs);
-  line-height: 1.7;
+  line-height: var(--lh-loose);
   color: var(--ink-3);
+  max-width: var(--measure);
 }
