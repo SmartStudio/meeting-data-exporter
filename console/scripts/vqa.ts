@@ -434,9 +434,23 @@ function browserProbe(args: ProbeArgs): ProbeResult {
     }
     return parts.join(' > ')
   }
+  // 可见性必须连祖先一起判，**因为 opacity 不继承**。关闭态的 Sheet 是
+  // `opacity:0 + pointer-events:none + transform:translateY() scale(.99)`：
+  // 浮层自己被第一行挡住了，可它里面每一个子元素的 computed opacity 都是 1，
+  // 于是全被量了进去——而且是连着祖先那层 scale(.99) 一起量的。
+  // 实测代价：`.btn` 报出 33.8 与 34.1 两个高度，看着像「行高继承让按钮不等高」，
+  // 其实 33.8 全部来自关闭态 Sheet，34.15 × 0.99 = 33.81。一个量错的数会长成
+  // 一条假结论，比没有数更贵——这正是这个脚本存在的理由，不该由它自己犯。
+  // `[inert]` 是这个库判「关闭态浮层」的既有写法（见 Overlay.tsx 的 tabbable 判定），
+  // 照它走，不另发明一套。
   const visible = (el: Element): boolean => {
     const cs = getComputedStyle(el)
     if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false
+    if (el.closest('[inert]')) return false
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const pcs = getComputedStyle(p)
+      if (pcs.display === 'none' || pcs.visibility === 'hidden' || pcs.opacity === '0') return false
+    }
     const r = el.getBoundingClientRect()
     return r.width > 0 && r.height > 0
   }
