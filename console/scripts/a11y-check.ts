@@ -27,7 +27,8 @@
  *   3 横向溢出    1440 / 1050 / 375；不只量 scrollWidth——被 overflow-x: clip
  *                 切掉的元素量不出来，必须同时验「元素在视口内可达」；
  *                 含进度条/骨架条的实际渲染几何
- *   4 裸值扫描    module.css 里的裸 px / hex / rgb / 半像素字号（纯文本）；
+ *   4 裸值扫描    module.css 里的裸 px / hex / rgb / 半像素字号，以及不带单位因而前面
+ *                 几条正则一条也网不住的裸行高与裸 ch 行长（纯文本）；
  *                 含构建产物里的裸 outline 复位、@keyframes 里的布局属性、
  *                 深色两处定义的逐字一致
  *   5 媒体查询    prefers-reduced-motion 与三态主题在真实浏览器下真的生效
@@ -41,7 +42,8 @@
 import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
-import { readFile, readdir } from 'node:fs/promises'
+import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { argv, exit } from 'node:process'
 import path from 'node:path'
@@ -53,6 +55,7 @@ const SRC = path.join(ROOT, 'src')
 const OUT_DIR = path.join(ROOT, 'node_modules', '.a11y-dist')
 const TOKENS_CSS = path.join(SRC, 'styles', 'tokens.css')
 const PAGE_JS = path.join(ROOT, 'scripts', 'a11y-page.js')
+const FONT_CACHE = path.join(ROOT, 'node_modules', '.a11y-fonts')
 
 const args = argv.slice(2)
 const SKIP_BUILD = args.includes('--skip-build')
@@ -177,9 +180,94 @@ const LAYOUT_ANIM_PROPS = [
   'flex', 'flex-basis', 'border-width', 'background-position', 'grid-template-columns',
 ]
 
+/* ── 裸行高与裸行长 ────────────────────────────────────────────────
+   上面那几条正则抓的都是**带单位**的值，`line-height: 1.42` 这种无量纲数字
+   整条漏在网外。实测后果：146 条行高声明用了 16 个互不相同的值，其中
+   1.35/1.4、1.5/1.55、1.6/1.65 三对在 11–14px 下差不到 1px——是三次各写各的，
+   而门槛一直全绿。手写的 `max-width: NNch` 同理（52ch 到 78ch，差 50%）。
+   不补这一项，归并完的第二天就会重新长回来：tokens.css 开头那段
+   「原型重构前有 105 个互不相同的 padding 取值」讲的就是这件事。
+
+   抽成纯函数是为了能拿夹具直接喂：第 4 项其余部分绑着 SRC 目录与 tokens.css，
+   而这两条只认一段文本，抽出来才能在不跑构建的前提下自证检测器有效。 */
+
+const LH_TOKENS = ['var(--lh-tight)', 'var(--lh)', 'var(--lh-loose)']
+const MEASURE_TOKENS = ['var(--measure)', 'var(--measure-narrow)']
+
+interface TypeScaleHit {
+  line: number
+  lines: string[]
+}
+
+export function scanTypeScale(raw: string): {
+  hits: TypeScaleHit[]
+  lineHeights: number
+  measures: number
+} {
+  const lines = raw.split('\n')
+  const stripped = stripCssComments(raw).split('\n')
+
+  /* 豁免判断在**原始文本**上做，取值在**抹注释后的文本**上做。
+     两边不能换：stripCssComments 之后注释没了，拿它判断豁免永远判不出来；
+     拿原始文本取值，注释里写的「原型是 line-height:1.5」会变成假阳性。
+     「这一行沾了注释」= 抹之前与抹之后不一样——它同时认行内注释和多行注释的
+     头尾两行，比找 `/*` 稳。 */
+  const commented = (i: number): boolean => (lines[i] ?? '') !== (stripped[i] ?? '')
+  /* 例外可以有，但必须写明为什么：图标盒的 line-height:1、控件宽度那种
+     不是行长的 ch，写一句注释就放行；一句都不写就是忘了，不是例外。 */
+  const exempt = (i: number): boolean => commented(i) || commented(i - 1)
+
+  const hits: TypeScaleHit[] = []
+  let lineHeights = 0
+  let measures = 0
+
+  stripped.forEach((line, i) => {
+    const src = (lines[i] ?? '').trim()
+
+    for (const m of line.matchAll(/(?<![-\w])line-height\s*:\s*([^;{}]+)/g)) {
+      const v = (m[1] ?? '').trim()
+      if (v === '') continue
+      lineHeights++
+      if (LH_TOKENS.includes(v)) continue
+      if (exempt(i)) continue
+      hits.push({
+        line: i + 1,
+        lines: [
+          `裸行高 ${v} —— ${src}`,
+          '  行高一律走 --lh-tight / --lh / --lh-loose',
+          '  确有例外（图标盒 line-height:1 之类）就在这行或上一行写注释说明为什么',
+        ],
+      })
+    }
+
+    for (const m of line.matchAll(/(?<![-\w])max-width\s*:\s*([^;{}]+)/g)) {
+      const v = (m[1] ?? '').trim()
+      const isToken = MEASURE_TOKENS.includes(v)
+      /* 只管 ch：px / % 的 max-width 是盒子宽度，不是行长，那是另一码事 */
+      const isCh = /(?:^|[^\w.-])\d*\.?\d+ch\b/.test(v)
+      if (!isToken && !isCh) continue
+      measures++
+      if (isToken) continue
+      if (exempt(i)) continue
+      hits.push({
+        line: i + 1,
+        lines: [
+          `裸行长 ${v} —— ${src}`,
+          '  行长一律走 --measure / --measure-narrow',
+          '  这个 ch 若是控件宽度而不是行长（如 .stat{max-width:22ch}），在这行或上一行写注释说明',
+        ],
+      })
+    }
+  })
+
+  return { hits, lineHeights, measures }
+}
+
 async function checkNakedValues(tf: TokenFile): Promise<void> {
   const files = (await walkCss(SRC)).sort()
   bump('module.css 文件', files.length)
+  let lineHeights = 0
+  let measures = 0
 
   for (const file of files) {
     const rel = path.relative(ROOT, file)
@@ -218,6 +306,11 @@ async function checkNakedValues(tf: TokenFile): Promise<void> {
       }
     })
 
+    const ts = scanTypeScale(raw)
+    lineHeights += ts.lineHeights
+    measures += ts.measures
+    for (const h of ts.hits) fail('4 裸值', `${rel}:${h.line}`, ...h.lines)
+
     /* @keyframes 里出现布局属性 = 每帧 reflow（design-system.md §6） */
     const noComment = stripCssComments(raw)
     for (const m of noComment.matchAll(/@keyframes\s+([\w-]+)/g)) {
@@ -240,6 +333,9 @@ async function checkNakedValues(tf: TokenFile): Promise<void> {
       }
     }
   }
+
+  bump('行高声明', lineHeights)
+  bump('行长声明（ch）', measures)
 
   /* 深色两处定义必须逐字一致：design-system.md §7 要求 @media 块与
      [data-theme="dark"] 块同时存在，两边漂了就是「切换器在某个方向不生效」。 */
@@ -856,8 +952,118 @@ async function open(page: Page, route: string, waitFor: string = NAV_SELECTOR): 
   url.searchParams.set('proto', '1')
   await page.goto(url.toString(), { waitUntil: 'load' })
   await page.waitForSelector(waitFor, { timeout: 15000 })
-  await page.waitForFunction('document.fonts.status === "loaded"', null, { timeout: 6000 }).catch(() => {})
+  await awaitFonts(page, route)
   await page.waitForTimeout(120)
+}
+
+/**
+ * 等字体真的就位，**等不到就大声说，不许悄悄往下量**。
+ *
+ * 这里原来是一行 `waitForFunction(..., { timeout: 6000 }).catch(() => {})`，
+ * 两个毛病叠在一起：
+ *
+ * 1. **6 秒不够**。Noto Sans SC 按 unicode-range 切成上百个分片、首屏要拉十几个，
+ *    冷启动的 Google Fonts 经常要十几秒（`tokens.css` 里记着实测 818 KB）。
+ * 2. **`.catch(() => {})` 把超时吞了**，于是字体没换上也照量。第 1 项要读字号判
+ *    大字豁免、第 6 项量的是着色像素的位置——**两项都会变成"拿回退字形量出来的数"**，
+ *    而它们照样打出 ✔。这正是 design-system.md §5 那两行假「✅」的成因。
+ *
+ * 而且那个吞并没有救回这一轮：`page.screenshot()` 内部还会自己等
+ * `document.fonts.ready`（Playwright 的默认 30s），24 秒后照样抛，只是抛出来的是
+ * 一句什么都没说的 TimeoutError 堆栈，而不是「字体没就位」。实测三次跑挂两次。
+ *
+ * 所以：等窗口放宽到能覆盖真实冷启动，超时则记一条**说人话的失败**——
+ * 它是环境问题不是代码回归，报错里要说清楚这一点，免得下一个人去翻 CSS。
+ */
+/**
+ * 把 Google Fonts 从测量回路里拿掉：磁盘缓存 + 路由拦截。
+ *
+ * 起因是实测：那张字体样式表本身就要 **13–20 秒**、470 KB
+ * （`Noto Sans SC:wght@400..700` 会展开成几百条 unicode-range 的 @font-face），
+ * 连拉三次有两次 20 秒还没下完。之后浏览器还得再去 gstatic 取十几个 woff2 分片。
+ * 一轮门槛开将近一百次页面，每次都从头走一遍这条链路——于是
+ * 「字体没就位」的失败在一次跑里出现了 58 次，整轮跑了 23 分钟。
+ *
+ * 这不是被测代码的问题，但它让门槛**既慢又不可复现**，而且第 1 项（字号）与
+ * 第 6 项（着色像素位置）都建立在「量的是真字形」这个前提上。所以：
+ * 首跑落盘，之后离线复用，测量不再受 CDN 摆布。
+ *
+ * 几个必须留意的细节：
+ * - **必须补 `access-control-allow-origin`**。woff2 是跨源加载的，
+ *   fulfill 回去的响应少这个头，字体会静默加载失败——比不缓存还糟。
+ * - **必须扔掉 `content-encoding` / `content-length`**。`route.fetch()` 拿到的
+ *   body 已经解过压，把原来的编码头一起replay 回去，浏览器会拿它当压缩流去解。
+ * - 取不到就 abort，让 awaitFonts 去报「字体没就位」——这里不许自己吞掉。
+ */
+const FONT_HOSTS = ['https://fonts.googleapis.com/**', 'https://fonts.gstatic.com/**']
+const DROP_HEADERS = new Set([
+  'content-encoding', 'content-length', 'transfer-encoding', 'connection', 'alt-svc',
+])
+
+function replayHeaders(h: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(h)) if (!DROP_HEADERS.has(k.toLowerCase())) out[k] = v
+  out['access-control-allow-origin'] = '*'
+  return out
+}
+
+async function installFontCache(context: BrowserContext): Promise<void> {
+  await mkdir(FONT_CACHE, { recursive: true })
+  for (const pattern of FONT_HOSTS) {
+    await context.route(pattern, async (route) => {
+      const url = route.request().url()
+      const key = createHash('sha1').update(url).digest('hex')
+      const bodyPath = path.join(FONT_CACHE, key)
+      const metaPath = `${bodyPath}.json`
+
+      if (existsSync(bodyPath) && existsSync(metaPath)) {
+        const m = JSON.parse(await readFile(metaPath, 'utf8')) as {
+          status: number
+          headers: Record<string, string>
+        }
+        bump('字体走缓存', 1)
+        await route.fulfill({ status: m.status, headers: m.headers, body: await readFile(bodyPath) })
+        return
+      }
+
+      try {
+        const resp = await route.fetch({ timeout: 120_000 })
+        const buf = await resp.body()
+        const headers = replayHeaders(resp.headers())
+        if (resp.status() === 200) {
+          await writeFile(bodyPath, buf)
+          await writeFile(metaPath, JSON.stringify({ url, status: 200, headers }))
+          bump('字体首次落盘', 1)
+        }
+        await route.fulfill({ status: resp.status(), headers, body: buf })
+      } catch {
+        await route.abort()
+      }
+    })
+  }
+}
+
+const FONT_WAIT_MS = 20_000
+
+async function awaitFonts(page: Page, where: string): Promise<void> {
+  const ok = await page
+    .waitForFunction('document.fonts.status === "loaded"', null, { timeout: FONT_WAIT_MS })
+    .then(() => true)
+    .catch(() => false)
+  if (ok) {
+    bump('字体就位', 1)
+    return
+  }
+  const seen = (await page.evaluate(
+    `(() => { const l = []; for (const f of document.fonts) if (f.status === 'loaded') l.push(f.family); return [...new Set(l)].join(' / ') || '（一个都没有）' })()`,
+  )) as string
+  fail(
+    '7 字体',
+    where,
+    `字体 ${FONT_WAIT_MS / 1000}s 内没就位，已加载：${seen}`,
+    '    这一轮的字号、行盒与起笔位置都会是回退字形量出来的，不作数',
+    '    这多半是网络问题（Noto Sans SC 十几个分片走 Google Fonts），不是代码回归——重跑一次',
+  )
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1465,6 +1671,10 @@ const CHECK_TITLES: Array<[string, string]> = [
   ['4 裸值', 'module.css 无裸 px / hex / rgb'],
   ['5 媒体查询', 'reduced-motion 与三态主题真的生效'],
   ['6 起笔对齐', '七页内容区第一个着色像素都落在同一条带子里'],
+  /* 7 不是一项「检查」，是前六项的前提：字号判断与着色像素位置都得在真字体上量。
+     它必须登记在这张表里——不登记的 check 名不会出现在失败明细，也不会出现在
+     逐项汇总，只会把末尾那行总数顶上去。见下面 printOrphans 的注释。 */
+  ['7 字体', '量之前字体真的就位（拿回退字形量出来的数不作数）'],
 ]
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1652,6 +1862,25 @@ function report(): number {
         }
       }
     }
+
+    /* 兜底：check 名没登记进 CHECK_TITLES 的失败，上面那个循环一条都不打印，
+       逐项汇总里也不会有它的行——它只会把末尾「共 N 次命中」的 N 顶上去。
+       实测踩过：字体等待那条失败当初用了没登记的 '字体'，58 条失败一行没打印，
+       末尾总数从 1 跳到 59，看日志的人只会以为是计数器坏了。
+       这跟 `.catch(() => {})` 吞超时是同一种病：**打不出来的失败等于没有失败**。
+       所以这里宁可打得难看也要打出来，并且明说这是门槛自己的 bug。 */
+    const known = new Set(CHECK_TITLES.map(([id]) => id))
+    const orphans = failures.filter((f) => !known.has(f.check))
+    if (orphans.length) {
+      console.log(`\n■ 未登记的检查名　—— ${orphans.length} 次命中`)
+      console.log('  这些 check 名不在 CHECK_TITLES 里。这是门槛自己的 bug，不是被测代码的：')
+      console.log('  去 CHECK_TITLES 把它们登记上，否则它们永远只会以「总数对不上」的形式露头。')
+      for (const f of orphans.slice(0, 20)) {
+        console.log(`  ✖ [${f.check}] ${f.lines[0] ?? ''}`)
+        console.log(`      形态：${f.where}`)
+      }
+      if (orphans.length > 20) console.log(`      …以及另外 ${orphans.length - 20} 次命中`)
+    }
   }
 
   console.log('\n' + bar)
@@ -1661,8 +1890,15 @@ function report(): number {
   console.log('')
   let kinds = 0
   for (const [id, title] of CHECK_TITLES) {
-    if (!enabled(id[0] ?? '')) { console.log(`  ○ ${id}　${title}　（本次跳过）`); continue }
     const arr = byCheck.get(id) ?? []
+    /* 先取 arr 再判跳过：--only 把某项关掉、而它照样攒下了失败（字体这类前提检查
+       是在 open() 里跑的，不受 --only 控制），那这项就得照常打红，不能显示成「本次跳过」。
+       第 7 项更进一步：它不由 --only 决定跑不跑，而由「这一轮到底开没开过页面」决定。
+       只要开过页面它就一定判过，显示成「本次跳过」是骗人；一页没开（比如只跑第 4 项
+       这种纯文本扫描）它才是真没跑。 */
+    const opened = (checkedCounters['字体就位'] ?? 0) + (byCheck.get('7 字体')?.length ?? 0)
+    const skipped = id.startsWith('7') ? opened === 0 : !enabled(id[0] ?? '') && arr.length === 0
+    if (skipped) { console.log(`  ○ ${id}　${title}　（本次跳过）`); continue }
     const k = new Set(arr.map((f) => shape(f.lines[0] ?? ''))).size
     kinds += k
     console.log(`  ${arr.length === 0 ? '✔' : '✖'} ${id}　${title}　`
@@ -1759,8 +1995,12 @@ async function runPageTop(page: Page): Promise<void> {
       const main = document.querySelector('main').getBoundingClientRect()
       return { top: Math.round(bar.bottom), left: Math.round(main.left), right: Math.round(main.right) }
     })()`)) as { top: number; left: number; right: number }
+    /* 显式给超时：Playwright 截图内部还会自己等一次 document.fonts.ready，
+       默认 30s。上面 awaitFonts 已经把字体这件事判过了，这里再等三十秒只会
+       把一个已知结论拖成一句没有信息的 TimeoutError 堆栈。 */
     const shot = await page.screenshot({
       clip: { x: box.left, y: box.top, width: box.right - box.left, height: 120 },
+      timeout: 10_000,
     })
     const b64 = shot.toString('base64')
     /* 量两次：一次全宽，一次只量左侧文字栏。右侧主操作那颗按钮的边框恒在 16px，
@@ -1817,6 +2057,7 @@ async function main(): Promise<void> {
       + ` try { localStorage.removeItem('mde-console-theme') } catch (e) {}`,
   })
   await context.addInitScript({ path: PAGE_JS })
+  await installFontCache(context)
 
   const page: Page = await context.newPage()
   page.on('pageerror', (e) => fail('2 Tab 泄漏', '页面运行时', `页面抛异常，本次扫描的结论都不可信：${e.message.split('\n')[0]}`))
