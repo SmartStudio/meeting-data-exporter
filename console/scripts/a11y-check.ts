@@ -17,7 +17,9 @@
  * 单个类选择器——只是让报告能说出「MeetingRow__extendBtn」而不是「_1f3x9」。
  * brief Step 5：只报「有 3 处失败」的脚本没人会去修。
  *
- * ── 五项检查 ──────────────────────────────────────────────────────
+ * ── 九项检查（0–8）─────────────────────────────────────────────────
+ *   0 已知缺口    spec.md §11 那张缺口表与实际一致。**过期的豁免算失败**——
+ *                 一条已经修好的缺口还挂在名单上，下次真的复发就没人会发现
  *   1 对比度      两种主题 × 多个页面形态全页扫描；含语义色令牌的色相/配对
  *                 断言，以及「--ink-4 不许用于文字」。每个形态都要先过
  *                 `assertLive`：该有的东西没渲染出来、或者渲染的是错误态，
@@ -32,6 +34,13 @@
  *                 含构建产物里的裸 outline 复位、@keyframes 里的布局属性、
  *                 深色两处定义的逐字一致
  *   5 媒体查询    prefers-reduced-motion 与三态主题在真实浏览器下真的生效
+ *   6 起笔对齐    七页内容区第一个**着色像素**落在同一条带子里。量的是像素不是
+ *                 盒顶——盒子对齐而字不对齐，眼睛看到的是后者
+ *   7 字体        量之前字体真的就位。这一项是 1 和 6 的前提，不是并列项：
+ *                 拿回退字形量出来的字号与着色像素位置都不作数。它在 open()
+ *                 里跑，不受 --only 控制
+ *   8 触控目标    输入类的有效热区 ≥44×44。design-system.md §5 那一行此前
+ *                 只写着一个 ✅ 而没有任何检查在守它——那张表上的第三条假保证
  *
  * 用法：
  *   npm run a11y                 完整跑（含构建）
@@ -1675,6 +1684,7 @@ const CHECK_TITLES: Array<[string, string]> = [
      它必须登记在这张表里——不登记的 check 名不会出现在失败明细，也不会出现在
      逐项汇总，只会把末尾那行总数顶上去。见下面 printOrphans 的注释。 */
   ['7 字体', '量之前字体真的就位（拿回退字形量出来的数不作数）'],
+  ['8 触控目标', '输入类的有效热区 ≥44×44（design-system.md §5）'],
 ]
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1943,6 +1953,73 @@ function report(): number {
 const TOP_ALIGN_MIN = 14
 const TOP_ALIGN_MAX = 22
 
+/* ══════════════════════════════════════════════════════════════════
+   检查 8：输入类触控目标
+   ══════════════════════════════════════════════════════════════════
+
+   design-system.md §5 那张表里「触控目标 | 输入类 ≥44px」这一行，此前**没有
+   任何检查在守**——它只写着一个 ✅。那张表在表头认过账：原先整列写「✅ 已实测」，
+   其中两行是假保证，教训是「一次性脚本量出来的 ✅ 会随代码一起腐烂，而它腐烂时
+   不会有人知道」。这是同一张表上的第三条。
+
+   为什么值得单开一项而不是塞进第 3 项：第 3 项问的是「够不够得着」（在不在视口里、
+   有没有被压住），这一项问的是「够着了点不点得中」。两个问题的失败长得完全不一样，
+   合在一起会让报错说不清该改什么。
+
+   扫描本身在 a11y-page.js 的 scanTapTargets 里，那儿写了为什么量的是「有效热区」
+   而不是元素自己的盒子，以及原型专用控件为什么按结构豁免。 */
+interface TapHit {
+  desc: string
+  name: string
+  tag: string
+  type: string
+  ownW: number
+  ownH: number
+  effW: number
+  effH: number
+  viaLabel: boolean
+}
+
+async function runTapTargets(page: Page): Promise<void> {
+  /* 场景取的是第 3 项那一套的子集：触控尺寸只跟布局形态有关，与数据三态无关，
+     所以不必把 loading / load-failed 之类再走一遍。登录页必须在里面——它是
+     移动端用户唯一必须完成的动作，也是这一项最早暴露问题的地方。 */
+  const scenes = SCENES.filter((s) => ['ok', 'selected', 'login', 'storage'].includes(s.id))
+  for (const w of WIDTHS) {
+    await page.setViewportSize({ width: w, height: 900 })
+    for (const s of scenes) {
+      await open(page, s.route, s.waitFor)
+      if (s.setup) {
+        try { await s.setup(page) } catch (e) {
+          fail('8 触控目标', `${w}px/${s.id}`, `形态没搭起来：${e instanceof Error ? e.message : String(e)}`)
+          continue
+        }
+      }
+      await assertLive(page, s, '8 触控目标', `${w}px/${s.id}`)
+      const hits = (await page.evaluate('window.__a11y.scanTapTargets()')) as TapHit[]
+      bump('输入类触控目标：受检视口 × 形态')
+      for (const h of hits) {
+        const via = h.viaLabel ? '（已按包着它的 label 算）' : ''
+        const own = h.ownW === h.effW && h.ownH === h.effH
+          ? ''
+          : `，元素自己 ${h.ownW}×${h.ownH}`
+        /* 提示按控件类型分开给。checkbox/radio 那条（别把方框画大）套到 select 上
+           是废话，而废话读多了整段提示就没人看了。 */
+        const hint = /^(checkbox|radio)$/.test(h.type)
+          ? ['    原生 checkbox / radio 恒为 13×13，把方框画大会让它看起来像另一种控件——',
+             '    让包着它的 label 当热区（点 label 就是点它，原生行为），或用透明内距扩热区。']
+          : ['    用 min-height / min-width 走 var(--tap-min)，或用透明内距扩热区；',
+             '    同一组里的文字输入框已经是 44，这里补齐是拉回一致，不是新加约束。']
+        fail('8 触控目标', `${w}px/${s.id}`,
+          `${h.tag}${h.type ? `[type=${h.type}]` : ''} 有效热区 ${h.effW}×${h.effH}${via}${own} —— 不足 44×44`,
+          `    ${h.name || '（无可及名）'}`,
+          ...hint,
+          `      形态：${h.desc}`)
+      }
+    }
+  }
+}
+
 const TOP_ALIGN_SCENES: Scene[] = [
   { id: 'ok', why: '会议记录', route: '/meetings' },
   { id: 'consumers', why: '采集授权', route: '/consumers', expect: ['[class*="tallyItem"]'] },
@@ -2033,7 +2110,7 @@ async function main(): Promise<void> {
 
   if (enabled('4')) await checkNakedValues(tf)
 
-  const needsBrowser = ['1', '2', '3', '5', '6'].some((k) => enabled(k))
+  const needsBrowser = ['1', '2', '3', '5', '6', '8'].some((k) => enabled(k))
 
   /* 构建产物里的裸 outline 复位也归第 4 项——它同样是"文本扫描"，
      只是扫的是打包之后的 CSS：那条规则赢没赢，只有在产物里才看得出来。 */
@@ -2075,6 +2152,7 @@ async function main(): Promise<void> {
     if (enabled('3')) await runLayout(page)
     if (enabled('5')) await runMedia(page, tf)
     if (enabled('6')) await runPageTop(page)
+    if (enabled('8')) await runTapTargets(page)
   } finally {
     await context.close()
     await browser.close()

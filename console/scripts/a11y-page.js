@@ -172,6 +172,22 @@
       const t = lb.split(/\s+/).map((id) => (document.getElementById(id) || {}).textContent || '').join(' ').trim()
       if (t) return t
     }
+    /* 表单控件的名字常常来自 <label>，而 <input> 自己没有 textContent——
+       只回落到 textContent 会把「记住我」这种明明有名字的控件报成「无可及名」，
+       读报告的人会以为还有一条无障碍缺陷要修。两种关联都要认：包着它的 label，
+       和 label[for] 指过来的那个。 */
+    if (/^(input|select|textarea)$/i.test(el.tagName)) {
+      const wrap = el.closest('label')
+      const wt = wrap && (wrap.textContent || '').replace(/\s+/g, ' ').trim()
+      if (wt) return wt.slice(0, 60)
+      if (el.id) {
+        const forLab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]')
+        const ft = forLab && (forLab.textContent || '').replace(/\s+/g, ' ').trim()
+        if (ft) return ft.slice(0, 60)
+      }
+      const ph = el.getAttribute('placeholder')
+      if (ph) return ph.trim()
+    }
     return (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60)
   }
 
@@ -640,6 +656,56 @@
     if (s.endsWith('ms')) return parseFloat(s)
     if (s.endsWith('s')) return parseFloat(s) * 1000
     return 0
+  }
+
+  /* ── 检查八：输入类触控目标 ───────────────────────────────────────
+   *
+   * design-system.md §5 那张表里「触控目标 | 输入类 ≥44px」原先只写着一个 ✅，
+   * 而门槛七项检查里**没有任何一项在量它**。那张表自己在表头认过账：它原先整列
+   * 写「✅ 已实测」，其中两行是假保证，教训是「一次性脚本量出来的 ✅ 会随代码
+   * 一起腐烂，而它腐烂时不会有人知道」。这是第三条。这一项就是来守它的。
+   *
+   * 量的是**有效热区**，不是元素自己的盒子。原生 checkbox 恒为 13×13，把方框
+   * 画大会让它看起来像另一种控件；正确做法是让包着它的 <label> 当热区——点
+   * label 就是点 checkbox，这是原生行为，不需要 htmlFor。所以往上找最近的
+   * label 祖先，两个盒子取更大的那个。找不到 label 才只能按自己的盒子算。
+   *
+   * 只管「输入类」，与 §5 的措辞一致：button / a 不在这一项里。它们由 spec.md
+   * §10「移动端只保证能看、不保证能改」那条界线分别处置，标准不同，混在一起
+   * 会逼着把密集后台里的写操作按钮也撑到 44——那不是这张表要的东西。
+   */
+  api.scanTapTargets = function () {
+    const MIN = 44
+    const out = []
+    const sel = 'input:not([type="hidden"]):not([disabled]),'
+      + 'select:not([disabled]),textarea:not([disabled])'
+    for (const el of document.querySelectorAll(sel)) {
+      if (!isRendered(el)) continue
+      /* 原型专用控件豁免。顶栏那个「系统状态」下拉包在 `{proto && …}` 里，
+         只在原型模式渲染，是演示用具不是产品界面；而门槛必须带 ?proto=1 开页
+         （假后端在那儿），所以它一定会被扫到。
+         豁免写成**结构判据**（在 protoGroup 子树里）而不是一份类名名单：
+         名单会在改名时静默失效，而失效的豁免只会以「突然红了」的形式露头。 */
+      if (el.closest('[class*="protoGroup"]')) continue
+
+      const own = el.getBoundingClientRect()
+      const lab = el.closest('label')
+      const box = lab ? lab.getBoundingClientRect() : own
+      const w = Math.max(own.width, box.width)
+      const h = Math.max(own.height, box.height)
+      if (w >= MIN && h >= MIN) continue
+      const r1 = (n) => Math.round(n * 10) / 10
+      out.push({
+        desc: describe(el),
+        name: accName(el),
+        tag: el.tagName.toLowerCase(),
+        type: el.getAttribute('type') || '',
+        ownW: r1(own.width), ownH: r1(own.height),
+        effW: r1(w), effH: r1(h),
+        viaLabel: !!lab && (box.width > own.width || box.height > own.height),
+      })
+    }
+    return out
   }
 
   api.readVars = function (names) {
