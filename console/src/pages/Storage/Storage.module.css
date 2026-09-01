@@ -99,31 +99,56 @@
    （文字梯度的最后一档，再浅就过不了 4.5:1），不是 --ink-4。
    --ink-4 在 tokens.css 里写死了「图形专用：描边 / 分隔 / 填充，禁止用于文字」，
    曾经这里用它、并且用一句「它不是文字内容」把自己说服过去——scripts/a11y-check.ts
-   两种主题各报了一遍（浅 3.72:1 / 深 3.87:1，都要 4.5）。可聚焦的字形是字。 */
+   两种主题各报了一遍（浅 3.72:1 / 深 3.87:1，都要 4.5）。可聚焦的字形是字。
+   它现在是一颗 <button>（从前是 tabIndex=0 的 span，说明只活在 title 里），
+   所以按钮自带的边框 / 底色 / 内距要清掉；字号字族**不能**跟着清——全局
+   `button { font: inherit }` 之后它继承的是正文 14px，而这个字形要压在它
+   旁边那行 12px 的路径上。 */
 .hint {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
   margin-left: var(--s-1);
+  padding: 0;
+  border: 0;
+  background: none;
   font-family: var(--sans);
   font-size: var(--t-xs);
   /* ⓘ 是单个字形，靠 inline-flex + center 压在它旁边那行标题的中线上。
      行高一旦大于 1，居中的就是行盒不是字形，圆圈会往下掉半个行距。 */
   line-height: 1;
   color: var(--ink-3);
-  cursor: help;
+  cursor: pointer;
   border-radius: var(--r-pill);
 }
 
+/* 展开态也提一档色：这颗按钮按下去之后页面上唯一的变化是下面多出一行字，
+   按钮自己不给回执的话，重复点它的人不知道是它在管那行字。 */
 .hint:hover,
-.hint:focus-visible {
+.hint:focus-visible,
+.hint[aria-expanded='true'] {
   color: var(--ink-2);
 }
 
 .hint:focus-visible {
   outline: var(--s-0) solid var(--brand);
   outline-offset: var(--s-px);
+}
+
+/* ⓘ 展开出来的那句说明。它落在挂载点那一行下面的**正文流**里。
+   **为什么不是 ui/Popover**：那个基元是绝对定位的，而且它自己的注释写明
+   不做视口边界避让（"F1 阶段的用法都是贴着触发它的按钮"）。这颗 ⓘ 恰好
+   长在一行会换行的路径末尾——390 下它停在哪个 x 完全看挂载点有多长，
+   贴左角贴右角都可能把面板推出视口，而「1440 / 1050 / 375 无横向溢出」
+   是门槛第 3 条。一句说明不值得为它借一层焦点陷阱和 z 轴。 */
+.hintNote {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+  line-height: var(--lh);
+  max-width: var(--measure);
+  overflow-wrap: anywhere;
 }
 
 /* 徽标 + 它旁边一句可见的来源小字（原来是徽标 + ⓘ，见 describeDefaultDays
@@ -509,6 +534,20 @@
   font-family: var(--mono);
   font-size: var(--t-2xs);
   color: var(--ink-4);
+  /* 390 下这条轨道只有 100px 宽，而四个刻度的宽度之和恰好也是 100px——
+     一点空隙都不剩，于是每个标签都在词中间断开：屏幕上读到的是
+     「今 10 20 30」「天 天 天 天」两行汉字方阵，轴高从 17 涨到 34，
+     上面五条横条也跟着失去参照系。
+     nowrap 只保证它不断词；四个标签仍然会在 100px 里挤成一堵墙，
+     所以窄屏那一档同时把刻度减成三档，见文件末尾的 56em 块。 */
+  white-space: nowrap;
+}
+
+/* 刻度分两套：宽屏 10 / 20，窄屏 15。两套都渲染出来、由媒体查询挑一套，
+   不去 JS 里读视口宽——那要么首帧读不到，要么得挂一个 resize 监听，
+   而这件事只是选几个标签。 */
+.tlTickNarrow {
+  display: none;
 }
 
 /* ── 浮层里的内容 ─────────────────────────────────────────────── */
@@ -641,4 +680,74 @@
 
 .errorActions {
   margin-top: var(--s-4);
+}
+
+/* ── 窄屏（≤56em）─────────────────────────────────────────────────
+   这一页此前一条窄屏分支都没有，内容区完全跟着外壳走。390 下实测：统计带
+   clientWidth 324，NAS 那条 scrollWidth 468（藏 144px），保留窗口那条 623
+   （藏 299px ＝ 48%）；藏起来的恰好是「7 天内到期」和红色的「归档报错」——
+   管理员打开这一页的理由。
+   **「宽内容自己横滚」（硬规矩 7）在这里挑错了对象**：可以横滚的东西得让人
+   一眼看出还有下文（表格有列头断在半途，时间轴有轴），而一排数字看上去
+   就是完整的一排，没人会想到去推它。 */
+@media (max-width: 56em) {
+  .stats {
+    display: grid;
+    /* **列数不写死 2**。56em 是全站唯一的窄屏断点，可这一页在它两侧的可用
+       宽度是反的：≤56em 外壳收起左栏，895 下这块面板反而有 829px，比 897 下
+       的 751px 还宽。写死 2 列的话 895 处是两根 408px 的巨柱、排三行，而只窄
+       2px 的 897 是齐整的一行——跨过断点反而更散。
+       auto-fit 让列数跟着实际宽度走，实测：324px → 2 列（每列 156px，与写死
+       2 列量出来的一模一样）；829px → 5 列，五格仍排成一行。跨断点时只差
+       "等宽列"和"按内容宽排"，不再差一整个形状。
+       16ch（这里 1ch ≈ 8px，即约 128px）不是随手挑的：324px 下要恰好落 2 列，
+       每列的下限得落在 100–156px 之间（再小塞得下 3 列，再大只剩 1 列），
+       16ch 在这个区间的中段，字体回退导致 ch 变宽或变窄都还有余量。 */
+    grid-template-columns: repeat(auto-fit, minmax(16ch, 1fr));
+    gap: var(--s-4);
+    /* 换成 grid 之后没有横向溢出可滚了，滚动容器连同它留给滚动条的下内距
+       一起撤掉：留着 overflow-x 会把 overflow-y 一并变成 auto，焦点圈会被
+       这块凭空多出来的裁剪边切掉一圈。 */
+    overflow-x: visible;
+    padding-bottom: 0;
+  }
+
+  /* 列宽交给 grid，格子自己不再定宽。格与格之间那条 --line-soft 竖线也一并
+     撤掉：2 列 5 格时最后一行只剩一格，那条线要么悬在半空，要么得按行数补
+     一套 nth-child 判据——为一条装饰线加规则不值得。行列对齐本身已经说清
+     「这是一组数」，剩下的分隔交给 --s-4 的间距。 */
+  .stat {
+    min-width: 0;
+    max-width: none;
+    padding-right: 0;
+    margin-right: 0;
+    border-right: 0;
+  }
+
+  /* 触屏没有 hover，而这颗 ⓘ 的说明从前唯一的出口就是 title 的悬停气泡——
+     在手机上这条「协议是推断出来的」等于不存在。改成点击展开之后，热区也
+     得够手指点：**字形仍然是 12px，撑开的是可点面积**（--tap-min，44px）。
+     margin-left 撤掉，因为 44px 的框自带的空隙已经比那 4px 大得多。 */
+  .hint {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+    margin-left: 0;
+  }
+
+  /* 100px 的轨道装不下四个刻度，减成三档：今天 / 15 天 / 30 天。
+     轨道背景那两条竖线同时换成一条 50%——刻度写着 15、竖线还站在 10 和 20
+     上，等于给同一条轴配了两套对不上的参照系。 */
+  .tlTickWide {
+    display: none;
+  }
+
+  .tlTickNarrow {
+    display: block;
+  }
+
+  .tlTrack {
+    background-image: linear-gradient(var(--line-soft), var(--line-soft));
+    background-size: var(--s-px) 100%;
+    background-position: 50% 0;
+  }
 }

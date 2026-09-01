@@ -2,28 +2,52 @@ import type { ReactNode } from 'react'
 import styles from './Storage.module.css'
 
 export interface HintProps {
-  /** 悬停/聚焦时读到的整句定义。它同时是 `title` 与 `aria-label` */
-  text: string
+  /** 这颗按钮自己的名字。读屏该念的是「这颗按钮是干什么的」，不是整句说明——
+   *  说明现在是页面上真实存在的一段文字，展开之后它自己会被念到。 */
+  label: string
+  /** 它管着的那段说明的 id（`aria-controls`）。那段说明由**调用方**渲染：
+   *  它必须落在挂载点那一行的外面，`.path` 本身是个 `<p>`，`<p>` 里塞不下
+   *  另一个 `<p>`。 */
+  controls: string
+  open: boolean
+  onToggle: () => void
 }
 
 /**
- * 口径说明的 ⓘ。
+ * 口径说明的 ⓘ。一颗按钮，点开的是就在下面一行的说明。
  *
- * **为什么定义不写成正文**：这一页原先有 13 处说明性散文，占全页可见文字的
- * 48%——数字和按钮被自己的解释淹了。判据是"删掉它，用户会不会做错事"：
+ * **为什么定义不写成常驻正文**：这一页原先有 13 处说明性散文，占全页可见文字
+ * 的 48%——数字和按钮被自己的解释淹了。判据是"删掉它，用户会不会做错事"：
  * 一格统计的口径（"等待归档数的是哪些会议"）不知道也不会点错任何按钮，
- * 但需要的时候得查得到。所以它降级成悬停，而不是被删掉。
+ * 但需要的时候得查得到。所以它降级成"点一下才看得到"，而不是被删掉。
+ * （能压进一句短小字的那几处已经搬成常驻可见文本了，见 `Stat` 的 `note`
+ * 和 `describeDefaultDays` 的 `sourceNote`；剩下这一处的整句有四十来字，
+ * 常驻在挂载点下面就是三行"系统不知道某件事"顶在管理员想看的信息前面。）
  *
- * `tabIndex={0}` 是为了键盘也够得着这个 title——只能鼠标悬停的说明对键盘
- * 用户等于不存在。`role="note"` + `aria-label` 让读屏念出整句，而不是念一个
- * 孤零零的 ⓘ 字符。**不要改成 `role="img"`**：容量条本身就是一个 role=img，
- * 图例里的 ⓘ 再占一个，读屏用户在同一块区域里会听到两个"图像"。
+ * **为什么不再是 `title` 悬停**：`title` 的气泡只在鼠标悬停时出现，而**触屏
+ * 没有 hover**——这段文字在手机上等于不存在，可它讲的是"协议这一栏的值是
+ * 推断出来的，不是后端给的"，一条关于数据可信度的说明。原先那个 span 的
+ * 热区还只有 12×12px，远低于 44×44 的触控下限：够不着的东西，说明写得再对
+ * 也没用。换成 button + 点击展开，这两件事一起解决，键盘也不必再靠
+ * `tabIndex={0}` 让一个 span 假装可聚焦。
+ *
+ * **role 跟着换**：从前 `role="note"` + `aria-label`＝整句，那是在给一个不可
+ * 操作的字形补一个可读名。现在它是按钮就老实当按钮（`aria-expanded` /
+ * `aria-controls` 说明它管着下面那段），`role="note"` 让给真正是"说明"的
+ * 那段文字。
  */
-export function Hint({ text }: HintProps) {
+export function Hint({ label, controls, open, onToggle }: HintProps) {
   return (
-    <span className={styles.hint} tabIndex={0} role="note" aria-label={text} title={text}>
+    <button
+      type="button"
+      className={styles.hint}
+      aria-expanded={open}
+      aria-controls={controls}
+      aria-label={label}
+      onClick={onToggle}
+    >
       ⓘ
-    </span>
+    </button>
   )
 }
 

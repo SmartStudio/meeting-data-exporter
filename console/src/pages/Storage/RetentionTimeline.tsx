@@ -112,12 +112,20 @@ function TimelineBody({ rows }: { rows: TimelineRow[] }) {
           </li>
         ))}
       </ul>
+      {/* 刻度两套：宽屏 10 / 20，窄屏只留 15。390 下这条轨道量出来只有 100px，
+          而四个刻度的宽度之和恰好也是 100px——挤到一点空隙都不剩，于是每个
+          标签都在词中间断行，屏幕上读成「今 10 20 30」「天 天 天 天」两行汉字
+          方阵。两套都渲染出来、由 CSS 媒体查询挑一套（见 Storage.module.css
+          末尾的 56em 块），不去 JS 里读视口宽：那要么首帧读不到，要么得挂一个
+          resize 监听，而这件事只是选几个标签。整条轴本来就 aria-hidden，
+          多出来的那个 span 不进无障碍树，读屏不会听到两遍。 */}
       <div className={styles.tlAxis} aria-hidden="true">
         <span />
         <span className={styles.tlAxisTrack}>
           <span>今天</span>
-          <span>10 天</span>
-          <span>20 天</span>
+          <span className={styles.tlTickWide}>10 天</span>
+          <span className={styles.tlTickNarrow}>15 天</span>
+          <span className={styles.tlTickWide}>20 天</span>
           <span>30 天</span>
         </span>
         <span />

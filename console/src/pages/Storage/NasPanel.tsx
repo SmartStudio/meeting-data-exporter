@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { ProgressBar } from '@/ui/ProgressBar'
 import { fmtBytes, fmtDateTime } from '@/lib/format'
@@ -33,7 +34,10 @@ function StatusLine({ tone, children }: { tone: 'neutral' | 'fail'; children: Re
  * **`text === null` 的那一支不再当主文案**：一句"协议未知 —— 后端只下发挂载点"
  * 占的是管理员本来想看信息的位置，讲的却是"系统不知道某件事"。它降级成挂载点
  * 旁边的一个 ⓘ：想查的人查得到，不想查的人不必先读完它才看到别的。
- */
+ *
+ * 这个"降级"从前是靠 `title` 悬停实现的——**触屏没有 hover，那等于在手机上
+ * 把它删了**。现在改成点一下展开成下面一行小字（`PROTOCOL_NOTE_ID`）：仍然不
+ * 常驻、仍然不占位置，但它在任何设备上都真的够得着。 */
 export function protocolOf(root: string | null): { text: string | null; hint: string } {
   if (root === null) {
     return { text: null, hint: '协议未知：挂载点还没配，无从判断。' }
@@ -54,6 +58,12 @@ export interface NasPanelProps {
   nas: NasArchive
 }
 
+/** ⓘ 与它展开的那段说明分居在两个元素里（按钮在 `.path` 这个 `<p>` 内，
+ *  说明只能在它外面），要靠 `aria-controls` 把两者接起来，所以需要一个稳定
+ *  的 id。这一页只挂一块 NasPanel，用常量即可，与同文件里
+ *  `storage-nas-title` 那些写死的 id 保持同一种做法。 */
+const PROTOCOL_NOTE_ID = 'nas-protocol-note'
+
 /**
  * NAS 归档（spec §4.9 的第一块）：挂载点、连通状态、最近检测时间、
  * 容量三分、归档三态。
@@ -65,6 +75,7 @@ export interface NasPanelProps {
 export function NasPanel({ nas }: NasPanelProps) {
   const hasCapacity = nas.totalBytes !== null && nas.availableBytes !== null
   const proto = protocolOf(nas.root)
+  const [protoNoteOpen, setProtoNoteOpen] = useState(false)
 
   return (
     <section className={styles.panel} aria-labelledby="storage-nas-title">
@@ -77,8 +88,26 @@ export function NasPanel({ nas }: NasPanelProps) {
             <span>{nas.root ?? '未配置挂载点'}</span>
             <span className={styles.protocol} data-testid="nas-protocol">
               {proto.text !== null && <span className={styles.protocolText}>{proto.text}</span>}
-              <Hint text={proto.hint} />
+              <Hint
+                label="协议这一栏是怎么来的"
+                controls={PROTOCOL_NOTE_ID}
+                open={protoNoteOpen}
+                onToggle={() => setProtoNoteOpen((v) => !v)}
+              />
             </span>
+          </p>
+          {/* 收起时用 `hidden` 而不是不渲染：`aria-controls` 指向一个不存在的
+              id 就是一条断掉的引用，读屏那边"这颗按钮管着谁"直接失传。
+              `hidden` 之下这段既不进无障碍树也不占位（`.hintNote` 刻意不写
+              display，免得把 UA 的 `[hidden]{display:none}` 盖掉）。 */}
+          <p
+            id={PROTOCOL_NOTE_ID}
+            className={styles.hintNote}
+            role="note"
+            hidden={!protoNoteOpen}
+            data-testid="nas-protocol-note"
+          >
+            {proto.hint}
           </p>
         </div>
         <StatusLine tone={nas.reachable ? 'neutral' : 'fail'}>

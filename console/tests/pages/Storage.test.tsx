@@ -21,10 +21,12 @@ import { fmtBytes, fmtDateTime } from '../../src/lib/format'
  *   - `failedMeetings` 拿不到时显示"暂不可得"，不是 0——0 的意思是"确实没有"
  *   - `defaultDaysSource` 的三个取值在界面上分得开，尤其 `invalid`
  *
- * 另外这一页的口径说明**一律挂在 ⓘ 的 title / aria-label 上，不在正文里**
- * （原先 13 处说明性散文占了全页可见文字的 48%）。所以下面凡是断言"这一格
- * 说清了口径"的测试，查的是那个提示标记的可及名，而不是 textContent——
- * 把它改回 toHaveTextContent 就等于把散文放回页面上。
+ * 另外这一页的口径说明**不进常驻正文**（原先 13 处说明性散文占了全页可见
+ * 文字的 48%）。能压成一句小字的已经搬成可见文本（`Stat` 的 `note`、
+ * `describeDefaultDays` 的 `sourceNote`），下面那些断言查的就是它们；
+ * 唯一剩下的整句说明（协议是推断出来的）挂在一颗 ⓘ **按钮**上，点开才显示。
+ * **不要把它改回 `title` 悬停**：触屏没有 hover，那等于在手机上把这条关于
+ * 数据可信度的说明删掉——所以下面查它的测试是"点一下，然后它必须出现"。
  *
  * 另外，系统状态横幅上的「暂停到期清理」现在链到 `/storage`（见 F0 报告 §2.2），
  * 所以「暂停/恢复到期清理」这个动作必须在这一页上真的做得成。
@@ -316,26 +318,52 @@ describe('NAS 归档', () => {
     expect(panel('NAS 归档')).toHaveTextContent('未配置')
   })
 
-  test('协议是从挂载点形式推断的，"是推断"这件事说在 ⓘ 上', async () => {
+  test('协议是从挂载点形式推断的，"是推断"点开 ⓘ 才说——但一定说得到', async () => {
     // 后端没有下发协议字段（只有挂载点）。写死一句"SMB 协议"是替一个我们
-    // 没有的探测下结论；这里只说观察到的形式，把"是推断"放进悬停。
+    // 没有的探测下结论；这里只说观察到的形式，"是推断"降级成点开才看。
+    // **降级不等于藏起来**：它从前只活在 title 的悬停气泡里，而触屏没有
+    // hover，于是这条关于数据可信度的说明在手机上等于不存在。
     answer('/api/v1/admin/storage', ok(storagePayload({ nas: { root: '//nas01.internal/meetings' } })))
+    const user = userEvent.setup()
     await renderReady()
+    const nas = panel('NAS 归档')
     const proto = screen.getByTestId('nas-protocol')
     expect(proto).toHaveTextContent(/SMB/)
-    expect(within(proto).getByRole('note')).toHaveAccessibleName(/推断/)
+
+    // 收起时那句不在无障碍树里（role 查询默认跳过 hidden），页面上也看不到
+    expect(within(nas).queryByRole('note')).toBeNull()
+
+    const toggle = within(proto).getByRole('button')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // 按钮和它管的那段说明分居在两个元素里，靠 aria-controls 接起来——
+    // 这条引用断了，读屏那边"这颗按钮管着谁"就失传了
+    expect(toggle.getAttribute('aria-controls')).toBe(
+      screen.getByTestId('nas-protocol-note').id,
+    )
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(within(nas).getByRole('note')).toHaveTextContent(/推断/)
   })
 
   test('挂载点是本地路径时不猜协议，而且"不知道"不占主文案的位置', async () => {
     // 从前这里是一句主文案：「协议未知 —— 后端只下发挂载点，从这一侧看不出
     // 它挂的是什么」。它诚实，但占的是管理员本来想看信息的位置，讲的却是
-    // 系统不知道某件事。降级成 ⓘ：查得到，但不再挡着别的。
+    // 系统不知道某件事。降级成点开才看：查得到，但不再挡着别的。
+    const user = userEvent.setup()
     await renderReady()
+    const nas = panel('NAS 归档')
     const proto = screen.getByTestId('nas-protocol')
     expect(proto).not.toHaveTextContent(/未知/)
-    expect(within(proto).getByRole('note')).toHaveAccessibleName(/协议未知/)
-    // 猜一个协议出来仍然是不许的
-    expect(panel('NAS 归档')).not.toHaveTextContent(/SMB|NFS 协议/)
+    // 猜一个协议出来仍然是不许的。查的是协议那一格本身而不是整块面板：
+    // 那句说明现在是页面上真实存在的一个（收起的）节点，而 textContent 不分
+    // 可见不可见，拿整块面板去查会读到它里面那句"看不出它挂的是 NFS、SMB"——
+    // 那不是一句声称，是这一格空着的理由。
+    expect(proto).not.toHaveTextContent(/SMB|NFS/)
+    expect(within(nas).queryByRole('note')).toBeNull()
+
+    await user.click(within(proto).getByRole('button'))
+    expect(within(nas).getByRole('note')).toHaveTextContent(/协议未知/)
   })
 })
 
