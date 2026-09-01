@@ -10,8 +10,67 @@
   overflow: hidden;
 }
 
+/* 「右边还有内容」必须在**静止**时看得见。
+ *
+ * 1024×768 下实测：滚动容器 scrollWidth 1020 / clientWidth 778，会议记录表被
+ * 切掉 242px，而 `.wrap{overflow:hidden}` 加上 macOS 的覆盖式滚动条（不滚就
+ * 不画），静止时**没有任何渐隐、阴影或可见滚动条**告诉人后面还有两列。
+ * T5 把左栏在中间宽度收起来之后 1024 已经装得下了，但这一条**不分断点、
+ * 无条件做**：897–963px 那一段仍有最多 67px 横滚（spec §11 缺口 8 登记在案），
+ * 而且任何一张列多到装不下的表在任何宽度上都会撞到同一件事。修一个断点是
+ * 补丁，让"还有内容"这件事自己说出来才是修。
+ */
 .scroll {
   overflow-x: auto;
+
+  /* ── 边缘渐隐 ──────────────────────────────────────────────────
+     四层背景两两成对，**不需要 JS 监听 scrollLeft**：
+       1、2 遮罩层，attachment 是 local —— 跟着内容一起滚。滚到最左端时它
+            正好盖住左边那道阴影，滚到最右端时盖住右边那道。
+       3、4 阴影层，attachment 是 scroll —— 钉在容器边缘不动。
+     于是「这一侧还有内容」与「这一侧到头了」是布局自己算出来的，表本来就
+     装得下时（1440、以及窄屏的卡片形态）两道阴影被遮罩完全盖住，不会画出
+     两条假边。渐变用令牌：遮罩是 --surface，阴影是 --ink 兑出来的低透明度
+     （同 .table tbody tr:hover 的 color-mix 写法），没有裸 rgba。 */
+  background:
+    linear-gradient(to right, var(--surface), transparent) 0 0 / var(--s-8) 100% no-repeat local,
+    linear-gradient(to left, var(--surface), transparent) 100% 0 / var(--s-8) 100% no-repeat local,
+    linear-gradient(to right, color-mix(in oklab, var(--ink) 14%, transparent), transparent)
+      0 0 / var(--s-4) 100% no-repeat scroll,
+    linear-gradient(to left, color-mix(in oklab, var(--ink) 14%, transparent), transparent)
+      100% 0 / var(--s-4) 100% no-repeat scroll;
+}
+
+/* ── 常显滚动条 ──────────────────────────────────────────────────
+   macOS 默认是覆盖式滚动条：不滚就不画，静止的一屏里它根本不存在。给
+   ::-webkit-scrollbar 指定尺寸会让 Blink/WebKit 改画常驻的经典滚动条，
+   代价是它占 6px 高——这是**明说的**取舍，"看得见"比那 6px 值钱。
+
+   **不要在这里补 `scrollbar-width` / `scrollbar-color`。** 直觉上那是"标准
+   属性 + 前缀属性两条腿走路"，实测是相反的：Chromium 一旦看到这两个标准
+   属性取了非 auto 的值，就**整块忽略** ::-webkit-scrollbar 伪元素。同一个
+   容器实测（headed Chrome / macOS，量 offsetHeight − clientHeight）：
+     只写 ::-webkit-scrollbar          8px —— 常驻滚动条真的画出来了
+     两者都写                          2px —— 退回覆盖式，等于这一条白写
+     只写 scrollbar-width/color        2px —— 标准属性在 macOS 上不改常驻与否
+   所以这里只留前缀那一套。Firefox 落回平台默认（仍是覆盖式），那一侧由上面
+   的边缘渐隐兜住——这也正是渐隐必须存在、不能只靠滚动条的原因。
+   （headless Chromium 三种写法量出来都是 0，它自己就不画常驻滚动条；
+   这几个数字是 headed 模式量的，别用 headless 去复核这一条。）
+
+   滑块用 --ink-4：它是图形专用令牌（tokens.css 规矩 2），滚动条是图形。 */
+
+.scroll::-webkit-scrollbar {
+  height: var(--s-2);
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: var(--ink-4);
+  border-radius: var(--r-pill);
+}
+
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .table {

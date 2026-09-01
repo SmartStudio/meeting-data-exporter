@@ -1,6 +1,11 @@
 /* 骨架尺寸只用令牌：--rail-w 被 Rail 自己、这里的网格列、以及 ShortcutBar
    的左偏移三处引用，改一处令牌三处一起变——原型重构前这个宽度硬编码在
-   四处，其中两处是心算值（`calc(50% + 98px)`、`left: 222px`）。 */
+   四处，其中两处是心算值（`calc(50% + 98px)`、`left: 222px`）。
+
+   这条网格现在有**三档**，而这里只写了一处：1120px 以下 --rail-w 在
+   tokens.css 的 70em 断点上变成 56px（左栏收成图标带，形态见
+   Rail.module.css），896px 以下下面那个 56em 块把它整列去掉。中间那一档
+   不需要在这里写任何东西——正是因为宽度走的是令牌。 */
 .shell {
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr);

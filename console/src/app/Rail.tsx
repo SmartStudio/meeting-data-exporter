@@ -127,8 +127,14 @@ function RailStatus() {
     subtitle = '依赖都通 · 有失败项待处理'
   }
 
+  /* title 无条件挂，不按断点挂。
+     1120px 以下左栏收成 56px 图标带，`.statText` 被视觉隐藏（留在无障碍树里，
+     读屏照念），鼠标用户那一侧就只剩一颗彩色圆点——「一个依赖异常」和「拉取
+     可能不通」都是同一颗琥珀点。title 是这条信息在收起态唯一的出口。
+     不用 matchMedia 按断点加：那要在壳层挂一个媒体查询监听器，只为省掉一条
+     在展开态**重复可见文字**的悬停提示——重复不伤人，多一个状态源会。 */
   return (
-    <div className={styles.railFoot}>
+    <div className={styles.railFoot} title={`${title} · ${subtitle}`}>
       <span className={styles.statDot} data-s={severity} aria-hidden="true" />
       <span className={styles.statText}>
         <span className={styles.statTitle}>{title}</span>
@@ -187,6 +193,11 @@ export default function Rail() {
             key={item.to}
             to={item.to}
             className={({ isActive }) => (isActive ? `${styles.navItem} ${styles.navItemActive}` : styles.navItem)}
+            /* 收起态（1120px 以下）`.navLabel` 视觉隐藏之后，鼠标用户面对的是
+               六个没有名字的图标。可及名字仍然来自 `.navLabel` 的文本（title
+               只是可及名的兜底，有内容时不参与），所以这一条纯粹是给鼠标的。
+               理由同 RailStatus 里那段：不按断点加。 */
+            title={item.label}
           >
             <span className={styles.navIco}>{item.icon}</span>
             <span className={styles.navLabel}>{item.label}</span>

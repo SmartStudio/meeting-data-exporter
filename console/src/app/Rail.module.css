@@ -196,3 +196,102 @@
     padding: var(--s-3) var(--s-4);
   }
 }
+
+/* ── 中间宽度（56.01em–70em）：左栏收成一条图标带 ──────────────────
+   1024×768（iPad 横屏，也是最常见的小笔记本）落在这一段。此前这一段两头
+   不靠：卡片化要 896px 才触发，而八列的会议记录表装得下要 1264px，中间
+   367px 宽的区间里表被切掉 242px——「可取走的程序」整列和行尾的展开按钮
+   完全在视口之外，而 `Table.module.css` 的 `.wrap{overflow:hidden}` 加上
+   macOS 的覆盖式滚动条，静止时连"右边还有东西"都看不出来。
+   左栏让出 140px（196→56），加上表下限从 1020 压到 860（见 tokens.css），
+   1024 下就装得进去了。
+
+   **断点写成互斥区间，不靠源码顺序去压上面 56em 那一块。**
+   写成 `@media (max-width: 70em)` 再指望它排在后面，375px 下两块会同时匹配，
+   谁生效取决于 CSS 的注入顺序——这个库为「谁赢取决于注入顺序」栽过一次
+   （见 `scripts/a11y-check.ts` 头部关于 Overlay 与 base.css 谁先注入的那段）。
+   区间一旦写死，窄屏那一档的横排顶栏形态就永远不可能被这里污染，也不需要
+   任何人记得两块的先后。56.01em 而不是 56em：`max-width: 56em` 含 896px
+   本身，下边界必须跨过去，两块才真的互斥。
+
+   宽度本身不在这里写——`.rail` 一直是 `width: var(--rail-w)`，令牌在
+   tokens.css 的同一条断点上变成 56px，AppShell 的网格列、ShortcutBar 与
+   BatchBar 的左锚点跟着一起走。这里只管 56px 里面怎么排。 */
+@media (min-width: 56.01em) and (max-width: 70em) {
+  /* 56px 里放不下「32px 商标 + 8px 间距 + 两行文字」，只留商标本身居中。
+     8 + 32 + 8 = 48，落在 --rail-w 减掉右边框之后的 55px 内。 */
+  .brand {
+    padding: var(--s-4) var(--s-3);
+    justify-content: center;
+    gap: 0;
+  }
+
+  /* 视觉隐藏但**留在无障碍树里**，照抄 `ui/PageShell.module.css` 的
+     `.titleHidden`。不许换成 `display: none`——那会把六个导航项的名字、
+     产品名和底部状态摘要一起从读屏里拿掉，收起的左栏对读屏使用者就变成
+     六个没有名字的图标。鼠标用户那一侧由 `Rail.tsx` 补的 title 兜住。 */
+  .brandName,
+  .brandSub,
+  .navLabel,
+  .statText {
+    position: absolute;
+    width: var(--s-px);
+    height: var(--s-px);
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .navItem {
+    /* 计数徽标要叠在这个盒子的右上角，定位基准得是它自己 */
+    position: relative;
+    justify-content: center;
+    gap: 0;
+    padding: var(--s-3) 0;
+    /* 热区**不许比展开态小**。展开态那一档是鼠标尺寸（8+8 内边距 + 14px 字
+       的行盒，实测 38px 高）；这一段宽度里躺着 iPad 横屏 1024×768，那是**触屏**
+       设备，所以直接用触控下限 --tap-min（44px），比展开态更高而不是更矮。 */
+    min-height: var(--tap-min);
+  }
+
+  /* 徽标不许消失：它是「这一项有事要处理」的信号，而 .navLabel 在这一档
+     已经看不见了，把它一起收掉等于把这条信号也收掉。56px 放不下并排的
+     徽标，改叠在图标右上角。 */
+  .navBadge {
+    position: absolute;
+    top: 0;
+    right: 0;
+    /* flex 而不是默认的 block：这个外层 span 里躺着的是一枚 inline-flex 药丸，
+       走行内布局的话它会被基线对齐推到 21.7px 行盒的下沿——实测药丸因此比
+       `top: 0` 低 5px，正好压进图标的上边缘（相交 18–53px²）。改成 flex
+       容器，药丸成为流内子项贴着顶边，相交面积回到 0。 */
+    display: flex;
+  }
+
+  /* 直接压 `ui/Pill` 的尺寸（同 `MeetingTable.module.css` 压 `ui/Table`
+     表头的做法）。药丸默认那一档是 12px 字 + 继承来的 1.55 行高 + 6px 横向
+     内边距，实测 21.7×24.6，叠在 39×44 的图标格上会盖住图标本身；收成 11px
+     字 + 行高 1 + 4px 内边距后是 17.2×13（三位数 31.4×13），落在格子上沿的
+     0–13，而图标居中在 14.5–29.5——**实测相交面积 0**，三位数也仍在格子里，
+     没有被 .nav 的 overflow 裁掉。
+     靠**特异度**赢，不靠注入顺序：`.navBadge > span` 是 (0,1,1)，
+     Pill 的 `.pill` 是 (0,1,0)，谁先注入都一样。 */
+  .navBadge > span {
+    padding: 0 var(--s-1);
+    font-size: var(--t-2xs);
+    /* 行盒等于字形本身：药丸的高度全部由内边距决定，才压得进图标格上沿
+       那 14px。与 `Pill.module.css` 里 `.remove` 的 line-height:1 同一个理由。 */
+    line-height: 1;
+  }
+
+  /* 状态点留着——它是这条暗带上唯一还在说话的东西。文字由上面那条
+     视觉隐藏规则收走，完整的「标题 · 副标题」挂在 `Rail.tsx` 的 title 上。 */
+  .railFoot {
+    padding: var(--s-4) var(--s-3);
+    justify-content: center;
+    gap: 0;
+  }
+}

@@ -18,7 +18,9 @@
 }
 
 /* 窄屏改成卡片（`ui/Table` 的 cards 开关），那时就没有"内容最小宽度"这回事了：
-   1020px 的下限正是逼出横滚的那个数。断点 56em 写死的理由见 Table.module.css。 */
+   --meetings-table-w 那个下限正是逼出横滚的那个数（T5 之后是 860px，此前是
+   1020px；为什么能压到 860、为什么再压也没用，见 tokens.css 那条令牌的注释）。
+   断点 56em 写死的理由见 Table.module.css。 */
 @media (max-width: 56em) {
   .table {
     min-width: 0;
