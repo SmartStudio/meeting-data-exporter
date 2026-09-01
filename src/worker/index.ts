@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import type { Stats } from 'node:fs'
 import { loadConfig } from '../config'
 import { createCatalog } from '../catalog/index'
-import { POOL_CONNECTION_LIMIT, createPool, runMigrations } from '../store/db'
+import { POOL_CONNECTION_LIMIT, closePool, createPool, runMigrations } from '../store/db'
 import { createStsStore } from '../store/sts'
 import { createMeetingCacheStore } from '../store/meetings'
 import { createStsManager } from '../sts/manager'
@@ -684,7 +684,10 @@ async function main(): Promise<number> {
     // 关停顺序：一轮跑完（或抛出）→ 关连接池 → 进程退出。
     // 进度回写是 fire-and-forget，池关掉时可能还有一两条在途，它们会被
     // executor 里的 .catch 记成一行 warn——那正是当初不肯用 void 吞掉它的原因。
-    await pool.end()
+    //
+    // 而当那「一两条」变成一批还排在取连接队列里的回写时，`pool.end()` 会**永远**
+    // 等下去（见 closePool）。收尾超时就放弃，别让一轮跑完的进程退不掉。
+    await closePool(pool, { log: (msg) => console.warn(`worker: ${msg}`) })
   }
 }
 

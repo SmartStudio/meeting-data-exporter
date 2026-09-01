@@ -70,7 +70,7 @@ import {
   type JobsStore,
 } from '../store/jobs'
 import { loadConfig } from '../config'
-import { POOL_CONNECTION_LIMIT, createPool, runMigrations } from '../store/db'
+import { POOL_CONNECTION_LIMIT, closePool, createPool, runMigrations } from '../store/db'
 import { createArchivesStore } from '../store/archives'
 import { createPolicyStore } from '../store/policy'
 import { createGrantsStore } from '../store/grants'
@@ -781,14 +781,21 @@ async function main(): Promise<number> {
     await new Promise<void>((resolve) => {
       const shutdown = (sig: string): void => {
         console.log(`scheduler: 收到 ${sig}，停止调度，等在跑的任务收尾`)
-        void scheduler.stop().then(resolve)
+        void scheduler.stop().then(() => {
+          // 这一行是给「进程为什么还不退」留的分界线：有它，卡的是下面的关池；
+          // 没它，卡的是还没跑完的任务体（那是上面注释里说的、故意不砍的等待）。
+          console.log('scheduler: 在跑的任务已全部收尾，关连接池')
+          resolve()
+        })
       }
       process.once('SIGINT', () => shutdown('SIGINT'))
       process.once('SIGTERM', () => shutdown('SIGTERM'))
     })
     return 0
   } finally {
-    await pool.end()
+    // 关池超时就放弃（见 closePool）：这一步只是客气地道别，不值得把
+    // 「进程能不能退出」押在它身上。
+    await closePool(pool, { log: (msg) => console.warn(`scheduler: ${msg}`) })
   }
 }
 
