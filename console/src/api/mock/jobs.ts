@@ -229,14 +229,20 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     }),
   ]
 
+  // ⚠ 下面四条的 label / schedule / what / impact **逐字抄自后端的 JOB_CATALOG**
+  //   （`src/store/jobs.ts`），不是原型自己的文案。它们曾经各写各的：这一份比
+  //   生产长一倍、任务四的频率还写成「每 30 分钟」（真值 5 分钟），于是所有原型
+  //   截图与 `scripts/vqa.ts` 的视觉验收量的都是一页并不存在的文字——谁照着原型
+  //   调版式，调的就是错的字长。`tests/store/jobs-copy.test.ts` 现在钉住这件事。
+  //   要改文案，改 JOB_CATALOG，然后把这里同步过来。
   const jobs: ProtoJob[] = [
     {
       name: 'fetch_recordings',
       label: '拉取新录制',
-      what: '问腾讯会议要新的录制，把八类资产下载到本地。',
+      what: '从腾讯会议下载新录制到本地',
       schedule: '每 15 分钟',
       nextDueAt: nowSec + 640,
-      impact: '不跑就没有新会议进来，后面三步都没有输入。',
+      impact: '上游过期后这些录制就再也拉不到了',
       maxAttempts: 5,
       openFailures: 0,
       health: 'ok',
@@ -246,11 +252,11 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     {
       name: 'archive_nas',
       label: '归档到 NAS',
-      what: '把本地文件写进 NAS，校验哈希，写下旁挂的说明文件。',
+      what: '把本地文件写进 NAS 并校验哈希',
       schedule: '每小时整点',
       // 已经到点很久了——这正是 overdue 的意思：调度器多半不在跑了
       nextDueAt: nowSec - 2.5 * HOUR,
-      impact: '不跑就一直没有异地副本，本地到期清理之后录制就永久没有了。',
+      impact: '本地到期清理后就没有任何副本了',
       maxAttempts: 5,
       openFailures: failures.length,
       health: 'overdue',
@@ -260,10 +266,10 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     {
       name: 'cleanup_expired',
       label: '清理到期文件',
-      what: '删掉已过保留期、且已经归档进 NAS 的本地文件。',
+      what: '删掉已过期且已归档的本地文件，记录保留',
       schedule: '每天 03:00',
       nextDueAt: nowSec + 20 * HOUR,
-      impact: '不跑本地磁盘会被占满，新的拉取会失败。',
+      impact: '本地磁盘会被占满，新的拉取跟着失败',
       maxAttempts: 3,
       openFailures: 0,
       health: 'running',
@@ -273,10 +279,10 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     {
       name: 'refresh_inventory',
       label: '刷新采集清单',
-      what: '重算每个采集程序现在能取走哪些会议的哪些资产。',
-      schedule: '每 30 分钟',
-      nextDueAt: nowSec + 900,
-      impact: '不跑的话采集程序看到的清单会停在上一次的样子。',
+      what: '重算每个程序能取走哪些会议的哪些资产',
+      schedule: '每 5 分钟',
+      nextDueAt: nowSec + 190,
+      impact: '采集程序拿到的清单会停在上一次',
       maxAttempts: 3,
       openFailures: 0,
       // 一次都没跑过。刚部署的实例就是这样，**不是故障**
