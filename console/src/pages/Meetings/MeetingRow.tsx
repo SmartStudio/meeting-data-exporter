@@ -91,13 +91,19 @@ export function MeetingRow(props: MeetingRowProps) {
       data-flag={flag ?? undefined}
     >
       <td className={styles.check}>
-        <input
-          type="checkbox"
-          className={styles.checkbox}
-          checked={selected}
-          onChange={(e) => onSelect(m.id, e.target.checked)}
-          aria-label={`选择 ${title}`}
-        />
+        {/* label 包着 input（不需要 htmlFor，这是原生写法）：它是这颗勾选框
+            的触控热区，44px 的下限补在它身上而不是把方框画大——见
+            MeetingRow.module.css 的 .checkWrap。可访问名仍由 input 自己的
+            aria-label 给，label 里没有文字，不参与命名。 */}
+        <label className={styles.checkWrap}>
+          <input
+            type="checkbox"
+            className={styles.checkbox}
+            checked={selected}
+            onChange={(e) => onSelect(m.id, e.target.checked)}
+            aria-label={`选择 ${title}`}
+          />
+        </label>
       </td>
 
       <td className={styles.main}>

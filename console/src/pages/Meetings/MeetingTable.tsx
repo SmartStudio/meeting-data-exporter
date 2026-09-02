@@ -108,15 +108,21 @@ export function MeetingTable(props: MeetingTableProps) {
         <thead>
           <tr>
             <th className={styles.check}>
-              <input
-                ref={headCheck}
-                type="checkbox"
-                className={styles.checkbox}
-                checked={allPageSelected}
-                disabled={loading || pageIds.length === 0}
-                onChange={(e) => onSelectPage(e.target.checked)}
-                aria-label="全选本页"
-              />
+              {/* label 包着 input（原生写法，不需要 htmlFor）：触控热区补在
+                  label 上，不去把 13px 的方框画大。可访问名仍由 input 的
+                  aria-label 给。表头这一颗补不满 44 的原因见
+                  MeetingTable.module.css 的 .checkWrap。 */}
+              <label className={styles.checkWrap}>
+                <input
+                  ref={headCheck}
+                  type="checkbox"
+                  className={styles.checkbox}
+                  checked={allPageSelected}
+                  disabled={loading || pageIds.length === 0}
+                  onChange={(e) => onSelectPage(e.target.checked)}
+                  aria-label="全选本页"
+                />
+              </label>
             </th>
             <th>会议记录</th>
             <th>主持人</th>

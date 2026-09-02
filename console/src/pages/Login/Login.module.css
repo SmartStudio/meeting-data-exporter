@@ -67,10 +67,19 @@
   color: var(--ink-2);
 }
 
+/* 「记住此设备」这一行的**热区就是这个 label**——原生行为，点 label 等于点
+   勾选框，所以补触控下限补在这里，不去把 13px 的方框本身画大（画大它就不像
+   勾选框了，像另一个控件）。
+   这里用的是真实高度（min-height），不是别处那套「透明内距 + 等量负外边距」
+   的假热区：表单的 gap 是 16px，负外边距要吃掉其中 12px 才能凑够 44，密码
+   输入框（44px 的触控目标）与这一行的净距就从 16px 掉到 4px——两个都够手指
+   点的目标挨到 4px，比这一行矮 24px 更糟。登录页没有密度指标（一屏只有一张
+   卡），高度是这里最付得起的代价：卡片长 24px。 */
 .remember {
   display: flex;
   align-items: center;
   gap: var(--s-2);
+  min-height: var(--tap-min);
   font-size: var(--t-sm);
   color: var(--ink-2);
   cursor: pointer;
