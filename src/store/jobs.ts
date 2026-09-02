@@ -111,8 +111,10 @@ export const JOB_CATALOG: readonly JobSpec[] = [
     what: '从腾讯会议下载新录制到本地',
     schedule: { kind: 'everyMinutes', minutes: 15 },
     maxAttempts: 5,
-    // 说的是**不可逆**：上游那份有保留期，过了就不存在了，不是"晚点再拉"
-    impact: '上游过期后这些录制就再也拉不到了',
+    // 说的是**不可逆**：腾讯会议那边的云录制有保留期，过了就不存在了，
+    // 不是"晚点再拉"。不写「上游」——那是我们自己的说法，看这一行的人只知道
+    // 录制是从腾讯会议来的。
+    impact: '录制在腾讯会议过期后就再也拉不回来了',
   },
   {
     name: 'archive_nas',
@@ -122,9 +124,9 @@ export const JOB_CATALOG: readonly JobSpec[] = [
     schedule: { kind: 'hourly', minute: 0 },
     maxAttempts: 5,
     // spec §1.2：没有归档成功的会议，本地保留期一到就彻底没有了。
-    // 不写「未归档」——任务名就叫「归档到 NAS」，重复一遍不增加信息；
-    // 换成说清终点：**一份副本都不剩**。
-    impact: '本地到期清理后就没有任何副本了',
+    // 不写「未归档」——任务名就叫「归档到 NAS」，重复一遍不增加信息。
+    // 主语写「这场会议」而不是「副本」：丢的是会议，副本是我们的说法。
+    impact: '本地文件到期清理后，这场会议就一份都不剩了',
   },
   {
     name: 'cleanup_expired',
@@ -135,8 +137,9 @@ export const JOB_CATALOG: readonly JobSpec[] = [
     schedule: { kind: 'daily', hour: 3, minute: 0 },
     maxAttempts: 5,
     // 原来这一句 35 字，后半截讲的是"部分清理留下的账目不一致"——一个很窄的情形。
-    // 换成操作员真会撞上的那条连锁：盘满了，上游那一步跟着挂。
-    impact: '本地磁盘会被占满，新的拉取跟着失败',
+    // 换成真会撞上的那条连锁：盘满了，新录制就下不来。说「新的录制拉不下来」
+    // 而不是「新的拉取失败」——前者是丢了什么，后者是哪个程序报错。
+    impact: '本地磁盘会被占满，新的录制拉不下来',
   },
   {
     name: 'refresh_inventory',
@@ -146,8 +149,10 @@ export const JOB_CATALOG: readonly JobSpec[] = [
     schedule: { kind: 'everyMinutes', minutes: 5 },
     maxAttempts: 5,
     // 原来这一句里写着「§4.5」——spec 的章节号漏到了界面上，看见它的人无从查起。
-    // 换成这一行真正的表现：清单还在，只是停在上一轮。
-    impact: '采集程序拿到的清单会停在上一次',
+    // 换成这个任务不跑时**别人看得见的那件事**：采集程序那边少了新会议。
+    // 先说丢了什么（取不到新会议），再说为什么（清单停在上一轮）——
+    // 反过来写的话，读的人得先消化一个内部概念才知道这跟自己有什么关系。
+    impact: '采集程序取不到新会议，清单停在上一轮',
   },
 ]
 

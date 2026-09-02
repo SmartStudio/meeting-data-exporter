@@ -180,10 +180,10 @@ describe('四个任务格子', () => {
     expect(cards[0]).toHaveTextContent('10 分钟后')
   })
 
-  test('「没跑成的后果」不再四张卡常驻——只在这个任务真的出问题时才现身', async () => {
-    // D-jobs-storage 改版：四行常驻的「没跑成的后果：……」收窄成脚注，正常任务
-    // 不再挂这一行；真正卡住的那一段（overdue 或有未处理失败项）仍然要看得到，
-    // 这是失败项表「如果不处理」列之外，唯一还会说这句话的地方。
+  test('「影响」不再四张卡常驻——只在这个任务真的出问题时才现身', async () => {
+    // D-jobs-storage 改版：四行常驻的影响说明收窄成脚注，正常任务不再挂这一行；
+    // 真正卡住的那一段（overdue 或有未处理失败项）仍然要看得到，这是失败项表
+    // 「如果不处理」列之外，唯一还会说这句话的地方。
     await mount(
       payload({
         jobs: [
@@ -195,6 +195,10 @@ describe('四个任务格子', () => {
     const [okCard, stuckCard] = await screen.findAllByTestId('job-card')
     expect(okCard).not.toHaveTextContent('未归档，到期会永久丢失')
     expect(stuckCard).toHaveTextContent('未归档，到期会永久丢失')
+    // 标签是「影响：」，不是那七个字。这一行挤在 298px 宽的卡片里，
+    // 前缀越长，真正要读的那句话越晚开始
+    expect(stuckCard).toHaveTextContent('影响：')
+    expect(stuckCard).not.toHaveTextContent('没跑成的后果')
   })
 
   test('有未处理失败项（即使健康状态本身是 ok）也会现身，不必等到 overdue', async () => {

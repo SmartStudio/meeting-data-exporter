@@ -62,7 +62,7 @@ test('每个任务都带一句「影响」——失败项表要显示它（spec 
   }
   // 抽查一条。措辞本身由 tests/store/jobs-copy.test.ts 钉住三处一致，
   // 这里只确认「影响」这一列真的接到了目录里那句话上
-  expect(jobSpec('archive_nas')?.impact).toBe('本地到期清理后就没有任何副本了')
+  expect(jobSpec('archive_nas')?.impact).toBe('本地文件到期清理后，这场会议就一份都不剩了')
 })
 
 // ── 二、时间片算术 ──────────────────────────────────────────────

@@ -78,7 +78,8 @@ export interface JobItem {
    * 所以永远和 `health` 一起看，不能单独当"一切正常"的证据。
    */
   nextDueAt: number
-  /** 这个任务没跑成的后果（"未归档，到期会永久丢失"）。spec §4.8 要求明写 */
+  /** 这个任务没跑成的影响（卡片上那行「影响：…」）。spec §4.8 要求明写。
+   *  文案在后端的 `JOB_CATALOG`，三处一致由 `tests/store/jobs-copy.test.ts` 钉住。 */
   impact: string
   maxAttempts: number
   /** 这个任务还有几个没处理的失败项 */

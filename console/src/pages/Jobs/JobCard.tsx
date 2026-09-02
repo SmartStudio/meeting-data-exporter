@@ -142,7 +142,7 @@ export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
   const hv = healthView(job.health)
   const pending = runState?.phase === 'pending'
   const readonly = useReadonly()
-  // 这个任务是不是真的出了问题——「没跑成的后果」只在这时候才现身（见下）。
+  // 这个任务是不是真的出了问题——「影响」那一行只在这时候才现身（见下）。
   const trouble = hv.alarm || job.openFailures > 0
   const statusTone: 'neutral' | 'warn' | 'fail' =
     job.openFailures > 0 || hv.tone === 'fail' ? 'fail' : hv.tone === 'warn' ? 'warn' : 'neutral'
@@ -186,11 +186,15 @@ export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
         )}
       </div>
 
-      {/* 「没跑成的后果」是脚注，不是正文：只在这个任务真的出问题时才现身。
-          正常的三个任务不再各自常驻一行一模一样句式的「没跑成的后果：……」；
-          真正失败的那几项，后果已经在下面「失败项 · 需要处理」表的
-          「如果不处理」列里逐条写过一次，这里只补它自己那一句。 */}
-      {trouble && <p className={styles.impact}>没跑成的后果：{job.impact}</p>}
+      {/* 「影响」是脚注，不是正文：只在这个任务真的出问题时才现身。正常的三个
+          任务不再各自常驻一行同一句式；真正失败的那几项，后果已经在下面
+          「失败项 · 需要处理」表的「如果不处理」列里逐条写过一次，这里只补
+          它自己那一句。
+
+          标签从「没跑成的后果：」换成「影响：」——七个字换成两个字，而这一行
+          本来就在四张 298px 宽的卡片里挤着，前缀越长，真正要读的那句话越晚开始。
+          「没跑成」这三个字也没在说事实：卡片上方那个红点已经写着「已经落后」。 */}
+      {trouble && <p className={styles.impact}>影响：{job.impact}</p>}
 
       {/* 只读账号禁用而不是隐藏：藏起来会让人以为这个系统没有手动触发这回事 */}
       <Button size="sm" onClick={() => onRun(job.name)} disabled={pending || readonly} title={readonlyTitle(readonly)}>
