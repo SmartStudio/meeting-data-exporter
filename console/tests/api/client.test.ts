@@ -205,9 +205,9 @@ describe('回归：fetchAdminIdentity 不许改成走这一层', () => {
     expect(src).not.toMatch(/\bapiGet\b|\bapiSend\b/)
   })
 
-  test('fetchAdminIdentity 遇到 401 仍然返回 null，不抛', async () => {
+  test('fetchAdminIdentity 遇到 401 仍然返回值，不抛', async () => {
     const { fetchAdminIdentity } = await import('../../src/api/admin')
     install(() => jsonResponse(401, { error: 'missing_admin_session' }))
-    await expect(fetchAdminIdentity()).resolves.toBeNull()
+    await expect(fetchAdminIdentity()).resolves.toEqual({ signedIn: false, rejected: false })
   })
 })

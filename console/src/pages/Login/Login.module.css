@@ -50,6 +50,26 @@
   color: var(--ink-3);
 }
 
+/* 「你的登录已经失效」这一条。
+ *
+ * 它**不是**报错行的第二个位置：报错行说的是「刚才那一次提交怎么了」，会随每次
+ * 点击变化，所以常驻占位、不许让表单跳动；这一条说的是「你为什么会站在这一页」，
+ * 进页面时就定了、此后不变，所以有才渲染——空着的时候不该在标题和表单之间留一段
+ * 谁也解释不了的空白。
+ *
+ * 用 --warn 而不是 --fail：会话到期不是一次失败，是一件正常发生、只是需要交代
+ * 一声的事。染成红的会让人以为自己刚做错了什么。 */
+.notice {
+  margin: 0 0 var(--s-6);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--t-sm);
+  line-height: var(--lh-loose);
+}
+
 /* 表单里每一个间隔都是 --s-5，没有例外——这正是报错行要挪到按钮下面的理由，
  * 见 .submitGroup。 */
 .form {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { adminLogin, AdminAuthError } from '@/api/admin'
+import type { LoginNavState } from '@/app/session'
 import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
 import { PasswordInput } from '@/ui/PasswordInput'
@@ -46,6 +47,7 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
+  const nav = (location.state as LoginNavState | null) ?? {}
 
   async function onSubmit(e: FormEvent): Promise<void> {
     e.preventDefault()
@@ -53,8 +55,7 @@ export default function LoginPage() {
     setError(null)
     try {
       await adminLogin(username, password, remember)
-      const from = (location.state as { from?: string } | null)?.from ?? '/meetings'
-      navigate(from, { replace: true })
+      navigate(nav.from ?? '/meetings', { replace: true })
     } catch (err) {
       // 表单级报错，故意不说是账号还是密码错——spec.md §4.1
       setError(err instanceof AdminAuthError ? err.message : '登录失败，请稍后重试')
@@ -72,6 +73,15 @@ export default function LoginPage() {
           <h1 className={styles.title}>YAO-DATA</h1>
           <p className={styles.sub}>会议数据管理控制台</p>
         </header>
+
+        {/* 只在「登录过、服务端已经不认了」时出现——见 LoginNavState.expired。
+            对一个从没登录过的人说这句话，是在解释一件没发生过的事。 */}
+        {nav.expired === true && (
+          <p className={styles.notice} role="status" data-testid="session-expired-notice">
+            你之前的登录已经失效，请重新登录。会话到期、管理员重置了密码、或这个账号在别处退出，
+            都会这样——不需要清浏览器缓存或 cookie。
+          </p>
+        )}
 
         <form className={styles.form} onSubmit={onSubmit}>
           <label className={styles.field}>

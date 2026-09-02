@@ -68,6 +68,59 @@ function installFetchMock(validCredentials: { username: string; password: string
 
 const CREDS = { username: 'chen.yw', password: 'right-pass' }
 
+/** 只回 401 的 /auth/me，错误码可控——用来分「从没登录过」和「令牌被拒了」。 */
+function installMeOnly(errorCode: string) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/v1/admin/auth/me')) {
+        return jsonResponse(401, { error: errorCode })
+      }
+      throw new Error(`未预期的 fetch ${String(input)}`)
+    }),
+  )
+}
+
+/**
+ * 「你为什么会站在登录页」这句话。
+ *
+ * 两种 401 都把人送到同一张空表单前，但**后一种人以为自己好好地登着**：管理员
+ * 在命令行重置了他的密码、短会话到了 12 小时、他在另一台机器上登出过。不说一声，
+ * 他看到的就是「我明明登录着的，怎么突然要我重新登录」——然后去找一个并不存在的
+ * 原因（比如以为要手工清 cookie）。这几条钉住那句话在该出现时出现、不该出现时闭嘴。
+ */
+describe('登录页说明「你之前的登录已经失效」', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  test('带着令牌被服务端拒了（invalid_admin_session）——说出来', async () => {
+    installMeOnly('invalid_admin_session')
+    renderApp('/meetings')
+
+    const notice = await screen.findByTestId('session-expired-notice')
+    expect(notice).toHaveTextContent('登录已经失效')
+    // 顺带把那条错误的自救路径堵掉：这正是用户自己会想到的下一步
+    expect(notice).toHaveTextContent('不需要清浏览器缓存或 cookie')
+  })
+
+  test('从来没登录过（missing_admin_session）——闭嘴，别解释一件没发生过的事', async () => {
+    installMeOnly('missing_admin_session')
+    renderApp('/meetings')
+
+    expect(await screen.findByLabelText('账号')).toBeInTheDocument()
+    expect(screen.queryByTestId('session-expired-notice')).toBeNull()
+  })
+
+  test('直接访问 /login 也不出现 —— 那不是被弹过来的', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('/login 不该探登录态') }))
+    renderApp('/login')
+
+    expect(await screen.findByLabelText('账号')).toBeInTheDocument()
+    expect(screen.queryByTestId('session-expired-notice')).toBeNull()
+  })
+})
+
 describe('AppShell 路由守卫：管理员登录态检查', () => {
   afterEach(() => {
     vi.unstubAllGlobals()

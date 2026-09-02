@@ -1,7 +1,8 @@
 import { useId, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { adminLogout, changePassword, PasswordError } from '@/api/admin'
+import { adminLogout, changePassword, isSessionGone, PasswordError } from '@/api/admin'
+import { notifyUnauthorized } from '@/api/client'
 import { Button } from '@/ui/Button'
 import { PasswordInput } from '@/ui/PasswordInput'
 import { Popover } from '@/ui/Popover'
@@ -183,6 +184,14 @@ function PasswordSheet({ open, onClose }: { open: boolean; onClose: () => void }
       setAgain('')
     } catch (err) {
       setError(err instanceof PasswordError ? err.message : err instanceof Error ? err.message : String(err))
+      // 「当前密码不对」留在原地重填；「这张会话已经没了」必须走和其余 32 条端点
+      // 一样的出口。两者后端都回 401，混成一句话的后果是：一个会话已经失效的人
+      // 盯着自己**填对了**的当前密码一遍遍失败，而这张表单是全站唯一一处不会
+      // 把他送去登录页的地方——他能想到的下一步只剩「是不是要手工清 cookie」。
+      //
+      // 先 setError 再跳：跳转要等 React 处理完这一轮状态，那句话来得及被看见，
+      // 而登录页上还会有一句独立的说明（见 pages/Login）。
+      if (isSessionGone(err)) notifyUnauthorized()
     } finally {
       setSubmitting(false)
     }

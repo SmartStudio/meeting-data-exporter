@@ -90,6 +90,22 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
 }
 
 /**
+ * 手工触发那个全局 401 出口。
+ *
+ * 只有一个调用方：`app/UserMenu.tsx` 的改密码面板。`POST /auth/password` 刻意不走
+ * `request()`（401 在它身上多半是「当前密码不对」，交给全局出口会把一次输错变成
+ * 一次强制登出），但 401 在它身上**也可能**是「这张会话本身没了」——那一种必须和
+ * 其余 32 条端点同样处理，否则那张表单就是全站唯一一处 401 不通往登录页的地方，
+ * 用户会盯着自己填对了的当前密码一遍遍失败。
+ *
+ * 判断是哪一种由 `api/admin.ts` 的 `isSessionGone()` 做（错误码是后端契约），
+ * 动作在这里：跳转仍然只有这一个出口。
+ */
+export function notifyUnauthorized(): void {
+  unauthorizedHandler?.()
+}
+
+/**
  * query 序列化。`undefined` 与 `null` 的键**不出现在 URL 里**——
  * 两者都是"不带这个参数"的意思，而 `String(undefined)` / `String(null)` 会把它们
  * 变成 `?x=undefined` / `?x=null` 两个真实的、后端会当成字符串收下的取值。

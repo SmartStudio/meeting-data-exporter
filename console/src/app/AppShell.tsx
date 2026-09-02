@@ -7,7 +7,7 @@ import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
 import GlobalBar, { TopBarSlotProvider } from './GlobalBar'
 import Rail from './Rail'
-import { SessionProvider } from './session'
+import { SessionProvider, type LoginNavState } from './session'
 import ShortcutBar, { shortcutsFor } from './ShortcutBar'
 import SystemStatus, { SystemHealthProvider } from './SystemStatus'
 import styles from './AppShell.module.css'
@@ -21,9 +21,10 @@ import styles from './AppShell.module.css'
  * 外七条路由共同的父元素，守卫放在这一处，就不用在每个页面组件里各自重复。
  * 三态照抄 `useResource` 已有的 loading/error/ready 模式，不另造一套：
  *   - loading：骨架屏（`ui/Skeleton`），不是空白，也不是新发明的 spinner
- *   - ready 且 `data === null`（未登录，`fetchAdminIdentity` 把 401 转成了
- *     这个值）：整体导航到 `/login`，带上原本想去的路径，登录成功后
- *     Login 页用它跳回来
+ *   - ready 且 `signedIn: false`（未登录，`fetchAdminIdentity` 把 401 转成了
+ *     这个值）：整体导航到 `/login`，带上原本想去的路径（登录成功后 Login 页
+ *     用它跳回来）**以及这次是不是「登录被判失效」**——后者要在登录页上说出来，
+ *     否则一个以为自己登着的人被静静地弹到空表单前，只会认为系统坏了
  *   - ready 且拿到身份：正常渲染外壳 + `<Outlet />`
  *   - error（401 以外的网络错误）：复用 `Meetings` 页对 `load-failed` 的
  *     呈现方式（标题 + 说明 + 重试按钮），不是空白页——`AppShell` 目前没有
@@ -31,7 +32,7 @@ import styles from './AppShell.module.css'
  */
 export default function AppShell() {
   const location = useLocation()
-  const identity = useResource(() => fetchAdminIdentity(), [])
+  const probe = useResource(() => fetchAdminIdentity(), [])
 
   /**
    * **全局的 401 出口**（计划 §3.1）。33 条 admin 端点里任何一条返回 401，
@@ -51,10 +52,13 @@ export default function AppShell() {
   }, [])
 
   if (sessionExpired) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />
+    // 这一支的信息是确凿的：刚才还在用，某条请求回了 401。带上 expired，
+    // 登录页才说得出「你为什么突然站在这儿」。
+    const state: LoginNavState = { from: location.pathname, expired: true }
+    return <Navigate to="/login" state={state} replace />
   }
 
-  if (identity.state === 'loading') {
+  if (probe.state === 'loading') {
     return (
       <div className={styles.authGate} data-testid="admin-auth-loading">
         <Skeleton width="70%" />
@@ -63,20 +67,23 @@ export default function AppShell() {
     )
   }
 
-  if (identity.state === 'error') {
+  if (probe.state === 'error') {
     return (
       <div className={styles.authGate} data-testid="admin-auth-error">
         <h2 className={styles.authGateTitle}>登录状态读取失败</h2>
-        <p className={styles.authGateText}>{identity.error.message}</p>
-        <Button variant="primary" onClick={identity.retry}>
+        <p className={styles.authGateText}>{probe.error.message}</p>
+        <Button variant="primary" onClick={probe.retry}>
           重试
         </Button>
       </div>
     )
   }
 
-  if (identity.data === null) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  if (!probe.data.signedIn) {
+    // `rejected` 区分「从来没登录过」与「带着一张令牌被服务端拒了」。
+    // 两者落在同一张空表单前，只有后者需要一句解释（见 LoginNavState.expired）。
+    const state: LoginNavState = { from: location.pathname, expired: probe.data.rejected }
+    return <Navigate to="/login" state={state} replace />
   }
 
   // `SystemHealthProvider` 在登录态确认**之后**才挂：它要发两条真实的 admin
@@ -92,7 +99,7 @@ export default function AppShell() {
   const hasShortcuts = shortcutsFor(location.pathname).length > 0
 
   return (
-    <SessionProvider identity={identity.data}>
+    <SessionProvider identity={probe.data.identity}>
       <SystemHealthProvider>
         <div className={styles.shell}>
           <Rail />

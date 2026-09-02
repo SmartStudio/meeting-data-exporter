@@ -68,27 +68,42 @@ describe('GET /auth/me 把 role 带回来', () => {
   test('下发 admin 时是管理员', async () => {
     install(() => jsonResponse(200, { adminId: 'a-1', username: 'alice', role: 'admin' }))
     await expect(fetchAdminIdentity()).resolves.toEqual({
-      adminId: 'a-1',
-      username: 'alice',
-      role: 'admin',
+      signedIn: true,
+      identity: { adminId: 'a-1', username: 'alice', role: 'admin' },
     })
   })
 
   test('下发 readonly 时是只读', async () => {
     install(() => jsonResponse(200, { adminId: 'a-2', username: 'bob', role: 'readonly' }))
     const me = await fetchAdminIdentity()
-    expect(me?.role).toBe('readonly')
+    expect(me.signedIn && me.identity.role).toBe('readonly')
   })
 
   test('旧后端不下发 role 时按只读处理（回归：不许折成 admin）', async () => {
     install(() => jsonResponse(200, { adminId: 'a-3', username: 'carol' }))
     const me = await fetchAdminIdentity()
-    expect(me?.role).toBe('readonly')
+    expect(me.signedIn && me.identity.role).toBe('readonly')
   })
 
-  test('401 仍然返回 null（这条路径没被角色改动碰坏）', async () => {
+  test('401 仍然不抛（这条路径没被角色改动碰坏）', async () => {
     install(() => jsonResponse(401, { error: 'missing_admin_session' }))
-    await expect(fetchAdminIdentity()).resolves.toBeNull()
+    await expect(fetchAdminIdentity()).resolves.toEqual({ signedIn: false, rejected: false })
+  })
+
+  // ── 「从来没登录过」与「带着令牌被拒了」必须分得开 ──────────────
+  //
+  // 这两种都是 401、都落到同一张空登录表单前，但后者的人**以为自己好好地登着**。
+  // 折成同一个值（原来的 `null`）的代价，是登录页说不出「你为什么在这儿」——
+  // 于是他会认为系统坏了，去找一个并不存在的原因（比如「要手工清 cookie」）。
+
+  test('invalid_admin_session：带了令牌、被服务端拒了 → rejected', async () => {
+    install(() => jsonResponse(401, { error: 'invalid_admin_session' }))
+    await expect(fetchAdminIdentity()).resolves.toEqual({ signedIn: false, rejected: true })
+  })
+
+  test('读不出错误码时按「没带令牌」处理——拿不准就少说一句', async () => {
+    install(() => new Response('', { status: 401 }))
+    await expect(fetchAdminIdentity()).resolves.toEqual({ signedIn: false, rejected: false })
   })
 
   test('缺 adminId / username 时抛，不折成空串', async () => {

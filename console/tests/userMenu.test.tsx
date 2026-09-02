@@ -3,6 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import UserMenu from '../src/app/UserMenu'
+import { setUnauthorizedHandler } from '../src/api/client'
 import { renderAsRole } from './helpers/session'
 
 /**
@@ -160,6 +161,52 @@ describe('修改密码', () => {
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('当前密码不对')
     expect(screen.queryByTestId('password-done')).toBeNull()
+  })
+
+  // ── 401 在这条端点上有两个含义 ─────────────────────────────────
+  //
+  // 「当前密码不对」留在原地重填；「这张会话已经没了」必须走和其余 32 条端点
+  // 一样的出口。混成一句话的后果是：一个会话已经失效的人，盯着自己**填对了**的
+  // 当前密码一遍遍失败，而这张表单是全站唯一一处不会把他送去登录页的地方——
+  // 他能想到的下一步只剩「是不是要手工清 cookie」。本轮修的就是这个死胡同。
+
+  for (const code of ['invalid_admin_session', 'missing_admin_session']) {
+    test(`会话没了（${code}）时说的是「登录失效」，并触发全局 401 出口`, async () => {
+      const kicked = vi.fn()
+      setUnauthorizedHandler(kicked)
+      try {
+        next = { status: 401, body: { error: code } }
+        await openForm()
+        await fill('old-pass', 'new-pass-1234')
+        await userEvent.click(screen.getByRole('button', { name: '改密码' }))
+
+        const alert = await screen.findByRole('alert')
+        expect(alert).toHaveTextContent('登录已经失效')
+        // 不许说成「当前密码不对」——那句话会让人一遍遍重填一个本来就对的密码
+        expect(alert).not.toHaveTextContent('当前密码不对')
+        // 也不许把原始错误码摊在用户脸上
+        expect(alert).not.toHaveTextContent(code)
+        await waitFor(() => expect(kicked).toHaveBeenCalled())
+      } finally {
+        setUnauthorizedHandler(null)
+      }
+    })
+  }
+
+  test('当前密码不对**不**触发全局 401 出口 —— 一次输错不该变成一次强制登出', async () => {
+    const kicked = vi.fn()
+    setUnauthorizedHandler(kicked)
+    try {
+      next = { status: 401, body: { error: 'invalid_current_password' } }
+      await openForm()
+      await fill('wrong', 'new-pass-1234')
+      await userEvent.click(screen.getByRole('button', { name: '改密码' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('当前密码不对')
+      expect(kicked).not.toHaveBeenCalled()
+    } finally {
+      setUnauthorizedHandler(null)
+    }
   })
 
   test('太短时把后端下发的门槛说出来，不抄一个前端自己的数', async () => {

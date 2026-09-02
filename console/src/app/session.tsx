@@ -37,6 +37,27 @@ export const ROLE_LINE: Record<AdminRole, string> = {
   readonly: '只读账号 · 只能查看，不能改',
 }
 
+/**
+ * 跳登录页时随 `<Navigate state>` 带过去的东西。类型放在这里，是因为写它的
+ * （`AppShell`）和读它的（`pages/Login`）分处两端，各写各的字段名会静静地
+ * 对不上——那种错的表现是「说明永远不出现」，而没人会为一句没出现的话报 bug。
+ */
+export interface LoginNavState {
+  /** 原本想去的路径，登录成功后跳回。 */
+  from?: string
+  /**
+   * 是不是「登录过、但服务端已经不认这张会话了」。
+   *
+   * 这个字段存在的全部理由：**「从来没登录过」和「登录被判失效」落在同一张空
+   * 表单前，长得一模一样**，而后者的人以为自己好好地登着。不说明白，他会认为
+   * 系统坏了，然后去找一个并不存在的原因（比如「是不是要手工清 cookie」）。
+   *
+   * 缺失 / false = 就是来登录的，不用解释——对一个从没登录过的人说「你的登录
+   * 失效了」，是在解释一件没发生过的事。
+   */
+  expired?: boolean
+}
+
 const SessionContext = createContext<AdminIdentity | null>(null)
 
 export function SessionProvider({

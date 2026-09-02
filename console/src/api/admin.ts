@@ -75,13 +75,52 @@ export async function adminLogout(): Promise<void> {
   await call('/auth/logout', { method: 'POST' })
 }
 
-/** 未登录返回 null，而不是抛出——调用方（路由守卫）要的是"有没有登录"这个布尔判断，
- *  不是异常处理流。401 是这个探测本身预期的正常结果之一。 */
-export async function fetchAdminIdentity(): Promise<AdminIdentity | null> {
+/**
+ * 探测登录态的结果。
+ *
+ * ## 为什么不是 `AdminIdentity | null`
+ *
+ * 它原来就是。但「从来没登录过」和「登录过、服务端已经不认这张会话了」在**界面上
+ * 是两回事**：前者看见一张登录表单是理所当然的，后者的人以为自己好好地登着，
+ * 被静静地弹到同一张空表单前，只会认为系统坏了——然后开始怀疑是不是要手工清
+ * cookie。这条类型改动的来源正是这样一次误判。
+ *
+ * 两者的区别后端一直在说（`missing_admin_session` / `invalid_admin_session`），
+ * 是这一层把它折成了 `null` 丢掉的。
+ */
+export type SessionProbe =
+  | { signedIn: true; identity: AdminIdentity }
+  | {
+      signedIn: false
+      /** 浏览器确实带了一张会话令牌、而服务端拒绝了它。用来在登录页上解释「你为什么在这儿」。 */
+      rejected: boolean
+    }
+
+/** 401 体里那个错误码是不是「令牌无效」——与「压根没带令牌」相对。 */
+async function sessionWasRejected(res: Response): Promise<boolean> {
+  try {
+    const body: unknown = await res.json()
+    return (
+      body !== null &&
+      typeof body === 'object' &&
+      (body as { error?: unknown }).error === 'invalid_admin_session'
+    )
+  } catch {
+    // 读不出错误码时按「没带令牌」处理：多说一句「你的登录失效了」给一个从没
+    // 登录过的人，是在解释一件没发生过的事。拿不准就少说。
+    return false
+  }
+}
+
+/**
+ * 探一次登录态。**401 是它预期的正常结果之一**，所以返回值而不是抛——调用方
+ * （路由守卫）要的是"有没有登录"，不是异常处理流。
+ */
+export async function fetchAdminIdentity(): Promise<SessionProbe> {
   const res = await call('/auth/me', { method: 'GET' })
-  if (res.status === 401) return null
+  if (res.status === 401) return { signedIn: false, rejected: await sessionWasRejected(res) }
   if (!res.ok) throw new Error(`session check failed: ${res.status}`)
-  return readIdentity(await res.json(), 'GET /auth/me')
+  return { signedIn: true, identity: readIdentity(await res.json(), 'GET /auth/me') }
 }
 
 /**
@@ -111,12 +150,27 @@ export class PasswordError extends Error {
   }
 }
 
+/** 这两个码说的是「这张会话没了」，不是「当前密码不对」。见 changePassword 里的分支。 */
+const SESSION_GONE = new Set(['missing_admin_session', 'invalid_admin_session'])
+
 const PASSWORD_ERROR: Record<string, string> = {
+  missing_admin_session: '你的登录已经失效了，密码没有被修改。正在把你送回登录页——用现在的密码重新登录之后再改。',
+  invalid_admin_session: '你的登录已经失效了，密码没有被修改。正在把你送回登录页——用现在的密码重新登录之后再改。',
   missing_fields: '当前密码与新密码都要填。',
   password_unchanged: '新密码和当前密码一样，等于没改。',
   invalid_current_password: '当前密码不对。这一栏必须填对——只凭浏览器里那张 cookie 就能改密码，等于一次 XSS 就能永久接管账号。',
   account_not_found: '这个账号在后端已经不存在了。请重新登录。',
   invalid_json: '请求体不是合法 JSON——这是前端的问题，请把这句话连同时间点报给维护者。',
+}
+
+/**
+ * 这个错误是不是「会话没了」——而不是「当前密码不对」。
+ *
+ * 判据留在这一层（错误码是后端契约的一部分，UI 不该认识 `invalid_admin_session`
+ * 这种字符串），动作留在 UI 层（跳登录页是界面的事）。
+ */
+export function isSessionGone(err: unknown): boolean {
+  return err instanceof PasswordError && SESSION_GONE.has(err.code)
 }
 
 export async function changePassword(
@@ -138,6 +192,18 @@ export async function changePassword(
     }
     const code = typeof body.error === 'string' ? body.error : `http_${res.status}`
     const min = typeof body.minLength === 'number' ? body.minLength : null
+    // 401 在这条端点上有两个含义，必须分开——这是本轮修的那个死胡同：
+    // 会话已经没了（管理员在命令行重置过密码、短会话到期、在别处登出）时，
+    // 后端回的是 missing/invalid_admin_session，而这里从前把它当成一句普通的
+    // 「改密码失败」显示在表单里。用户看着自己**填对了**的当前密码一遍遍失败，
+    // 得不到任何出口——这是全站唯一一处 401 不通往登录页的地方。
+    // 抛一个**认得出来**的错误就够了，跳转不在这一层做：`tests/api/client.test.ts`
+    // 有一条故意写得很钝的回归测试——这个文件一律不许引用统一请求层，连提到它
+    // 那两个函数的名字都不行。它钝得超过了它写下的理由（防止 /auth/me 走那一层、
+    // 造成登录页把自己重定向到自己），而那个钝正是它的价值：第一个被它挡住的人
+    // 如果顺手把它磨细，它就再也挡不住下一个人了——本轮就被它挡了一次，挡对了。
+    // 所以这里只说「发生了什么」，「该去哪」交给调用方（`app/UserMenu.tsx`）。
+    if (SESSION_GONE.has(code)) throw new PasswordError(code, PASSWORD_ERROR[code]!, null)
     const text =
       code === 'password_too_short'
         ? `新密码太短，至少 ${min ?? 8} 位。`
