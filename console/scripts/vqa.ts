@@ -385,7 +385,10 @@ interface TypographyRow {
   w: number; h: number; text: string; len: number
 }
 interface InteractiveRow {
+  /** 有效热区（含包着它的 label）的宽高——**这才是「点不点得中」的那个数**。 */
   sel: string; tag: string; w: number; h: number; x: number; y: number
+  /** 元素自己的边框盒。与 w/h 不同时才有意义：原生 checkbox 恒为 13×13。 */
+  ownW: number; ownH: number
   text: string; label: string
 }
 interface ValueGroup { key: string; count: number; samples: string[] }
@@ -496,10 +499,18 @@ function browserProbe(args: ProbeArgs): ProbeResult {
     }
 
     if (el.matches(INTERACTIVE_SEL)) {
+      /* 记的是**有效热区**，不是元素自己的盒子。原生 checkbox 恒为 13×13，
+         热区长在包着它的 <label> 上（点 label 就是点它，原生行为）——只量
+         元素自己会把一个已经补到 44 的勾选框继续报成 13×13，让人以为没修。
+         与门槛第 8 项同一套算法，两个量具对同一件事不能给两个答案。 */
+      const lab = el.closest('label')
+      const lb = lab ? lab.getBoundingClientRect() : r
+      const r1 = (n: number): number => Math.round(n * 10) / 10
       interactive.push({
         sel: sel(el), tag: el.tagName.toLowerCase(),
-        w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10,
+        w: r1(Math.max(r.width, lb.width)), h: r1(Math.max(r.height, lb.height)),
         x: Math.round(r.x), y: Math.round(r.y),
+        ownW: r1(r.width), ownH: r1(r.height),
         text: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 30),
         label: el.getAttribute('aria-label') ?? '',
       })
@@ -529,7 +540,11 @@ function browserProbe(args: ProbeArgs): ProbeResult {
   }
 
   const offScaleFontSize = typography.filter((t) => !fontScale.includes(t.fs))
-  const tightTap = interactive.filter((b) => b.w > 0 && b.h > 0 && (b.w < tapMin || b.h < tapMin))
+  /* 原型专用控件不计入：顶栏那个「系统状态」下拉包在 `{proto && …}` 里，
+     只在原型模式渲染，而这个量具必须带 ?proto=1 才有数据可看。按结构判
+     （在 protoGroup 子树里），与门槛第 8 项的豁免同一个判据。 */
+  const tightTap = interactive.filter((b) =>
+    b.w > 0 && b.h > 0 && (b.w < tapMin || b.h < tapMin) && !b.sel.includes('protoGroup'))
   const longParagraphs = typography.filter((t) => t.len >= paraMinChars && t.w > paraMaxWidth)
 
   // 溢出可达性：区分「被滚动容器吸收」（表格横向滚动，设计好的行为）与
@@ -798,7 +813,8 @@ function printSummary(raw: Record<string, RunResult>, tapMin: number): void {
   console.log(`【390px 下不足 ${tapMin}px 的可点元素】${tapAll.length} 个（--tap-min，输入类触控目标下限）`)
   console.log(bar)
   for (const b of tapAll.slice(0, 25)) {
-    console.log(`  ${b.page.padEnd(10)} ${b.w}×${b.h}  ${b.sel}${b.label ? `（aria-label="${b.label}"）` : ''} 「${b.text}」`)
+    const own = b.w === b.ownW && b.h === b.ownH ? '' : `（自身 ${b.ownW}×${b.ownH}）`
+    console.log(`  ${b.page.padEnd(10)} ${b.w}×${b.h}${own}  ${b.sel}${b.label ? `（aria-label="${b.label}"）` : ''} 「${b.text}」`)
   }
   if (tapAll.length > 25) console.log(`  ……还有 ${tapAll.length - 25} 个未列出，见 measure.json`)
 
