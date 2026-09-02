@@ -1,4 +1,10 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import {
+  SystemStatusContext,
+  useSystemStatusView,
+  type SystemAlert,
+  type SystemStatusView,
+} from './systemAlert'
 import { Link } from 'react-router-dom'
 import type { SystemState } from '@/api/types'
 import {
@@ -74,35 +80,6 @@ export function useSystemState(): SystemStateContextValue {
    真实的系统健康状态
    ══════════════════════════════════════════════════════════════════ */
 
-/**
- * 状态条与左栏摘要要显示的那一件事。
- *
- * 拆成一个显式的联合而不是几个布尔，是为了让"读不到"有自己的取值：
- * `unreadable` 与 `none` 必须分得开——**拿不到状态时显示"未知"，
- * 不许默认成"正常"**（计划 §1 全局约束第 2 条）。
- */
-export type SystemAlert =
-  /** 一切正常，或者数据三态（loading/load-failed/empty，出口在页面内容区） */
-  | { kind: 'none' }
-  /** 首次探测还没回来 */
-  | { kind: 'checking' }
-  /** 系统状态本身读不到（后端不可达 / 响应形状不对）。**不是"正常"** */
-  | { kind: 'unreadable'; detail: string }
-  /** `GET /api/v1/admin/storage` 的 `nas.reachable === false` */
-  | { kind: 'nas-down'; error: string | null; pendingMeetings: number | null }
-  /** 从 `fetch_recordings` 的最近运行**推断**出来的"拉不通"。措辞见下 */
-  | { kind: 'fetch-stalled'; streak: number; label: string }
-  /** 任务清单里没有 `fetch_recordings`——推不出来，也不许当成正常 */
-  | { kind: 'fetch-unknown' }
-
-export interface SystemStatusView {
-  alert: SystemAlert
-  /** 需要人处理的失败项总数；读不到时是 `null`——`0` 是"没有失败"，不是同一件事 */
-  openFailures: number | null
-  retry: () => void
-}
-
-const SystemStatusContext = createContext<SystemStatusView | null>(null)
 
 function protoAlert(state: SystemState): SystemAlert {
   switch (state) {
@@ -176,14 +153,14 @@ export function SystemHealthProvider({ children }: { children: ReactNode }) {
 }
 
 /**
- * 状态条与左栏摘要都读它。**只有 `AppShell` 之下才有**——七条路由的每一页
- * 都在它底下，登录页刻意不在（那时还没有会话，发请求只会拿到 401）。
+ * 类型与读取口转出去，给原本就从本文件取的调用方（`Rail`、测试）用。
+ *
+ * **页面不要走这条转出**——那等于又把 `SystemStatus.module.css` 拖进模块图，
+ * 而那正是 `systemAlert.ts` 存在的理由（见那个文件的头注释）。页面直接
+ * `import ... from '@/app/systemAlert'`。
  */
-export function useSystemStatusView(): SystemStatusView {
-  const ctx = useContext(SystemStatusContext)
-  if (!ctx) throw new Error('useSystemStatusView 必须在 SystemHealthProvider 内使用')
-  return ctx
-}
+export { useSystemStatusView, useSystemAlertKind } from './systemAlert'
+export type { SystemAlert, SystemStatusView } from './systemAlert'
 
 /* ══════════════════════════════════════════════════════════════════
    顶栏下方的告警条

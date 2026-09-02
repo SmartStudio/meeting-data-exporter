@@ -6,6 +6,7 @@ import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { TENCENT_DOWN_STREAK, fetchStreakText } from '../../src/api/admin/health'
 import JobsPage from '../../src/pages/Jobs'
+import { SystemStateProvider, SystemHealthProvider } from '../../src/app/SystemStatus'
 
 /**
  * 定时任务页（spec.md §4.8）。
@@ -135,6 +136,42 @@ async function mount(body: unknown = payload(), opts: StubOpts = {}) {
   render(<JobsPage />)
   await screen.findByRole('heading', { name: '定时任务', level: 1 })
   return stub
+}
+
+/**
+ * 把页面挂进**真实的** `SystemHealthProvider` 里。
+ *
+ * 不手工注入一个假的 alert：那样测的是"我以为 liveAlert() 会返回什么"。
+ * 这里喂的是两条真端点的响应（`/storage` 与 `/jobs`，`fetchSystemHealth()`
+ * 两条都要），让顶栏那一侧走完自己的推导——「NAS 断连会挡住 fetch-stalled」
+ * 这条分支因此是被真的执行到的，不是被断言假设的。
+ */
+async function mountWithAlert(opts: { nasReachable: boolean }, body: unknown = payload()) {
+  const storage = {
+    nas: {
+      root: '/nas',
+      reachable: opts.nasReachable,
+      checkedAt: 0,
+      error: opts.nasReachable ? null : 'EROFS',
+      pendingMeetings: 3,
+    },
+  }
+  const f = vi.fn(async (url: string, init?: RequestInit) => {
+    const out = String(url).includes('/admin/storage') ? storage : body
+    return new Response(JSON.stringify(out), {
+      status: (init?.method ?? 'GET') === 'POST' ? 202 : 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  })
+  vi.stubGlobal('fetch', f)
+  render(
+    <SystemStateProvider>
+      <SystemHealthProvider>
+        <JobsPage />
+      </SystemHealthProvider>
+    </SystemStateProvider>,
+  )
+  await screen.findByRole('heading', { name: '定时任务', level: 1 })
 }
 
 describe('三态出口', () => {
@@ -495,6 +532,98 @@ describe('「拉取连续失败」的措辞（计划 G-d）', () => {
   test('没连续失败到阈值就没有这条', async () => {
     await mount()
     expect(screen.queryByTestId('jobs-fetch-stalled')).toBeNull()
+  })
+
+  // ── 顶栏已经在说的时候，这一页不再说第二遍 ──────────────────────
+  //
+  // 那条全局状态条在每一页都显示，包括这一页，文案比这条还全（多一句「这是从
+  // 任务运行记录推出来的判断」），还带着一颗指向 /jobs 的「查看失败原因」——
+  // 指向你已经站着的地方。同一屏说两遍、第二遍还更短且不可点。
+
+  test('顶栏正在说 fetch-stalled 时，页内这条不再出现', async () => {
+    await mountWithAlert(
+      { nasReachable: true },
+      payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
+    )
+    await waitFor(() => expect(screen.queryByTestId('jobs-fetch-stalled')).toBeNull())
+  })
+
+  test('顶栏被 NAS 断连占住时，这条要回来 —— 那时没人替它说', async () => {
+    // liveAlert() 先判 nas.reachable，一旦为假就直接返回 nas-down，
+    // 再也走不到 fetch-stalled 那一支
+    await mountWithAlert(
+      { nasReachable: false },
+      payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
+    )
+    expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
+  })
+
+  test('压根没有 Provider 时也要出现 —— 兜底落在「多说一句」那一侧', async () => {
+    // useSystemAlertKind() 缺 Provider 时返回 null（不抛）。反过来兜底
+    // （当成"顶栏正在说"）会把一条真实告警藏掉，屏幕上剩下一个看起来
+    // 一切正常的页面 —— 那比多说一遍糟得多。
+    await mount(
+      payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
+    )
+    expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
+  })
+})
+
+describe('卡片上那句「影响」不与失败项表重复', () => {
+  const IMPACT = '录制在腾讯会议过期后就再也拉不回来了'
+
+  test('失败项表里已经列着这个任务的失败行时，卡片上那句不再出现', async () => {
+    await mount(
+      payload({
+        jobs: [job({ name: 'fetch_recordings', health: 'overdue', openFailures: 1, impact: IMPACT })],
+        failures: [failure({ jobName: 'fetch_recordings', impact: IMPACT })],
+      }),
+    )
+    const card = await screen.findByTestId('job-card')
+    expect(card).not.toHaveTextContent('影响：')
+    // 同一句话仍然在屏幕上 —— 只是由那张表说
+    expect(await screen.findByTestId('failure-row')).toHaveTextContent(IMPACT)
+  })
+
+  test('任务落后但一条失败项都没有时，卡片这句是唯一的出处', async () => {
+    // 调度器停了，压根没跑到会失败的那一步 —— 那时表是空的
+    await mount(
+      payload({
+        jobs: [job({ name: 'fetch_recordings', health: 'overdue', openFailures: 0, impact: IMPACT })],
+        failures: [],
+      }),
+    )
+    const card = await screen.findByTestId('job-card')
+    expect(card).toHaveTextContent('影响：')
+    expect(card).toHaveTextContent(IMPACT)
+  })
+
+  test('失败行存在、但「如果不处理」写的是另一句时，卡片这句不能被藏掉', async () => {
+    // 失败行的 impact 是**独立的一列**，可以逐条不同（原型数据就是这样）。
+    // 按「有没有失败行」这个代理指标抑制，会把一句根本不重复的话也藏掉 ——
+    // 第一版就是这么错的，靠把页面真的渲染出来才发现，不是靠这里的断言。
+    await mount(
+      payload({
+        jobs: [job({ name: 'fetch_recordings', health: 'overdue', openFailures: 1, impact: IMPACT })],
+        failures: [failure({ jobName: 'fetch_recordings', impact: '这一轮一场都没拉成。' })],
+      }),
+    )
+    const card = await screen.findByTestId('job-card')
+    expect(card).toHaveTextContent('影响：')
+    expect(card).toHaveTextContent(IMPACT)
+  })
+
+  test('失败行被那张表截断掉时，卡片这句要回来', async () => {
+    // 那张表一次最多 100 条。被截断掉的行不在屏幕上，此时卡片是唯一的出处 ——
+    // 判据因此是「这条失败此刻在不在屏幕上」，不是「有没有未处理的失败」。
+    await mount(
+      payload({
+        jobs: [job({ name: 'fetch_recordings', health: 'overdue', openFailures: 7, impact: IMPACT })],
+        failures: [failure({ jobName: 'archive_nas' })],
+      }),
+    )
+    const card = await screen.findAllByTestId('job-card')
+    expect(card[0]).toHaveTextContent('影响：')
   })
 })
 

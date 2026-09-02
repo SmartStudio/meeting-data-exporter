@@ -6,6 +6,10 @@ import { PageShell } from '@/ui/PageShell'
 import { Skeleton } from '@/ui/Skeleton'
 import { FailuresTable } from './FailuresTable'
 import { JobCard, type RunState } from './JobCard'
+// 直连 `app/systemAlert`（无 CSS）而不是 `app/SystemStatus`：后者带着
+// `SystemStatus.module.css`，多一条 import 边就会改变全站样式的注入顺序。
+// 这一行曾经写成前者，结果把会议记录页的对比度检查搞红了。
+import { useSystemAlertKind } from '@/app/systemAlert'
 import { fetchStall, overdueJobs, runQueuedNote } from './view'
 import styles from './Jobs.module.css'
 
@@ -131,6 +135,46 @@ function Ready({
   const overdue = overdueJobs(o.jobs)
   const stall = fetchStall(o.jobs)
 
+  /**
+   * 顶栏那条全局状态条是不是已经在说「拉取连着没跑成」。
+   *
+   * 它在**每一页**都显示，包括这一页，文案比下面这条还全（多一句「这是从任务
+   * 运行记录推出来的判断」），而且带着一颗「查看失败原因」的链接——指向 `/jobs`，
+   * 也就是你已经站着的地方。同一件事在一屏里说两遍，第二遍还比第一遍少说一句，
+   * 且没有任何动作可点。
+   *
+   * **不是直接删掉这条横幅**，因为有两种情形顶栏说不出来：
+   *
+   * 1. NAS 也断了。`liveAlert()` 先判 `nas.reachable`，一旦为假就直接返回
+   *    `nas-down`，再也走不到 `fetch-stalled` 那一支——那时顶栏只讲 NAS，
+   *    而「新录制正在积压」这件事在这一页仍然要有人说。
+   * 2. 顶栏读的是另一条端点（`GET /admin/health`），这一页读的是 `/admin/jobs`。
+   *    前者挂了顶栏会显示「系统状态读取失败」，那时它同样说不出这一句。
+   *
+   * 所以判据是「顶栏此刻正在说这件事吗」，不是「顶栏存在吗」。
+   *
+   * `useSystemAlertKind()` 在没有 Provider 时给 `null`（不抛），于是这里落到
+   * `false`——**照常把这句说出来**。少了一个 Provider 就把告警藏掉，屏幕上会
+   * 剩下一个看起来一切正常的页面，那比多说一遍糟得多。
+   */
+  const globalSaysStalled = useSystemAlertKind() === 'fetch-stalled'
+
+  /**
+   * 卡片上那句「影响」是不是**逐字**已经在下面那张表里了。
+   *
+   * 判据是**文字本身相同**，不是「这个任务有没有失败行」——那只是个代理指标，
+   * 而它会错：`scheduler.ts` 把 `spec.impact` 原样写进失败行，所以生产环境里
+   * 两处确实是同一句；但失败行的 `impact` 是**一个独立的列**，可以逐条不同
+   * （原型数据就是这样写的：「未归档。本地保留期一到，这场会议就永久没有了。」
+   * 与任务级的那句并不一样）。按代理指标抑制，会把一句根本不重复的话也藏掉——
+   * 这一版就是这么错的，靠把页面真的渲染出来才发现。
+   *
+   * 用 `o.failures`（屏幕上那一批）而不是 `job.openFailures > 0`：那张表一次
+   * 最多 100 条，被截断掉的行不在屏幕上，那时卡片这句是唯一的出处。
+   */
+  const impactShownBelow = (name: string, impact: string): boolean =>
+    o.failures.some((f) => f.jobName === name && f.impact === impact)
+
   return (
     <>
       {overdue.length > 0 && (
@@ -150,7 +194,7 @@ function Ready({
         </div>
       )}
 
-      {stall !== null && (
+      {stall !== null && !globalSaysStalled && (
         <div className={styles.banner} data-sev="warn" data-testid="jobs-fetch-stalled" role="status">
           <p className={styles.bannerText}>
             <b>{stall.text}</b>——「{stall.label}」连着没跑成，新的录制多半正在积压。
@@ -165,6 +209,10 @@ function Ready({
         </div>
       )}
 
+      {/* 「N 个任务已经落后」那条**不做同样的抑制**：顶栏的 `liveAlert()` 只报
+          nas-down / fetch-unknown / fetch-stalled 三种，没有 overdue——这一页
+          是它唯一的出处。 */}
+
       <ul className={styles.chain} aria-label="内置定时任务">
         {o.jobs.map((job, i) => (
           <JobCard
@@ -173,6 +221,7 @@ function Ready({
             index={i}
             now={o.now}
             runState={runStates[job.name]}
+            impactShownBelow={impactShownBelow(job.name, job.impact)}
             onRun={onRun}
           />
         ))}

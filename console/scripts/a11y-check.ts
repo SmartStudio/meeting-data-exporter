@@ -652,7 +652,15 @@ const SCENES: Scene[] = [
     // 先在会议记录页把状态拨过去，再走左栏进定时任务页，见 viaState()
     route: '/meetings',
     setup: (p) => viaState(p, 'tencent-down', '/jobs'),
-    expect: ['[data-testid="jobs-fetch-stalled"]', 'ul[aria-label="内置定时任务"]'],
+    // 判据从页内那条横幅（`jobs-fetch-stalled`）换成**顶栏那条**
+    // （`[data-alert="fetch-stalled"]`）：这一句现在由全局状态条说，页内那条只在
+    // 顶栏说不出来时才出现（NAS 也断了、或 health 端点自己挂了——见
+    // `pages/Jobs/index.tsx` 的 `globalSaysStalled`）。在这个场景里顶栏正说着，
+    // 所以页内那条按设计不该在。
+    //
+    // 页内那条的样式仍然被门槛盖着：它和 `jobs-overdue` 共用 `.banner`，
+    // 而那一条由上面的 `jobs` 场景检查。这里少的只是它那段文字本身。
+    expect: ['[data-alert="fetch-stalled"]', 'ul[aria-label="内置定时任务"]'],
   },
   {
     id: 'storage',

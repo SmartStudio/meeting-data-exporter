@@ -123,6 +123,14 @@ export interface JobCardProps {
   /** 服务端的"现在"。相对时间一律拿它算，不用客户端的钟 */
   now: number
   runState: RunState | undefined
+  /**
+   * `job.impact` 这句话**逐字**已经在下面那张失败项表里了吗。
+   *
+   * 由调用方算（它才看得见 `o.failures`），判据是文字相同而不是「这个任务有没有
+   * 失败行」——失败行的 `impact` 是独立的一列，可以逐条不同。理由写在
+   * `index.tsx` 的 `impactShownBelow` 上。
+   */
+  impactShownBelow: boolean
   onRun: (name: string) => void
 }
 
@@ -138,7 +146,7 @@ export interface JobCardProps {
  * 卡住的那一段（`data-alarm="true"`）整段变红：`--fail-soft` 底 +
  * 顶部一条 `--fail` 色条（`.job[data-alarm]::before`）。
  */
-export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
+export function JobCard({ job, index, now, runState, impactShownBelow, onRun }: JobCardProps) {
   const hv = healthView(job.health)
   const pending = runState?.phase === 'pending'
   const readonly = useReadonly()
@@ -186,15 +194,20 @@ export function JobCard({ job, index, now, runState, onRun }: JobCardProps) {
         )}
       </div>
 
-      {/* 「影响」是脚注，不是正文：只在这个任务真的出问题时才现身。正常的三个
-          任务不再各自常驻一行同一句式；真正失败的那几项，后果已经在下面
-          「失败项 · 需要处理」表的「如果不处理」列里逐条写过一次，这里只补
-          它自己那一句。
+      {/* 「影响」是脚注，不是正文，两道闸都得过：
+
+          1. 这个任务真的出了问题（`trouble`）。正常的三个任务不再各自常驻一行
+             同一句式。
+          2. **下面那张失败项表还没替它说过**（`!impactShownBelow`）。那张表的
+             「如果不处理」列逐行写的就是同一句 `job.impact`，同屏说两遍、中间
+             只隔几行，是这一页「一个错误被摊在好几处」的一半。
+             留下的是表说不出来的那一种：任务已经落后、但一条失败项都没有
+             （调度器停了，压根没跑到会失败的那一步）——那时表是空的。
 
           标签从「没跑成的后果：」换成「影响：」——七个字换成两个字，而这一行
           本来就在四张 298px 宽的卡片里挤着，前缀越长，真正要读的那句话越晚开始。
           「没跑成」这三个字也没在说事实：卡片上方那个红点已经写着「已经落后」。 */}
-      {trouble && <p className={styles.impact}>影响：{job.impact}</p>}
+      {trouble && !impactShownBelow && <p className={styles.impact}>影响：{job.impact}</p>}
 
       {/* 只读账号禁用而不是隐藏：藏起来会让人以为这个系统没有手动触发这回事 */}
       <Button size="sm" onClick={() => onRun(job.name)} disabled={pending || readonly} title={readonlyTitle(readonly)}>
