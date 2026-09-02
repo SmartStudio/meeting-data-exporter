@@ -78,6 +78,36 @@ export function readCookie(req: Request, name: string): string | null {
 }
 
 /**
+ * 在一个响应上附「把浏览器手里那张会话 cookie 作废」的指令。
+ *
+ * ## 为什么服务端判无效之后必须主动清
+ *
+ * 服务端说这张令牌不认了，浏览器却还按签发时的 `Max-Age`（勾了「记住此设备」
+ * 就是 30 天）继续留着它，附在此后每一个请求上。两边对「我登录了没有」的答案
+ * 从此不一致，而**产品里没有任何一条路径能让人把它弄掉**——普通用户不会去开
+ * 开发者工具删 cookie。所以拒绝这张令牌的那一刻，就是告诉浏览器扔掉它的那一刻，
+ * 这件事不该落到人身上。
+ *
+ * ## 为什么这条删除指令不带 `Secure`
+ *
+ * cookie 的身份是 (name, domain, path) 三元组，`Secure` 不在其中：https 下一条
+ * 不带 Secure 的删除指令照样删得掉一张 Secure 的 cookie。反过来在本地开发
+ * （http）下发一条带 Secure 的删除指令，浏览器会整条丢弃——删除**静静地**不生效，
+ * 而这正是最难排查的那种失败。一条在两种部署下都成立的写法，胜过两条各自成立、
+ * 靠调用方挑对的写法，所以这里不接 `cookieSecure`。
+ *
+ * Path / HttpOnly / SameSite 必须与签发时（`handlers/console/auth.ts` 的
+ * `cookieAttrs`）一致，否则浏览器认为这是另一张 cookie，删除落空。
+ */
+export function clearAdminSessionCookie(res: Response): Response {
+  res.headers.append(
+    'set-cookie',
+    `${ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+  )
+  return res
+}
+
+/**
  * 管理员会话校验。与 requireAuth 并列但签名故意不同——管理员会话（Task 3，
  * A1）落库在 admin_sessions 表，校验必须查库（并可能触发滑动续期的 UPDATE），
  * 做不成同步函数。
@@ -96,7 +126,13 @@ export async function requireAdminAuth(
     return { ok: true, identity }
   } catch (err) {
     if (err instanceof AdminSessionInvalidError) {
-      return { ok: false, response: json(401, { error: 'invalid_admin_session' }) }
+      // 浏览器确实带了一张令牌，服务端判定它无效——顺手让浏览器把它扔掉，
+      // 理由见 clearAdminSessionCookie。上面 token === null 那一支不清：
+      // 本来就没有东西可清，每个未登录请求都回一条 set-cookie 只是噪音。
+      return {
+        ok: false,
+        response: clearAdminSessionCookie(json(401, { error: 'invalid_admin_session' })),
+      }
     }
     throw err
   }

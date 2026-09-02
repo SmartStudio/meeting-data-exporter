@@ -119,6 +119,60 @@ test('requireAdminAuth：token 校验失败（AdminSessionInvalidError）返回 
   }
 })
 
+// ── 被拒绝的会话 cookie 必须当场作废 ────────────────────────────────
+//
+// 服务端判定这张令牌不认了，浏览器却按签发时的 Max-Age（勾了「记住此设备」
+// 就是 30 天）继续留着它、附在此后每一个请求上。两边对「我登录了没有」的答案
+// 从此不一致，而产品里**没有任何一条路径**能让人把它弄掉——普通用户不会去开
+// 开发者工具删 cookie。这几条钉住「拒绝的那一刻就是清掉的那一刻」。
+
+function setCookies(res: Response): string[] {
+  // getSetCookie() 才拿得到多条；headers.get('set-cookie') 会把它们逗号连成一条
+  return res.headers.getSetCookie()
+}
+
+test('requireAdminAuth：令牌无效时，401 顺带把浏览器里那张 cookie 作废', async () => {
+  const adminAuth = fakeAdminAuth(async () => {
+    throw new AdminSessionInvalidError()
+  })
+  const req = new Request('https://gw/api/v1/admin/accounts', {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=some-invalid-token` },
+  })
+  const r = await requireAdminAuth(req, adminAuth, 1000)
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    const cookies = setCookies(r.response)
+    expect(cookies).toHaveLength(1)
+    expect(cookies[0]).toContain(`${ADMIN_SESSION_COOKIE}=;`)
+    expect(cookies[0]).toContain('Max-Age=0')
+    // Path / HttpOnly / SameSite 必须与签发时（handlers/console/auth.ts 的
+    // cookieAttrs）一字不差，否则浏览器认为这是另一张 cookie，删除落空
+    expect(cookies[0]).toContain('Path=/')
+    expect(cookies[0]).toContain('HttpOnly')
+    expect(cookies[0]).toContain('SameSite=Strict')
+  }
+})
+
+test('requireAdminAuth：删除指令不带 Secure —— 一条写法要在 http 与 https 下都成立', async () => {
+  // cookie 的身份是 (name, domain, path)，Secure 不在其中：https 下一条不带
+  // Secure 的删除指令照样删得掉 Secure 的 cookie。反过来在本地开发（http）
+  // 下发带 Secure 的删除指令，浏览器整条丢弃——删除**静静地**不生效。
+  const adminAuth = fakeAdminAuth(async () => {
+    throw new AdminSessionInvalidError()
+  })
+  const req = new Request('https://gw/x', {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=nope` },
+  })
+  const r = await requireAdminAuth(req, adminAuth, 1000)
+  expect(r.ok === false && setCookies(r.response)[0]).not.toContain('Secure')
+})
+
+test('requireAdminAuth：压根没带 cookie 时不发删除指令 —— 没东西可清，那是噪音', async () => {
+  const adminAuth = fakeAdminAuth(async () => ADMIN_IDENTITY)
+  const r = await requireAdminAuth(new Request('https://gw/x'), adminAuth, 1000)
+  expect(r.ok === false && setCookies(r.response)).toEqual([])
+})
+
 test('requireAdminAuth：verifySession 抛出非 AdminSessionInvalidError 的异常时向上抛出，不吞掉', async () => {
   const boom = new Error('unexpected db failure')
   const adminAuth = fakeAdminAuth(async () => {
