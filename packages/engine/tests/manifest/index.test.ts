@@ -146,27 +146,48 @@ test('会议在库里不存在 → skipped，不写文件', async () => {
   expect(storage.writes.size).toBe(0)
 })
 
-test('终态失败的资产进 missing 并带原因——「确认缺失」与「不知有无」是两种状态', async () => {
+test('没取到的资产进 missing 并带原因——skipped / dead 是终态，failed 是「还在重试」，pending 什么都不写', async () => {
   const store = await seeded()
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'f-ai-1', fileType: 'docx' }, 1)
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_topic_minutes', remoteId: 'f-ai-2', fileType: 'docx' }, 1)
-  await downloadAll(store)                              // 四个都 completed
-  // 再把两个 AI 纪要打回终态：一个 skipped（平台明说不给），一个 dead（重试用尽）
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_speaker_minutes', remoteId: 'f-ai-3', fileType: 'docx' }, 1)
+  await downloadAll(store)                              // 五个都 completed
+  // 再把三个 AI 纪要各打到一个"没取到"的状态：skipped（平台明说不给）、
+  // dead（重试用尽）、failed（这一轮没成，下一轮还会重试）
   const rows = await store.assetsForMeeting('m1', '')
   const ai1 = rows.find((r) => r.asset_type === 'ai_minutes')!
   const ai2 = rows.find((r) => r.asset_type === 'ai_topic_minutes')!
+  const ai3 = rows.find((r) => r.asset_type === 'ai_speaker_minutes')!
   await store.markSkipped(ai1.id, 'download_not_allowed', 2000)
   await store.markDead(ai2.id, 'http 500', 2000)
+  await store.markFailed(ai3.id, 'ECONNRESET', 2000, 2300)
   const storage = fakeStorage()
 
   await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   expect(manifest.assets.map((a) => a.assetType).sort()).toEqual(['meeting_summary', 'video'])
+  // failed 与两个终态一起写出来：它带着最后一次的错，而 status 这一列本身就说明了
+  // 「还会重试」。藏起来的话，一个反复失败的资产在清单里与「从来没有过这个资产」
+  // 长得一模一样——这份清单每轮重写，说一件还会变的事比沉默诚实。
   expect(manifest.missing).toEqual([
     { assetType: 'ai_minutes', assetKey: 'ai_minutes', remoteId: 'f-ai-1', status: 'skipped', reason: 'download_not_allowed' },
     { assetType: 'ai_topic_minutes', assetKey: 'ai_topic_minutes', remoteId: 'f-ai-2', status: 'dead', reason: 'http 500' },
+    { assetType: 'ai_speaker_minutes', assetKey: 'ai_speaker_minutes', remoteId: 'f-ai-3', status: 'failed', reason: 'ECONNRESET' },
   ])
+})
+
+test('pending / running 不进 missing——它们连"试过一次"都还没有，没有原因可写', async () => {
+  const store = await seeded()
+  // 只有两个种子资产下完；第三个 upsert 之后不跑 executor，停在 pending
+  await downloadAll(store)
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'f-ai-1', fileType: 'docx' }, 1)
+  const storage = fakeStorage()
+
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+
+  const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
+  expect(manifest.missing).toEqual([])
 })
 
 test('重复调用幂等：除 generatedAt 外内容逐字节一致', async () => {

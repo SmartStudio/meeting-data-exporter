@@ -520,6 +520,8 @@ function bodyDeps(over: Partial<JobBodyDeps>): JobBodyDeps {
       undecidable: 0,
     }),
     cleanup: async () => ({ dryRun: false, paused: false, purged: [], verificationFailed: [], failed: [] }),
+    // 缺省"没有资产处于放弃状态"。只有下面那条失败项用例会覆盖它
+    deadAssets: async () => [],
     listPrograms: async () => [],
     inventory: async () => ({
       programId: 'p',
@@ -774,5 +776,91 @@ test('任务二把归档轮的六个数字原样写进摘要', async () => {
       skipped: 3,
       undecidable: 1,
     })
+  })
+})
+
+/**
+ * 任务一的第二件事：**转 dead 的资产必须有人看得见，而且要一直看得见。**
+ *
+ * 下载队列自己会重试（退避 5 / 10 / 20 / 40 分钟），逐次失败不该惊动运维；
+ * 但 `dead` 是终态，队列从此不再碰它——不在这里落一条失败项的话，那个视频的
+ * 唯一痕迹是 `meeting_assets.last_error`，一列没有任何界面读的数据库字段。
+ *
+ * 失败项是「资产此刻是否 dead」的**镜像**（见 scheduler.ts 的 recordDeadAssets）：
+ * 每轮把仍然 dead 的都重记一遍，attempts 照抄资产行的真实计数（绝对值，不累加），
+ * 于是它一直开着；哪天有人 resetFailed 把它打回队列、它不再是 dead，就不再被
+ * 重记，`resolveStaleFailures` 下一轮把它关掉。开与关都不需要另一条路径。
+ *
+ * 顺带钉住合并口径：`job_failures` 的唯一键是 (job_name, target)，`recordFailure`
+ * 是 upsert。一场会议两个资产同一轮双双转 dead 时逐条调用的话，后一条会覆盖前一条
+ * 的 reason——所以先合并成一句。
+ */
+test('任务一：dead 资产的失败项是资产状态的镜像——一直开着、attempts 是真的、资产不再 dead 才关', async () => {
+  const video = { meetingId: 'm-1', subMeetingId: '', assetType: 'video', lastError: 'HTTP 404', attempts: 5 }
+  const summary = { meetingId: 'm-1', subMeetingId: '', assetType: 'meeting_summary', lastError: 'connect ETIMEDOUT', attempts: 5 }
+  const other = { meetingId: 'm-2', subMeetingId: 's-1', assetType: 'video', lastError: '磁盘满', attempts: 5 }
+  let dead = [video, summary, other]
+  const deps = bodyDeps({ deadAssets: async () => dead })
+  await withScheduler({ fetch_recordings: createJobRunners(deps).fetch_recordings }, T0, async (h) => {
+    await h.scheduler.bootstrap()
+
+    // ── 第一轮：三个资产刚转 dead ────────────────────────────
+    h.setNow(T0 + 15 * MIN)
+    await h.scheduler.tick()
+    await h.drain()
+
+    let fs = await h.jobs.listFailures({ jobName: 'fetch_recordings' })
+    expect(fs.map((f) => f.target).sort()).toEqual(['m-1|', 'm-2|s-1'])
+
+    const m1 = fs.find((f) => f.target === 'm-1|')!
+    expect(m1.meetingId).toBe('m-1')
+    expect(m1.subMeetingId).toBe('')
+    // 资产类型与最后一次的错都在，运维不必再去翻库才知道该查什么
+    expect(m1.reason).toContain('video（HTTP 404）')
+    expect(m1.reason).toContain('meeting_summary（connect ETIMEDOUT）')
+    // attempts 是资产行的真实计数，不是"这是第几次记"：dead 就是 5，
+    // 与 maxAttempts 相等，界面上因此直接是「已到上限 · 需要人工介入」
+    expect(m1.attempts).toBe(5)
+    expect(m1.maxAttempts).toBe(jobSpec('fetch_recordings')!.maxAttempts)
+    // 「影响」那句话来自 JOB_CATALOG，不是任务体手抄的字符串
+    expect(m1.impact).toBe(jobSpec('fetch_recordings')!.impact)
+
+    // 整轮仍然 succeeded：几个资产被放弃不该让"任务一挂了"淹没在里面
+    expect((await h.jobs.listRuns('fetch_recordings', 1))[0]!.status).toBe('succeeded')
+
+    // ── 第二轮：没人处理，三个还是 dead ───────────────────────
+    h.setNow(T0 + 30 * MIN)
+    await h.scheduler.tick()
+    await h.drain()
+
+    fs = await h.jobs.listFailures({ jobName: 'fetch_recordings' })
+    // 仍然开着（没被 resolveStaleFailures 当成"自己好了"）、仍是两条、attempts 没被顶成 6
+    expect(fs.map((f) => f.target).sort()).toEqual(['m-1|', 'm-2|s-1'])
+    expect(fs.every((f) => f.resolvedAt === null)).toBe(true)
+    expect(fs.find((f) => f.target === 'm-1|')!.attempts).toBe(5)
+    // last_failed_at 对 dead 资产的含义是「截至这一轮仍然没好」
+    expect(fs.find((f) => f.target === 'm-1|')!.lastFailedAt).toBeGreaterThanOrEqual(T0 + 30 * MIN)
+
+    // ── 第三轮：运维 resetFailed 了 m-1，两个资产下下来了；m-2 没人管 ──
+    dead = [other]
+    h.setNow(T0 + 45 * MIN)
+    await h.scheduler.tick()
+    await h.drain()
+
+    const all = await h.jobs.listFailures({ jobName: 'fetch_recordings', includeResolved: true })
+    expect(all.length).toBe(2) // 没有新增行
+    expect(all.find((f) => f.target === 'm-1|')!.resolvedAt).not.toBeNull() // 不再 dead → 关掉
+    expect(all.find((f) => f.target === 'm-2|s-1')!.resolvedAt).toBeNull() // 还 dead → 开着
+
+    // ── 第四轮：m-1 的视频重试又用尽，再次 dead ───────────────
+    dead = [video, other]
+    h.setNow(T0 + 60 * MIN)
+    await h.scheduler.tick()
+    await h.drain()
+
+    const again = (await h.jobs.listFailures({ jobName: 'fetch_recordings' })).find((f) => f.target === 'm-1|')!
+    expect(again.resolvedAt).toBeNull()
+    expect(again.attempts).toBe(5) // 绝对值：不是上一次的 5 再 +1
+    expect(again.reason).not.toContain('meeting_summary') // reason 是这一次的，纪要已经下下来了
   })
 })

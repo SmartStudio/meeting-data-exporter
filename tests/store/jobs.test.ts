@@ -282,6 +282,43 @@ test('同一个对象反复失败是累加 attempts，不是每轮新增一行',
   })
 })
 
+test('给了 attempts 就按绝对值写，不累加——镜像着别处真实计数器的失败项用它', async () => {
+  await withStore(async (store) => {
+    const base = {
+      jobName: 'fetch_recordings',
+      target: 'm-9|',
+      targetLabel: '',
+      meetingId: 'm-9',
+      subMeetingId: '',
+      impact: 'x',
+      maxAttempts: 5,
+    }
+    // 首次：绝对值 5（资产转 dead 时 meeting_assets.attempts 就是上限）
+    await store.recordFailure({ ...base, reason: 'a', attempts: 5, now: 1000 })
+    expect((await store.listFailures())[0]!.attempts).toBe(5)
+
+    // 再记一次仍是 5，不是 6：调度器每轮把仍然 dead 的资产重记一遍，
+    // 累加会让「N / 5」变成轮次计数器
+    await store.recordFailure({ ...base, reason: 'b', attempts: 5, now: 2000 })
+    let row = (await store.listFailures())[0]!
+    expect(row.attempts).toBe(5)
+    expect(row.lastFailedAt).toBe(2000)
+    expect(row.firstFailedAt).toBe(1000)
+
+    // 已恢复之后再来：绝对值照写，first_failed_at 重新起算——这是新一次事故
+    await store.resolveStaleFailures('fetch_recordings', 3000, 3000)
+    await store.recordFailure({ ...base, reason: 'c', attempts: 5, now: 4000 })
+    row = (await store.listFailures())[0]!
+    expect(row.attempts).toBe(5)
+    expect(row.firstFailedAt).toBe(4000)
+    expect(row.resolvedAt).toBeNull()
+
+    // 不给 attempts 的老路径不受影响：从绝对值 5 再累加一次是 6
+    await store.recordFailure({ ...base, reason: 'd', now: 5000 })
+    expect((await store.listFailures())[0]!.attempts).toBe(6)
+  })
+})
+
 test('不同任务的同名对象是两个失败项', async () => {
   await withStore(async (store) => {
     const base = { target: 'm-1|', targetLabel: '', meetingId: 'm-1', subMeetingId: '', maxAttempts: 5 }

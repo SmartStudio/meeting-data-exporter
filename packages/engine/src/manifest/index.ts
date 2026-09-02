@@ -89,8 +89,14 @@ export async function writeMeetingManifest(
   }
   if (assets.length === 0) return 'skipped'
 
+  // `failed` 与两个终态一起写进 missing：它还会重试，但 `status` 这一列本身就把这件事
+  // 说清楚了（见 ManifestMissingEntry）。这份清单每轮重写，宁可说一件还会变的事，
+  // 也不让一个反复失败的资产在清单里长得像"从来没有过"。
   const missing: ManifestMissingEntry[] = rows
-    .filter((r): r is AssetRow & { status: 'skipped' | 'dead' } => r.status === 'skipped' || r.status === 'dead')
+    .filter(
+      (r): r is AssetRow & { status: 'skipped' | 'dead' | 'failed' } =>
+        r.status === 'skipped' || r.status === 'dead' || r.status === 'failed',
+    )
     .map((r) => ({
       assetType: r.asset_type,
       assetKey: manifestAssetKey(r.asset_type),

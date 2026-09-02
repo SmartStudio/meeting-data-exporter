@@ -255,8 +255,9 @@ async function cleanupOneMeeting(
   //   这是一个刻意的设计判断，不是漏掉了】
   // 全局约束原文是"NAS 断连时……受影响会议的保留窗口清零"，落到这份实现上分两种情形：
   //   1. 还没归档完的会议：保留窗口的**起点就是** meeting_archives.archived_at，而
-  //      archiveMeeting 只在整场会议全部资产归档成功之后才写这一行（见 archive.ts 里
-  //      `fullyArchived && newlyArchived > 0` 那段）。NAS 断连时归档根本走不完，那一行
+  //      archiveMeeting 只在整场会议**再没有资产在路上、且全部下载完的资产都归档成功**
+  //      之后才写这一行（见 archive.ts 里 `fullyArchived && (newlyArchived > 0 || …)`
+  //      那段，以及它上面 `inFlight === 0` 的判定）。NAS 断连时归档根本走不完，那一行
   //      压根不存在——保留窗口从未开始计时，没有"清零"可做。
   //   2. 已经归档完、NAS 随后才断连的会议：到期时 verifyNasCopies 读不到 NAS 上那份
   //      文件，整场会议本轮直接进 verificationFailed 拒删（不是静默跳过），本地文件

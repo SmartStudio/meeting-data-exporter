@@ -43,7 +43,11 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   // 那时这就是「这个文件多大」唯一的事实来源（见 domain/manifest.ts 的 bytes 字段注释）
   if (res.status === 'completed') { await deps.store.markCompleted(row.id, res.contentHash, res.bytesWritten, now()); result.completed++; return }
   if (row.attempts >= MAX_ATTEMPTS) { await deps.store.markDead(row.id, res.error, now()); result.failed++; return }
-  await deps.store.markFailed(row.id, res.error, now()); result.failed++
+  // `row.attempts` 是**这一次**领取之后的值（claimNext 领的时候就 +1 了），所以
+  // 第一次失败传进 downloadBackoff 的是 1，等 5 分钟。退避时间由这里算、store 只写，
+  // 理由见 Store.markFailed。
+  const at = now()
+  await deps.store.markFailed(row.id, res.error, at, at + downloadBackoff(row.attempts)); result.failed++
 }
 
 /**
@@ -82,3 +86,24 @@ export async function runProbes(deps: ExecutorDeps & { store: Store }, now: () =
   return out
 }
 function probeBackoff(attempts: number): number { return Math.min(3600, 300 * 2 ** Math.min(attempts, 4)) }  // 5min→…→上限 1h
+
+/**
+ * 下载失败后的退避（秒）：第 n 次失败等 `300 · 2^(n-1)`，上限 1 小时。
+ *
+ *   第 1 次失败 → 5 分钟   第 2 次 → 10 分钟   第 3 次 → 20 分钟   第 4 次 → 40 分钟
+ *   第 5 次失败 → 不再等，转 dead（MAX_ATTEMPTS）
+ *
+ * 也就是说一条资产从第一次失败到被放弃，前后跨 **75 分钟**、试满 5 次。这个总时长
+ * 是照着"要扛过什么"挑的：网络抖动、上游一次限流、一次 CDN 502——都在分钟级别，
+ * 而不是"腾讯会议那边这个文件坏了"（那种情况多等一小时也没用，早点转 dead 让人看见
+ * 反而对）。1 小时那个上限在 MAX_ATTEMPTS=5 下永远用不上（第 5 次失败不再退避、
+ * 直接转 dead），它是给将来调大 MAX_ATTEMPTS 的人兜底的：没有它，第 8 次失败
+ * 就要等 10 小时。
+ *
+ * **和上面的 `probeBackoff` 走同一条 `300·2^k` 曲线，但刻意不共用一个函数**，这是有意的。两者回答的是
+ * 不同的问题：probe 是「资产还没生成好，什么时候再去问一次」——上游在慢慢干活，
+ * 等多久取决于纪要多久能出来；这里是「下载出错了，多久再试一次」——错误可能是
+ * 我们这边的网络，也可能是对方限流。今天两条曲线数值撞在一起是巧合，把它们并成
+ * 一个函数就等于宣布"以后也一起调"，而实际要调的时候一定是分别调的。
+ */
+export function downloadBackoff(attempts: number): number { return Math.min(3600, 300 * 2 ** (attempts - 1)) }

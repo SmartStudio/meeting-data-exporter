@@ -149,8 +149,8 @@ async function decideArchiveDir(
 
   // `archived` 是 `arch`（isarch / notarch）条件的数据源，**查出来传，不猜**：
   // 随手填 false 会让一条 `arch notarch → 归档到 X` 的规则对已归档的会议也成立。
-  // 这一轮进到这里的会议数量很小（listMeetingsNeedingArchive 只给「有未归档完成
-  // 资产」的那些），一次查询换一个正确的事实是划算的。
+  // 这一轮进到这里的会议数量很小（listMeetingsNeedingArchive 只给「还要跑一次归档」
+  // 的那些），一次查询换一个正确的事实是划算的。
   const archived = (await deps.archives.findMeetingArchive(meetingId, subMeetingId)) !== null
 
   // 人工改写优先于**所有**规则（spec §5.4）。套在求值**外面**而不是混进
@@ -319,8 +319,12 @@ export interface ArchiveOutcome {
   newlyArchived: number
   /** 哈希校验不一致、本轮跳过的资产数——不是致命错误，下一轮会重试 */
   verificationFailed: number
-  /** completed 资产是否已全部归档完——meeting_archives 是否真的被写入还要看这一轮
-   *  是否真有新资产归档，见 archiveMeeting 内 `fullyArchived && newlyArchived > 0` 的判断 */
+  /** **整场会议**是否归档完毕：下载完的资产都搬上 NAS 了（completed === archived）
+   *  且没有资产还在路上（pending/running/failed 一个都没有）。后半句不能省——
+   *  只问前半句的话，视频还在下载的会议会在其余 7 个资产搬完时就宣布"归档完了"。
+   *
+   *  meeting_archives 是否真的被写入还要看这一轮有没有该记的新事实，
+   *  见 archiveMeeting 内那道 `fullyArchived && (newlyArchived > 0 || …)` 的门。 */
   fullyArchived: boolean
   /**
    * NAS 那份自解释 sidecar（`meeting.json` / `_manifest.json`）这一轮的结果。
@@ -687,6 +691,19 @@ function isUnder(dir: string, path: string): boolean {
 /**
  * 归档一场会议。
  *
+ * ## 资产逐个搬，会议级的三件事一起等
+ *
+ * **资产是增量搬的**：这一轮哪个下载完了就搬哪个，先搬完的先在 NAS 上安全下来，
+ * 不必等整场会议齐。这是对的，不要改成"齐了再一起搬"——一场会议的录像可能比纪要
+ * 晚几个小时，那几个小时里纪要没有理由只躺在本地。
+ *
+ * **但会议级的三件事只在 `inFlight === 0`（没有资产还在 pending/running/failed）
+ * 之后才发生**：写 `meeting_archives` 那一行、写 NAS 上的 `meeting.json` /
+ * `_manifest.json`、以及由前者的 `archived_at` 起算的 30 天保留窗口。三件事说的都是
+ * 「这场会议归档完了」这一句话，而只要还有一个资产在路上，这句话就是假的：
+ * sidecar 会列出一份不全的清单（还在下载的录像既不在 `assets` 也不在 `missing`）、
+ * 保留窗口会在录像还没落地时就开始倒数、控制台会显示「已归档」。
+ *
  * `rules` 是**显式参数**而不是从 `deps` 里现取的（阶段 3 · T9）：规则每轮取一次，
  * 由 `archivePendingMeetings` 在循环外取好传进来。见 `ArchiveDeps.listArchiveRules`。
  */
@@ -750,11 +767,18 @@ export async function archiveMeeting(
     await ingestAssetContent(deps, asset, outcome, now, contents)
   }
 
-  const totalCompleted = await deps.archives.countCompletedAssets(meetingId, subMeetingId)
-  const totalArchived = await deps.archives.countArchivedAssets(meetingId, subMeetingId)
-  const fullyArchived = totalCompleted > 0 && totalCompleted === totalArchived
+  // 「整场会议归档完了」= 下载完的都搬完了（completed === archived）**并且**
+  // 没有资产还在路上（inFlight === 0）。少了后半句就是这条流水线曾经的那个 bug：
+  // 8 个资产的会议，视频还在下载（status='running'）时它不在 completed 里，于是
+  // 前 7 个搬完就凑出 7 === 7 —— meeting_archives 建行、sidecar 写出一份只列 7 个
+  // 资产的清单（那盘录像既不在 assets 也不在 missing）、30 天保留窗口开始计时、
+  // 控制台显示「已归档」，而录像还没落地。三个数一次查询取回，见 ArchiveProgress。
+  const progress = await deps.archives.countArchiveProgress(meetingId, subMeetingId)
+  const fullyArchived =
+    progress.completed > 0 && progress.completed === progress.archived && progress.inFlight === 0
 
-  // 只在"这次调用真的让某个资产从未归档变成已归档"时才落 meeting_archives，
+  // 落 meeting_archives 的两道门：整场齐了（fullyArchived），**并且**这一轮确实有
+  // 该记的新事实——要么真搬了东西（newlyArchived > 0），要么这场会议还没有那一行。
   // 不是每次 fullyArchived 求值为 true 就重新 upsert。
   //
   // 这条守卫是必要的，不是防御性冗余：Step 5 接入 worker 主循环之后，
@@ -771,10 +795,26 @@ export async function archiveMeeting(
   // retention_days）都合理；纯粹的空转重跑（没有新资产）则原样跳过，已有记录
   // （含它的 archived_at 与只能由 extendRetention 修改的 extended_days）保持不动。
   //
+  // **但"这一轮没搬东西"不等于"没有事实要记"**，这是第二个条件的由来：一场会议的
+  // 最后一个在路上的资产转 dead / skipped 时，inFlight 归零、整场从此"齐了"，
+  // 而这一轮一个字节都没搬（该搬的早搬完了）。只认 newlyArchived > 0 的话，
+  // 这场会议永远拿不到 meeting_archives 行——保留窗口永远不开始计时、本地文件
+  // 永远不会被清理、控制台永远显示没归档，而且不会有任何报错。所以补一条
+  // "还没有那一行"。**这不会让空转重跑推着 archived_at 往前走**：已经有行的会议
+  // 第二个条件恒为 false，用例4 钉的正是这一点。
+  //
+  // 这一次 findMeetingArchive **只在 newlyArchived === 0 时才发**：真搬过东西的
+  // 正常路径不为它多一次往返（`&&` 的短路顺序就是这个意思，不是随手写的）。
+  //
   // NAS sidecar 跟着同一条守卫走，理由完全相同：空转重跑没有任何新内容可写，
-  // 每轮重写一遍只会让 NAS 上的 mtime 和 generatedAt 天天跳，而清单内容一个字没变。
+  // 每轮重写一遍只会让 NAS 上的 mtime 和 generatedAt 天天跳，而清单内容一个字没变；
+  // 而"刚刚才齐"的那一轮虽然没搬东西，清单本身是第一次写，必须写。
   let sidecar: ArchiveOutcome['sidecar'] = 'skipped'
-  if (fullyArchived && newlyArchived > 0) {
+  const firstArchiveRecord =
+    fullyArchived &&
+    newlyArchived === 0 &&
+    (await deps.archives.findMeetingArchive(meetingId, subMeetingId)) === null
+  if (fullyArchived && (newlyArchived > 0 || firstArchiveRecord)) {
     const retentionSetting = await deps.archives.getSetting('default_retention_days')
     const retentionDays = retentionSetting ? Number(retentionSetting) : DEFAULT_RETENTION_DAYS
     await deps.archives.upsertMeetingArchive({ meetingId, subMeetingId, nasDir, archivedAt: now, retentionDays, now })
@@ -835,7 +875,7 @@ export interface ArchiveRoundOutcome {
 }
 
 /**
- * 对 listMeetingsNeedingArchive() 给出的每一场"有未归档完成资产"的会议调用一次
+ * 对 listMeetingsNeedingArchive() 给出的每一场"还要跑一次归档"的会议调用一次
  * archiveMeeting，逐会议做错误隔离：一场会议的 archiveMeeting 抛出不能连累排在
  * 后面的会议——不隔离的话，例如某场会议的本地文件被人手误删触发 ENOENT，会让
  * 同一轮里排在它后面的所有会议都归档不了，即便它们与那场会议毫无关系。

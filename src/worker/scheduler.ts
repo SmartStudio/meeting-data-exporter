@@ -90,7 +90,7 @@ import { archivePendingMeetings, type ArchiveDeps, type ArchiveRoundOutcome } fr
 import { executeCleanup, type CleanupExecuted } from './retention'
 import { computeProgramInventory, type ProgramInventory, type VisibilityDeps } from './visibility'
 import { createInProcSource } from './source-inproc'
-import { createMysqlStore } from './store-mysql'
+import { createMysqlStore, type DeadAsset } from './store-mysql'
 import {
   DEFAULT_LEASE_SEC,
   assertArchiveRootUsable,
@@ -124,6 +124,8 @@ export interface JobFailInput {
   meetingId?: string | null
   subMeetingId?: string
   reason: string
+  /** 绝对计数，不给就累加。只有镜像着别处真实计数器的失败项才该给，见 RecordFailureInput.attempts */
+  attempts?: number
 }
 
 export interface JobRunContext {
@@ -166,6 +168,16 @@ export interface JobBodyDeps {
    * **开跑那一刻就已经算过期**的租约。
    */
   fetchRound: (now: () => number) => Promise<FetchRound>
+  /**
+   * 任务一收尾要用：**此刻仍处于放弃状态（dead）的全部资产**——不分轮次。
+   *
+   * 下载队列自己会重试（失败退避、到 MAX_ATTEMPTS 转 dead），所以逐次失败不必
+   * 惊动任何人；但 `dead` 是终态，队列从此不再碰它——那一刻起，这个视频**只有人
+   * 才救得回来**。落一条失败项是它在界面上唯一的出口，见下面 `fetch_recordings`。
+   * 要全部而不是"本轮新转的"，是因为失败项得跟着资产的状态开与关，见
+   * recordDeadAssets 上方的说明。
+   */
+  deadAssets: () => Promise<readonly DeadAsset[]>
   /** 任务二：`archivePendingMeetings`。收活时钟，理由见 `JobRunContext.clock` */
   archiveRound: (now: () => number) => Promise<ArchiveRoundOutcome>
   /** 任务三：`retention.ts` 的 `executeCleanup`。`confirm: true` 由装配处写死 */
@@ -178,6 +190,72 @@ export interface JobBodyDeps {
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * 把本轮新转 dead 的资产落成失败项，**一场会议一条**。
+ *
+ * ## 为什么必须先按会议合并
+ *
+ * `job_failures` 的唯一键是 `(job_name, target)`，而 `recordFailure` 是 upsert：
+ * 同一个 target 调第二次不是新增一行，是**改写**那一行（reason 被后一次覆盖、
+ * attempts +1，见 src/store/jobs.ts 的 recordFailure 与 migrations/008 的第三节）。
+ * 一场会议的视频和纪要同一轮双双转 dead 时逐条调用的话，运维看到的是「视频那条
+ * 没了、只剩纪要，而且已经失败 2 次」——两个错都不对。所以先合并成一句话。
+ *
+ * 「一行一个对象」正是那张表的设计：这里的"对象"是会议，不是资产。资产级的细节
+ * （哪一类、最后一次错在哪）进 reason 那一句，够运维判断该去查什么。
+ *
+ * ## 为什么每轮记**全部** dead，而不是只记"本轮新转 dead 的"
+ *
+ * 因为失败项的开与关都得跟着资产走，而这两个方向只有一条现成的机制：
+ * `launch()` 每轮跑完调 `resolveStaleFailures(name, startedAt, …)`，把「这一轮
+ * 没再记过」的失败项标成已恢复。归档、清理是"每轮重新判定同一批对象"，还没好
+ * 的会再失败一次，那条规则对它们天然成立。`dead` 不是——它是终态，队列不再碰它，
+ * 只记一次的话下一轮就被判成"自己好了"，失败项在「需要处理」里只停留一轮。
+ *
+ * 所以这里每轮把**此刻仍然 dead** 的资产都重记一遍：它还 dead，这一轮就再记一次，
+ * `resolveStaleFailures` 就不会关它；哪天运维 `resetFailed` 把它打回队列、它不再
+ * 是 dead，就不再被记，下一轮自然关掉。失败项因此是「资产此刻是否 dead」的镜像，
+ * 开与关都不需要另写一条路径。
+ *
+ * 代价是 `attempts` 不能再走 `recordFailure` 默认的累加——那会让它变成轮次计数器，
+ * 界面上「N / 5」一天涨 96。所以传绝对值，照抄 `meeting_assets.attempts`（dead 行上
+ * 它就是队列的上限），见 recordDeadAssets 里那一行。`last_failed_at` 在这种失败项上的
+ * 含义随之变成「截至这一轮仍然没好」，与归档失败项的「这一轮又失败了」略有不同，
+ * 但表格里那一列叫「最近失败」，两种读法都对得上。
+ *
+ * 全量而不是增量的成本：一轮一次 `deadAssets()`，dead 行在健康的库里是个位数；
+ * 真的堆到几百条时，那几百条本来就该出现在失败项表里——这正是要它们出现的地方。
+ */
+async function recordDeadAssets(ctx: JobRunContext, dead: readonly DeadAsset[]): Promise<void> {
+  const byMeeting = new Map<string, DeadAsset[]>()
+  for (const d of dead) {
+    const key = jobFailureTarget(d.meetingId, d.subMeetingId)
+    const bucket = byMeeting.get(key)
+    if (bucket) bucket.push(d)
+    else byMeeting.set(key, [d])
+  }
+  for (const [target, assets] of byMeeting) {
+    const first = assets[0]!
+    await ctx.fail({
+      target,
+      meetingId: first.meetingId,
+      subMeetingId: first.subMeetingId,
+      // 资产类型与最后一次的错各自带着：只写「3 个资产失败了」的话，运维还得自己
+      // 去数据库里翻 last_error 才知道是磁盘满了还是上游 403——那正是这条失败项
+      // 想替他省掉的那一步。
+      reason:
+        '下载重试用尽，已放弃：' +
+        assets.map((a) => `${a.assetType}（${a.lastError ?? '无错误信息'}）`).join('；'),
+      // 绝对值，照抄资产行：dead 行上 attempts 就是下载队列的上限，与 spec.maxAttempts
+      // 相等，界面因此直接显示「已到上限 · 需要人工介入」。**不能走累加**——这个函数
+      // 每轮都跑（见上方「为什么每轮记全部 dead」），累加会把它变成轮次计数器。
+      // 一场会议几个资产取最大的那个：它们各自都到了上限，取哪个都是同一个数；
+      // 万一将来上限按资产类型不同了，取最大保证「已到上限」不会漏报。
+      attempts: Math.max(...assets.map((a) => a.attempts)),
+    })
+  }
 }
 
 /**
@@ -197,14 +275,24 @@ export function createJobRunners(deps: JobBodyDeps): Record<JobName, JobRunner> 
       // 发现 + 入队 + 执行下载队列，一整条。T11 时它只做前两件，队列里的资产
       // 得等运维手动 `bun run worker` 才有人取，而这一格的运行记录一路绿。
       const r = await deps.fetchRound(ctx.clock)
+      // 逐次失败**不**落 `job_failures`：下载队列自己会重试——失败按退避（executor
+      // 的 `downloadBackoff`：5 / 10 / 20 / 40 分钟）自动重领，到 MAX_ATTEMPTS 才转
+      // dead。一次网络抖动不该惊动运维，硬塞进来还会让同一件事有两套重试计数。
+      //
+      // **转 dead 的那一轮在这里落一条失败项。** `dead` 是终态：队列从此不再领它，
+      // 没有任何机制会让它自己好转。不落这一条的话，那个视频的唯一痕迹是
+      // `meeting_assets.last_error`——一列没有任何界面读的数据库字段。
+      //
+      // 这段注释的上一版写的是「到 MAX_ATTEMPTS 才转 dead，下一轮照样被领取」，
+      // 并据此认定不必落失败项。那句话当时是假的：`failed` 行三条路都领不到
+      // （claim 只看 pending 与过期 running、upsert 不重置 status、resetFailed
+      // 零调用方），于是 attempts 永远停在 1，MAX_ATTEMPTS 那道门根本走不到。
+      // 现在退避重试是真的了，这条推理才第一次成立——但结论反过来：正因为
+      // 「转 dead」现在真的会发生，才更要有人看得见。
+      await recordDeadAssets(ctx, await deps.deadAssets())
       // 摘要里必须有下载那几个数：只报「发现了 11 个」的话，一轮全下挂了与一轮
       // 全下成功在运行记录里长得一模一样。`discovered` 这个名字比 `tasks` 说得清
       // ——它数的是本轮发现的就绪资产条数，含已经 completed 的那些。
-      //
-      // 逐个资产的失败**不**在这里落 `job_failures`：那张表是**会议维度**的
-      // （target 是 `meetingId|subMeetingId`），而下载队列的重试与放弃是它自己的
-      // 机制——`meeting_assets` 里带着 `last_error` / `attempts`，到 MAX_ATTEMPTS
-      // 才转 dead，下一轮照样被领取。硬塞进来只会让同一件事有两套重试计数。
       return {
         meetings: r.meetings,
         discovered: r.tasks,
@@ -363,6 +451,7 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
           meetingId: input.meetingId ?? null,
           subMeetingId: input.subMeetingId ?? '',
           reason: input.reason,
+          attempts: input.attempts,
           impact: spec.impact,
           maxAttempts: spec.maxAttempts,
           now: cfg.now(),
@@ -758,6 +847,8 @@ async function main(): Promise<number> {
             clock,
           )
         },
+        // 任务一收尾的失败项口。`since` 由任务体传本轮开跑时刻，见 recordDeadAssets
+        deadAssets: () => store.deadAssets(),
         archiveRound: (clock) => archivePendingMeetings(archiveDeps, clock),
         // confirm 的字面量 true 写死在这里，不由任务体拼——executeCleanup 逼着
         // 每一个调用点写明白「这次是真删」，那道栅栏就该落在装配处这一层

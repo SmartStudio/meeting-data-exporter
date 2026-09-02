@@ -14,7 +14,7 @@ import type { Pool } from '../../src/store/db'
  * pool 读 meeting_assets 是同一种"这张表不归本模块写，但读的语义要验证"的处境。
  *
  * 每个用例各自持有一个隔离的测试库（跟随 tests/store/admin.test.ts 的约定），
- * 不共用 pool，避免同文件内其他用例的行污染基线（尤其是 countCompletedAssets/
+ * 不共用 pool，避免同文件内其他用例的行污染基线（尤其是 countArchiveProgress/
  * listExpiredUnpurged 这类"数满足条件的行数"的断言）。
  */
 
@@ -108,24 +108,35 @@ test('listCompletedAssets 对 target_path 为 NULL 的 completed 行显式报错
   }
 })
 
-test('countCompletedAssets 只数 completed 的行，且按会议隔离', async () => {
+test('countArchiveProgress 三个数各数各的：completed / archived / 还在路上（pending·running·failed），且按会议隔离', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
     await seedAsset(pool, { meetingId: 'm-4', assetType: 'video', remoteId: 'r-1', status: 'completed' })
     await seedAsset(pool, { meetingId: 'm-4', assetType: 'audio', remoteId: 'r-2', status: 'completed' })
     await seedAsset(pool, { meetingId: 'm-4', assetType: 'chat', remoteId: 'r-3', status: 'pending' })
+    // failed 算「还在路上」——它会被自动重试，是「还没有结论」不是「确认没有」
+    await seedAsset(pool, { meetingId: 'm-4', assetType: 'transcript', remoteId: 'r-5', status: 'failed' })
+    // 两个终态**不算**在路上：这场会议不会再多出新东西可搬
+    await seedAsset(pool, { meetingId: 'm-4', assetType: 'ai_minutes', remoteId: 'r-6', status: 'skipped' })
+    await seedAsset(pool, { meetingId: 'm-4', assetType: 'ai_ds_minutes', remoteId: 'r-7', status: 'dead' })
     await seedAsset(pool, { meetingId: 'm-other', assetType: 'video', remoteId: 'r-4', status: 'completed' })
 
     const store = createArchivesStore(pool)
-    expect(await store.countCompletedAssets('m-4', '')).toBe(2)
-    expect(await store.countCompletedAssets('m-other', '')).toBe(1)
-    expect(await store.countCompletedAssets('m-nonexistent', '')).toBe(0)
+    await store.recordArchivedAsset({
+      meetingId: 'm-4', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4',
+      localPath: 'a.mp4', nasPath: '/nas/a.mp4', nasHash: 'h', archivedAt: 1000,
+    })
+
+    expect(await store.countArchiveProgress('m-4', '')).toEqual({ completed: 2, archived: 1, inFlight: 2 })
+    // 另一场会议的行不串味；archived 数的是 archived_assets，与 completed 不同表
+    expect(await store.countArchiveProgress('m-other', '')).toEqual({ completed: 1, archived: 0, inFlight: 0 })
+    expect(await store.countArchiveProgress('m-nonexistent', '')).toEqual({ completed: 0, archived: 0, inFlight: 0 })
   } finally {
     await cleanup()
   }
 })
 
-test('recordArchivedAsset 落库后 isAssetArchived 与 countArchivedAssets 从 false/0 变为 true/1', async () => {
+test('recordArchivedAsset 落库后 isAssetArchived 与 countArchiveProgress().archived 从 false/0 变为 true/1', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
     await seedAsset(pool, { meetingId: 'm-2', remoteId: 'r-1' })
@@ -133,7 +144,7 @@ test('recordArchivedAsset 落库后 isAssetArchived 与 countArchivedAssets 从 
     const key = { meetingId: 'm-2', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4' }
 
     expect(await store.isAssetArchived(key)).toBe(false)
-    expect(await store.countArchivedAssets('m-2', '')).toBe(0)
+    expect((await store.countArchiveProgress('m-2', '')).archived).toBe(0)
 
     await store.recordArchivedAsset({
       ...key,
@@ -144,7 +155,7 @@ test('recordArchivedAsset 落库后 isAssetArchived 与 countArchivedAssets 从 
     })
 
     expect(await store.isAssetArchived(key)).toBe(true)
-    expect(await store.countArchivedAssets('m-2', '')).toBe(1)
+    expect((await store.countArchiveProgress('m-2', '')).archived).toBe(1)
     // 另一个资产（不同 remoteId）不应被误判为已归档——isAssetArchived 必须按完整自然键匹配
     expect(await store.isAssetArchived({ ...key, remoteId: 'r-2' })).toBe(false)
   } finally {
@@ -331,37 +342,53 @@ test('listMeetingsNeedingArchive 精确按 (meeting_id, sub_meeting_id) 枚举�
   }
 })
 
-test('listMeetingsNeedingArchive 只返回 completed 数量严格大于 archived 数量的会议——完全归档完/没有 completed 资产的不出现', async () => {
+test('listMeetingsNeedingArchive 返回两种会议：还有 completed 没搬的，以及搬完了但还没有 meeting_archives 行的', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
     const store = createArchivesStore(pool)
 
-    // 有 completed 资产、还没归档任何一个——应该出现
+    // 有 completed 资产、还没归档任何一个——应该出现（第一支：有活要干）
     await seedAsset(pool, { meetingId: 'm-needs', remoteId: 'r-1' })
 
-    // 有 completed 资产，且已经全部归档完——不应该出现（早退的核心）
+    // 资产都搬完了，但会议级那一行还没写——**必须出现**（第二支）。
+    // 生产里的来路：这场会议最后一个在路上的资产转成了 dead，于是再没有新东西可搬，
+    // 但 meeting_archives 一直没建行。只按第一支枚举的话它永远不会再被 archiveMeeting
+    // 访问——保留窗口永不开始、本地文件永不清理，且没有任何报错。
+    await seedAsset(pool, { meetingId: 'm-norow', remoteId: 'r-1' })
+    await store.recordArchivedAsset({
+      meetingId: 'm-norow', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4',
+      localPath: 'a.mp4', nasPath: '/nas/a.mp4', nasHash: 'h', archivedAt: 1000,
+    })
+
+    // 有 completed 资产、全部归档完、**且已有归档记录**——不应该出现（早退的核心）
     await seedAsset(pool, { meetingId: 'm-done', remoteId: 'r-1' })
     await store.recordArchivedAsset({
       meetingId: 'm-done', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4',
       localPath: 'a.mp4', nasPath: '/nas/a.mp4', nasHash: 'h', archivedAt: 1000,
     })
+    await store.upsertMeetingArchive({
+      meetingId: 'm-done', subMeetingId: '', nasDir: '/nas/done', archivedAt: 1000, retentionDays: 30, now: 1000,
+    })
 
-    // 只有 pending 资产，没有任何 completed——不应该出现
+    // 只有 pending 资产，没有任何 completed——不应该出现（枚举源是 completed 那一侧）
     await seedAsset(pool, { meetingId: 'm-pending', remoteId: 'r-1', status: 'pending' })
 
     const rows = await store.listMeetingsNeedingArchive()
-    expect(rows).toEqual([{ meetingId: 'm-needs', subMeetingId: '' }])
+    expect(rows).toEqual([
+      { meetingId: 'm-needs', subMeetingId: '' },
+      { meetingId: 'm-norow', subMeetingId: '' },
+    ])
   } finally {
     await cleanup()
   }
 })
 
-test('listMissingAssets 只返回终态的 skipped / dead，pending / failed 一概不返回', async () => {
+test('listMissingAssets 返回 skipped / dead / failed，pending 与 running 不返回', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
-    // 「确认缺失」（skipped / dead）与「不知有无」（pending / running / failed）是两种
-    // 状态——US-6.2 第三条验收标准要的正是这条区分。把还在流程里的状态写进清单，
-    // 等于对着一个还会变的状态下结论。
+    // skipped / dead 是终态（确认取不到），failed 是「上次没取到、还会重试」——三者都
+    // 有原因可写，清单里如实记下来。pending / running 连"试过一次"都还没有，写进清单
+    // 等于对着一个什么都还没发生的状态下结论。分类与 packages/engine/src/manifest/ 逐字一致。
     await seedAsset(pool, { meetingId: 'm-x', assetType: 'ai_minutes', remoteId: 'r-skip', fileType: '', status: 'skipped', targetPath: null, lastError: 'download_not_allowed' })
     await seedAsset(pool, { meetingId: 'm-x', assetType: 'ai_ds_minutes', remoteId: 'r-dead', fileType: '', status: 'dead', targetPath: null, lastError: 'upstream_timeout' })
     await seedAsset(pool, { meetingId: 'm-x', assetType: 'audio', remoteId: 'r-pending', status: 'pending', targetPath: null })
@@ -371,9 +398,11 @@ test('listMissingAssets 只返回终态的 skipped / dead，pending / failed 一
     await seedAsset(pool, { meetingId: 'm-y', assetType: 'ai_minutes', remoteId: 'r-other', fileType: '', status: 'skipped', targetPath: null, lastError: 'download_not_allowed' })
 
     const store = createArchivesStore(pool)
+    // 按 id 升序 = 入库顺序，与清单里的顺序同一种排序
     expect(await store.listMissingAssets('m-x', '')).toEqual([
       { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'r-skip', fileType: '', status: 'skipped', lastError: 'download_not_allowed' },
       { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_ds_minutes', remoteId: 'r-dead', fileType: '', status: 'dead', lastError: 'upstream_timeout' },
+      { meetingId: 'm-x', subMeetingId: '', assetType: 'transcript', remoteId: 'r-failed', fileType: 'mp4', status: 'failed', lastError: 'ECONNRESET' },
     ])
   } finally {
     await cleanup()

@@ -108,20 +108,27 @@ export interface ManifestAssetEntry {
 }
 
 /**
- * `_manifest.json` 里的一项：**确认取不到**的资产及原因。
+ * `_manifest.json` 里的一项：**这个目录里没有的资产**及原因。
  *
- * 「确认缺失」与「不知有无」是两种不同的状态，归档系统里前者才无歧义
- * （网关 spec §A.4 / US-6.2 第三条验收标准）。所以只有终态才进这里：
- * `skipped`（明确放弃，如平台不允许下载、等到 deadline 也没产出）与
- * `dead`（重试用尽）。`pending` / `running` / `failed` 还在流程里，属于
- * 「不知有无」，一概不写——写了就等于对着还会变的状态下结论。
+ * 两个终态无歧义：`skipped`（明确放弃，如平台不允许下载、等到 deadline 也没产出）
+ * 与 `dead`（重试用尽）。`failed` 也写进来，**但它不是终态**——它会被重试，
+ * 状态值本身就把这一点说清楚了，配上 `reason` 里的最后一次错误，读清单的人看到的是
+ * 「这个资产上次没取到，原因是 X，还在试」。清单是**快照**，本地这份每轮都会重写，
+ * 让它说一件还会变的事是诚实的；把 `failed` 藏起来才是撒谎——那样一个反复失败的资产
+ * 在清单里与「从来没有过这个资产」长得一模一样。
+ *
+ * `pending` / `running` 仍然不写：它们连"试过一次"都还没有，没有原因可写，
+ * 而清单每轮重写，下一轮它们多半已经变成别的状态了。
+ *
+ * 分类规则与网关侧 `src/store/archives.ts` 的 `listMissingAssets` **逐字一致**：
+ * 同一个资产在本地清单与 NAS 清单里不能一份说缺、一份说没有。改这里必须同时改那里。
  */
 export interface ManifestMissingEntry {
   assetType: string
   assetKey: string
   remoteId: string | null
-  status: 'skipped' | 'dead'
-  /** 放弃的原因（`download_not_allowed` / `upstream_timeout` / 最后一次错误…） */
+  status: 'skipped' | 'dead' | 'failed'
+  /** 放弃/失败的原因（`download_not_allowed` / `upstream_timeout` / 最后一次错误…） */
   reason: string
 }
 

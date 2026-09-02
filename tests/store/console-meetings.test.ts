@@ -479,12 +479,14 @@ test('sizeBytes 只数 completed 行的 bytes_expected；一个都没有时是 n
 
 // ── 阶段状态 ─────────────────────────────────────────────────────────────
 
-test('fetch 状态：没有资产行是 none，有 pending/running 是 running，都终结是 done', async () => {
+test('fetch 状态：没有资产行是 none，有 pending/running/failed 是 running，都终结是 done', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
     await seedMeeting(pool, { meetingId: 'm-none' })
     await seedMeeting(pool, { meetingId: 'm-run' })
     await seedAsset(pool, { meetingId: 'm-run', status: 'running' })
+    await seedMeeting(pool, { meetingId: 'm-retry' })
+    await seedAsset(pool, { meetingId: 'm-retry', status: 'failed' })
     await seedMeeting(pool, { meetingId: 'm-done' })
     await seedAsset(pool, { meetingId: 'm-done', status: 'completed' })
     await seedMeeting(pool, { meetingId: 'm-allfail' })
@@ -495,6 +497,9 @@ test('fetch 状态：没有资产行是 none，有 pending/running 是 running�
     const byId = new Map(rows.map((r) => [r.meetingId, r]))
     expect(byId.get('m-none')!.fetch).toBe('none')
     expect(byId.get('m-run')!.fetch).toBe('running')
+    // `failed` 不是终态：下载队列按退避会把它重新排上。显示成 done 等于告诉
+    // 管理员「拉取结束了」，而它下一分钟还会自己动起来
+    expect(byId.get('m-retry')!.fetch).toBe('running')
     expect(byId.get('m-done')!.fetch).toBe('done')
     // 全部资产都放弃了：契约的 FetchState 没有 'failed' 这个取值，报 'none'（无录制）
     // 是错的——明明有录制，只是一个都没拉下来。got/total 会说出这件事
@@ -548,6 +553,62 @@ test('archive 状态：没有 completed 资产是 none，归档行在是 done，
   }
 })
 
+/**
+ * 「小文件早下完、大文件还在下」这场会议：7 个 completed 的完成时刻**早就过了
+ * 归档宽限**，外加一个还没终结的尾巴（视频）。
+ *
+ * 这是生产上最常见的一种会议——纪要、转写这些小资产几分钟就下完了，一场三小时
+ * 的录制视频下 8 小时很正常。`meeting_archives` 只在没有资产在路上时才建行，
+ * 所以这种会议**长时间没有归档行**，而这恰恰不是失败。
+ */
+async function seedTailingMeeting(
+  pool: Pool,
+  meetingId: string,
+  tailStatus: 'running' | 'failed' | 'dead',
+): Promise<void> {
+  await seedMeeting(pool, { meetingId })
+  for (let i = 0; i < 7; i++) {
+    await seedAsset(pool, {
+      meetingId,
+      assetType: 'meeting_summary',
+      remoteId: `r-small-${i}`,
+      fileType: 'txt',
+      status: 'completed',
+      completedAt: NOW - ARCHIVE_GRACE_SEC - 1,
+    })
+  }
+  await seedAsset(pool, { meetingId, assetType: 'video', remoteId: 'r-video', status: tailStatus })
+}
+
+test('archive 状态：还有资产在路上时是 running，不是 failed——哪怕早就过了宽限', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    // 视频还在下
+    await seedTailingMeeting(pool, 'm-tail-running', 'running')
+    // 视频下崩了，但队列会按退避重试——同样是「在路上」
+    await seedTailingMeeting(pool, 'm-tail-failed', 'failed')
+    // 视频重试用尽、彻底放弃：没东西在路上了，这次「过了宽限还没归档」是真的
+    await seedTailingMeeting(pool, 'm-tail-dead', 'dead')
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    const byId = new Map(rows.map((r) => [r.meetingId, r]))
+
+    // 宽限从**最后一个资产终结**起算，这两场的那一刻根本还没到——判失败没有依据。
+    // 报 failed 就是分诊条最高级别的红色告警（「到期会永久丢失」），而它什么事都没有
+    expect(byId.get('m-tail-running')!.archive).toBe('running')
+    expect(byId.get('m-tail-running')!.fetch).toBe('running')
+    expect(byId.get('m-tail-failed')!.archive).toBe('running')
+    expect(byId.get('m-tail-failed')!.fetch).toBe('running')
+
+    // dead 那场：全部资产都终结了，过了宽限仍没有归档行，这才是真失败
+    expect(byId.get('m-tail-dead')!.archive).toBe('failed')
+    expect(byId.get('m-tail-dead')!.fetch).toBe('done')
+  } finally {
+    await cleanup()
+  }
+})
+
 // ── 分诊条五格 ───────────────────────────────────────────────────────────
 
 test('分诊条 archiveFailed：过了归档宽限还没进 meeting_archives 才算', async () => {
@@ -573,6 +634,34 @@ test('分诊条 archiveFailed：过了归档宽限还没进 meeting_archives 才
     const { rows, total } = await store.list({ now: NOW, triage: 'archiveFailed' })
     expect(total).toBe(1)
     expect(rows[0]!.meetingId).toBe('m-late')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('分诊条：还有资产在路上的会议不算归档失败，只算进行中', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedTailingMeeting(pool, 'm-tail-running', 'running')
+    await seedTailingMeeting(pool, 'm-tail-failed', 'failed')
+    await seedTailingMeeting(pool, 'm-tail-dead', 'dead')
+
+    const store = createConsoleMeetingsStore(pool)
+    const t = await store.triage(NOW)
+    // 只有 dead 那场是真的失败。另外两场在改这条判据之前会天天报红——
+    // 三场里两场是假警，红格就没人看了
+    expect(t.archiveFailed).toBe(1)
+    expect(t.inProgress).toBe(2)
+
+    // SQL 的判据与 JS 侧算 archive 状态的判据必须同源：这一条同时钉住两侧，
+    // 免得以后只改一边，出现「分诊条说 0 场失败、列表里那行写着 failed」
+    const failed = await store.list({ now: NOW, triage: 'archiveFailed' })
+    expect(failed.rows.map((r) => r.meetingId)).toEqual(['m-tail-dead'])
+    expect(failed.rows[0]!.archive).toBe('failed')
+
+    const busy = await store.list({ now: NOW, triage: 'inProgress' })
+    expect(busy.rows.map((r) => r.meetingId).sort()).toEqual(['m-tail-failed', 'm-tail-running'])
+    expect(busy.rows.every((r) => r.archive === 'running')).toBe(true)
   } finally {
     await cleanup()
   }

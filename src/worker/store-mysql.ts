@@ -4,6 +4,51 @@ import type { AssetRow, AssetStatus, ProbeRow, Store } from '@yaowu/mde-engine'
 import type { Pool } from '../store/db'
 
 /**
+ * 一条**此刻仍处于放弃状态**的资产（`deadAssets` 的返回形状）。
+ *
+ * 只带调度器落失败项要用的五列，不给整行：这个方法的调用方是
+ * `scheduler.ts` 的任务一，它要拼的是一句人读的话（哪场会议、哪类资产、
+ * 最后一次错在哪）加一个真实的计数，拿整行只会让人以为自己可以顺手改点什么。
+ */
+export interface DeadAsset {
+  meetingId: string
+  subMeetingId: string
+  assetType: string
+  lastError: string | null
+  /** 下载队列的真实尝试次数。dead 行上它就是上限——失败项的 attempts 照抄它，不累加 */
+  attempts: number
+}
+
+/**
+ * MySQL 宿主比引擎接口多出来的那部分。
+ *
+ * `deadAssets` 服务的是 `job_failures`——一张**只有网关侧才有**的表
+ * （spec §4.8「失败项 · 需要处理」）。SQLite 宿主是管理员机器上的 mde CLI，
+ * 那边没有调度器、没有运行记录、也没有失败项表，把这个方法塞进 `Store` 接口
+ * 等于逼 CLI 实现一个它永远不会调的查询。所以它长在这一侧，而不是共用接口上。
+ *
+ * 返回类型放宽成 `MysqlStore` 对既有调用方是透明的：它们都把结果当 `Store` 用。
+ */
+export interface MysqlStore extends Store {
+  /**
+   * **此刻**全部 `dead` 行。**只读，给失败项用。**
+   *
+   * 是全部而不是"本轮新转的"：失败项要做「资产此刻是否 dead」的镜像——每轮重记
+   * 一遍仍然 dead 的，它就一直开着；不再 dead 的不再记，`resolveStaleFailures`
+   * 下一轮关掉它。理由的全文在 scheduler.ts 的 recordDeadAssets 上方。
+   *
+   * 为什么不复用 `failures()`：那个方法给的是 failed + dead。`failed` 现在是
+   * 会按退避自动重试的中间态，不该惊动运维；只有 `dead`（重试用尽）才是。
+   *
+   * 带上 `attempts`：失败项的 attempts 要照抄它（绝对值），不能靠 upsert 累加。
+   *
+   * 索引：`idx_assets_claimable` 首列是 status，等值查得到。dead 行在健康的库里
+   * 是个位数，而这个查询一轮只跑一次（对比 `claimNext` 是每领一条跑一次）。
+   */
+  deadAssets(): Promise<DeadAsset[]>
+}
+
+/**
  * Store 的 MySQL 实现。与 packages/engine 的 SQLite 实现是同一个接口的两个宿主：
  * SQLite 服务 mde CLI（管理员机器），本文件服务归档 worker（服务器）。
  *
@@ -13,7 +58,7 @@ import type { Pool } from '../store/db'
  * COALESCE / NOT IN 之类的细节逐条对齐；只有 SQLite 方言在 MySQL 里不存在
  * 对应写法的地方才改，改动点在注释里写明为什么等价。
  */
-export function createMysqlStore(pool: Pool): Store {
+export function createMysqlStore(pool: Pool): MysqlStore {
   return {
     async upsertMeeting(m, now) {
       await pool.query(
@@ -116,10 +161,15 @@ export function createMysqlStore(pool: Pool): Store {
         [h, bytes, now, now, id],
       )
     },
-    async markFailed(id, e, now) {
+    // lease_expires_at 写的是**最早可再领取时间**，不是租约——同一列在 running /
+    // failed / 终态三种状态下三种读法，完整语义见引擎侧 `Store.markFailed` 的注释。
+    // 退避曲线在 executor 的 `downloadBackoff` 里算好传进来，这里只负责写。
+    // **两处必须一起改**（SQLite 版逐字同样）：只改一边的话，一个宿主会重试、
+    // 另一个宿主的 failed 行永远卡死，而两边都不报错。
+    async markFailed(id, e, now, retryAt) {
       await pool.query(
-        `UPDATE meeting_assets SET status='failed', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
-        [e, now, id],
+        `UPDATE meeting_assets SET status='failed', last_error=?, lease_expires_at=?, updated_at=? WHERE id=?`,
+        [e, retryAt, now, id],
       )
     },
     async markSkipped(id, r, now) {
@@ -221,9 +271,29 @@ export function createMysqlStore(pool: Pool): Store {
       )
       return rows as unknown as AssetRow[]
     },
+    // 时间窗 + 只取四列，理由见 MysqlStore.deadAssets。ORDER BY id 是为了让
+    // 同一场会议的多条资产在拼那句失败原因时次序稳定（不然两轮跑出来的话不一样，
+    // 界面上看起来像是又出了新问题）。
+    async deadAssets() {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT meeting_id, sub_meeting_id, asset_type, last_error, attempts
+           FROM meeting_assets WHERE status='dead' ORDER BY id`,
+      )
+      return rows.map((r) => ({
+        meetingId: r.meeting_id as string,
+        subMeetingId: r.sub_meeting_id as string,
+        assetType: r.asset_type as string,
+        lastError: (r.last_error ?? null) as string | null,
+        attempts: Number(r.attempts),
+      }))
+    },
+    // lease_expires_at 一并清掉：它对 failed 行是「最早可再领取时间」，行被打回
+    // pending 之后那个值没有任何含义，留着只会让人对着一条 pending 行猜它在等什么。
+    // 这个方法是**人工逃生口**（把 dead 打回队列），不是重试机制——重试是
+    // markFailed 的退避加 claimNext 到点重领，见引擎侧 `Store.resetFailed` 的注释。
     async resetFailed(now) {
       const [res] = await pool.query<ResultSetHeader>(
-        `UPDATE meeting_assets SET status='pending', last_error=NULL, updated_at=? WHERE status IN ('failed','dead')`,
+        `UPDATE meeting_assets SET status='pending', last_error=NULL, lease_expires_at=NULL, updated_at=? WHERE status IN ('failed','dead')`,
         [now],
       )
       return res.affectedRows
@@ -294,9 +364,11 @@ export function createMysqlStore(pool: Pool): Store {
 /**
  * 挑出「可领取集合里 id 最小的那条」并锁住它，返回它的 id。
  *
- * SQLite 版一条 `WHERE status='pending' OR (status='running' AND lease_expires_at < ?)
- * ORDER BY id LIMIT 1` 就够了。MySQL 这边**必须拆成两条单 status 的查询**，
- * 原因是加锁足迹会随执行计划翻转：
+ * 可领取的是三类行（语义见引擎侧 `Store.claimNext`）：`pending`、租约过期的
+ * `running`、退避到点的 `failed`。
+ *
+ * SQLite 版把三者写成一条带 OR 的 `WHERE … ORDER BY id LIMIT 1` 就够了。
+ * MySQL 这边**必须拆成三条单 status 的查询**，原因是加锁足迹会随执行计划翻转：
  *
  *   OR 形式在生产数据分布上（历史 completed 远多于待领）会走 range + filesort。
  *   为了排序，它必须把**整个可领取集合**读出来，而 `FOR UPDATE` 会把读到的每一行
@@ -305,20 +377,31 @@ export function createMysqlStore(pool: Pool): Store {
  *   `runExecutor` 的 `if (!row) return` 会让 worker 就此退出：
  *   **队列里还有活，worker 却集体收工**。空表上测不出来，因为优化器那时选主键。
  *
- * 拆开之后两条都是 status 等值查询，配合 `idx_assets_claimable (status, id,
+ * 拆开之后三条都是 status 等值查询，配合 `idx_assets_claimable (status, id,
  * lease_expires_at)` 索引自带 id 序，不再 filesort，`LIMIT 1` 锁到第一条就停手
  * （同样数据下实测 2 把锁，且不随队列长度增长）。
  *
- * 取两条结果里 id 较小的那个，等价于原来的 `OR + ORDER BY id LIMIT 1`——
- * 可领取集合与优先级都没变，两个宿主不分叉。第二条查询即使这次用不上也照跑，
- * 就是为了保住这个「跨两个集合取全局最小 id」的语义；它多锁的那一行在几微秒后
- * 的 COMMIT 就释放，足迹依然是常数。
+ * 取三条结果里 id 最小的那个，等价于原来的 `OR + ORDER BY id LIMIT 1`——
+ * 可领取集合与优先级都没变，两个宿主不分叉。用不上的那几条查询也照跑，
+ * 就是为了保住这个「跨三个集合取全局最小 id」的语义；它们多锁的那一行在几微秒后
+ * 的 COMMIT 就释放。
  *
- * **与 SQLite 单语句语义唯一残留的差别**：这是两条语句，而 READ COMMITTED 下每条
- * 语句取自己的快照，两条之间不共享。若恰好在 Q1 与 Q2 之间提交了一条 id 比 Q2 结果
- * 更小的 pending，本轮会领走 expired 那条而不是它。**只影响单轮的挑选顺序**——
- * 不会重复领取（行锁保证），也不会漏活（那条 pending 下一轮就取到了）。
- * 写在这里免得将来有人拿它当 bug 查。
+ * 第三条（failed 重试）能塞进这个形状，靠的是 `lease_expires_at` 对 failed 行
+ * 复用成「最早可再领取时间」（见 `markFailed`）：它与第二条**逐字同形**，走同一条
+ * 索引、同样是 status 等值 + id 序 + LIMIT 1，没有新增索引、没有迁移。
+ *
+ * 它带来的唯一新增成本要说清楚：`lease_expires_at` 在索引里排在 id **之后**，
+ * 所以「还没到点」的 failed 行只能靠索引条件下推逐行过滤，而锁定读会把扫过的
+ * 索引记录一并锁上。上游长时间出问题、堆了 N 条未到点的 failed 时，这一条查询的
+ * 加锁足迹是 O(N) 而不是常数。**不会退化成上面那个"worker 集体收工"的故障**：
+ * 被锁住的都是本来就不可领的行，并发 worker 的 pending / expired 两条查询照常出活。
+ * 真要按到点时间收窄，得把索引改成 (status, lease_expires_at, id)，而那会把
+ * pending 那条查询的 id 序弄丢——那才是不能动的那一头。
+ *
+ * **与 SQLite 单语句语义唯一残留的差别**：这是三条语句，而 READ COMMITTED 下每条
+ * 语句取自己的快照，相互之间不共享。若恰好在两条之间提交了一条 id 更小的可领行，
+ * 本轮会领走后一条查出来的那个。**只影响单轮的挑选顺序**——不会重复领取
+ * （行锁保证），也不会漏活（那条下一轮就取到了）。写在这里免得将来有人拿它当 bug 查。
  */
 async function pickClaimable(conn: PoolConnection, now: number): Promise<number | undefined> {
   const [pending] = await conn.query<RowDataPacket[]>(
@@ -330,7 +413,20 @@ async function pickClaimable(conn: PoolConnection, now: number): Promise<number 
       ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
     [now],
   )
-  const ids = [pending[0]?.id as number | undefined, expired[0]?.id as number | undefined]
-    .filter((v): v is number => v !== undefined)
+  // `IS NULL` 那半句是给**本次改动之前**就躺在库里的 failed 行留的：那时 markFailed
+  // 写的是 NULL，而 `NULL < ?` 不成立，不带这半句的话那些行会继续永远卡在 failed
+  // ——正是这次要修的 bug，只是换成了存量数据，而服务端没有 `mde retry` 那个逃生口。
+  // 新写入的 failed 行永远带着时间戳，走不到这个分支。
+  const [retryable] = await conn.query<RowDataPacket[]>(
+    `SELECT id FROM meeting_assets
+      WHERE status='failed' AND (lease_expires_at IS NULL OR lease_expires_at < ?)
+      ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+    [now],
+  )
+  const ids = [
+    pending[0]?.id as number | undefined,
+    expired[0]?.id as number | undefined,
+    retryable[0]?.id as number | undefined,
+  ].filter((v): v is number => v !== undefined)
   return ids.length > 0 ? Math.min(...ids) : undefined
 }

@@ -33,12 +33,25 @@ export interface CompletedAssetRow {
 }
 
 /**
- * meeting_assets 里一行**确认取不到**的资产。
+ * meeting_assets 里一行**没拿到**的资产。
  *
- * 只有终态才算「确认缺失」：`skipped`（明确放弃）与 `dead`（重试用尽）。
- * `pending` / `running` / `failed` 还在流程里，属于「不知有无」，不在这里返回——
- * 「确认缺失」与「不知有无」是两种状态，这条区分是 US-6.2 的第三条验收标准本身，
- * 不是实现细节。分类规则与 `packages/engine/src/manifest/` 逐字一致。
+ * 三种状态进这里：`skipped`（明确放弃）、`dead`（重试用尽）这两个终态，加上
+ * `failed`（这一轮没成，下一轮还会重试）。`pending` / `running` 不进——它们连
+ * 「试过一次」都还没有，写进清单等于对着一个什么都还没发生的状态下结论。
+ *
+ * **`failed` 进来是有代价的取舍**：它不是终态，清单因此会说一件还会变的事。但
+ * 它带着 `last_error`，而 `status` 这一列本身就把「还会重试」说清楚了——读清单的人
+ * 看见 `failed` 知道这是一张快照，看不见它则会以为这个资产从来不存在。**沉默比
+ * 一个会变的事实更糟**，这是同一条判断在本仓库里的第 N 次应用。
+ *
+ * 分类规则与 `packages/engine/src/manifest/` **逐字一致**：两个宿主各写一份清单
+ * （本地那份每轮重写、NAS 那份长期留着），同一个资产在两份清单里不能一份说缺、
+ * 一份说没有。改这里必须同时改那里。
+ *
+ * 顺带一提：NAS 那份 sidecar 实际上很难看到 `failed`——`archiveMeeting` 只在
+ * 「没有资产还在路上」（含 failed）时才写它。写得出 sidecar 时 failed 恒为 0，
+ * 除非两条查询之间正好有一行转成 failed。留着这一支是为了上面那条「两处逐字一致」，
+ * 以及那个窄窗口里如实写、不静默丢。
  */
 export interface MissingAssetRow {
   meetingId: string
@@ -46,9 +59,33 @@ export interface MissingAssetRow {
   assetType: string
   remoteId: string
   fileType: string
-  status: 'skipped' | 'dead'
-  /** 放弃的原因（meeting_assets.last_error），没记下时为 null */
+  status: 'skipped' | 'dead' | 'failed'
+  /** 放弃/失败的原因（meeting_assets.last_error），没记下时为 null */
   lastError: string | null
+}
+
+/**
+ * 一场会议归档进度的三个数（`countArchiveProgress` 的返回）。
+ *
+ * 三个一起取回不是图省事，是因为**只看前两个会得出错误结论**：`completed === archived`
+ * 只说明「已经下载完的都搬走了」，不说明「这场会议归档完了」。一场会议 8 个资产、
+ * 视频还在下载时，前 7 个搬完就有 `7 === 7`——于是 `meeting_archives` 建行、
+ * NAS sidecar 写出一份只列 7 个资产的清单（视频既不在 `assets` 也不在 `missing`）、
+ * 30 天保留窗口开始计时，而那盘录像还没落地。`inFlight` 就是补上的那半个事实。
+ */
+export interface ArchiveProgress {
+  /** meeting_assets 里 status='completed' 的行数 */
+  completed: number
+  /** archived_assets 里已经搬上 NAS 的行数 */
+  archived: number
+  /**
+   * 还在路上的资产数：`pending` / `running` / `failed`。
+   *
+   * `failed` 算在路上，因为它会被自动重试（`meeting_assets.attempts` 用尽才转
+   * `dead`）——它是「还没有结论」，不是「确认没有」。终态只有 `completed` /
+   * `skipped` / `dead` 三个，这个数归零就意味着这场会议再也不会多出新东西可搬。
+   */
+  inFlight: number
 }
 
 export interface ArchivedAssetRecord {
@@ -89,21 +126,36 @@ export interface ArchivesStore {
    *  按 id 升序（= 入库顺序）：归档顺序与 NAS sidecar 的 `assets[]` 顺序都由它决定，
    *  重跑要产出同样的内容就不能让顺序跟着优化器走。与引擎那份清单同一种排序。 */
   listCompletedAssets(meetingId: string, subMeetingId: string): Promise<CompletedAssetRow[]>
-  /** 同一场会议里**确认取不到**的资产（status='skipped' / 'dead'），供 NAS sidecar 的
+  /** 同一场会议里**没拿到**的资产（status='skipped' / 'dead' / 'failed'），供 NAS sidecar 的
    *  `missing[]` 用——US-6.2 第三条验收标准要的就是这一段。按 id 升序，理由同上。
+   *  三个状态各自的取舍见 `MissingAssetRow` 的注释。
    *
    *  它读的仍然是 meeting_assets（三张表边界内那张只读的），不越界去碰第四张表。 */
   listMissingAssets(meetingId: string, subMeetingId: string): Promise<MissingAssetRow[]>
   /** 该资产是否已经在 archived_assets 里有记录（用于跳过已归档过的资产，支持重跑） */
   isAssetArchived(row: Pick<CompletedAssetRow, 'meetingId' | 'subMeetingId' | 'assetType' | 'remoteId' | 'fileType'>): Promise<boolean>
   recordArchivedAsset(input: ArchivedAssetRecord): Promise<void>
-  /** 某场会议 meeting_assets 里 completed 的资产总数，与 archived_assets 里已归档的数量做比较，
-   *  用来判断"这场会议是不是全部资产都归档完了"（只有全部完成才创建/更新 meeting_archives） */
-  countCompletedAssets(meetingId: string, subMeetingId: string): Promise<number>
-  countArchivedAssets(meetingId: string, subMeetingId: string): Promise<number>
+  /** "这场会议是不是归档完了"要的三个数，**一次往返**取回：completed / archived / inFlight。
+   *
+   *  取代此前的 countCompletedAssets + countArchivedAssets 两个方法：那两个数只答得了
+   *  「下载完的都搬完了没有」，答不了「还有没有东西没下完」，而后者才是
+   *  `meeting_archives` 建行、sidecar 落盘、保留窗口起算的前提（见 `ArchiveProgress`）。
+   *  两个数变三个数不该变成三次查询——`archivePendingMeetings` 每轮对每场待办会议
+   *  都要问一次，所以这里是三个标量子查询拼成的一条语句。 */
+  countArchiveProgress(meetingId: string, subMeetingId: string): Promise<ArchiveProgress>
 
-  /** worker 主循环用：枚举"存在未归档完成资产"的 (meeting_id, sub_meeting_id) 精确对——
-   *  即 meeting_assets 里 completed 数量严格大于 archived_assets 里已归档数量的那些。
+  /** worker 主循环用：枚举**还需要跑一次 archiveMeeting** 的 (meeting_id, sub_meeting_id)
+   *  精确对。两种会议要返回，缺一种都会有会议永远卡住：
+   *
+   *  1. **还有 completed 资产没搬**（completed 数量严格大于 archived 数量）——有活要干；
+   *  2. **`meeting_archives` 里还没有行**（哪怕 completed 已经全搬完了）——会议级记录
+   *     还没落。第二条不是冗余：一场会议的最后一个在路上的资产转 `dead` 之后，
+   *     没有任何新东西可搬（completed === archived），只按第一条枚举的话它再也不会被
+   *     `archiveMeeting` 访问，于是永远拿不到归档记录、保留窗口永远不开始计时、
+   *     本地文件永远不会被清理——而这一切没有任何地方会报错。
+   *
+   *  第二条的代价是「已经归档完但一直写不出 meeting_archives」的会议每轮都被捞回来，
+   *  这正是想要的：那种会议本来就有事没办完。归档完且有行的会议仍然一轮都不会进来。
    *
    *  这是 Step 5 归档循环真正的枚举源，取代最初错误复用的 Store.meetingsForPaths()：
    *  那个方法按 meeting_id 去重（专为local 落盘路径命名设计——一次只需要一个"代表"
@@ -114,9 +166,9 @@ export interface ArchivesStore {
    *  这个"后一行覆盖前一行"的行为——它对自己的原始用途是对的，只是不该被当成
    *  归档流水线的枚举源复用）。
    *
-   *  同时也是"没有待办事项就不必再查"的早退：completed<=archived 的会议（早就
-   *  全部归档完、或者压根没有 completed 资产）不会出现在结果里，不会每轮都被
-   *  重新 archiveMeeting 一遍。 */
+   *  同时也是"没有待办事项就不必再查"的早退：**归档完了、而且已经有 meeting_archives
+   *  那一行**的会议不会出现在结果里，不会每轮都被重新 archiveMeeting 一遍；压根没有
+   *  completed 资产的会议也不会（枚举源是 completed 那一侧的聚合）。 */
   listMeetingsNeedingArchive(): Promise<{ meetingId: string; subMeetingId: string }[]>
 
   upsertMeetingArchive(input: {
@@ -205,7 +257,7 @@ interface MissingAssetSqlRow extends RowDataPacket {
   asset_type: string
   remote_id: string
   file_type: string
-  status: 'skipped' | 'dead'
+  status: 'skipped' | 'dead' | 'failed'
   last_error: string | null
 }
 
@@ -231,8 +283,10 @@ interface MeetingArchiveSqlRow extends RowDataPacket {
   local_purged_at: number | null
 }
 
-interface CountRow extends RowDataPacket {
-  cnt: number
+interface ArchiveProgressSqlRow extends RowDataPacket {
+  completed: number
+  archived: number
+  in_flight: number
 }
 
 interface MeetingKeyRow extends RowDataPacket {
@@ -324,7 +378,7 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
       const [rows] = await pool.execute<MissingAssetSqlRow[]>(
         `SELECT meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, last_error
            FROM meeting_assets
-          WHERE meeting_id = ? AND sub_meeting_id = ? AND status IN ('skipped', 'dead')
+          WHERE meeting_id = ? AND sub_meeting_id = ? AND status IN ('skipped', 'dead', 'failed')
           ORDER BY id`,
         [meetingId, subMeetingId],
       )
@@ -363,33 +417,49 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
       )
     },
 
-    async countCompletedAssets(meetingId, subMeetingId) {
-      const [rows] = await pool.execute<CountRow[]>(
-        `SELECT COUNT(*) AS cnt FROM meeting_assets
-          WHERE meeting_id = ? AND sub_meeting_id = ? AND status = 'completed'`,
-        [meetingId, subMeetingId],
+    async countArchiveProgress(meetingId, subMeetingId) {
+      // 三个标量子查询拼成一条语句：三个数属于同一个判断（见 ArchiveProgress），
+      // 拆成三次往返只会让每场会议每轮多两次查询，还让三个数取自三个时刻。
+      // 每个子查询都以 (meeting_id, sub_meeting_id) 打头，走的是各自表上那条索引
+      // 的最左前缀。
+      const [rows] = await pool.execute<ArchiveProgressSqlRow[]>(
+        `SELECT
+           (SELECT COUNT(*) FROM meeting_assets
+             WHERE meeting_id = ? AND sub_meeting_id = ? AND status = 'completed') AS completed,
+           (SELECT COUNT(*) FROM archived_assets
+             WHERE meeting_id = ? AND sub_meeting_id = ?) AS archived,
+           (SELECT COUNT(*) FROM meeting_assets
+             WHERE meeting_id = ? AND sub_meeting_id = ?
+               AND status IN ('pending', 'running', 'failed')) AS in_flight`,
+        [meetingId, subMeetingId, meetingId, subMeetingId, meetingId, subMeetingId],
       )
-      return Number(rows[0]?.cnt ?? 0)
-    },
-
-    async countArchivedAssets(meetingId, subMeetingId) {
-      const [rows] = await pool.execute<CountRow[]>(
-        `SELECT COUNT(*) AS cnt FROM archived_assets
-          WHERE meeting_id = ? AND sub_meeting_id = ?`,
-        [meetingId, subMeetingId],
-      )
-      return Number(rows[0]?.cnt ?? 0)
+      const r = rows[0]
+      return {
+        completed: Number(r?.completed ?? 0),
+        archived: Number(r?.archived ?? 0),
+        inFlight: Number(r?.in_flight ?? 0),
+      }
     },
 
     async listMeetingsNeedingArchive() {
       // 两边各自按 (meeting_id, sub_meeting_id) 聚合成一行 completed_count /
-      // archived_count 再 LEFT JOIN 比较，而不是逐会议跑 countCompletedAssets +
-      // countArchivedAssets——那样对 N 场会议要发 2N 条查询；这里恒定两条。
-      // completed_count > archived_count（archived_count 缺行时按 0 算）精确刻画
-      // "这场会议还有至少一个 completed 资产没有出现在 archived_assets 里"，
-      // 包含三种情况：从没归档过、归档到一半、某个资产哈希校验失败等下一轮重试——
-      // 全部需要重新调用 archiveMeeting；完全没有 completed 资产、或已经全部归档完的
-      // 会议不会出现在结果里，天然提供"没有待办事项就不必再查"的早退。
+      // archived_count 再 LEFT JOIN 比较，而不是逐会议跑 countArchiveProgress——
+      // 那样对 N 场会议要发 N 条查询；这里恒定一条。
+      //
+      // WHERE 的两支各自刻画一种"还要跑一次 archiveMeeting"：
+      //
+      //   c.completed_count > COALESCE(a.archived_count, 0)
+      //     还有 completed 资产没进 archived_assets：从没归档过、归档到一半、
+      //     某个资产哈希校验失败等下一轮重试——有活要干。
+      //
+      //   ar.meeting_id IS NULL
+      //     **一个字节都不用搬，但会议级那一行还没写**。这一支是必需的：一场会议的
+      //     最后一个在路上的资产转 dead 之后，completed === archived 恒成立，
+      //     只有第一支的话它再也不会被 archiveMeeting 访问，于是永远没有
+      //     meeting_archives 行、保留窗口永远不开始、本地文件永远不会被清理，
+      //     而且不会有任何报错。
+      //
+      // 归档完且已有那一行的会议两支都不命中——"没有待办事项就不必再查"的早退还在。
       const [rows] = await pool.execute<MeetingKeyRow[]>(
         `SELECT c.meeting_id, c.sub_meeting_id
            FROM (
@@ -403,7 +473,9 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
                FROM archived_assets
               GROUP BY meeting_id, sub_meeting_id
            ) a ON a.meeting_id = c.meeting_id AND a.sub_meeting_id = c.sub_meeting_id
-          WHERE c.completed_count > COALESCE(a.archived_count, 0)
+           LEFT JOIN meeting_archives ar
+             ON ar.meeting_id = c.meeting_id AND ar.sub_meeting_id = c.sub_meeting_id
+          WHERE c.completed_count > COALESCE(a.archived_count, 0) OR ar.meeting_id IS NULL
           ORDER BY c.meeting_id, c.sub_meeting_id`,
       )
       return rows.map((r) => ({ meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id }))

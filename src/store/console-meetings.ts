@@ -356,9 +356,15 @@ export function parseConsoleMeetingId(id: string): MeetingKey {
  *   进去，已经不是「还没轮到」能解释的了。
  * - 单次归档的上界是 `NAS_WRITE_TIMEOUT_MS`（10 分钟，见 `src/worker/archive.ts`），
  *   一场会议再大也不可能一次跨过 6 小时，所以宽限内不会漏报一场「正在搬」的会议。
- * - 起算点是**最后一个 completed 资产的完成时刻**，不是会议时间：归档要等
- *   全部资产下载完（`meeting_archives` 只在全部资产都归档后才建行），
- *   从会议时间起算会把一场刚拉完的老会议立刻判成失败。
+ * - 起算点是**最后一个资产终结的时刻**（库里取得到的是最后一个 completed 的
+ *   `completed_at`），不是会议时间：归档要等这场会议再没有资产在路上——
+ *   `meeting_archives` 只在没有任何资产处于 pending / running / failed 时才建行
+ *   （见 `src/worker/archive.ts`）。从会议时间起算，会把一场刚拉完的老会议
+ *   立刻判成失败。
+ * - 因此**还有资产在路上时这条判据根本不适用**：起算点都还没到，无所谓超时。
+ *   两处判据都先把 `busy_cnt > 0` 摘出去（`assembleRow` 的 archive 分支、
+ *   `triageFragment('archiveFailed')`）。少了那一步，一场「小文件早下完、
+ *   大视频还在下 8 小时」的正常会议会天天报红——而红格说的是「到期会永久丢失」。
  *
  * 这套判据是**启发式**的：`meeting_archives` 没有行只说明「没归成」，说不出
  * 「为什么没归成」。**「为什么」现在有出处了**——A4（T11）建的 `job_failures`
@@ -400,7 +406,13 @@ const FROM_SQL = `
     SELECT meeting_id, sub_meeting_id,
            COUNT(*) AS total_cnt,
            SUM(status = 'completed') AS completed_cnt,
-           SUM(status IN ('pending', 'running')) AS busy_cnt,
+           -- busy_cnt 数的是「还在路上」的资产，不是「没成功」的资产。failed
+           -- 因此在里面：下载队列会按退避重新排它，那是两次尝试之间的等待态，
+           -- 不是终点。skipped（判定不取）与 dead（重试用尽，彻底放弃）不在里面
+           -- ——它们已经没有下一次尝试了，再等下去也不会有新结果。
+           -- 这个集合是 fetch 与 archive 两个圆点判 running 时共用的判据，
+           -- 改它等于同时改两处的含义。
+           SUM(status IN ('pending', 'running', 'failed')) AS busy_cnt,
            MAX(CASE WHEN status = 'completed' THEN COALESCE(completed_at, updated_at) END)
              AS last_completed_at
       FROM meeting_assets
@@ -448,7 +460,12 @@ function triageFragment(bucket: Exclude<TriageBucket, 'awaitingGrant'>, now: num
   switch (bucket) {
     case 'archiveFailed':
       // 判据见 ARCHIVE_GRACE_SEC 的注释。`sk.meeting_id IS NULL` 把被人工关掉归档的
-      // 会议摘出去——最高级别告警不许每天报一次假警。
+      // 会议摘出去，`busy_cnt = 0` 把还有资产在路上的会议摘出去（宽限的起算点
+      // 还没到，理由见 `assembleRow` 里那一支）——最高级别告警不许每天报一次假警。
+      //
+      // 这几个条件与 `assembleRow` 算 archive 状态的那几支**必须逐条对应**，
+      // 否则分诊条数出来的数和列表里显示的状态会打架。测试里有一条同时断言
+      // 两侧，就是钉这个。
       //
       // 已知的窄边界：`meeting_assets` 里有资产而 `meetings` 表里没有对应行的会议
       // （采集侧的数据不一致，`src/worker/archive.ts` 的 undecidable 分支处理它）
@@ -458,6 +475,7 @@ function triageFragment(bucket: Exclude<TriageBucket, 'awaitingGrant'>, now: num
         sql: `(COALESCE(a.completed_cnt, 0) > 0
                AND ar.meeting_id IS NULL
                AND sk.meeting_id IS NULL
+               AND COALESCE(a.busy_cnt, 0) = 0
                AND a.last_completed_at IS NOT NULL
                AND a.last_completed_at + ${ARCHIVE_GRACE_SEC} < ?)`,
         params: [now],
@@ -823,6 +841,17 @@ function assembleRow(
     archiveState = 'none'
   } else if (archived) {
     archiveState = 'done'
+  } else if (busyCnt > 0) {
+    // 还有资产在路上（pending / running / failed，见 FROM_SQL 里 busy_cnt 的注释）。
+    // 宽限是从**最后一个资产终结的那一刻**起算的，而这场会议的那一刻还没到——
+    // 起算点都没到，就谈不上「超过宽限」，判失败没有任何依据。
+    //
+    // 这一支不是锦上添花：`meeting_archives` 只在这场会议没有资产还在路上时
+    // 才建行（见 `src/worker/archive.ts`），于是「7 个小文件 6 小时前就下完了、
+    // 视频还在下」这种再正常不过的会议会一直没有归档行。少了这一支，它落进
+    // 下面那条时间判据，被报成分诊条最高级别的红色告警（「到期会永久丢失」），
+    // 而它其实什么事都没有——大文件下 8 小时本来就是常态。
+    archiveState = 'running'
   } else if (lastCompletedAt !== null && lastCompletedAt + ARCHIVE_GRACE_SEC < now) {
     archiveState = 'failed'
   } else {

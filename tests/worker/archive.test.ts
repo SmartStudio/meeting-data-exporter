@@ -41,26 +41,53 @@ interface SeedAssetInput {
   contentHash?: string | null
 }
 
-/** 直接写 meeting_assets：这张表不归 ArchivesStore/archiveMeeting 写，只读用途 */
-async function seedCompletedAsset(pool: Pool, input: SeedAssetInput): Promise<void> {
+/** meeting_assets 的状态机（002 的列定义）：pending → running → completed | failed | skipped | dead */
+type AssetStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'dead'
+
+/**
+ * 直接写一行**任意状态**的 meeting_assets：这张表不归 ArchivesStore/archiveMeeting 写，
+ * 只读用途，所以测试直接用 pool 造行（与 tests/store/archives.test.ts 同一种处境）。
+ *
+ * **"还没下完的资产"在库里的形状是一行 pending/running/failed 的行，不是"没有这一行"**：
+ * 资产行在发现会议时就被 `upsertAsset`（src/worker/store-mysql.ts）以 pending 全部建好，
+ * 之后一个个往终态走。所以"整场会议还差几个"这件事在库里是现成的——归档的判定
+ * 必须读它，这也是本文件几条在途用例都造 pending/running/failed 行、而不是干脆不建行的原因。
+ */
+async function seedAsset(
+  pool: Pool,
+  input: Omit<SeedAssetInput, 'targetPath'> & {
+    status: AssetStatus
+    /** 非 completed 的行在生产里 target_path 多半还是 NULL（setTargetPath 还没跑） */
+    targetPath?: string | null
+    lastError?: string | null
+  },
+): Promise<void> {
   const {
     meetingId,
     subMeetingId = '',
     assetType = 'video',
     remoteId = 'remote-1',
     fileType = 'mp4',
-    targetPath,
+    status,
+    targetPath = null,
     bytesExpected = null,
     bytesWritten = 0,
     contentHash = null,
+    lastError = null,
   } = input
   await pool.execute(
     `INSERT INTO meeting_assets
        (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path,
-        bytes_written, bytes_expected, content_hash, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, 1000, 1000)`,
-    [meetingId, subMeetingId, assetType, remoteId, fileType, targetPath, bytesWritten, bytesExpected, contentHash],
+        bytes_written, bytes_expected, content_hash, last_error, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1000, 1000)`,
+    [meetingId, subMeetingId, assetType, remoteId, fileType, status, targetPath,
+     bytesWritten, bytesExpected, contentHash, lastError],
   )
+}
+
+/** 一行下载完成的资产——绝大多数用例的输入，所以留一个不必每次写 status 的入口 */
+async function seedCompletedAsset(pool: Pool, input: SeedAssetInput): Promise<void> {
+  await seedAsset(pool, { ...input, status: 'completed' })
 }
 
 /** 直接写一行**终态但没拿到**的资产（skipped / dead）——US-6.2 第三条验收标准的输入 */
@@ -68,12 +95,23 @@ async function seedMissingAsset(
   pool: Pool,
   input: { meetingId: string; assetType: string; remoteId: string; fileType?: string; status: 'skipped' | 'dead'; lastError: string },
 ): Promise<void> {
-  const { meetingId, assetType, remoteId, fileType = '', status, lastError } = input
+  await seedAsset(pool, { ...input, fileType: input.fileType ?? '' })
+}
+
+/**
+ * 把一行资产改成另一个状态——**在途的资产最终会落到某个终态**，这是几条多轮用例的
+ * 第二幕（视频下完 → completed、重试用尽 → dead）。生产里这一步由 executor 做，
+ * 测试里直接改库，理由同 seedAsset。
+ */
+async function updateAssetStatus(
+  pool: Pool,
+  input: { meetingId: string; remoteId: string; status: AssetStatus; targetPath?: string | null; lastError?: string | null },
+): Promise<void> {
+  const { meetingId, remoteId, status, targetPath = null, lastError = null } = input
   await pool.execute(
-    `INSERT INTO meeting_assets
-       (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, last_error, created_at, updated_at)
-     VALUES (?, '', ?, ?, ?, ?, ?, 1000, 1000)`,
-    [meetingId, assetType, remoteId, fileType, status, lastError],
+    `UPDATE meeting_assets SET status = ?, target_path = ?, last_error = ?, updated_at = 2000
+      WHERE meeting_id = ? AND remote_id = ?`,
+    [status, targetPath, lastError, meetingId, remoteId],
   )
 }
 
@@ -314,7 +352,7 @@ test('用例4：对已经全部归档过的会议重跑一次 → newlyArchived=
     const first = await archiveMeeting(deps, 'm-4', '', 8000, RULES, null)
     expect(first.newlyArchived).toBe(1)
     expect(first.fullyArchived).toBe(true)
-    expect(await archives.countArchivedAssets('m-4', '')).toBe(1)
+    expect((await archives.countArchiveProgress('m-4', '')).archived).toBe(1)
 
     const second = await archiveMeeting(deps, 'm-4', '', 8500, RULES, null)
     expect(second.newlyArchived).toBe(0)
@@ -324,7 +362,7 @@ test('用例4：对已经全部归档过的会议重跑一次 → newlyArchived=
     // 没有重复写：数量还是 1，不是 2。若 isAssetArchived 没挡住重复归档，
     // 第二次 recordArchivedAsset 会撞 archived_assets 的主键直接抛错——
     // 这条用例能正常跑完本身就已经说明第二轮没有尝试过重复插入。
-    expect(await archives.countArchivedAssets('m-4', '')).toBe(1)
+    expect((await archives.countArchiveProgress('m-4', '')).archived).toBe(1)
 
     // 关键回归断言：第二轮什么新资产都没有归档（newlyArchived===0），
     // meeting_archives.archived_at 必须原样停在第一轮的 8000，不能被这次
@@ -337,20 +375,25 @@ test('用例4：对已经全部归档过的会议重跑一次 → newlyArchived=
   })
 })
 
-test('用例5：分两轮跑——第一轮部分资产完成、第二轮剩余资产完成 → 第二轮之后 fullyArchived===true 且 meeting_archives 被创建', async () => {
+test('用例5：分两轮跑——第一轮 B 还是 pending（整场不算齐、不建归档行）、第二轮 B 下完 → fullyArchived===true 且 meeting_archives 记的是第二轮的时刻', async () => {
   await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
-    // 第一轮：只有 A 就绪（B 还没下载完，这场会议里根本还没有它的 completed 行——
-    // 与真实流水线一致，探测/下载是异步就绪的，不要求同一轮里所有资产一起就绪）
+    // 第一轮：A 下完了，B 的行**以 pending 存在**——这才是生产里的形状（资产行在发现
+    // 会议时就全建好了，见 seedAsset 的注释）。从前这条用例写成"B 的行根本不存在"，
+    // 那种状态生产里不会出现，也就恰好绕过了本次要钉的判据。
     await seedCompletedAsset(pool, { meetingId: 'm-5', assetType: 'video', remoteId: 'r-a', fileType: 'mp4', targetPath: 'a.mp4' })
     await writeLocalFile(localRoot, 'a.mp4', 'asset A content')
+    await seedAsset(pool, { meetingId: 'm-5', assetType: 'meeting_summary', remoteId: 'r-b', fileType: 'txt', status: 'pending' })
 
     const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
     const round1 = await archiveMeeting(deps, 'm-5', '', 9000, RULES, null)
+    // A 照样搬走（增量归档是对的），但整场没齐：B 还在路上
     expect(round1.newlyArchived).toBe(1)
     expect(round1.verificationFailed).toBe(0)
+    expect(round1.fullyArchived).toBe(false)
+    expect(await archives.findMeetingArchive('m-5', '')).toBeNull()
 
-    // 第二轮之前，B 的下载才完成——补上它的 completed 行与本地文件
-    await seedCompletedAsset(pool, { meetingId: 'm-5', assetType: 'meeting_summary', remoteId: 'r-b', fileType: 'txt', targetPath: 'b.txt' })
+    // 第二轮之前，B 的下载才完成——那一行从 pending 变成 completed，本地文件也有了
+    await updateAssetStatus(pool, { meetingId: 'm-5', remoteId: 'r-b', status: 'completed', targetPath: 'b.txt' })
     await writeLocalFile(localRoot, 'b.txt', 'asset B content')
 
     const round2 = await archiveMeeting(deps, 'm-5', '', 9500, RULES, null)
@@ -358,10 +401,151 @@ test('用例5：分两轮跑——第一轮部分资产完成、第二轮剩余�
     expect(round2.verificationFailed).toBe(0)
     expect(round2.fullyArchived).toBe(true)
 
-    expect(await archives.countArchivedAssets('m-5', '')).toBe(2)
+    expect((await archives.countArchiveProgress('m-5', '')).archived).toBe(2)
     const rec = await archives.findMeetingArchive('m-5', '')
     expect(rec).not.toBeNull()
     expect(rec?.archivedAt).toBe(9500) // 反映"最终真正凑齐"的那一轮
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 「还有资产在路上」时整场不算归档完
+//
+// 实测确认过的失效形态：8 个资产的会议，视频还在下载（status='running'）时它不在
+// completed 里，前 7 个搬完就凑出 7 === 7 —— meeting_archives 建行、sidecar 写出
+// 一份只列 7 个资产的清单、30 天保留窗口开始计时、控制台显示「已归档」，而录像还没落地。
+//
+// 下面三条用例的输入只差那一个状态值（running / failed / pending），钉的是同一条判据：
+// **终态只有 completed / skipped / dead，其余三个都算「还在路上」**。failed 也算，
+// 因为它会被自动重试——它是「还没有结论」，不是「确认没有」。
+// ---------------------------------------------------------------------------
+
+/**
+ * 7 段已下完的资产 + 1 个还卡在 `status` 上的录像，跑一轮归档。
+ *
+ * 7 段用 `audio`（二进制类）而不是纪要之类的文本：本组用例测的是归档的门，
+ * 不是正文入库，用文本类会让每条用例多刷 7 行「ArchiveDeps.contents 未接线」的
+ * warn（那条 warn 本身由 T4⑥ 负责）。
+ */
+async function expectVideoInFlightBlocksMeetingArchive(status: 'running' | 'failed' | 'pending'): Promise<void> {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    const meetingId = `m-inflight-${status}`
+    for (let i = 1; i <= 7; i++) {
+      await seedCompletedAsset(pool, {
+        meetingId, assetType: 'audio', remoteId: `r-${i}`, fileType: 'm4a',
+        targetPath: `${meetingId}/seg-${i}.m4a`,
+      })
+      await writeLocalFile(localRoot, `${meetingId}/seg-${i}.m4a`, `segment ${i}`)
+    }
+    // 第 8 个：录像还在路上。它的行早就建好了，只是还没走到终态
+    await seedAsset(pool, {
+      meetingId, assetType: 'video', remoteId: 'r-video', fileType: 'mp4', status,
+      lastError: status === 'failed' ? 'ECONNRESET' : null,
+    })
+
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const outcome = await archiveMeeting(deps, meetingId, '', 30_000, RULES, null)
+
+    // 已经下完的那 7 个**照样搬上 NAS**：增量归档是对的，先安全下来的先安全，
+    // 不必等那盘录像。这一半不能因为修 bug 被顺手改成"齐了再一起搬"。
+    expect(outcome.newlyArchived).toBe(7)
+    expect((await archives.countArchiveProgress(meetingId, '')).archived).toBe(7)
+
+    // 但会议级的三件事一件都不许发生：没有归档行、没有 sidecar、保留窗口没起算
+    expect(outcome.fullyArchived).toBe(false)
+    expect(await archives.findMeetingArchive(meetingId, '')).toBeNull()
+    expect(outcome.sidecar).toBe('skipped')
+    const nasDir = expectedNasDir(nasRoot, meetingId)
+    expect(await exists(join(nasDir, 'meeting.json'))).toBe(false)
+    expect(await exists(join(nasDir, '_manifest.json'))).toBe(false)
+  })
+}
+
+test('在途①：视频还在下载（running）→ 7 个已完成的照样搬上 NAS，但整场不算归档完：不建 meeting_archives、不写 sidecar', async () => {
+  await expectVideoInFlightBlocksMeetingArchive('running')
+})
+
+test('在途②：视频这一轮下载失败（failed）→ 同样不算归档完——failed 会被自动重试，是「还没有结论」不是「确认没有」', async () => {
+  await expectVideoInFlightBlocksMeetingArchive('failed')
+})
+
+test('在途③：视频还没开始下载（pending）→ 同样不算归档完——资产行发现会议时就建好了，pending 是「还没轮到」', async () => {
+  await expectVideoInFlightBlocksMeetingArchive('pending')
+})
+
+test('在途资产转 dead 收尾：这一轮一个字节都没搬，但整场从此「齐了」→ meeting_archives 补建、sidecar 写出、视频以 dead 出现在 missing 里', async () => {
+  await withRig(async ({ pool, localRoot, nasRoot, archives }) => {
+    const meetingId = 'm-dead-tail'
+    for (let i = 1; i <= 7; i++) {
+      await seedCompletedAsset(pool, {
+        meetingId, assetType: 'audio', remoteId: `r-${i}`, fileType: 'm4a',
+        targetPath: `${meetingId}/seg-${i}.m4a`, bytesExpected: 9 + i,
+      })
+      await writeLocalFile(localRoot, `${meetingId}/seg-${i}.m4a`, `segment ${i}`)
+    }
+    await seedAsset(pool, { meetingId, assetType: 'video', remoteId: 'r-video', fileType: 'mp4', status: 'running' })
+
+    const deps: ArchiveDeps = { archives, localRoot, nasRoot, getMeeting: stubMeeting, listArchiveRules, listArchiveOverrides: noOverrides }
+    const round1 = await archiveMeeting(deps, meetingId, '', 40_000, RULES, null)
+    expect(round1.newlyArchived).toBe(7)
+    expect(round1.fullyArchived).toBe(false)
+
+    // 录像重试用尽，转 dead。**这一轮之后再没有任何新东西可搬**（completed === archived），
+    // 从前的判据下这场会议永远不会再被访问，也就永远拿不到归档记录。
+    await updateAssetStatus(pool, { meetingId, remoteId: 'r-video', status: 'dead', lastError: 'upstream_timeout' })
+
+    // 枚举源必须还捞得到它——否则下面这一轮在生产里根本不会发生
+    expect(await archives.listMeetingsNeedingArchive()).toContainEqual({ meetingId, subMeetingId: '' })
+
+    const round2 = await archiveMeeting(deps, meetingId, '', 41_000, RULES, null)
+    expect(round2.newlyArchived).toBe(0) // 该搬的早搬完了
+    expect(round2.verificationFailed).toBe(0)
+    expect(round2.fullyArchived).toBe(true) // 在途归零，整场从此有结论
+    expect(round2.sidecar).toBe('written')
+
+    // 会议级那一行这一轮才建起来：保留窗口从"整场有结论"的这一刻开始计时
+    const rec = await archives.findMeetingArchive(meetingId, '')
+    expect(rec).not.toBeNull()
+    expect(rec?.archivedAt).toBe(41_000)
+
+    // 清单如实交代那盘录像：它不在 assets 里，但**在 missing 里，带着终态与原因**——
+    // 「确认取不到」与「清单里压根没提过它」是两件完全不同的事
+    const manifest = await readJson<ArchivedManifestFile>(join(expectedNasDir(nasRoot, meetingId), '_manifest.json'))
+    expect(manifest.assets.map((a) => a.remoteId)).toEqual(['r-1', 'r-2', 'r-3', 'r-4', 'r-5', 'r-6', 'r-7'])
+    expect(manifest.missing).toEqual([
+      { assetType: 'video', assetKey: 'video', remoteId: 'r-video', status: 'dead', reason: 'upstream_timeout' },
+    ])
+  })
+})
+
+test('listMeetingsNeedingArchive 的枚举口径：搬完了但还没有归档行的会议要返回（否则它永远拿不到记录），已有归档行且没有新 completed 的不返回', async () => {
+  await withRig(async ({ pool, archives }) => {
+    // (a) 全部 completed 都已归档、但 meeting_archives 里没有行——**要返回**。
+    //     这正是"最后一个在途资产转 dead"之后的形状：没有新东西可搬，但会议级
+    //     那一行还欠着，不再访问它就等于永远不建。
+    await seedCompletedAsset(pool, { meetingId: 'm-enum-norow', remoteId: 'r-1', targetPath: 'a.mp4' })
+    await archives.recordArchivedAsset({
+      meetingId: 'm-enum-norow', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4',
+      localPath: 'a.mp4', nasPath: '/nas/a.mp4', nasHash: 'h', archivedAt: 1000,
+    })
+
+    // (b) 有归档行、且没有新的 completed——**不返回**（"没有待办就不必再查"的早退）
+    await seedCompletedAsset(pool, { meetingId: 'm-enum-done', remoteId: 'r-1', targetPath: 'b.mp4' })
+    await archives.recordArchivedAsset({
+      meetingId: 'm-enum-done', subMeetingId: '', assetType: 'video', remoteId: 'r-1', fileType: 'mp4',
+      localPath: 'b.mp4', nasPath: '/nas/b.mp4', nasHash: 'h', archivedAt: 1000,
+    })
+    await archives.upsertMeetingArchive({
+      meetingId: 'm-enum-done', subMeetingId: '', nasDir: '/nas/done', archivedAt: 1000, retentionDays: 30, now: 1000,
+    })
+
+    // (c) 还有 completed 没搬——照旧返回
+    await seedCompletedAsset(pool, { meetingId: 'm-enum-todo', remoteId: 'r-1', targetPath: 'c.mp4' })
+
+    expect(await archives.listMeetingsNeedingArchive()).toEqual([
+      { meetingId: 'm-enum-norow', subMeetingId: '' },
+      { meetingId: 'm-enum-todo', subMeetingId: '' },
+    ])
   })
 })
 
@@ -380,7 +564,7 @@ test('NAS 写得太久（注入一个小超时模拟挂住的挂载）时归档�
     )
 
     // 超时的资产绝不能被当成已归档——下一轮还要重试它
-    expect(await archives.countArchivedAssets('m-slow-nas', '')).toBe(0)
+    expect((await archives.countArchiveProgress('m-slow-nas', '')).archived).toBe(0)
     expect(await archives.findMeetingArchive('m-slow-nas', '')).toBeNull()
 
     // 同一场会议、同一个 16MB 文件，用生产默认超时（10 分钟）就正常归档得掉。
@@ -668,7 +852,7 @@ test('sidecar②：会议元数据取不到 → 判不出归档目录，这一�
       expect(outcome.sidecar).toBe('skipped')
 
       // 一个字节都没往 NAS 上写，库里也没有任何归档记录
-      expect(await archives.countArchivedAssets('m-nometa', '')).toBe(0)
+      expect((await archives.countArchiveProgress('m-nometa', '')).archived).toBe(0)
       expect(await archives.findMeetingArchive('m-nometa', '')).toBeNull()
 
       // 不静默：拿不到元数据这件事必须留痕
@@ -699,7 +883,7 @@ test('sidecar③：写 sidecar 抛错时归档仍然成功，meeting_archives �
       const rec = await archives.findMeetingArchive('m-badmeta', '')
       expect(rec).not.toBeNull()
       expect(rec?.archivedAt).toBe(21_000)
-      expect(await archives.countArchivedAssets('m-badmeta', '')).toBe(1)
+      expect((await archives.countArchiveProgress('m-badmeta', '')).archived).toBe(1)
 
       // 不许静默 .catch(() => {})——失败必须留痕
       expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('m-badmeta'))).toBe(true)
@@ -733,7 +917,7 @@ test('sidecar④：NAS 写 sidecar 挂住时在有限时间内返回，归档不
       expect(outcome.sidecar).toBe('failed')
       expect(elapsed).toBeLessThan(10_000)      // 有限时间内返回，不是挂死
       // 资产与归档记录都照常落库——挂住的只是 sidecar
-      expect(await archives.countArchivedAssets('m-hang', '')).toBe(1)
+      expect((await archives.countArchiveProgress('m-hang', '')).archived).toBe(1)
       expect(await archives.findMeetingArchive('m-hang', '')).not.toBeNull()
       expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('timed out'))).toBe(true)
     })
@@ -893,7 +1077,7 @@ test('T9：一条规则都没有 → 兜底 skip，什么都不归档，理由�
     expect(outcome.reason).toContain('兜底')
     expect(outcome.reason).toContain('不归档')
 
-    expect(await archives.countArchivedAssets('m-norule', '')).toBe(0)
+    expect((await archives.countArchiveProgress('m-norule', '')).archived).toBe(0)
     expect(await archives.findMeetingArchive('m-norule', '')).toBeNull()
   })
 })
@@ -910,7 +1094,7 @@ test('T9：规则判 skip → 不归档，理由带着是哪条规则判的', as
     expect(outcome.skipped).toBe(true)
     expect(outcome.reason).toContain('#9')
     expect(outcome.reason).toContain('外部客户会议不进 NAS')
-    expect(await archives.countArchivedAssets('m-skip', '')).toBe(0)
+    expect((await archives.countArchiveProgress('m-skip', '')).archived).toBe(0)
   })
 })
 
@@ -926,7 +1110,7 @@ test('T9：模板渲染不出合法路径（路径穿越）→ 不归档，绝�
     expect(outcome.skipped).toBe(true)
     expect(outcome.reason).toContain('..')
     expect(outcome.reason).toContain('#3')
-    expect(await archives.countArchivedAssets('m-bad', '')).toBe(0)
+    expect((await archives.countArchiveProgress('m-bad', '')).archived).toBe(0)
     // 一个字节都没写出去——尤其没有写到 NAS 根之外
     expect(await archives.findMeetingArchive('m-bad', '')).toBeNull()
   })

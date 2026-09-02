@@ -177,3 +177,58 @@ test('markCompleted 用真实文件大小覆盖 touchProgress 留下的进度检
   expect(done.status).toBe('completed')
   expect(done.bytes_written).toBe(8 * 1024 * 1024 + 4242)    // completed 行上这一列是真实大小
 })
+
+// ── 失败重试：failed 行按退避重新入队 ────────────────────────────
+//
+// 修复之前 `failed` 是事实上的终态：claim 只看 pending 与过期的 running，
+// upsertAsset 不重置 status，resetFailed 只有 CLI 的 retry 命令会调。一条资产
+// 只要网络抖一次失败，attempts 就永远停在 1，MAX_ATTEMPTS=5 那道门走不到。
+
+test('markFailed 写下最早可再领取时间：没到点领不到，到点了领得到且 attempts 递增', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const first = (await s.claimNext(100, 300))!
+  expect(first.attempts).toBe(1)
+
+  const retryAt = 100 + 300                                   // executor 的 downloadBackoff(1)
+  await s.markFailed(first.id, 'HTTP 500', 110, retryAt)
+  expect((await s.assetsForMeeting('m1', ''))[0]!.lease_expires_at).toBe(retryAt)
+
+  expect(await s.claimNext(retryAt - 1, 300)).toBeNull()       // 还在退避里
+  // 边界与租约那条**严格同款**（`lease_expires_at < now` 才算可领），所以卡在
+  // retryAt 这一秒上还不行。两类行同形是 MySQL 宿主加锁足迹的前提，不值得为一秒
+  // 把它们拆成两种写法。
+  expect(await s.claimNext(retryAt, 300)).toBeNull()
+  const again = (await s.claimNext(retryAt + 1, 300))!
+  expect(again.id).toBe(first.id)
+  expect(again.status).toBe('running')
+  expect(again.attempts).toBe(2)
+  expect(again.last_error).toBe('HTTP 500')                    // 上次的错留着，转 dead 时要用
+})
+
+test('领取顺序仍是"全局 id 最小"：到点的 failed 排在 id 更大的 pending 前面', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'old' }, 1)
+  const old = (await s.claimNext(100, 300))!
+  await s.markFailed(old.id, 'boom', 110, 400)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'new' }, 200)  // id 更大
+
+  const got = (await s.claimNext(401, 300))!
+  expect(got.id).toBe(old.id)
+  expect(got.remote_id).toBe('old')
+})
+
+test('resetFailed 把 failed/dead 打回 pending，并清掉那个"最早可再领取时间"', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const row = (await s.claimNext(100, 300))!
+  await s.markFailed(row.id, 'boom', 110, 9_999_999)          // 退避到很久以后
+
+  expect(await s.resetFailed(120)).toBe(1)
+  const back = (await s.assetsForMeeting('m1', ''))[0]!
+  expect(back.status).toBe('pending')
+  expect(back.last_error).toBeNull()
+  // 留着的话，一条 pending 行上会挂着一个没有任何含义的时间戳
+  expect(back.lease_expires_at).toBeNull()
+  expect((await s.claimNext(130, 300))!.id).toBe(row.id)      // 逃生口的意义：立刻能再领
+})

@@ -510,6 +510,13 @@ interface AssetSources {
     archivedAt: number
   }[]
   completed: readonly { assetType: string; remoteId: string; fileType: string }[]
+  /**
+   * **只收终态**。`ArchivesStore.listMissingAssets` 现在连 `failed` 一起返回（NAS 清单
+   * 要如实记下"上次没取到、还在重试"），但这里那一档的措辞是「确认取不到」，
+   * `failed` 塞进来就会被写成「终态 failed（明确放弃）」——把一件还会自动重试的事
+   * 说成既成事实，正是文件头那张表警告的那种伪装。所以在调用点就把它滤掉，
+   * 类型这里也不放宽，让编译器盯着。
+   */
   missing: readonly {
     assetType: string
     remoteId: string
@@ -1008,7 +1015,13 @@ async function prepare(
       row,
       access,
       local: localState(archive),
-      sources: { contents: [], archived, completed, missing },
+      // `failed` 在这里滤掉：它还会被重试，不是「确认取不到」，见 AssetSources.missing
+      sources: {
+        contents: [],
+        archived,
+        completed,
+        missing: missing.filter((m): m is typeof m & { status: 'skipped' | 'dead' } => m.status !== 'failed'),
+      },
       now,
       adminId: auth.identity.adminId,
     },

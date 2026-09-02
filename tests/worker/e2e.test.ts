@@ -718,6 +718,10 @@ describe('定时任务的任务一（fetch_recordings）', () => {
       },
       listPrograms: async () => [],
       inventory: async () => ({ programId: '', now: 0, entries: [], fetchable: [], blocked: [], assetTypes: [] }),
+      // 任务一收尾的失败项口（转 dead 的资产）。这一组用例里跑不到它——一条资产要
+      // 连挂 5 轮才转 dead，而这里一共只跑一两轮。「转 dead 就落一条失败项」那条
+      // 断言在 tests/worker/scheduler.test.ts。
+      deadAssets: async () => [],
     }
   }
 
@@ -802,7 +806,8 @@ describe('定时任务的任务一（fetch_recordings）', () => {
 
       const run = (await jobs.listRuns('fetch_recordings', 1))[0]!
       // 一个资产下不下来不该把整个任务标红——真正"任务一挂了"的那一次会淹没在里面。
-      // 它留在 meeting_assets 里带着 last_error 与 attempts，下一轮照样被领取重试
+      // 它留在 meeting_assets 里带着 last_error 与 attempts，退避 5 分钟之后照样被
+      // 领取重试（executor 的 downloadBackoff），试满 5 次才转 dead
       expect(run.status).toBe('succeeded')
       expect(run.summary).toMatchObject({ meetings: 1, discovered: 2, completed: 1, failed: 1, skipped: 0 })
 

@@ -321,6 +321,15 @@ export interface RecordFailureInput {
   reason: string
   impact: string
   maxAttempts: number
+  /**
+   * 这次失败的**绝对**计数。不给就走累加（同一个 target 再失败一次 +1）。
+   *
+   * 给它的是那种失败项本身**镜像着别处一个真实计数器**的调用方——调度器任务一
+   * 每轮把仍处于 `dead` 的资产重记一遍，`attempts` 取的是 `meeting_assets.attempts`
+   * （dead 意味着它就是下载队列的上限）。那种失败项"每轮再记一次"表达的是
+   * 「截至这一轮仍然没好」，不是「又失败了一次」，累加会把它变成轮次计数器。
+   */
+  attempts?: number
   now: number
 }
 
@@ -426,7 +435,7 @@ export interface JobsStore {
   /** 某个任务最近 N 次运行，倒序。§4.8 的 sparkline 读它 */
   listRuns(jobName: string, limit: number): Promise<JobRunRecord[]>
 
-  /** 失败项落库。同一个 (jobName, target) 反复失败是累加 attempts，不是新增行 */
+  /** 失败项落库。同一个 (jobName, target) 反复失败是改写同一行：attempts 默认累加，给了 `attempts` 就按绝对值写 */
   recordFailure(input: RecordFailureInput): Promise<void>
 
   /**
@@ -664,7 +673,7 @@ export function createJobsStore(pool: Pool): JobsStore {
         `INSERT INTO job_failures
            (job_name, target, target_label, meeting_id, sub_meeting_id, reason, impact,
             attempts, max_attempts, first_failed_at, last_failed_at, resolved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL) AS new
+         VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1), ?, ?, ?, NULL) AS new
          ON DUPLICATE KEY UPDATE
            target_label = new.target_label,
            meeting_id = new.meeting_id,
@@ -672,7 +681,7 @@ export function createJobsStore(pool: Pool): JobsStore {
            reason = new.reason,
            impact = new.impact,
            max_attempts = new.max_attempts,
-           attempts = IF(job_failures.resolved_at IS NULL, job_failures.attempts + 1, 1),
+           attempts = COALESCE(?, IF(job_failures.resolved_at IS NULL, job_failures.attempts + 1, 1)),
            first_failed_at =
              IF(job_failures.resolved_at IS NULL, job_failures.first_failed_at, new.first_failed_at),
            last_failed_at = new.last_failed_at,
@@ -685,9 +694,12 @@ export function createJobsStore(pool: Pool): JobsStore {
           i.subMeetingId,
           i.reason,
           i.impact,
+          i.attempts ?? null,
           i.maxAttempts,
           i.now,
           i.now,
+          // UPDATE 分支里那个 COALESCE 的参数——同一个值绑第二次
+          i.attempts ?? null,
         ],
       )
     },

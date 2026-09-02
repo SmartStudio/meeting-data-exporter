@@ -1,7 +1,7 @@
 import { expect, test, spyOn } from 'bun:test'
 import { openDb } from '../../src/store/db'
 import { createStore } from '../../src/store'
-import { runExecutor } from '../../src/executor'
+import { downloadBackoff, runExecutor } from '../../src/executor'
 // 用真实 store + 假 downloadAsset（注入）+ 临时目录
 
 test('并发池领任务并下载，全部 completed；幂等重跑零下载', async () => {
@@ -111,3 +111,71 @@ test('markCompleted 把下载器报的真实字节数写进 bytes_written，覆�
   expect(row.bytes_written).toBe(REAL)      // 不是 CHECKPOINT
 })
 
+
+// ---------------------------------------------------------------------------
+// 失败重试的整条曲线：5 → 10 → 20 → 40 分钟，第 5 次转 dead。
+//
+// 这条用例钉的是修复之前那个洞：`failed` 曾经是事实上的终态（claim 领不到、
+// upsert 不重置、resetFailed 服务端没人调），于是 attempts 永远停在 1，
+// MAX_ATTEMPTS 那道门根本走不到——一个视频只要网络抖一次就永久卡住，
+// 而且在任何界面上都看不见。
+//
+// 用可推进的假时钟而不是真时间：曲线本身就是"等多久"，真等 75 分钟不现实。
+// 每一轮把时钟推到上一轮写下的重试时间之后一秒，等价于"退避到点了"。
+// ---------------------------------------------------------------------------
+test('下载一直失败：按 5/10/20/40 分钟退避重试，第 5 次转 dead', async () => {
+  const store = createStore(openDb(':memory:'))
+  await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1', bytesExpected: 10, fileType: 'mp4' }, 1)
+
+  let clock = 1000
+  let downloads = 0
+  const deps: any = {
+    store,
+    download: async () => { downloads++; return { status: 'failed' as const, error: 'HTTP 500' } },
+    gw: {},
+    storage: { ensureFreeSpace: async () => true },
+    meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]),
+  }
+  const row = async () => (await store.assetsForMeeting('m1', ''))[0]!
+
+  // 前四次失败：状态回 failed，lease_expires_at 是下一次可领的时刻
+  for (const [attempt, backoff] of [[1, 300], [2, 600], [3, 1200], [4, 2400]] as const) {
+    const at = clock
+    const r = await runExecutor(deps, { concurrency: 1, leaseSec: 900 }, () => clock)
+    expect(r.failed).toBe(1)
+    const a = await row()
+    expect(a.status).toBe('failed')
+    expect(a.attempts).toBe(attempt)
+    expect(a.lease_expires_at).toBe(at + backoff)
+    // 同一轮里执行体会再领一次——退避没到点，它领不到，于是这一轮就此收工。
+    // （领得到的话这个 for 循环里 downloads 会暴涨，下面那个断言会当场炸。）
+    clock = a.lease_expires_at! + 1
+  }
+  expect(downloads).toBe(4)
+
+  // 第五次：claimNext 把 attempts 顶到 5 = MAX_ATTEMPTS，失败即放弃
+  const last = await runExecutor(deps, { concurrency: 1, leaseSec: 900 }, () => clock)
+  expect(last.failed).toBe(1)
+  const dead = await row()
+  expect(dead.status).toBe('dead')
+  expect(dead.attempts).toBe(5)
+  expect(dead.last_error).toBe('HTTP 500')
+  expect(dead.lease_expires_at).toBeNull()   // 终态：不再有"下次什么时候领"
+
+  // 从第一次失败到放弃，一共 5 + 10 + 20 + 40 = 75 分钟
+  expect(clock - 1000).toBe(75 * 60 + 4)     // 四次各多推的那 1 秒
+  // dead 之后再跑多少轮都不会有人碰它——这正是"必须让操作员看见"的理由，
+  // 失败项那一条在 tests/worker/scheduler.test.ts
+  await runExecutor(deps, { concurrency: 1, leaseSec: 900 }, () => clock + 86_400)
+  expect(downloads).toBe(5)
+})
+
+test('downloadBackoff 的曲线与上限', () => {
+  // 实际会用到的只有前四个：第 5 次失败直接转 dead，不再退避
+  expect([1, 2, 3, 4].map(downloadBackoff)).toEqual([300, 600, 1200, 2400])
+  // 上限从第 5 次起生效（裸算是 4800）。它是给将来调大 MAX_ATTEMPTS 的人兜底的：
+  // 没有它，第 8 次失败要等 10 小时
+  expect(downloadBackoff(5)).toBe(3600)
+  expect(downloadBackoff(8)).toBe(3600)
+})

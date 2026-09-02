@@ -20,6 +20,17 @@ export interface ProbeKey { meetingId: string; subMeetingId: string; assetType: 
 export interface Store {
   upsertMeeting(m: Meeting, now: number): Promise<void>
   upsertAsset(a: AssetUpsert, now: number): Promise<void>
+  /**
+   * 领一条可干的活。可领取集合是三类行，取其中 id 最小的那条：
+   *
+   *   - `pending`：还没人碰过
+   *   - `running` 且 `lease_expires_at < now`：上一个执行者崩了，租约过期
+   *   - `failed` 且 `lease_expires_at < now`：失败过，退避时间到了（见 `markFailed`）
+   *
+   * 后两类**形状完全相同**，这是刻意的：MySQL 宿主靠 `(status, id, lease_expires_at)`
+   * 这条索引把它们都走成「status 等值 + id 序 + LIMIT 1」，加锁足迹不随队列长度膨胀
+   * （见 src/worker/store-mysql.ts 的 `pickClaimable`）。
+   */
   claimNext(now: number, leaseSec: number): Promise<AssetRow | null>
   /**
    * 收尾一条下载完成的资产。`bytesWritten` 是 downloader 报回的**真实文件大小**
@@ -28,7 +39,25 @@ export interface Store {
    * 语义边界与它为什么值得信，见 domain/manifest.ts 里 `bytes` 字段的注释。
    */
   markCompleted(id: number, contentHash: string | null, bytesWritten: number, now: number): Promise<void>
-  markFailed(id: number, err: string, now: number): Promise<void>
+  /**
+   * 一次下载没成，但还没到放弃的时候。
+   *
+   * `retryAt` 写进 `lease_expires_at`——**这一列对 `failed` 行的含义是「最早什么
+   * 时候可以再被领取」**，不是租约。同一列在三种状态下三种读法：
+   *
+   *   - `running`  ：租约到期时间（过了就认为执行者死了，可以抢）
+   *   - `failed`   ：重试不早于此时（本次改动新增）
+   *   - 终态       ：NULL（completed / skipped / dead）
+   *
+   * 复用这一列不是省事：`claimNext` 对「过期的 running」和「到点的 failed」因此
+   * 是同一个形状的条件，两者共用 `(status, id, lease_expires_at)` 索引，MySQL 宿主
+   * 那边一条领取语句的加锁足迹不变（见 src/worker/store-mysql.ts 的 `pickClaimable`）。
+   * 另开一列 `retry_after` 要加迁移、要再加一条索引，换来的语义完全一样。
+   *
+   * 退避曲线由调用方算好传进来（executor 的 `downloadBackoff`），store 只负责写：
+   * 「隔多久重试」是执行策略，不是存储的事，而两个宿主必须用同一条曲线。
+   */
+  markFailed(id: number, err: string, now: number, retryAt: number): Promise<void>
   markSkipped(id: number, reason: string, now: number): Promise<void>
   markSkippedByKey(k: ProbeKey, reason: string, now: number): Promise<void>
   markDead(id: number, err: string, now: number): Promise<void>
@@ -51,6 +80,21 @@ export interface Store {
   bumpProbe(k: ProbeKey, probeAfter: number): Promise<void>
   counts(): Promise<Record<AssetStatus, number>>
   failures(): Promise<AssetRow[]>
+  /**
+   * **人工逃生口**：把 failed / dead 一把打回 pending。CLI 的 `mde retry`
+   * （client/src/cli/commands/retry.ts）是它唯一的调用方。
+   *
+   * 它**不是**重试机制——重试是 `markFailed` 的退避 + `claimNext` 到点重领，
+   * 自动、逐条、带上限。这个方法存在是为了另一件事：`dead` 是终态，队列再也不会
+   * 碰它，而「上游那会儿抽风、现在好了」只能由人来判断。清掉 `last_error` 与
+   * `lease_expires_at`，让这些行回到和新发现的资产一模一样的形状。
+   *
+   * `attempts` **不清零**（现状，本次没改）：它是「这条资产被领过多少次」的事实。
+   * 代价要知道——一条 attempts 已经到 5 的 dead 行被打回来之后只剩**一次**机会，
+   * 再失败就直接又是 dead（`claimNext` 领它时 attempts 变 6，越过 MAX_ATTEMPTS）。
+   * 对「上游修好了，再试一把」这个用途够用；想要完整的五次，得先想清楚
+   * 「重试了几次」这个数字还要不要能对外解释。
+   */
   resetFailed(now: number): Promise<number>
   /**
    * 拼落盘路径要用的会议元数据，键为 meeting_id。
@@ -81,10 +125,23 @@ export interface Store {
 }
 
 export function createStore(db: Database): Store {
+  // 三类可领取的行，取 id 最小的那条（语义见 Store.claimNext）。第三条是失败重试：
+  // `failed` 行的 lease_expires_at 是 markFailed 写下的「最早可再领取时间」，
+  // 所以它与上一条（过期的 running）逐字同形，`?2` 也是同一个 now。
+  //
+  // `IS NULL` 那半句是给**本次改动之前**就已经躺在库里的 failed 行留的：那时
+  // markFailed 写的是 NULL，而 `NULL < ?2` 在 SQL 里是 NULL（不成立），不带这半句
+  // 的话那些行会继续永远卡在 failed——正是这次要修的那个 bug，只是换成了存量数据。
+  // 新写入的 failed 行永远带着时间戳，走不到这个分支。
+  //
+  // UPDATE 那一句不用改：它已经是 attempts+1 且重写 lease_expires_at，
+  // 一条 failed 行被领走的瞬间就变回带租约的 running。
   const claimStmt = db.query<AssetRow, [number, number, number]>(`
     UPDATE assets SET status='running', lease_expires_at=?1, attempts=attempts+1, updated_at=?3
     WHERE id = (SELECT id FROM assets
-                WHERE status='pending' OR (status='running' AND lease_expires_at < ?2)
+                WHERE status='pending'
+                   OR (status='running' AND lease_expires_at < ?2)
+                   OR (status='failed' AND (lease_expires_at IS NULL OR lease_expires_at < ?2))
                 ORDER BY id LIMIT 1)
     RETURNING *`)
   return {
@@ -111,7 +168,10 @@ export function createStore(db: Database): Store {
     },
     async claimNext(now, leaseSec) { return claimStmt.get(now + leaseSec, now, now) ?? null },
     async markCompleted(id, h, bytes, now) { db.query(`UPDATE assets SET status='completed', content_hash=?, bytes_written=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(h, bytes, now, now, id) },
-    async markFailed(id, e, now) { db.query(`UPDATE assets SET status='failed', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
+    // lease_expires_at 在这里写的是**最早可再领取时间**（不是租约），语义见
+    // Store.markFailed。MySQL 版逐字同样，别只改一处：只改一边的话，
+    // 两个宿主一边会重试一边永远卡死，而且都不报错。
+    async markFailed(id, e, now, retryAt) { db.query(`UPDATE assets SET status='failed', last_error=?, lease_expires_at=?, updated_at=? WHERE id=?`).run(e, retryAt, now, id) },
     async markSkipped(id, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(r, now, id) },
     async markSkippedByKey(k, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=? AND status NOT IN ('completed','running')`).run(r, now, k.meetingId, k.subMeetingId, k.assetType) }, // 不回退已完成的下载、不中断执行中的任务
     async markDead(id, e, now) { db.query(`UPDATE assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
@@ -146,7 +206,10 @@ export function createStore(db: Database): Store {
       return out
     },
     async failures() { return db.query<AssetRow, []>(`SELECT * FROM assets WHERE status IN ('failed','dead') ORDER BY id`).all() },
-    async resetFailed(now) { return db.query(`UPDATE assets SET status='pending', last_error=NULL, updated_at=?  WHERE status IN ('failed','dead')`).run(now).changes },
+    // lease_expires_at 一并清掉：它对 failed 行是「最早可再领取时间」，行被打回
+    // pending 之后那个时间没有任何含义，留着只会让人对着一条 pending 行猜它是不是
+    // 还在等什么。三种状态各自的读法见 Store.markFailed。
+    async resetFailed(now) { return db.query(`UPDATE assets SET status='pending', last_error=NULL, lease_expires_at=NULL, updated_at=?  WHERE status IN ('failed','dead')`).run(now).changes },
     async meetingsForPaths() {
       const rows = db.query<{ meeting_id: string; sub_meeting_id: string; subject: string | null;
                               meeting_code: string | null; start_time: number | null; end_time: number | null }, []>(

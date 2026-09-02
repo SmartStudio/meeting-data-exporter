@@ -292,14 +292,16 @@ describe('createMysqlStore', () => {
       const a = (await s.claimNext(200, 60))!
       const b = (await s.claimNext(200, 60))!
       const c = (await s.claimNext(200, 60))!
-      await s.markFailed(a.id, 'boom', 210)
+      await s.markFailed(a.id, 'boom', 210, 510)
       await s.markDead(b.id, 'gave up', 210)
       await s.markSkipped(c.id, 'not allowed', 210)
 
       const f = await s.failures()
       expect(f.map((r) => r.id)).toEqual([a.id, b.id]) // ORDER BY id；skipped 不算失败
       expect(f[0]!.last_error).toBe('boom')
-      expect(f[0]!.lease_expires_at).toBeNull()
+      // failed 行的 lease_expires_at 是「最早可再领取时间」，不再是 NULL
+      expect(f[0]!.lease_expires_at).toBe(510)
+      expect(f[1]!.lease_expires_at).toBeNull() // dead 是终态，仍然清空
 
       expect(await s.resetFailed(300)).toBe(2) // affectedRows
       const counts = await s.counts()
@@ -309,6 +311,104 @@ describe('createMysqlStore', () => {
       expect(counts.dead).toBe(0)
       expect((await s.failures()).length).toBe(0)
       expect(await s.resetFailed(310)).toBe(0) // 没有可重置的了
+      // 打回 pending 的行不留下那个"最早可再领取时间"——它对 pending 没有含义
+      const [reset] = await pool.query<RowDataPacket[]>(
+        `SELECT lease_expires_at FROM meeting_assets WHERE id=?`, [a.id],
+      )
+      expect(reset[0]!.lease_expires_at).toBeNull()
+    })
+  })
+
+  // ── 失败重试：failed 行按退避重新入队 ──────────────────────────
+  //
+  // 修复之前 `failed` 是事实上的终态：claim 只看 pending 与过期的 running，
+  // upsertAsset 不重置 status，resetFailed 在服务端没有调用方。一个视频只要网络
+  // 抖一次就永久卡住，attempts 停在 1，MAX_ATTEMPTS=5 那道门永远走不到。
+  // 下面三条钉的是这条路真的通了，以及它没有把领取顺序弄乱。
+
+  test('markFailed 写下最早可再领取时间：没到点领不到，到点了领得到且 attempts 递增', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
+
+      const first = (await s.claimNext(200, 60))!
+      expect(first.attempts).toBe(1)
+      const retryAt = 200 + 300 // executor 的 downloadBackoff(1) = 5 分钟
+      await s.markFailed(first.id, 'HTTP 500', 210, retryAt)
+
+      expect(await s.claimNext(retryAt - 1, 60)).toBeNull() // 没到点，领不到
+      // 边界与租约那条**严格同款**：`lease_expires_at < now` 才算可领，所以卡在
+      // retryAt 这一秒上还不行。两条查询同形是 pickClaimable 加锁足迹的前提，
+      // 不值得为一秒把它们拆成两种写法。
+      expect(await s.claimNext(retryAt, 60)).toBeNull()
+      const again = (await s.claimNext(retryAt + 1, 60))!
+      expect(again.id).toBe(first.id)
+      expect(again.status).toBe('running')
+      expect(again.attempts).toBe(2) // 领取本身就是计数的那一步
+      expect(again.last_error).toBe('HTTP 500') // 上一次的错留着，转 dead 时要用
+    })
+  })
+
+  test('领取顺序仍是"全局 id 最小"：到点的 failed 排在 id 更大的 pending 前面', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'old', fileType: 'mp4' }, 100)
+      const old = (await s.claimNext(200, 60))!
+      await s.markFailed(old.id, 'boom', 210, 500)
+      // 失败之后才发现的新资产，id 更大
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'new', fileType: 'mp4' }, 300)
+
+      // 三条单 status 查询取 id 最小的那个（见 pickClaimable）：拆成三条是为了加锁
+      // 足迹，不是为了给 pending 优先权——优先级必须还是原来那个「全局最小 id」。
+      const got = (await s.claimNext(501, 60))!
+      expect(got.id).toBe(old.id)
+      expect(got.remote_id).toBe('old')
+    })
+  })
+
+  test('改动之前留下的 failed 行（lease_expires_at 为 NULL）也能被领回来', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
+      const row = (await s.claimNext(200, 60))!
+      // 老版 markFailed 写的就是这一行 SQL（lease_expires_at=NULL）
+      await pool.query(
+        `UPDATE meeting_assets SET status='failed', last_error='legacy', lease_expires_at=NULL WHERE id=?`,
+        [row.id],
+      )
+      // `NULL < ?` 不成立，所以不特判的话这些存量行会继续永远卡死——
+      // 而服务端没有 mde retry 那个逃生口
+      const again = (await s.claimNext(1000, 60))!
+      expect(again.id).toBe(row.id)
+      expect(again.attempts).toBe(2)
+    })
+  })
+
+  test('deadAssets 给此刻全部 dead 的行（不分轮次）、带 attempts、不含 failed', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      for (const [rid, type] of [['a', 'video'], ['b', 'meeting_summary'], ['c', 'video']] as const) {
+        await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: type, remoteId: rid, fileType: 'mp4' }, 100)
+      }
+      const [a, b, c] = [(await s.claimNext(200, 60))!, (await s.claimNext(200, 60))!, (await s.claimNext(200, 60))!]
+      await s.markDead(a.id, '上一轮就放弃了', 500)
+      await s.markDead(b.id, 'HTTP 404', 1000)
+      await s.markFailed(c.id, '还在重试', 1000, 1300) // failed 是会自动重试的中间态，不该惊动运维
+
+      // 不带时间窗：失败项是「资产此刻是否 dead」的镜像，上一轮放弃的只要还 dead 就要在
+      const got = await s.deadAssets()
+      expect(got).toEqual([
+        { meetingId: 'm1', subMeetingId: '', assetType: 'video', lastError: '上一轮就放弃了', attempts: 1 },
+        { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', lastError: 'HTTP 404', attempts: 1 },
+      ])
+
+      // 被人打回队列（resetFailed）之后它不再是 dead，也就不再出现——失败项由此关掉
+      await s.resetFailed(2000)
+      expect(await s.deadAssets()).toEqual([])
     })
   })
 
