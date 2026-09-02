@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { adminLogout, changePassword, PasswordError } from '@/api/admin'
 import { Button } from '@/ui/Button'
-import { Input } from '@/ui/Input'
+import { PasswordInput } from '@/ui/PasswordInput'
 import { Popover } from '@/ui/Popover'
 import { Sheet } from '@/ui/Sheet'
 import { useTheme, type Theme } from '@/theme/useTheme'
@@ -287,9 +287,8 @@ function PwField({
       <label className={styles.label} htmlFor={id}>
         {label}
       </label>
-      <Input
+      <PasswordInput
         id={id}
-        type="password"
         autoComplete={autoComplete}
         value={value}
         disabled={disabled}

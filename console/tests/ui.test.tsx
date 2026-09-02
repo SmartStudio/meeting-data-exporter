@@ -8,6 +8,9 @@ import buttonCss from '../src/ui/Button.module.css?raw'
 
 import { Input } from '../src/ui/Input'
 import inputCss from '../src/ui/Input.module.css?raw'
+
+import { PasswordInput } from '../src/ui/PasswordInput'
+import passwordCss from '../src/ui/PasswordInput.module.css?raw'
 import sheetCss from '../src/ui/Sheet.module.css?raw'
 
 import { Pill } from '../src/ui/Pill'
@@ -137,6 +140,65 @@ describe('Input', () => {
     const el = screen.getByLabelText('搜索')
     await userEvent.type(el, 'x')
     expect(el).toHaveValue('')
+  })
+})
+
+describe('PasswordInput', () => {
+  /* 这颗按钮存在的理由是「让人自己看一眼输对没有」：密码框只回显圆点，而登录
+     失败只能说「账号或密码不对」（说得更细就是在帮人枚举账号）。两件对的事叠
+     在一起，大写锁定开着、输入法吃掉一个字母、粘贴带进尾随空格——三种长得
+     一模一样。下面钉的是这条出路的每一段，缺哪一段它都不成立。 */
+
+  test('默认掩码；按一下变明文，再按一下变回来', async () => {
+    render(<PasswordInput aria-label="密码" defaultValue="" />)
+    const el = screen.getByLabelText('密码')
+    expect(el).toHaveAttribute('type', 'password')
+
+    await userEvent.click(screen.getByRole('button', { name: '显示密码' }))
+    expect(el).toHaveAttribute('type', 'text')
+
+    await userEvent.click(screen.getByRole('button', { name: '隐藏密码' }))
+    expect(el).toHaveAttribute('type', 'password')
+  })
+
+  test('按钮的名字说的是「下一次按下去会发生什么」，不是当前状态', async () => {
+    // 用变名字而不是 aria-pressed：两个一起用会念成「隐藏密码，已按下」，
+    // 听的人还得自己推一遍现在到底是明是暗。
+    render(<PasswordInput aria-label="密码" defaultValue="" />)
+    const btn = screen.getByRole('button', { name: '显示密码' })
+    expect(btn).not.toHaveAttribute('aria-pressed')
+    await userEvent.click(btn)
+    expect(screen.getByRole('button', { name: '隐藏密码' })).toBeInTheDocument()
+  })
+
+  test('状态不跨实例、不被记住 —— 显示密码是一次动作，不是一条偏好', async () => {
+    const { unmount } = render(<PasswordInput aria-label="密码" defaultValue="" />)
+    await userEvent.click(screen.getByRole('button', { name: '显示密码' }))
+    unmount()
+    render(<PasswordInput aria-label="密码" defaultValue="" />)
+    expect(screen.getByLabelText('密码')).toHaveAttribute('type', 'password')
+  })
+
+  test('disabled 时按钮也禁用 —— 提交中不许把密码亮出来', () => {
+    render(<PasswordInput aria-label="密码" disabled defaultValue="" />)
+    expect(screen.getByRole('button', { name: '显示密码' })).toBeDisabled()
+  })
+
+  test('明文态换等宽字体 —— 不然 l/1/I 与 O/0 还是分不出来', () => {
+    expect(ruleBody(passwordCss, '.wrap .shown {')).toMatch(/font-family:\s*var\(--mono\)/)
+  })
+
+  test('按钮热区走 --tap-min，且输入框给它让出了位置', () => {
+    expect(ruleBody(passwordCss, '.toggle {')).toMatch(/width:\s*var\(--tap-min\)/)
+    // 不让位的话密码长一点就钻到眼睛底下去了
+    expect(ruleBody(passwordCss, '.wrap .input {')).toMatch(/padding-right:\s*calc\(var\(--tap-min\)/)
+  })
+
+  test('压过 ui/Input 的那条内距用两个类，不靠模块注入顺序', () => {
+    // `.input` 在两个 CSS Module 里同名同优先级时，谁赢取决于打包产物里谁在
+    // 后面——这个库为「谁赢取决于注入顺序」栽过一次，不再来第二次。
+    expect(passwordCss).toContain('.wrap .input {')
+    expect(passwordCss).not.toMatch(/^\.input\s*\{/m)
   })
 })
 

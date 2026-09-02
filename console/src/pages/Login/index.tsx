@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { adminLogin, AdminAuthError } from '@/api/admin'
 import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Input'
+import { PasswordInput } from '@/ui/PasswordInput'
 import styles from './Login.module.css'
 
 /**
@@ -85,8 +86,7 @@ export default function LoginPage() {
           </label>
           <label className={styles.field}>
             密码
-            <Input
-              type="password"
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
