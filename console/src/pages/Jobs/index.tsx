@@ -6,7 +6,7 @@ import { PageShell } from '@/ui/PageShell'
 import { Skeleton } from '@/ui/Skeleton'
 import { FailuresTable } from './FailuresTable'
 import { JobCard, type RunState } from './JobCard'
-import { fetchStall, overdueJobs } from './view'
+import { fetchStall, overdueJobs, runQueuedNote } from './view'
 import styles from './Jobs.module.css'
 
 /**
@@ -44,8 +44,13 @@ export default function JobsPage() {
       void runJob(name)
         .then((accepted) => {
           // **不说「已完成」**：202 的意思是"接受了，还没执行"。调度器在 worker
-          // 进程里，下一个 tick 才会认领。后端那句话已经写清楚了，原样显示。
-          setRunStates((s) => ({ ...s, [name]: { phase: 'done', text: accepted.message } }))
+          // 进程里，下一个 tick 才会认领。
+          //
+          // 不再原样显示 `accepted.message`——那句话是写给没有界面的调用方的，
+          // 在这一页会被卡片自己那行重说一遍，且末尾「刷新本页看运行记录」在
+          // 控制台里是错的（下面那行 `retry()` 已经刷过了）。理由写在
+          // `view.ts` 的 `runQueuedNote` 上。
+          setRunStates((s) => ({ ...s, [name]: { phase: 'done', text: runQueuedNote(accepted.runId) } }))
           // 写操作 = 发请求 + 重取（计划 G-c）。这一刻运行记录里多了一行 queued，
           // 前端不自己往列表里塞一条假的。
           retry()

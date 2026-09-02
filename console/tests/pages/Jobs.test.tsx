@@ -396,13 +396,55 @@ describe('手动触发', () => {
     )
   })
 
-  test('成功后显示后端那句话，且不许说成「已完成」', async () => {
+  test('成功后说「已排队」并带上编号，不许说成「已完成」', async () => {
     await mount(payload({ jobs: [job()] }))
     await userEvent.click(await screen.findByRole('button', { name: '立即运行' }))
     const note = await screen.findByTestId('job-run-note')
     expect(note).toHaveTextContent('已排队')
-    expect(note).toHaveTextContent('下一个 tick')
+    // 202 = 接受了、还没执行。说成「已完成」是这条路径上唯一致命的措辞
     expect(note).not.toHaveTextContent('已完成')
+    // 编号是卡片说不出来的那件事：审计里那一行记的就是 run #<id>，
+    // 它是把「我刚才点的那一下」和事后翻出来的记录对上的唯一凭据
+    expect(note).toHaveTextContent(`#${ACCEPTED.runId}`)
+  })
+
+  test('不照抄后端那句话 —— 它是写给没有界面的调用方的', async () => {
+    await mount(payload({ jobs: [job()] }))
+    await userEvent.click(await screen.findByRole('button', { name: '立即运行' }))
+    const note = await screen.findByTestId('job-run-note')
+    // 卡片自己那行随即就写着「最近一次触发（排队中）还没被调度器认领」，
+    // 同一个事实说第二遍只是把它说长；四个任务都点一遍就是四段一模一样的话
+    expect(note.textContent ?? '').not.toContain('worker 进程')
+    // 而且这一句在控制台里**是错的**：onRun 里的 retry() 已经刷过了，
+    // 照做不会有任何变化。一条让人白做一次动作的指示比啰嗦更糟
+    expect(note.textContent ?? '').not.toContain('刷新本页')
+    // 短到能一眼看完：原来 73 字
+    expect((note.textContent ?? '').length).toBeLessThan(30)
+  })
+
+  test('各点各的，两句回执互不相同 —— 不再是几段逐字一样的话', async () => {
+    // 桩每次 POST 递增 runId：断言必须由「各自那一次响应」决定，
+    // 否则这条测试恒真——那种测试比没有更糟，它会在真出问题时保持绿色
+    let seq = 900
+    const body = payload({ jobs: [job({ name: 'fetch_recordings' }), job({ name: 'archive_nas' })] })
+    const f = vi.fn(async (_url: string, init?: RequestInit) => {
+      const isRun = (init?.method ?? 'GET') === 'POST'
+      const out = isRun ? { ...ACCEPTED, runId: ++seq } : body
+      return new Response(JSON.stringify(out), {
+        status: isRun ? 202 : 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', f)
+    render(<JobsPage />)
+    await screen.findByRole('heading', { name: '定时任务', level: 1 })
+
+    for (const b of await screen.findAllByRole('button', { name: '立即运行' })) {
+      await userEvent.click(b)
+    }
+    const texts = (await screen.findAllByTestId('job-run-note')).map((n) => n.textContent ?? '')
+    expect(texts).toHaveLength(2)
+    expect(new Set(texts).size).toBe(2)
   })
 
   test('触发之后重新取一遍数据（运行记录会变）', async () => {
