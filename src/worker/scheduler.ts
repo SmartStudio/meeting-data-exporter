@@ -95,7 +95,9 @@ import { DEFAULT_ASSET_KEYS, createLocalStorage, type MeetingSelector } from '@y
 import {
   JOB_CATALOG,
   createJobsStore,
+  envInt,
   jobFailureTarget,
+  schedulerFetchLookbackHours,
   schedulerTzOffsetSec,
   slotOf,
   type JobName,
@@ -825,20 +827,13 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
  *
  * **它不负责补跑长时间停机**：停了三天就用 `bun run worker --from … --to …` 手动补。
  * 让定时任务自己往回看三天，等于每 15 分钟重扫一次三天的会议。
+ *
+ * 默认值 `DEFAULT_FETCH_LOOKBACK_HOURS` 与解析函数 `schedulerFetchLookbackHours`
+ * **不在本文件**，挪去了 `store/jobs.ts`：控制台「定时任务」页的连续失败横幅要
+ * 告诉管理员同一个数字（超过多少小时需要人工补拉），而网关进程不许 import 本文件
+ * （见 `src/http/handlers/console/jobs.ts` 文件头）。`envInt` 同理搬了过去，好让
+ * 两边解析同一个环境变量时走的是同一条规则，不是两份各改各的实现。
  */
-const DEFAULT_FETCH_LOOKBACK_HOURS = 24
-
-function envInt(env: Record<string, string | undefined>, key: string, fallback: number): number {
-  const raw = env[key]
-  // 空串必须与未设置等价：.env.example 里可选项写作 `X=`，Bun 把它读成空串，
-  // 而 `Number('')` 是 0——一个 0 秒的 tick 间隔会把 CPU 烧满
-  if (raw === undefined || raw === '') return fallback
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`${key} must be a positive integer, got: ${raw}`)
-  }
-  return n
-}
 
 /** 归档任务的定义。落失败项时要它的「影响」与阈值，取一次即可 */
 const ARCHIVE_SPEC = JOB_CATALOG.find((j) => j.name === 'archive_nas')!
@@ -883,8 +878,9 @@ async function main(): Promise<number> {
     throw new Error('missing required config: MDE_NAS_ROOT')
   }
   const tickSec = envInt(process.env, 'MDE_SCHEDULER_TICK_SEC', DEFAULT_TICK_INTERVAL_MS / 1000)
-  const lookbackSec =
-    envInt(process.env, 'MDE_SCHEDULER_FETCH_LOOKBACK_HOURS', DEFAULT_FETCH_LOOKBACK_HOURS) * 3600
+  // 小时数的解析挪到了 store/jobs.ts（`schedulerFetchLookbackHours`）——
+  // 控制台要下发同一个数字，见该函数与 DEFAULT_FETCH_LOOKBACK_HOURS 旁边的注释。
+  const lookbackSec = schedulerFetchLookbackHours(process.env) * 3600
   const tzOffsetSec = schedulerTzOffsetSec(process.env)
   const fetchConcurrency = envInt(
     process.env,

@@ -62,6 +62,19 @@ export interface JobsDeps {
    * 读的是同一个环境变量，就是为了让这两处只有一个来源。
    */
   tzOffsetSec: number
+  /**
+   * 任务一（拉取新录制）的回看窗口，小时数。**必须与调度器进程用的是同一个值、
+   * 读的是同一个环境变量**（`MDE_SCHEDULER_FETCH_LOOKBACK_HOURS`，调度器那边用它
+   * 算 `lookbackSec`，见 `src/worker/scheduler.ts` 的 `main`）——与 `tzOffsetSec`
+   * 同一个先例，同一个 `store/jobs.ts` 里的共享定义（`schedulerFetchLookbackHours`）。
+   *
+   * 控制台「定时任务」页的「最近 N 轮拉取连续失败」横幅要用它讲清楚管理员真正能
+   * 做的事：调度器会自动重试；但连续失败超过这个小时数之后，中断期间结束的会议
+   * 会落在拉取窗口之外，修好后需要人工用 `bun run worker --from/--to` 补拉。
+   * 配错这里的后果与 `tzOffsetSec` 一样——**不报任何错**，界面上只会说错小时数，
+   * 让人以为补拉窗口比实际的更宽或更窄。
+   */
+  fetchLookbackHours: number
 }
 
 /** 失败项表一次最多带回多少行。§4.8 那是一段列表，不分页 */
@@ -203,6 +216,9 @@ export async function listJobs(req: Request, ctx: RouteCtx): Promise<Response> {
     // §4.8 下方那张「失败项 · 需要处理」。总数单列一个字段：列表被 limit 截断时，
     // 界面上"显示 100 条"与"一共就 100 条"必须分得开
     failuresTotal: Object.values(openFailures).reduce((a, b) => a + b, 0),
+    // 「最近 N 轮拉取连续失败」横幅要的那个小时数——不许前端硬编码 24，
+    // 见 JobsDeps.fetchLookbackHours 与 store/jobs.ts 的 schedulerFetchLookbackHours
+    fetchLookbackHours: d.fetchLookbackHours,
     failures: failures.map(failureView),
   })
 }

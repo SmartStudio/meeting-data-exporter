@@ -1,10 +1,13 @@
 import { expect, test } from 'bun:test'
 import { withTestDb } from '../helpers/testdb'
 import {
+  DEFAULT_FETCH_LOOKBACK_HOURS,
   JOB_CATALOG,
   createJobsStore,
+  envInt,
   jobSpec,
   nextDueAt,
+  schedulerFetchLookbackHours,
   slotOf,
   slotStartAt,
   type JobsStore,
@@ -471,4 +474,40 @@ test('一整页会议一次问完：`meetings` 批量反查，场次是键的一
     // 退化成"没有条件"的话，抽屉会把别的会议的失败原因安到这一场头上
     expect(await store.listFailures({ meetings: [] })).toEqual([])
   })
+})
+
+// ── 七、环境变量解析（envInt / schedulerFetchLookbackHours）──────
+//
+// 两个都是纯函数，不碰库，跟第二节时间片算术是同一类测试。
+// schedulerFetchLookbackHours 就是 envInt 的一层包装（见 store/jobs.ts 的注释），
+// 所以这里既钉 envInt 本身的语义，也钉包装之后对外的默认值没有变。
+
+test('envInt：未设置或空串回落到默认值，Number("") 是 0 这个坑不能漏', () => {
+  expect(envInt({}, 'X', 24)).toBe(24)
+  expect(envInt({ X: '' }, 'X', 24)).toBe(24)
+})
+
+test('envInt：合法的正整数原样返回', () => {
+  expect(envInt({ X: '36' }, 'X', 24)).toBe(36)
+  expect(envInt({ X: '1' }, 'X', 24)).toBe(1)
+})
+
+test('envInt：非整数 / 非正数直接抛错，不悄悄回落——这里控制的是进程节奏，猜错比崩溃更糟', () => {
+  expect(() => envInt({ X: 'abc' }, 'X', 24)).toThrow('X must be a positive integer, got: abc')
+  expect(() => envInt({ X: '0' }, 'X', 24)).toThrow()
+  expect(() => envInt({ X: '-1' }, 'X', 24)).toThrow()
+  expect(() => envInt({ X: '1.5' }, 'X', 24)).toThrow()
+})
+
+test('schedulerFetchLookbackHours：未设置时是 DEFAULT_FETCH_LOOKBACK_HOURS（24）', () => {
+  expect(schedulerFetchLookbackHours({})).toBe(DEFAULT_FETCH_LOOKBACK_HOURS)
+  expect(DEFAULT_FETCH_LOOKBACK_HOURS).toBe(24)
+})
+
+test('schedulerFetchLookbackHours：读 MDE_SCHEDULER_FETCH_LOOKBACK_HOURS，"36" 就是 36', () => {
+  expect(schedulerFetchLookbackHours({ MDE_SCHEDULER_FETCH_LOOKBACK_HOURS: '36' })).toBe(36)
+})
+
+test('schedulerFetchLookbackHours：非法值抛错——配错这个环境变量不该让控制台悄悄显示错的小时数', () => {
+  expect(() => schedulerFetchLookbackHours({ MDE_SCHEDULER_FETCH_LOOKBACK_HOURS: 'abc' })).toThrow()
 })

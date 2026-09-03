@@ -6,7 +6,7 @@ import { createPolicyStore } from './store/policy'
 import { createAuthStore } from './store/auth'
 import { createAdminStore } from './store/admin'
 import { createAuditStore } from './store/audit'
-import { createJobsStore, schedulerTzOffsetSec } from './store/jobs'
+import { createJobsStore, schedulerFetchLookbackHours, schedulerTzOffsetSec } from './store/jobs'
 import { createMeetingCacheStore } from './store/meetings'
 import { createTencentClient } from './tencent/client'
 import { createRecordsApi } from './tencent/records'
@@ -283,6 +283,10 @@ async function main(): Promise<void> {
       // **必须与调度器进程用同一个值**，两处读的是同一个环境变量。
       // 配得不一样时「下次运行」会比真实时刻差几个小时，而且不报任何错。
       tzOffsetSec: schedulerTzOffsetSec(process.env),
+      // 同一个先例：MDE_SCHEDULER_FETCH_LOOKBACK_HOURS 由调度器进程实际使用，
+      // 网关这里只是把同一个数字下发给控制台的「连续失败」横幅（说清多久没修好
+      // 就要人工补拉）。配得不一样时横幅会说错小时数，同样不报任何错。
+      fetchLookbackHours: schedulerFetchLookbackHours(process.env),
     },
   }
 

@@ -91,6 +91,7 @@ function fakeCtx(opts: {
   loggedIn?: boolean
   params?: Record<string, string>
   tzOffsetSec?: number
+  fetchLookbackHours?: number
 }): { ctx: RouteCtx; spy: Spy } {
   const spy: Spy = { enqueued: [], audits: [], listRunsCalls: [] }
   const notUsed = (name: string) => async (): Promise<never> => {
@@ -134,6 +135,9 @@ function fakeCtx(opts: {
         },
       },
       tzOffsetSec: opts.tzOffsetSec ?? 0,
+      // 默认 24：与 store/jobs.ts 的 DEFAULT_FETCH_LOOKBACK_HOURS 同值，
+      // 不给这个 opt 时测试仍然跑在「未特意配置」的默认场景下
+      fetchLookbackHours: opts.fetchLookbackHours ?? 24,
     },
   } as unknown as AppDeps
 
@@ -151,6 +155,7 @@ interface JobsBody {
   now: number
   timezoneOffsetSec: number
   failuresTotal: number
+  fetchLookbackHours: number
   jobs: Array<{
     name: string
     label: string
@@ -217,6 +222,14 @@ test('「下次运行」跟着调度器的时区走，配错会显示成另一�
   // 东八区的 03:00 = UTC 19:00。当天 UTC 10:07 还没到，所以下一次就是当天 19:00
   expect(cleanup.nextDueAt).toBe(Date.UTC(2026, 7, 26, 19, 0, 0) / 1000)
   expect(body.timezoneOffsetSec).toBe(8 * HOUR)
+})
+
+test('拉取回看小时数原样下发，不是控制台自己硬编码的 24', async () => {
+  // 传一个非默认值：如果 handler 里悄悄写死了 24，这条会假装成功——
+  // 只有传个不是 24 的数才能证明响应里的数字确实来自 JobsDeps
+  const { ctx } = fakeCtx({ fetchLookbackHours: 48 })
+  const body = (await (await listJobs(req('/api/v1/admin/jobs'), ctx)).json()) as JobsBody
+  expect(body.fetchLookbackHours).toBe(48)
 })
 
 test('从没跑过的任务如实报 never_ran，不编一个 lastRun', async () => {

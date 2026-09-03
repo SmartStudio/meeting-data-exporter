@@ -33,7 +33,7 @@ import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
-import { createJobsStore } from '../../src/store/jobs'
+import { DEFAULT_FETCH_LOOKBACK_HOURS, createJobsStore } from '../../src/store/jobs'
 import type { MeetingKey } from '../../src/store/grants'
 import type { Meeting } from '../../src/domain/types'
 import type { RowDataPacket } from 'mysql2/promise'
@@ -245,6 +245,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
       jobs: jobsStore,
       audit: auditStore,
       tzOffsetSec: 0,
+      // 跟随 src/index.ts 的默认值：真实装配读的是 MDE_SCHEDULER_FETCH_LOOKBACK_HOURS，
+      // 测试固定用同一个常量，需要非默认值的用例自己覆盖（见 console-jobs.test.ts）
+      fetchLookbackHours: DEFAULT_FETCH_LOOKBACK_HOURS,
     },
   }
 

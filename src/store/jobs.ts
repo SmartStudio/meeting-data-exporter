@@ -213,6 +213,56 @@ export function schedulerTzOffsetSec(env: Record<string, string | undefined>): n
   return n * MINUTE
 }
 
+/**
+ * 正整数型环境变量的通用解析。调度器进程好几个数字型配置都是这个语义
+ * （tick 间隔、拉取并发度、下面的拉取回看窗口……），搬到这个两边都能安全 import
+ * 的文件里导出，好让 `schedulerFetchLookbackHours` 复用同一条解析规则，而不是
+ * 在 store 里再照抄一份 scheduler.ts 那份实现——那样两份代码总有一天会各改各的。
+ *
+ * 认不出的值（非整数、非正数）**直接抛错，不回落默认值**：与上面
+ * `schedulerTzOffsetSec`「警告后回落 0」刻意不同的选择。tz 偏移猜错只是把
+ * 「下次运行」显示错几个小时；这里控制的是调度器进程按什么节奏跑、拉取窗口
+ * 有多大，猜错的后果是空转烧 CPU 或撑爆连接池——宁可启动失败，也不要带着一个
+ * 猜出来的数字跑起来。
+ */
+export function envInt(env: Record<string, string | undefined>, key: string, fallback: number): number {
+  const raw = env[key]
+  // 空串必须与未设置等价：.env.example 里可选项写作 `X=`，Bun 把它读成空串，
+  // 而 `Number('')` 是 0——一个 0 秒的 tick 间隔会把 CPU 烧满
+  if (raw === undefined || raw === '') return fallback
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`${key} must be a positive integer, got: ${raw}`)
+  }
+  return n
+}
+
+/**
+ * 任务一（拉取新录制）往回看多久，缺省 24 小时。用途见 `schedulerFetchLookbackHours`
+ * 的文档；这个默认值本身的取舍见 `scheduler.ts` 里 `lookbackSec` 那一行旁边的注释
+ * ——那边讲的是"任务一为什么不需要一个大窗口"，是任务体的设计取舍，留在那更合适。
+ */
+export const DEFAULT_FETCH_LOOKBACK_HOURS = 24
+
+/**
+ * 调度器与控制台**共用**的拉取回看小时数（`MDE_SCHEDULER_FETCH_LOOKBACK_HOURS`）。
+ *
+ * 这个变量只由调度器进程真正用到——算任务一的 `lookbackSec`（`scheduler.ts` 的
+ * `main`）：连续拉取失败超过这么多小时，中断期间结束的会议就会落在下一轮的
+ * 拉取窗口之外，不会被自动捞回来。控制台「定时任务」页那条「连续失败」横幅要把
+ * 这句话讲清楚——「调度器会自动重试；超过 N 小时后中断期间的会议需要人工用
+ * worker 补拉」——而 N 不许由控制台自己硬编码 24：一旦运维把这个环境变量调成别的
+ * 值，硬编码的横幅就会说谎，且不报任何错。于是 `GET /api/v1/admin/jobs` 要把这同
+ * 一个数字下发出去，装配处读的必须是同一个环境变量、同一份定义——道理与
+ * `schedulerTzOffsetSec` 完全一样，见那段注释。
+ *
+ * 解析语义与 `envInt` 完全一致（因为就是它）：空/未设置回落到
+ * `DEFAULT_FETCH_LOOKBACK_HOURS`，认不出的值直接抛错，不悄悄回退。
+ */
+export function schedulerFetchLookbackHours(env: Record<string, string | undefined>): number {
+  return envInt(env, 'MDE_SCHEDULER_FETCH_LOOKBACK_HOURS', DEFAULT_FETCH_LOOKBACK_HOURS)
+}
+
 /** 人读的频率描述，直接进 API 响应。与 `JOB_CATALOG` 同源，前端不必自己拼 */
 export function describeSchedule(s: JobSchedule): string {
   switch (s.kind) {
