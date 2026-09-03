@@ -362,10 +362,14 @@ describe('「现在可取走 N 场会议的 X」', () => {
 
     const reach = await screen.findByTestId('reach-kb-indexer')
     // spec §1.3 的三个条件是「与」：只补授权、或只放行规则，这个数都还是 0。
-    expect(reach).toHaveTextContent('先在「会议记录」')
-    expect(reach).toHaveTextContent('再到「自动规则」')
+    // 顺序必须是先规则、后授权：会议记录页只给规则已判「准许」的会议画授权入口
+    // （`grantCellKind`），规则全是 deny 时那里一个按钮都没有。
+    expect(reach).toHaveTextContent('先到「自动规则」')
+    expect(reach).toHaveTextContent('然后到「会议记录」把会议授权给它')
     // 原来那句把两步写成了二选一，照着它走的人一直卡在 0 场。
     expect(reach).not.toHaveTextContent('或在「会议记录」里逐场授权')
+    // 也不许把顺序写反：先授权的话，管理员会去找一个不存在的按钮。
+    expect(reach).not.toHaveTextContent('先在「会议记录」')
   })
 
   test('能取走的同时另有取不到的，也要把后者说出来', async () => {
