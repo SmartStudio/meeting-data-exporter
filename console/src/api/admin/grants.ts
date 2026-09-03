@@ -48,6 +48,19 @@ export interface ServiceProgram {
   /** unix 秒；null = 永不过期 */
   expiresAt: number | null
   createdAt: number
+  /**
+   * 程序级自动授权（方案 2）。开着的时候由后台任务 `auto_grant` 把规则已判
+   * 「准许」、文件还在本地、尚无生效授权、且**从来没被人工撤销过**的会议
+   * 真的写进 `meeting_grants`——判定逻辑一个字没改，只是多了一个「系统代为
+   * 授权」的来源。
+   */
+  autoGrant: boolean
+  /**
+   * 自动授权的资产范围。`null` = 不额外限制（以规则判定为准）；非空数组 =
+   * 白名单，取值是八类资产键。**`[]` 存不进去**——「什么都不授权的自动授权」
+   * 没有意义，后端回 400 `invalid_auto_grant_asset_types`。
+   */
+  autoGrantAssetTypes: string[] | null
 }
 
 /**
@@ -214,6 +227,10 @@ function readProgram(
     enabled: r.bool(o, 'enabled', where),
     expiresAt: r.numOrNull(o, 'expiresAt', where),
     createdAt: r.num(o, 'createdAt', where),
+    autoGrant: r.bool(o, 'autoGrant', where),
+    // null 与字符串数组之外的形状（比如 `[]` 之外的 `{}`、或数组里混进数字）
+    // 走的是这个文件里现有的那条解析错误路径：`ApiShapeError` 带端点名与字段路径。
+    autoGrantAssetTypes: r.strListOrNull(o, 'autoGrantAssetTypes', where),
   }
 }
 
@@ -303,6 +320,40 @@ export async function setProgramEnabled(programId: string, enabled: boolean): Pr
   const endpoint = `PATCH ${BASE}/programs/:id`
   const path = `${BASE}/programs/${encodeURIComponent(programId)}`
   const raw = await apiSend<unknown>('PATCH', path, { enabled })
+  return readProgram(reader(endpoint), raw, '')
+}
+
+export interface AutoGrantInput {
+  /** 必须是真布尔：后端对 `"true"` / `1` / `null` 一律回 400，不会折成某一侧。 */
+  autoGrant: boolean
+  /** `null` = 不额外限制（以规则判定为准）；非空数组 = 白名单。`[]` 后端回 400。 */
+  autoGrantAssetTypes: string[] | null
+}
+
+/**
+ * `PATCH /api/v1/admin/programs/:id` —— 开 / 关程序级自动授权。
+ *
+ * 与 `setProgramEnabled` 是**同一条端点的两个请求体家族**，二选一：
+ * `{ enabled }` 是一族，`{ autoGrant, autoGrantAssetTypes }` 是另一族，
+ * 同时出现或都不出现都会被后端回 400 `invalid_patch`。所以这里分成两个函数，
+ * 每个函数只发自己那一族的键——一个 `patchProgram(partial)` 迟早会有人把两族
+ * 拼在一起发出去。
+ *
+ * 三条规矩在界面上说清（`pages/Consumers/ProgramActions.tsx` 的确认面板）：
+ * 跑的时机、人工撤销过的不再自动补回、关掉开关不收回已有授权。
+ */
+export async function setProgramAutoGrant(
+  programId: string,
+  input: AutoGrantInput,
+): Promise<ServiceProgram> {
+  const endpoint = `PATCH ${BASE}/programs/:id`
+  const path = `${BASE}/programs/${encodeURIComponent(programId)}`
+  // 两个键都发：`autoGrantAssetTypes` 省略与显式 null 在后端是同一个意思
+  //（不限制），但省略会让请求体随开关状态时有时无，抓包时看不出发生过什么。
+  const raw = await apiSend<unknown>('PATCH', path, {
+    autoGrant: input.autoGrant,
+    autoGrantAssetTypes: input.autoGrantAssetTypes,
+  })
   return readProgram(reader(endpoint), raw, '')
 }
 

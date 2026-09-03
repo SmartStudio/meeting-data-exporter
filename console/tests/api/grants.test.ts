@@ -10,6 +10,7 @@ import {
   revokeGrant,
   revokeOverride,
   rotateProgramSecret,
+  setProgramAutoGrant,
   setProgramEnabled,
 } from '../../src/api/admin/grants'
 
@@ -47,6 +48,8 @@ const PROGRAM = {
   enabled: true,
   expiresAt: null,
   createdAt: 1700000000,
+  autoGrant: false,
+  autoGrantAssetTypes: null,
 }
 
 const GRANT = {
@@ -198,6 +201,73 @@ describe('停用 / 启用（PATCH /programs/:id）', () => {
     const { enabled: _drop, ...withoutEnabled } = PROGRAM
     install(200, withoutEnabled)
     await expect(setProgramEnabled('kb-indexer', false)).rejects.toBeInstanceOf(ApiShapeError)
+  })
+})
+
+describe('自动授权（PATCH /programs/:id 的另一族请求体）', () => {
+  test('发的是 PATCH，请求体逐字是 { autoGrant, autoGrantAssetTypes }', async () => {
+    install(200, { ...PROGRAM, autoGrant: true, autoGrantAssetTypes: ['ai_minutes'] })
+    const got = await setProgramAutoGrant('kb-indexer', {
+      autoGrant: true,
+      autoGrantAssetTypes: ['ai_minutes'],
+    })
+    expect(calls[0]!.url).toBe('/api/v1/admin/programs/kb-indexer')
+    expect(calls[0]!.init.method).toBe('PATCH')
+    expect(sentBody()).toEqual({ autoGrant: true, autoGrantAssetTypes: ['ai_minutes'] })
+    // 写后重读的完整 ServiceProgram，与 enabled 那一条同一个口径
+    expect(got.autoGrant).toBe(true)
+    expect(got.autoGrantAssetTypes).toEqual(['ai_minutes'])
+  })
+
+  test('不限制时发的是真 null，不是省略这个键、也不是八类全给', async () => {
+    install(200, { ...PROGRAM, autoGrant: true })
+    await setProgramAutoGrant('kb-indexer', { autoGrant: true, autoGrantAssetTypes: null })
+    expect(sentBody()).toEqual({ autoGrant: true, autoGrantAssetTypes: null })
+  })
+
+  test('请求体里不带 enabled —— 两族同时出现后端回 invalid_patch', async () => {
+    install(200, PROGRAM)
+    await setProgramAutoGrant('kb-indexer', { autoGrant: false, autoGrantAssetTypes: null })
+    expect(Object.keys(sentBody() as Record<string, unknown>)).toEqual([
+      'autoGrant',
+      'autoGrantAssetTypes',
+    ])
+  })
+
+  test('程序 id 走 encodeURIComponent', async () => {
+    install(200, PROGRAM)
+    await setProgramAutoGrant('a/b c', { autoGrant: true, autoGrantAssetTypes: null })
+    expect(calls[0]!.url).toBe('/api/v1/admin/programs/a%2Fb%20c')
+  })
+
+  test('400 原样带着后端的错误码与 issues 抛出来', async () => {
+    install(400, {
+      error: 'invalid_auto_grant_asset_types',
+      hint: '空数组存不进去',
+      issues: ['认不出的资产类型「summary」'],
+    })
+    const err = (await setProgramAutoGrant('kb-indexer', {
+      autoGrant: true,
+      autoGrantAssetTypes: [],
+    }).catch((e: unknown) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(400)
+    expect(err.body).toMatchObject({ error: 'invalid_auto_grant_asset_types' })
+  })
+
+  test('响应缺 autoGrant 时抛形状错误，不当成"开成功了"', async () => {
+    const { autoGrant: _drop, ...without } = { ...PROGRAM, autoGrant: true }
+    install(200, without)
+    await expect(
+      setProgramAutoGrant('kb-indexer', { autoGrant: true, autoGrantAssetTypes: null }),
+    ).rejects.toBeInstanceOf(ApiShapeError)
+  })
+
+  test('autoGrantAssetTypes 是别的形状时也抛形状错误，字段路径带在话里', async () => {
+    install(200, [{ ...PROGRAM, autoGrantAssetTypes: 'ai_minutes' }])
+    const err = (await listPrograms().catch((e: unknown) => e)) as ApiShapeError
+    expect(err).toBeInstanceOf(ApiShapeError)
+    expect(err.message).toContain('autoGrantAssetTypes')
   })
 })
 

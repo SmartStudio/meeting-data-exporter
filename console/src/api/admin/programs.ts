@@ -56,6 +56,13 @@ export function assetLabel(key: string): string {
   return ASSET_LABEL[key as AssetKey] ?? key
 }
 
+/**
+ * 八个资产键，顺序即上面那张表的顺序。**从 `ASSET_LABEL` 派生**，不另抄一份
+ * 数组：同一批资产在这个项目里已经有过三套叫法，第二份清单迟早与第一份分叉。
+ * 自动授权的资产范围勾选框（`ProgramActions.tsx`）与原型模式的假后端都用它。
+ */
+export const ASSET_KEYS = Object.keys(ASSET_LABEL) as AssetKey[]
+
 /** `['ai_minutes','transcript']` → `'AI 纪要 + 完整转写'`。空数组给空串（调用方要能分辨）。 */
 export function assetTypesText(keys: readonly string[]): string {
   return keys.map(assetLabel).join(' + ')
@@ -302,6 +309,39 @@ export function createErrorText(e: unknown): string {
   if (code !== null && CREATE_ERROR[code] !== undefined) return CREATE_ERROR[code] as string
   if (e instanceof Error) return e.message
   return String(e)
+}
+
+/**
+ * 自动授权那两个键被拒时的说法。
+ *
+ * 与 `createErrorText` 同一条规矩（已知码翻成人话、没见过的原样退回 client
+ * 那句），只多一件事：`invalid_auto_grant_asset_types` 可能带 `issues`——
+ * 后端逐条点名了哪个资产键认不出来。那几条比我们这句通用解释有用得多，
+ * **不能吞掉**：吞了之后管理员只知道"范围不合法"，不知道是哪一类不合法。
+ */
+const AUTO_GRANT_ERROR: Record<string, string> = {
+  invalid_auto_grant_asset_types:
+    '资产范围不合法：要么不限制（以规则判定为准），要么给一个非空的资产类型列表。空列表存不进去——那是一个什么都不授权的自动授权。',
+  invalid_patch:
+    '这次请求同时改了两件事、或者一件都没改：停用开关与自动授权是两族请求体，一次只能发一族。这是前端的问题，请把这句话连同时间点报给维护者。',
+}
+
+export function autoGrantErrorText(e: unknown): string {
+  const code = errorCode(e)
+  const known = code === null ? undefined : AUTO_GRANT_ERROR[code]
+  if (known === undefined) return createErrorText(e)
+  const issues = errorIssues(e)
+  return issues.length === 0 ? known : `${known}后端点名的是：${issues.join('；')}`
+}
+
+/** 响应体里的 `issues`（字符串数组）。没有、或不是字符串数组时给空数组。 */
+function errorIssues(e: unknown): string[] {
+  if (!(e instanceof ApiError)) return []
+  const body = e.body
+  if (body === null || typeof body !== 'object' || !('issues' in body)) return []
+  const raw = (body as { issues: unknown }).issues
+  if (!Array.isArray(raw)) return []
+  return raw.filter((x): x is string => typeof x === 'string')
 }
 
 /**

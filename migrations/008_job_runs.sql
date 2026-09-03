@@ -13,7 +13,7 @@
 -- ## 一、job_runs：为什么排队态也是它的一行
 --
 -- 手动触发端点（POST /api/v1/admin/jobs/:name/run）在**网关进程**里，而调度器在
--- **worker 进程**里（spec §4.8 的四个任务各跑一份是灾难，网关是多实例的）。
+-- **worker 进程**里（spec §4.8 的五个任务各跑一份是灾难，网关是多实例的）。
 -- 于是网关不能自己跑任务，它只能留下一条"有人要求跑一次"的记录，由 worker 侧的
 -- 调度器在下一个 tick 认领。这条记录就是 job_runs 里 status='queued' 的一行——
 -- 不另开一张 job_requests 表，是因为它随后会**原地**变成 running / succeeded，
@@ -90,7 +90,8 @@
 
 CREATE TABLE IF NOT EXISTS job_runs (
   id           BIGINT       NOT NULL AUTO_INCREMENT,
-  -- 任务名。取值见 src/store/jobs.ts 的 JOB_CATALOG，与 spec §4.8 的四个任务一一对应
+  -- 任务名。取值见 src/store/jobs.ts 的 JOB_CATALOG，与 spec §4.8 的五个任务一一对应
+  -- （fetch_recordings / archive_nas / cleanup_expired / refresh_inventory / auto_grant）
   job_name     VARCHAR(32)  NOT NULL,
   -- schedule = 到点自动跑，manual = 管理员在界面上按的，
   -- chained = 上一个任务的一轮成功结束后接着排进队列的（见 src/worker/scheduler.ts 的 JOB_CHAINS）。
@@ -104,7 +105,7 @@ CREATE TABLE IF NOT EXISTS job_runs (
   -- finished_at 为空）必须分得开，否则界面上"排队中"和"正在跑"长得一样
   started_at   BIGINT       NULL,
   finished_at  BIGINT       NULL,
-  -- 这一轮的数字。四个任务各有各的形状（归档轮是 newlyArchived/failed/…，
+  -- 这一轮的数字。五个任务各有各的形状（归档轮是 newlyArchived/failed/…，
   -- 清单重算是逐程序的 fetchable/blocked），所以是 JSON 不是几个定死的列。
   -- E-e 裁定的"清单重算写摘要不写缓存"，写的就是这一列
   summary      JSON         NULL,

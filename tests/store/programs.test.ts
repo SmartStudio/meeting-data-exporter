@@ -36,6 +36,9 @@ test('create + find 往返，enabled/expiresAt 的默认形态与库一致', asy
       enabled: true,
       expiresAt: null,
       createdAt: 1000,
+      // 两列走库里的默认值：新接进来的程序不该自带一个会往授权表里写行的开关
+      autoGrant: false,
+      autoGrantAssetTypes: null,
     })
   } finally {
     await cleanup()
@@ -313,6 +316,152 @@ test('读侧仍然不返回 secret_hash——轮换之后也一样', async () =>
     expect(found).not.toBeNull()
     expect(Object.keys(found!)).not.toContain('secretHash')
     expect(JSON.stringify(found)).not.toContain('the-new-hash')
+  } finally {
+    await cleanup()
+  }
+})
+
+// ── 程序级自动授权的两列（方案 2，migrations/011）────────────────────────
+
+test('setAutoGrant 往返：开关与资产范围一起写，list / find 都读得回来', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-ag')
+
+    // 建号时两列走库里的默认值：新接进来的程序不自带一个会往授权表里写行的开关
+    expect((await store.find('p-ag'))?.autoGrant).toBe(false)
+    expect((await store.find('p-ag'))?.autoGrantAssetTypes).toBeNull()
+
+    expect(
+      await store.setAutoGrant('p-ag', { enabled: true, assetTypes: ['ai_minutes', 'transcript'] }),
+    ).toBe(true)
+    const found = await store.find('p-ag')
+    expect(found?.autoGrant).toBe(true)
+    expect(found?.autoGrantAssetTypes).toEqual(['ai_minutes', 'transcript'])
+    // list 与 find 读的是同一份列，不能只有一边接上
+    expect((await store.list())[0]?.autoGrantAssetTypes).toEqual(['ai_minutes', 'transcript'])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('setAutoGrant 的 assetTypes 为 null 时落成 SQL NULL（= 不额外限制）', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-ag-null')
+    await store.setAutoGrant('p-ag-null', { enabled: true, assetTypes: ['video'] })
+    await store.setAutoGrant('p-ag-null', { enabled: true, assetTypes: null })
+
+    expect((await store.find('p-ag-null'))?.autoGrantAssetTypes).toBeNull()
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      'SELECT auto_grant_asset_types FROM service_accounts WHERE id = ?',
+      ['p-ag-null'],
+    )
+    // 库里真的是 NULL，不是字符串 'null'——后者读回来是一个长度 4 的白名单
+    expect(rows[0]?.auto_grant_asset_types).toBeNull()
+  } finally {
+    await cleanup()
+  }
+})
+
+test('autoGrant 读成布尔，不是 TINYINT 的 0/1', async () => {
+  // 自动授权轮按它决定要不要替这个程序往授权表里写行，一个数字下发到前端的开关上
+  // 是一个说不清开没开的值
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-ag-bool')
+    await pool.execute('UPDATE service_accounts SET auto_grant = 1 WHERE id = ?', ['p-ag-bool'])
+    expect((await store.find('p-ag-bool'))?.autoGrant).toBe(true)
+    await pool.execute('UPDATE service_accounts SET auto_grant = 0 WHERE id = ?', ['p-ag-bool'])
+    expect((await store.find('p-ag-bool'))?.autoGrant).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('setAutoGrant 关掉开关时**只改这两列**，enabled / secret_hash / name 一个都不碰', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await store.create({
+      id: 'p-ag-narrow', name: '原名', secretHash: 'keep-this-hash',
+      tmUserId: 'tm-x', expiresAt: 9_999_999, now: 1000,
+    })
+    await store.setAutoGrant('p-ag-narrow', { enabled: false, assetTypes: null })
+
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      'SELECT name, secret_hash, tm_userid, enabled, expires_at FROM service_accounts WHERE id = ?',
+      ['p-ag-narrow'],
+    )
+    expect(rows[0]?.name).toBe('原名')
+    expect(rows[0]?.secret_hash).toBe('keep-this-hash')
+    expect(rows[0]?.tm_userid).toBe('tm-x')
+    expect(Number(rows[0]?.enabled)).toBe(1)
+    expect(Number(rows[0]?.expires_at)).toBe(9_999_999)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('setAutoGrant 对不存在的 id 返回 false（handler 据此报 404），且不新建一行', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    expect(await store.setAutoGrant('never-existed', { enabled: true, assetTypes: null })).toBe(false)
+    expect(await store.list()).toEqual([])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('把同一个开关重复设成同一个值仍返回 true——问的是「有没有这个程序」', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-ag-idem')
+    await store.setAutoGrant('p-ag-idem', { enabled: true, assetTypes: null })
+    // 用 changedRows 判断的话这一次会报 404，而那个程序明明就在
+    expect(await store.setAutoGrant('p-ag-idem', { enabled: true, assetTypes: null })).toBe(true)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('auto_grant_asset_types 是坏 JSON 时**抛**，不折成 null（静默放宽）也不折成 []', async () => {
+  // 折成 null = 本来只该授权 AI 纪要的程序按规则放行的全部八类自动授权出去；
+  // 折成 [] = 自动授权轮会写出一批资产范围为空的真授权行，那些行一类都取不到，
+  // 却又满足「已有生效授权」于是永远挡住这场会议日后被正确地自动授权。
+  // 两个方向都是静默的错，所以这里响亮地失败。
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-ag-bad')
+    // JSON 列装得下一个对象/数字——无 schema 校验，库外的写入者塞得进来
+    await pool.execute(
+      `UPDATE service_accounts SET auto_grant_asset_types = CAST('{"a":1}' AS JSON) WHERE id = ?`,
+      ['p-ag-bad'],
+    )
+    expect(store.find('p-ag-bad')).rejects.toThrow(/auto_grant_asset_types/)
+    // list 走同一段 mapRow，也必须抛——只挡一条路等于没挡
+    expect(store.list()).rejects.toThrow(/auto_grant_asset_types/)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('auto_grant_asset_types 是「数组但元素不是字符串」时同样抛', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createProgramsStore(pool)
+    await seed(store, 'p-ag-bad2')
+    await pool.execute(
+      `UPDATE service_accounts SET auto_grant_asset_types = CAST('[1,2]' AS JSON) WHERE id = ?`,
+      ['p-ag-bad2'],
+    )
+    expect(store.find('p-ag-bad2')).rejects.toThrow(/JSON array of strings/)
   } finally {
     await cleanup()
   }

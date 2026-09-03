@@ -255,7 +255,7 @@ function AssetsStep({ created }: { created: CreatedProgram }) {
   const standing = programStanding(created, Math.floor(Date.now() / 1000))
   return (
     <div className={styles.body}>
-      <ReachBlock programId={created.id} standing={standing} res={res} />
+      <ReachBlock programId={created.id} standing={standing} autoGrant={created.autoGrant} res={res} />
     </div>
   )
 }

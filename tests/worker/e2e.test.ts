@@ -705,7 +705,7 @@ describe('runWorkerOnce', () => {
 const FETCH_SLOT = 15 * 60
 
 describe('定时任务的任务一（fetch_recordings）', () => {
-  /** 除任务一之外的三个任务体：这一组只问任务一，别的到点了也不许干活 */
+  /** 除任务一之外的四个任务体：这一组只问任务一，别的到点了也不许干活 */
   function otherJobs(counters: { archive: number; cleanup: number }): Omit<JobBodyDeps, 'fetchRound'> {
     return {
       archiveRound: async () => {
@@ -718,6 +718,15 @@ describe('定时任务的任务一（fetch_recordings）', () => {
       },
       listPrograms: async () => [],
       inventory: async () => ({ programId: '', now: 0, entries: [], fetchable: [], blocked: [], assetTypes: [] }),
+      // 任务五（自动授权）。这一组只问任务一，所以它一轮什么都不做——
+      // 但它到点了照样会被起，返回一个空轮次比抛出更贴近真实
+      autoGrantRound: async () => ({
+        programs: [],
+        granted: 0,
+        skippedRevoked: 0,
+        failedPrograms: 0,
+        failures: [],
+      }),
       // 任务一收尾的失败项口（转 dead 的资产）。这一组用例里跑不到它——一条资产要
       // 连挂 5 轮才转 dead，而这里一共只跑一两轮。「转 dead 就落一条失败项」那条
       // 断言在 tests/worker/scheduler.test.ts。

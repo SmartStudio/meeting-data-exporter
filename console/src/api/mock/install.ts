@@ -1,6 +1,13 @@
 import type { Meeting } from '../types'
 import { buildAudit, type AuditQuery } from './audit'
-import { buildInventory, CONSUMERS } from './consumers'
+import {
+  buildInventory,
+  buildPrograms,
+  CONSUMERS,
+  initialProgramStates,
+  readAutoGrantPatch,
+  type ProtoProgramState,
+} from './consumers'
 import { buildChapters, buildContent } from './content'
 import { applyTencentDown, buildJobs, makeQueuedRun, withQueued, type QueuedRun } from './jobs'
 import { MEETINGS, MOCK_NOW } from './meetings'
@@ -109,6 +116,8 @@ let nextRuleId = 900
 let retention: RetentionConfig = initialRetention('ok')
 /** 手动触发排进队里的运行。**它们不会开跑**——调度器在另一个进程里。 */
 let queuedRuns: QueuedRun[] = []
+/** 每个采集程序身上两族可写字段（停用开关 / 自动授权）。`PATCH /programs/:id` 改的就是它。 */
+let programStates: Record<string, ProtoProgramState> = initialProgramStates()
 
 function shift(sec: number | null): number | null {
   return sec === null ? null : sec + shiftSec
@@ -493,16 +502,36 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
   }
 
   if (path === `${PREFIX}/programs` && method === 'GET') {
-    return json(
-      CONSUMERS.map((c) => ({
-        id: c.id,
-        name: c.name,
-        tmUserId: `tm-${c.id}`,
-        enabled: true,
-        expiresAt: null,
-        createdAt: nowSec - 86400 * 90,
-      })),
-    )
+    return json(buildPrograms(programStates, nowSec))
+  }
+
+  /* 停用开关与自动授权是**同一条端点的两族请求体**：`{enabled}` 一族、
+     `{autoGrant, autoGrantAssetTypes}` 一族。同时出现或都不出现是 400
+     `invalid_patch`——这不是吹毛求疵：一个能同时收两族的端点，写起来一定会有
+     人把两件事塞进一次请求，然后在审计里留下一行说不清改了什么的记录。 */
+  const programPatch = /^\/api\/v1\/admin\/programs\/([^/]+)$/.exec(path)
+  if (programPatch && method === 'PATCH') {
+    const id = decodeURIComponent(programPatch[1] ?? '')
+    const state = programStates[id]
+    if (state === undefined) return json({ error: 'program_not_found' }, 404)
+
+    const hasEnabled = 'enabled' in body
+    const hasAuto = 'autoGrant' in body || 'autoGrantAssetTypes' in body
+    if (hasEnabled === hasAuto) return json({ error: 'invalid_patch' }, 400)
+
+    if (hasEnabled) {
+      if (typeof body.enabled !== 'boolean') {
+        return json({ error: 'invalid_enabled', hint: 'enabled 必须是 true 或 false' }, 400)
+      }
+      programStates = { ...programStates, [id]: { ...state, enabled: body.enabled } }
+    } else {
+      const read = readAutoGrantPatch(body)
+      if (!read.ok) return json(read.body, 400)
+      programStates = { ...programStates, [id]: { ...state, ...read.value } }
+    }
+    // 写后重读：回的是库里此刻的那一行，不是把请求里的值抄回来
+    const row = buildPrograms(programStates, nowSec).find((p) => p.id === id)
+    return json(row ?? {})
   }
 
   if (path === `${PREFIX}/meetings/triage` && method === 'GET') {
@@ -727,4 +756,5 @@ export function resetProtoWorld(): void {
   nextRuleId = 900
   retention = initialRetention(worldVariant)
   queuedRuns = []
+  programStates = initialProgramStates()
 }

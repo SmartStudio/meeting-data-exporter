@@ -52,12 +52,23 @@ export const AUDIT_ACTION_LABELS = {
   enable_program: '启用采集程序',
   disable_program: '停用采集程序',
   rotate_program_secret: '轮换采集程序的凭据',
+  /** 程序级自动授权的开关与资产范围（方案 2）。detail 第一行写明开/关与范围 */
+  set_program_auto_grant: '设置采集程序的自动授权',
 
   // ── 控制台 · 逐会议授权与人工改写 ────────────────────────────────
   grant_meeting: '把一场会议授权给采集程序',
   revoke_grant: '撤销一场会议的采集授权',
   put_override: '对一场会议写人工改写',
   revoke_override: '撤销一场会议的人工改写',
+  /**
+   * 自动授权轮**代人做的**那一次授权（方案 2）：`actor_type = 'system'`、
+   * `actor_id = 'auto_grant'`，每授权一场记一条。
+   *
+   * 与 `grant_meeting` 分成两个动作而不是共用一个：那一列是审计页的筛选条件，
+   * 合并之后「这场会议是谁授权的」就只能靠 actor 那一列去猜，而「人点的」与
+   * 「系统按规则代点的」正是事后复盘最要分清的两件事。
+   */
+  auto_grant_meeting: '系统按规则自动把一场会议授权给采集程序',
 
   // ── 控制台 · 自动规则 ─────────────────────────────────────────────
   rule_create: '新建自动规则',
@@ -108,11 +119,13 @@ export const AUDIT_ACTION = {
   enableProgram: 'enable_program',
   disableProgram: 'disable_program',
   rotateProgramSecret: 'rotate_program_secret',
+  setProgramAutoGrant: 'set_program_auto_grant',
 
   grantMeeting: 'grant_meeting',
   revokeGrant: 'revoke_grant',
   putOverride: 'put_override',
   revokeOverride: 'revoke_override',
+  autoGrantMeeting: 'auto_grant_meeting',
 
   ruleCreate: 'rule_create',
   ruleUpdate: 'rule_update',
@@ -146,6 +159,20 @@ export const AUDIT_ACTION = {
  * 那边保留一条 re-export 以免改动既有 import。
  */
 export const ACTION_EXTEND_RETENTION = AUDIT_ACTION.extendRetention
+
+/**
+ * 自动授权轮在 `audit_log.actor_id` 里的固定身份（方案 2）。
+ *
+ * 写侧是 `src/worker/auto-grant.ts`，读侧是 `handlers/console/audit.ts` 的
+ * `resolveActorNames`（把它显示成「系统 · 自动授权」）。两处各写一个字符串字面量的话，
+ * 哪天改了名字，写侧照常记账、读侧照常回 null——界面上那一列会显示成一串谁都不认识的
+ * id，而没有任何东西会报错。与 `ACTION_EXTEND_RETENTION` 是同一个理由。
+ *
+ * 它长在**这里**而不是 auto-grant.ts，是为了让网关侧的读代码不必 import 一个 worker
+ * 模块才拿得到一个字符串常量——与 `JOB_ARCHIVE_NAS` 住在 `store/jobs.ts` 而不是
+ * `worker/scheduler.ts` 是同一条边界。
+ */
+export const AUTO_GRANT_ACTOR_ID = 'auto_grant'
 
 /**
  * 库里的动作名 → 标签。**没登记时回 `null`，不回原值**（见文件头第三节）。

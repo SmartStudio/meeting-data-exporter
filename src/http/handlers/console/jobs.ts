@@ -2,12 +2,12 @@
  * 「定时任务」页（spec.md §4.8）的 API —— 阶段 4 · T11（A4）。
  *
  * 两个端点，都要管理员会话：
- *   GET  /api/v1/admin/jobs                四个任务 + 各自的 sparkline + 失败项表
+ *   GET  /api/v1/admin/jobs                五个任务 + 各自的 sparkline + 失败项表
  *   POST /api/v1/admin/jobs/:name/run      手动触发（**只排队，不执行**）
  *
  * ## 这个 handler 为什么不 import `src/worker/scheduler.ts`
  *
- * 验收判据 5：**调度器不进网关进程**。网关是多实例的，把四个任务各跑 N 份意味着
+ * 验收判据 5：**调度器不进网关进程**。网关是多实例的，把五个任务各跑 N 份意味着
  * N 个实例同时往同一个 NAS 目录搬同一批文件、同时对同一批本地文件执行不可逆删除。
  *
  * 所以「立即运行」在这里只能落一行 `job_runs.status='queued'`，由 worker 侧的调度器
@@ -149,7 +149,7 @@ function failureView(f: JobFailureRecord): Record<string, unknown> {
     maxAttempts: f.maxAttempts,
     /**
      * 重试次数已经到阈值 = **该找人了**，不是「系统放弃了」。
-     * 四个任务的重试都由各自的枚举源结构性地驱动，没有一个会因为这个数字停下来
+     * 五个任务的重试都由各自的枚举源结构性地驱动，没有一个会因为这个数字停下来
      * ——见 `store/jobs.ts` 的 `JobSpec.maxAttempts`。
      */
     escalated: f.attempts >= f.maxAttempts,
@@ -170,7 +170,7 @@ export async function listJobs(req: Request, ctx: RouteCtx): Promise<Response> {
   const now = ctx.deps.now()
 
   // 每个任务一次查询取回 sparkline，最近一次就是它的第一行——不再单发一次
-  // "取最后一次运行"。四个任务四次查询，与任务数同阶，不随运行历史增长。
+  // "取最后一次运行"。五个任务五次查询，与任务数同阶，不随运行历史增长。
   const [runsPerJob, openFailures, failures] = await Promise.all([
     Promise.all(JOB_CATALOG.map((s) => d.jobs.listRuns(s.name, JOB_RUNS_SPARKLINE_LIMIT))),
     d.jobs.countOpenFailures(),

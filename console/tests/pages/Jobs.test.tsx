@@ -50,11 +50,19 @@ function job(over: Record<string, unknown> = {}): Record<string, unknown> {
   }
 }
 
-const FOUR = [
+/** 五个内置任务。第五条的四句文案逐字照 `JOB_CATALOG`（与 `api/mock/jobs.ts` 同一份）。 */
+const FIVE = [
   job({ name: 'fetch_recordings', label: '拉取新录制', what: '发现新录制、入队并下载', schedule: '每 15 分钟' }),
   job(),
   job({ name: 'cleanup_expired', label: '清理到期文件', what: '删本地文件，记录与 NAS 路径保留', schedule: '每天 03:00' }),
   job({ name: 'refresh_inventory', label: '刷新采集清单', what: '重算哪些会议对哪些程序可见', schedule: '每 5 分钟' }),
+  job({
+    name: 'auto_grant',
+    label: '自动授权',
+    what: '把规则放行的会议授权给开了自动授权的程序',
+    schedule: '每 5 分钟',
+    impact: '新会议不会自动授权，程序取不到',
+  }),
 ]
 
 function failure(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -80,7 +88,7 @@ function payload(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     now: NOW,
     timezoneOffsetSec: 28800,
-    jobs: FOUR,
+    jobs: FIVE,
     failuresTotal: 0,
     failures: [],
     ...over,
@@ -198,16 +206,46 @@ describe('三态出口', () => {
   })
 })
 
-describe('四个任务格子', () => {
-  test('四个都在，各自带名字、频率、干什么', async () => {
+describe('五个任务格子', () => {
+  test('五个都在，各自带名字、频率、干什么', async () => {
     await mount()
     const cards = await screen.findAllByTestId('job-card')
-    expect(cards).toHaveLength(4)
+    expect(cards).toHaveLength(5)
     expect(cards[0]).toHaveTextContent('拉取新录制')
     expect(cards[0]).toHaveTextContent('每 15 分钟')
     expect(cards[0]).toHaveTextContent('发现新录制、入队并下载')
     expect(cards[2]).toHaveTextContent('清理到期文件')
     expect(cards[2]).toHaveTextContent('每天 03:00')
+  })
+
+  test('第五段是自动授权，序号排到「五」——它与前四段串在同一条链路上', async () => {
+    await mount()
+    const cards = await screen.findAllByTestId('job-card')
+    const auto = cards[4]!
+    expect(auto).toHaveTextContent('自动授权')
+    expect(auto).toHaveTextContent('把规则放行的会议授权给开了自动授权的程序')
+    expect(auto).toHaveTextContent('每 5 分钟')
+    // 序号原来只数到「四」，第五段会退回阿拉伯数字「5」，与前四个不是一套
+    expect(auto).toHaveTextContent('五')
+  })
+
+  test('自动授权那一轮的关键数是「新授权」，不是候选数', async () => {
+    await mount(
+      payload({
+        jobs: [
+          job({
+            name: 'auto_grant',
+            label: '自动授权',
+            lastRun: run({ summary: { candidates: 5, granted: 2, skippedRevoked: 1, failedPrograms: 0 } }),
+          }),
+        ],
+      }),
+    )
+    const card = (await screen.findAllByTestId('job-card'))[0]!
+    expect(card).toHaveTextContent('新授权')
+    // 摘要那一行把三个键都翻成中文，「人工撤销过」不许被吞掉
+    expect(within(card).getByTestId('job-last')).toHaveTextContent('人工撤销过，跳过')
+    expect(within(card).getByTestId('job-last')).toHaveTextContent('规则放行')
   })
 
   test('「下次」写成预计而不是承诺——调度器停了它照样算得出', async () => {
@@ -621,7 +659,7 @@ describe('「拉取连续失败」那条横幅关得掉，但只对这一段故�
 
   test('连续失败结束（最近一轮跑成了）：那个身份被删掉，下一段故障从头提醒', async () => {
     localStorage.setItem(KEY, String(LATEST))
-    await mount() // 默认四个任务最近两轮都是 succeeded
+    await mount() // 默认五个任务最近两轮都是 succeeded
     await waitFor(() => expect(localStorage.getItem(KEY)).toBeNull())
   })
 
@@ -711,14 +749,14 @@ describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
 })
 
 describe('任务链：横排 → 窄屏退回竖排（D-jobs-storage brief）', () => {
-  test('四段挂在同一个 ul[aria-label] 容器里（a11y 门槛认的就是这个选择器）', async () => {
+  test('五段挂在同一个 ul[aria-label] 容器里（a11y 门槛认的就是这个选择器）', async () => {
     await mount()
     const chain = screen.getByRole('list', { name: '内置定时任务' })
     expect(chain.tagName).toBe('UL')
-    expect(within(chain).getAllByTestId('job-card')).toHaveLength(4)
+    expect(within(chain).getAllByTestId('job-card')).toHaveLength(5)
   })
 
-  test('Jobs.module.css 里有一条按宽度收窄的媒体查询，把 .chain 收回单列——\n      1440 / 1050 / 375 三个宽度都不许横向溢出，四段横排在 1050 会溢出', () => {
+  test('Jobs.module.css 里有一条按宽度收窄的媒体查询，把 .chain 收回单列——\n      1440 / 1050 / 375 三个宽度都不许横向溢出，五段横排在 1050 会溢出', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/pages/Jobs/Jobs.module.css'), 'utf-8')
     const at = css.search(/@media\s*\(max-width:\s*[\d.]+em\)/)
     expect(at, '应该有一条按宽度收窄的媒体查询——硬规矩 7 盯着 1050 / 375 不许横向溢出').toBeGreaterThanOrEqual(0)
@@ -761,7 +799,7 @@ describe('只读账号（spec §11 缺口 1）', () => {
     stubApi(payload())
     renderAsRole(<JobsPage />, 'readonly')
     const btns = await screen.findAllByRole('button', { name: '立即运行' })
-    expect(btns).toHaveLength(4)
+    expect(btns).toHaveLength(5)
     for (const b of btns) {
       expect(b).toBeDisabled()
       expect(b).toHaveAttribute('title', '只读账号不能改')

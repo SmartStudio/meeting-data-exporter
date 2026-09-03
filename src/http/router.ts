@@ -180,7 +180,7 @@ export interface AppDeps {
    *
    * 它只握着 `JobsStore` 与审计写侧——**网关不执行任何任务**。「立即运行」在这里
    * 落一行 `job_runs.status='queued'`，由 worker 进程的调度器认领。网关是多实例的，
-   * 四个任务各跑 N 份意味着 N 个实例同时对同一批本地文件执行不可逆删除。
+   * 五个任务各跑 N 份意味着 N 个实例同时对同一批本地文件执行不可逆删除。
    */
   jobs: JobsDeps
   /**

@@ -4,6 +4,7 @@
  * ```
  * GET    /api/v1/admin/programs                                采集程序列表
  * POST   /api/v1/admin/programs                                接入新程序（四步向导的落点）
+ * PATCH  /api/v1/admin/programs/:id                            停用/启用，或开关自动授权
  * GET    /api/v1/admin/programs/:id/inventory                  「现在可取走 N 场会议的……」
  * POST   /api/v1/admin/meetings/:meetingId/grants              授权给某程序
  * DELETE /api/v1/admin/meetings/:meetingId/grants/:programId   撤销授权
@@ -68,6 +69,10 @@ import type { AdminIdentity } from '../../../auth/admin'
 import { generateServiceSecret, hashServiceSecret } from '../../../auth/service'
 import { buildAuditDetail } from '../../../store/audit'
 import { AUDIT_ACTION, type AuditAction } from '../../../audit/actions'
+// 资产键的合法集合只有一份：规则栈、人工改写、授权行、自动授权都过它。
+// 在这里另抄一份「八类是哪八类」，等于让某一类资产在自动授权路径下与在规则路径下
+// 待遇不同——而两条路径写的是同一张 meeting_grants
+import { normalizeAssetTypes } from '../../../policy/stacks'
 import type { MeetingKey } from '../../../store/grants'
 import {
   computeProgramInventory,
@@ -319,10 +324,32 @@ const SECRET_SHOWN_ONCE_NOTE =
 
 interface PatchProgramBody {
   enabled?: unknown
+  autoGrant?: unknown
+  autoGrantAssetTypes?: unknown
+}
+
+/** 请求体得是个对象才谈得上「哪个字段来了」。`null` / 数字 / 数组一律不算 */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
 /**
- * 停用 / 启用一个采集程序（spec §11 缺口 4）。
+ * PATCH 采集程序：**两个家族，一次只能改一个**。
+ *
+ * ```
+ * { enabled: boolean }                                     停用 / 启用
+ * { autoGrant: boolean, autoGrantAssetTypes?: string[]|null }  开关自动授权
+ * ```
+ *
+ * ## 为什么是「二选一」而不是「都可选、发什么改什么」
+ *
+ * 两个家族各自有一条独立的审计动作（`enable_program` / `disable_program` 与
+ * `set_program_auto_grant`），而审计的对象是**一次操作**。允许一个请求同时改两样，
+ * 就得在一次请求里写两条审计（于是「谁在什么时候做了什么」变成要拼两行才读得全），
+ * 或者合成一条含糊的「改了程序设置」——那一列是审计页的筛选条件，含糊等于筛不出来。
+ *
+ * 都不给同样是 400（`invalid_patch`）而不是「什么都不改返回 200」：一个空 PATCH
+ * 多半是前端漏发了字段，回 200 会让界面显示「已保存」，而库里一个字节都没变。
  *
  * ## 停用之后，它已有的授权怎么办：保留
  *
@@ -335,6 +362,8 @@ interface PatchProgramBody {
  * `auth/service.ts` 的登录校验——那里只挡「拿凭据换令牌」，而**已经签发出去的
  * 访问令牌在停用之后仍然有效到自然过期**。只挡登录，等于「停用」这个按钮在
  * 最长一个令牌生命周期内什么都没做。
+ *
+ * **关掉自动授权同理不收回已有授权**，见 `patchAutoGrant`。
  */
 export async function patchProgram(req: Request, ctx: RouteCtx): Promise<Response> {
   const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
@@ -343,7 +372,36 @@ export async function patchProgram(req: Request, ctx: RouteCtx): Promise<Respons
   const id = ctx.params.id!
   const body = await readJson<PatchProgramBody>(req)
   if (body === null) return json(400, { error: 'invalid_json' })
-  // 只认真正的布尔值。`"false"` / `0` / `undefined` 一律 400——把它们各自
+
+  // 家族按**字段出现与否**分，不按值合不合法分：`{ enabled: 0 }` 是「想改 enabled
+  // 但值填错了」，报 invalid_enabled 才说得清；判成「enabled 家族没出现」会让它
+  // 掉进 invalid_patch，管理员读到「二选一」而他明明只选了一个
+  const raw = isPlainObject(body) ? body : {}
+  const wantsEnabled = Object.hasOwn(raw, 'enabled')
+  const wantsAutoGrant =
+    Object.hasOwn(raw, 'autoGrant') || Object.hasOwn(raw, 'autoGrantAssetTypes')
+  if (wantsEnabled === wantsAutoGrant) {
+    return json(400, {
+      error: 'invalid_patch',
+      hint:
+        '一次只能改一件事：要么 { enabled }（停用/启用），' +
+        '要么 { autoGrant, autoGrantAssetTypes? }（自动授权）。两个都给或都不给都不行',
+    })
+  }
+
+  return wantsEnabled
+    ? patchEnabled(ctx, auth.identity, id, body)
+    : patchAutoGrant(ctx, auth.identity, id, body)
+}
+
+/** 停用 / 启用。语义与理由见 `patchProgram` 的文档 */
+async function patchEnabled(
+  ctx: RouteCtx,
+  identity: AdminIdentity,
+  id: string,
+  body: PatchProgramBody,
+): Promise<Response> {
+  // 只认真正的布尔值。`"false"` / `0` / `null` 一律 400——把它们各自
   // 折成某一侧，就会出现「点了停用、程序还在取数据」而且没有任何报错
   if (typeof body.enabled !== 'boolean') {
     return json(400, { error: 'invalid_enabled', hint: 'enabled 必须是 true 或 false' })
@@ -357,7 +415,7 @@ export async function patchProgram(req: Request, ctx: RouteCtx): Promise<Respons
   // find 到 setEnabled 之间被别人删掉了。不能当成改成功
   if (!changed) return json(404, { error: 'program_not_found' })
 
-  await recordAdminWrite(ctx, auth.identity, {
+  await recordAdminWrite(ctx, identity, {
     action: enabled ? AUDIT_ACTION.enableProgram : AUDIT_ACTION.disableProgram,
     meetingId: null,
     target: id,
@@ -372,6 +430,108 @@ export async function patchProgram(req: Request, ctx: RouteCtx): Promise<Respons
   // 回显请求体等于让界面显示「我以为写进去的东西」
   const after = await ctx.deps.programs.find(id)
   return json(200, after ?? { id, enabled })
+}
+
+/**
+ * 自动授权范围的解析与校验。返回 `Response` 表示这份请求体不合法，由调用方直接返回。
+ *
+ * 三态里只剩两态：`null`（不额外限制）与非空数组（白名单）。
+ *
+ *   - **省略 = `null`**。这一点与逐会议授权（`parseAssetTypes`）**故意不同**：
+ *     那里省略是 400，因为那条 API 的三态里 `[]` 合法，少一个字段就分不出管理员
+ *     想要的是「不限制」还是「什么都不给」。这里 `[]` 根本不合法，只剩两态，
+ *     而「开自动授权、范围不限」是这个开关最常见的用法——逼前端每次带一个
+ *     `null` 只是让它多一个可以漏掉的字段
+ *   - **`[]` → 400**。「什么都不授权的自动授权」写出来的每一行都取不到任何东西，
+ *     还会因为「已有生效授权就跳过」永远挡住这场会议将来被正确地自动授权
+ *   - **认不出的资产键 → 400，附 `issues`**，不静默丢掉：丢掉之后管理员看到的是
+ *     一个比他填的更窄的白名单，而界面上不会有任何提示。这与 `normalizeAssetTypes`
+ *     在**规则**路径下「丢掉并把 issues 挂到规则上」的处理不冲突：那边 issues
+ *     在规则列表里看得见，这边是一次一次性的写请求，不当场说就再也没机会说
+ */
+function parseAutoGrantAssetTypes(v: unknown): { assetTypes: string[] | null } | Response {
+  if (v === undefined || v === null) return { assetTypes: null }
+
+  const norm = normalizeAssetTypes(v)
+  if (norm.issues.length > 0) {
+    return json(400, {
+      error: 'invalid_auto_grant_asset_types',
+      hint: 'autoGrantAssetTypes 要么不填 / 填 null（不额外限制），要么是一个非空的资产键数组',
+      issues: norm.issues,
+    })
+  }
+  if (norm.keys.length === 0) {
+    return json(400, {
+      error: 'invalid_auto_grant_asset_types',
+      hint:
+        '空数组不行：「什么都不授权的自动授权」写出来的每一行授权都取不到任何东西，' +
+        '而且会挡住这场会议日后被正确地自动授权。不想限制范围就不填，或者填 null',
+    })
+  }
+  // 存**规范化之后**的键：`['*']` 在这里已经展开成八类，重复项也去掉了。
+  // 原样存的话，库里那一列就成了「一段还没解释过的文本」，而它随后会被原样
+  // 抄进 meeting_grants.asset_types——同一个值在两张表里各解释一遍，早晚分叉
+  return { assetTypes: norm.keys }
+}
+
+/**
+ * 开关程序级自动授权，并设定自动写出去的授权行的资产范围（方案 2）。
+ *
+ * ## 关掉开关**不收回**已有授权
+ *
+ * 与停用是同一条理由：可逆动作不该带不可逆后果。自动授权写出去的是**真的授权行**，
+ * 与管理员一场一场点出来的那些在 `meeting_grants` 里没有任何区别（区别只在审计里
+ * 那条 `auto_grant_meeting` 记着是系统代点的）。关掉开关时把它们一并撤掉，等于让
+ * 一次「先别自动加新的了」变成一次几十上百场的批量撤销，而撤销是不可逆的。
+ * 要收回请去会议记录页批量收回——那条路上管理员看得见自己要撤的是哪些。
+ *
+ * ## 改范围只对**之后**写出去的授权生效
+ *
+ * 同理：已经写出去的授权行一个字都不改。把范围一收窄就顺手去改历史授权行，
+ * 等于一次没人点过的批量收窄，而且它会把「当时授权的是什么范围」从库里抹掉。
+ */
+async function patchAutoGrant(
+  ctx: RouteCtx,
+  identity: AdminIdentity,
+  id: string,
+  body: PatchProgramBody,
+): Promise<Response> {
+  // 与 enabled 同一个口径：只认真正的布尔。`"true"` / `1` 折成某一侧的后果在这里
+  // 更重——折错的那一侧会替这个程序往授权表里写一批没人点过的授权行
+  if (typeof body.autoGrant !== 'boolean') {
+    return json(400, { error: 'invalid_auto_grant', hint: 'autoGrant 必须是 true 或 false' })
+  }
+  const parsed = parseAutoGrantAssetTypes(body.autoGrantAssetTypes)
+  if (parsed instanceof Response) return parsed
+
+  const before = await ctx.deps.programs.find(id)
+  if (before === null) return json(404, { error: 'program_not_found' })
+
+  const changed = await ctx.deps.programs.setAutoGrant(id, {
+    enabled: body.autoGrant,
+    assetTypes: parsed.assetTypes,
+  })
+  // find 到 setAutoGrant 之间被别人删掉了。不能当成改成功
+  if (!changed) return json(404, { error: 'program_not_found' })
+
+  const scope =
+    parsed.assetTypes === null ? '不限制（以采集权限规则的判定为准）' : parsed.assetTypes.join('、')
+  await recordAdminWrite(ctx, identity, {
+    action: AUDIT_ACTION.setProgramAutoGrant,
+    meetingId: null,
+    target: id,
+    subMeetingId: '',
+    // 第一行（也是唯一一行）必须同时说清开/关**和**范围：只写「开了自动授权」的话，
+    // 事后没人说得清那一批系统代点的授权当时是按什么范围写出去的
+    detail: body.autoGrant
+      ? `开启采集程序 ${before.name} 的自动授权，资产范围：${scope}`
+      : `关闭采集程序 ${before.name} 的自动授权（资产范围仍记为：${scope}）。` +
+        `已经自动授权出去的行一条都不收回——关开关是可逆动作，要收回请去会议记录页批量收回`,
+  })
+
+  // 回显写后重读的真值，理由同 patchEnabled
+  const after = await ctx.deps.programs.find(id)
+  return json(200, after ?? { id, autoGrant: body.autoGrant, autoGrantAssetTypes: parsed.assetTypes })
 }
 
 /**

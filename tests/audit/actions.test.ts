@@ -41,7 +41,10 @@ import {
  * - `src/audit/recorder.ts`：网关侧三个
  * - `src/http/handlers/console/auth.ts`：账号四个（三个来自阶段 5 · A8，
  *   `change_admin_role` 是补上「角色只能建号时定」那个洞时加的）
- * - `src/http/handlers/console/grants.ts`：程序与授权八个（后三个 A8 新加）
+ * - `src/http/handlers/console/grants.ts`：程序与授权九个（`set_program_auto_grant`
+ *   是方案 2 新加的那一个）
+ * - `src/worker/auto-grant.ts`：`auto_grant_meeting`——**唯一一个写侧不在 handler 里
+ *   的动作**（它由定时任务五写，操作者是 system）
  * - `src/http/handlers/console/rules.ts`：规则四个
  * - `src/http/handlers/console/storage.ts`：存储六个（含 `extend_retention`）
  * - `src/http/handlers/console/jobs.ts`：`run_job`
@@ -62,11 +65,15 @@ const WRITTEN_ACTIONS = [
   'enable_program',
   'disable_program',
   'rotate_program_secret',
+  // 程序级自动授权的开关（方案 2）
+  'set_program_auto_grant',
   // 逐会议授权与人工改写
   'grant_meeting',
   'revoke_grant',
   'put_override',
   'revoke_override',
+  // 自动授权轮代人做的那一次授权（写侧在 src/worker/auto-grant.ts，不是 handler）
+  'auto_grant_meeting',
   // 自动规则
   'rule_create',
   'rule_update',

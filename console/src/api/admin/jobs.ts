@@ -25,7 +25,7 @@
  * 2. **`status` 同理**（后端 `store/jobs.ts` 的 `JobRunRecord.status` 自己就是
  *    `string`，理由与 `store/audit.ts` 对 `decision` 的口径相同）。
  * 3. **`summary` 是 `unknown`**。它是 `job_runs.summary` 这个 JSON 列的回读，
- *    四个任务各写各的形状（`{newlyArchived, failed, …}` / `{purged, paused, …}`,
+ *    每个任务各写各的形状（`{newlyArchived, failed, …}` / `{purged, paused, …}`,
  *    见 `src/worker/scheduler.ts` 的 `createJobRunners`）。在这里给它一个联合类型
  *    就是把 worker 的内部形状钉进前端契约，加一个字段两边都要改。
  */
@@ -63,7 +63,7 @@ export interface JobRun {
   error: string | null
 }
 
-/** 四个内置任务之一（`JOB_CATALOG`，`src/store/jobs.ts`）。 */
+/** 五个内置任务之一（`JOB_CATALOG`，`src/store/jobs.ts`）。 */
 export interface JobItem {
   /** fetch_recordings / archive_nas / cleanup_expired / refresh_inventory */
   name: string
@@ -109,7 +109,7 @@ export interface JobFailure {
   attempts: number
   maxAttempts: number
   /**
-   * 重试次数已经到阈值。**含义是"该找人了"，不是"系统放弃了"**——四个任务的
+   * 重试次数已经到阈值。**含义是"该找人了"，不是"系统放弃了"**——每个任务的
    * 重试都由各自的枚举源结构性地驱动，没有一个会因为这个数字停下来。
    */
   escalated: boolean

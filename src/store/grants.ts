@@ -112,6 +112,26 @@ export interface GrantsStore {
   /** 一批会议当前生效的改写，只返回真有改写的那些（没有的会议不占位）。
    *  影响预览（§5.5）要把改写过的会议排除在「会被改变」之外，一场一场查就是 N+1 */
   listActiveOverridesForMeetings(keys: MeetingKey[]): Promise<MeetingOverride[]>
+
+  /**
+   * 这个程序**曾经被人工撤销过**授权的会议（`revoked_at <> 0`，去重）。
+   *
+   * 自动授权（方案 2）的第二条规矩：**人工撤销过的会议不再自动补回**。管理员撤销
+   * 一条授权是一次明确的决定，而自动授权是一个开着的开关——开关不该在下一轮把人的
+   * 决定覆盖掉。没有这条查询的话，撤销在界面上生效几分钟，下一轮自动授权原样写回来，
+   * 管理员再撤一次，如此往复，而两边都不报错。
+   *
+   * 判据是「**有过**撤销行」，不是「当前没有生效授权」：撤销之后又被人工重新授权、
+   * 后来那条也撤了的会议，撤销行有两条，照样算撤销过。同理，撤销之后现在又有生效
+   * 授权的会议也会出现在这个集合里——那不要紧，自动授权轮在这一步之前已经因为
+   * 「已有生效授权」跳过它了。**宁可多返回一些**：多返回的后果是少自动授权一场
+   * （人可以去点），少返回的后果是把人撤掉的授权自动加回去。
+   *
+   * 撤销行是**永久历史**（`revoke` 是软删除，从不删行，见本文件的三条不变量），
+   * 所以这个集合只增不减。哪天真要「让某场会议重新参与自动授权」，路径是人工
+   * 重新授权一次，不是清历史。
+   */
+  listRevokedMeetingKeysForProgram(programId: string): Promise<MeetingKey[]>
 }
 
 // ── 内部工具 ────────────────────────────────────────────────────────────
@@ -486,6 +506,18 @@ export function createGrantsStore(pool: Pool): GrantsStore {
         [meetingId, subMeetingId],
       )
       return rows.map(mapOverride)
+    },
+
+    async listRevokedMeetingKeysForProgram(programId) {
+      // DISTINCT：同一场会议可以有好几条撤销行（授权→撤销→再授权→再撤销），
+      // 这里回答的是「有没有撤过」，不是「撤过几次」
+      const [rows] = await pool.execute<GrantRow[]>(
+        `SELECT DISTINCT meeting_id, sub_meeting_id FROM meeting_grants
+          WHERE program_id = ? AND revoked_at <> 0
+          ORDER BY meeting_id, sub_meeting_id`,
+        [programId],
+      )
+      return rows.map((r) => ({ meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id }))
     },
 
     async listActiveOverridesForMeetings(keys) {

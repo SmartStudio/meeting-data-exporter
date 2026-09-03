@@ -43,11 +43,15 @@ export function ProgramCard({
           {standing !== 'active' && (
             <Pill tone={standing === 'disabled' ? 'neutral' : 'warn'}>{STANDING_LABEL[standing]}</Pill>
           )}
+          {/* 自动授权开着 = 会有一个任务替人往这一行上加授权。品牌蓝按设计系统
+              §2.2 的含义就是"数据可被取走"，这里正是那件事。关着的时候不挂徽标：
+              那是默认状态，说出来只会把真正需要先看到的两个徽标挤掉。 */}
+          {program.autoGrant && <Pill tone="brand">自动授权</Pill>}
         </div>
         <code className={styles.id}>{program.id}</code>
       </td>
 
-      <ReachCell programId={program.id} standing={standing} res={res} />
+      <ReachCell programId={program.id} standing={standing} autoGrant={program.autoGrant} res={res} />
       <BlockedCell res={res} />
 
       <td data-label="操作者身份">

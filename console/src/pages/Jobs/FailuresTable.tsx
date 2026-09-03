@@ -20,7 +20,7 @@ import styles from './Jobs.module.css'
  *
  * 原型里有一个（`gate-console.html` 的 `data-retry`），但后端只有一条写端点
  * （`POST /api/v1/admin/jobs/:name/run`），**没有"重试这一条失败项"这个动作**。
- * 四个任务的重试是由各自的枚举源结构性驱动的：那一条失败项下一轮照样会被捞起来
+ * 每个任务的重试都是由各自的枚举源结构性驱动的：那一条失败项下一轮照样会被捞起来
  * 重试，不需要也没法单独点。把整个任务的「立即运行」伪装成行内的「重试」，
  * 点下去实际跑的是一整轮——那是一个名字和行为对不上的按钮。
  *
@@ -100,7 +100,7 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
                 <td className={styles.nowrap} data-label="已自动重试">
                   {attemptsText(f)}
                   {f.escalated && (
-                    // 到上限的含义是**该找人了**，不是"系统放弃了"：四个任务的
+                    // 到上限的含义是**该找人了**，不是"系统放弃了"：每个任务的
                     // 重试都由各自的枚举源驱动，没有一个会因为这个数字停下来。
                     <span className={styles.escalated}>已到上限 · 需要人工介入</span>
                   )}

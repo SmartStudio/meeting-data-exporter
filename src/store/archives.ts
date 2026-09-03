@@ -218,6 +218,25 @@ export interface ArchivesStore {
   listMeetingsWithCompletedAssets(
     keys: readonly { meetingId: string; subMeetingId: string }[],
   ): Promise<ReadonlySet<string>>
+  /** 「本地文件还在」的**全量**枚举源：`local_purged_at IS NULL` 的归档行 ∪
+   *  有 `status='completed'` 资产的会议，去重，**一条 SQL**。
+   *
+   *  与 `listMeetingArchives` / `listMeetingsWithCompletedAssets` 的分工：那两个是
+   *  「给我这批会议的情况」（调用方已经有一份会议清单，比如某程序的授权行）；
+   *  这一个是「哪些会议的文件还在」——自动授权轮（方案 2）没有现成的清单可问，
+   *  它的候选源就是这个集合本身。
+   *
+   *  两个来源缺一不可，与 spec §1.3 第二个「与」的判据逐字一致（见 worker/visibility.ts
+   *  的文件头第二节）：还没归档过、但本地已经有下载完成资产的会议，文件确实在，
+   *  外部程序此刻真取得到；只按归档行枚举会把它们整批漏掉，而那正是「每天新进来的
+   *  会议」最常见的形态——它们恰恰是自动授权要覆盖的那一批。
+   *
+   *  `UNION` 而不是 `UNION ALL`：同一场会议两边都有是常态（归档过、本地也还有资产），
+   *  不去重的话调用方会对同一场会议判两遍、审计里出现两条一模一样的自动授权记录。
+   *
+   *  已清理的会议（`local_purged_at` 非空）**不在其中**——除非它同时还有 completed
+   *  资产，那说明清理之后又下过新东西，文件确实又在了。 */
+  listMeetingKeysWithLocalFiles(): Promise<{ meetingId: string; subMeetingId: string }[]>
   extendRetention(meetingId: string, subMeetingId: string, addDays: number, now: number): Promise<void>
   /** Task 8 用：查全部未清理的会议归档（local_purged_at IS NULL），并用 archived_at
    *  做一次廉价的 SQL 侧预过滤（archived_at <= now 是"真到期"的必要非充分条件，因为
@@ -552,6 +571,20 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
         params,
       )
       return new Set(rows.map((r) => archiveStateKey(r.meeting_id, r.sub_meeting_id)))
+    },
+
+    async listMeetingKeysWithLocalFiles() {
+      // 一条 SQL 而不是两条再在内存里合：两条查询之间有一个窗口，归档轮正好在那一刻
+      // 把某场会议的资产搬完并写上 local_purged_at 的话，它会同时从两边漏掉
+      const [rows] = await pool.execute<MeetingKeyRow[]>(
+        `SELECT meeting_id, sub_meeting_id FROM meeting_archives WHERE local_purged_at IS NULL
+          UNION
+         SELECT meeting_id, sub_meeting_id FROM meeting_assets WHERE status = 'completed'
+          ORDER BY meeting_id, sub_meeting_id`,
+      )
+      // 顺序稳定：自动授权轮按它逐场写授权行与审计，顺序跟着执行计划变的话，
+      // 同一批会议在两次运行里的审计顺序会不一样，对不上账
+      return rows.map((r) => ({ meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id }))
     },
 
     async extendRetention(meetingId, subMeetingId, addDays, now) {

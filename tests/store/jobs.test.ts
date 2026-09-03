@@ -36,17 +36,19 @@ async function withStore(fn: (store: JobsStore, pool: Pool) => Promise<void>): P
 
 // ── 一、任务目录 ────────────────────────────────────────────────
 
-test('JOB_CATALOG 就是 spec §4.8 的四个任务，频率逐条对上', () => {
+test('JOB_CATALOG 就是 spec §4.8 的五个任务，频率逐条对上', () => {
   expect(JOB_CATALOG.map((j) => j.name)).toEqual([
     'fetch_recordings',
     'archive_nas',
     'cleanup_expired',
     'refresh_inventory',
+    'auto_grant',
   ])
   expect(jobSpec('fetch_recordings')?.schedule).toEqual({ kind: 'everyMinutes', minutes: 15 })
   expect(jobSpec('archive_nas')?.schedule).toEqual({ kind: 'hourly', minute: 0 })
   expect(jobSpec('cleanup_expired')?.schedule).toEqual({ kind: 'daily', hour: 3, minute: 0 })
   expect(jobSpec('refresh_inventory')?.schedule).toEqual({ kind: 'everyMinutes', minutes: 5 })
+  expect(jobSpec('auto_grant')?.schedule).toEqual({ kind: 'everyMinutes', minutes: 5 })
 })
 
 test('认不出来的任务名返回 null，不回退到第一个任务', () => {

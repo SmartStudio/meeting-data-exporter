@@ -312,6 +312,38 @@ test('一行审计带齐 spec §4.10 的五个字段', async () => {
   expect(row.result).toMatchObject({ decision: 'allow', kind: 'allow', reason: null })
 })
 
+test('系统操作者 auto_grant 显示成「系统 · 自动授权」，不是笼统的「系统」', async () => {
+  // 将来还会有别的系统操作者（到期清理、归档）。全叫「系统」会让一批本来分得开的
+  // 记录读成同一个人干的，而「哪个系统动作改了这条授权」正是这一页要回答的问题
+  const { ctx } = fakeCtx({
+    rows: [
+      record({
+        actorType: 'system',
+        actorId: 'auto_grant',
+        action: 'auto_grant_meeting',
+      }),
+    ],
+  })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = (await res.json()) as { rows: Array<{ actor: Record<string, unknown>; actionLabel: string | null }> }
+  expect(body.rows[0]?.actor).toEqual({
+    kind: 'sys',
+    type: 'system',
+    id: 'auto_grant',
+    name: '系统 · 自动授权',
+  })
+  // 动作也读得懂——两件事各由一张表回答，缺一个界面上就有一半是英文
+  expect(body.rows[0]?.actionLabel).toBe('系统按规则自动把一场会议授权给采集程序')
+})
+
+test('没登记的系统 actor_id 留 null，不编一个名字', async () => {
+  // 编一个名字等于假装登记过，与 auditActionLabel 对没登记的动作回 null 同一个口径
+  const { ctx } = fakeCtx({ rows: [record({ actorType: 'system', actorId: 'some_future_job' })] })
+  const res = await listAudit(req('/api/v1/admin/audit'), ctx)
+  const body = (await res.json()) as { rows: Array<{ actor: { name: string | null } }> }
+  expect(body.rows[0]?.actor.name).toBeNull()
+})
+
 test('认不出的 actor_type 走 unknown 色块，且原值照带', async () => {
   const { ctx } = fakeCtx({ rows: [record({ actorType: 'ghost', actorId: 'x' })] })
   const res = await listAudit(req('/api/v1/admin/audit'), ctx)

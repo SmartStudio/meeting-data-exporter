@@ -1,11 +1,11 @@
 /**
- * 定时任务调度器（阶段 4 · T11，A4）—— spec.md §4.8 的四个任务。
+ * 定时任务调度器（阶段 4 · T11，A4）—— spec.md §4.8 的五个任务。
  *
  * ╔══════════════════════════════════════════════════════════════════════════╗
  * ║ **调度器只属于 worker 侧，绝不许装进 `src/index.ts` 的网关进程。**        ║
  * ║                                                                          ║
  * ║ 网关是**多实例**的（同一份镜像跑 N 份，前面挂负载均衡）。把调度器塞进去， ║
- * ║ 四个任务就会各跑 N 份：归档流水线 N 个实例同时往同一个 NAS 目录搬同一批   ║
+ * ║ 五个任务就会各跑 N 份：归档流水线 N 个实例同时往同一个 NAS 目录搬同一批   ║
  * ║ 文件，到期清理 N 个实例同时对同一批本地文件执行**不可逆删除**。           ║
  * ║ 这不是"多花点 CPU"，是数据损坏。                                         ║
  * ║                                                                          ║
@@ -111,6 +111,7 @@ import { createGrantsStore } from '../store/grants'
 import { createProgramsStore } from '../store/programs'
 import { createContentsStore } from '../store/contents'
 import { createConsoleMeetingsStore } from '../store/console-meetings'
+import { createAuditStore } from '../store/audit'
 import { createStsStore } from '../store/sts'
 import { createMeetingCacheStore } from '../store/meetings'
 import { createStsManager } from '../sts/manager'
@@ -123,6 +124,7 @@ import { createCatalog } from '../catalog/index'
 import { archivePendingMeetings, type ArchiveDeps, type ArchiveRoundOutcome } from './archive'
 import { executeCleanup, type CleanupExecuted } from './retention'
 import { computeProgramInventory, type ProgramInventory, type VisibilityDeps } from './visibility'
+import { runAutoGrantRound, type AutoGrantDeps, type AutoGrantRound } from './auto-grant'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore, type DeadAsset } from './store-mysql'
 import {
@@ -187,7 +189,7 @@ export interface JobRunContext {
 export type JobRunner = (ctx: JobRunContext) => Promise<unknown>
 
 /**
- * 四个任务体各自需要的东西。**全部是注入的函数，不是 store**：
+ * 五个任务体各自需要的东西。**全部是注入的函数，不是 store**：
  * 与 `ArchiveDeps.getMeeting` / `listArchiveRules` 同一个先例——调度这一层
  * 不该够得着它用不到的表，读代码的人也不必去猜某个任务到底会碰什么。
  */
@@ -220,6 +222,19 @@ export interface JobBodyDeps {
   listPrograms: () => Promise<readonly ServiceProgram[]>
   /** 任务四：`computeProgramInventory`。**写摘要不写缓存**（计划 E-e） */
   inventory: (programId: string, now: number) => Promise<ProgramInventory>
+  /**
+   * 任务五：`auto-grant.ts` 的 `runAutoGrantRound`（方案 2）。
+   *
+   * **这是五个任务体里唯一会往授权表写行的那一个**，所以它与任务四刻意分开：
+   * 任务四只读（算清单、写摘要），把两件事塞进同一格意味着「刷新一下清单」这个
+   * 听起来无害的动作会顺手改变谁能取到什么。
+   *
+   * 收**冻结的 `ctx.now`** 而不是活时钟：一轮自动授权是秒级的，而 `now` 会同时进
+   * 授权行的 `granted_at` 与审计的 `occurred_at`——同一轮里这两个时间戳必须对得上，
+   * 不然事后按时间对账时，一场会议的授权行与它的审计记录差着几秒对不上号。
+   * 失败项由任务体那边用 `ctx.fail` 落（照 `refresh_inventory` 的做法）。
+   */
+  autoGrantRound: (now: number) => Promise<AutoGrantRound>
 }
 
 function errText(err: unknown): string {
@@ -293,7 +308,7 @@ async function recordDeadAssets(ctx: JobRunContext, dead: readonly DeadAsset[]):
 }
 
 /**
- * spec §4.8 的四个任务体。
+ * spec §4.8 的五个任务体。
  *
  * 任务四为什么不落缓存表（计划 E-e 已裁定）：开缓存表意味着「控制台显示的可取清单」
  * 与「网关 `AccessGate` 的实时判定」变成**两份真相**，而漂移的方向恰好是 §1.3 要防的
@@ -405,6 +420,26 @@ export function createJobRunners(deps: JobBodyDeps): Record<JobName, JobRunner> 
       }
       return { programs: rows, fetchable, blocked, failedPrograms }
     },
+
+    async auto_grant(ctx) {
+      // 判定、候选枚举、逐场写授权与审计全在 `auto-grant.ts` 里。这一格只做两件事：
+      // 把「某个程序整个算不出来」逐条落成失败项，再把摘要**显式拼出来**。
+      const r = await deps.autoGrantRound(ctx.now)
+      // 一个程序算不出来不该让整轮 failed（另外几个程序写出去的授权仍然有效），
+      // 但必须留痕——与任务四同一条处理，只是那边在循环里落、这边收完再落
+      for (const f of r.failures) {
+        await ctx.fail({ target: f.programId, targetLabel: f.name, reason: f.reason })
+      }
+      // **不 `return r`**：`failures` 是给上面那个循环用的料，不属于摘要。
+      // 原样丢进 job_runs.summary 会让每一轮的运行记录里多出一份与失败项表重复的
+      // 错误全文，而 sparkline 那一列本来只该是几个数
+      return {
+        programs: r.programs,
+        granted: r.granted,
+        skippedRevoked: r.skippedRevoked,
+        failedPrograms: r.failedPrograms,
+      }
+    },
   }
 }
 
@@ -471,6 +506,22 @@ export const JOB_CHAINS: readonly JobChain[] = [
     when: (s) => completedOf(s) > 0,
     why: (s) => `这一轮有 ${completedOf(s)} 个资产下载完成，不等整点`,
   },
+  // 自动授权（方案 2）接在**两条**产出新会议的路上，理由与上面那条同源：
+  // 一场刚拉下来的会议要等最多 5 分钟才被授权出去，而对接方那边看到的是
+  // 「新会议没进来」。两条都要，因为「本地文件还在」这个候选判据有两个来源
+  // （还没归档但资产下完了 / 已经归档了），少接一条就有一批会议只能等兜底那一片。
+  {
+    after: 'fetch_recordings',
+    run: 'auto_grant',
+    when: (s) => completedOf(s) > 0,
+    why: (s) => `这一轮有 ${completedOf(s)} 个资产下载完成，顺手把该授权的授权出去`,
+  },
+  {
+    after: 'archive_nas',
+    run: 'auto_grant',
+    when: (s) => newlyArchivedOf(s) > 0,
+    why: (s) => `这一轮新归档了 ${newlyArchivedOf(s)} 场会议，顺手把该授权的授权出去`,
+  },
 ]
 
 /**
@@ -481,8 +532,24 @@ export const JOB_CHAINS: readonly JobChain[] = [
  * 记成 failed。
  */
 function completedOf(s: unknown): number {
+  return numberField(s, 'completed')
+}
+
+/**
+ * 同上，取归档轮的 `newlyArchived`（键名照 `archive_nas` 运行体的 return）。
+ *
+ * 另写一个取数函数而不是给 `completedOf` 加一个参数：这两个键各自钉着一个具体的
+ * 任务体的返回形状，取错了的表现是**接续静默不触发**（判成 0 就是不接），
+ * 而那种失效只有在有人盯着运行记录数轮次时才看得出来。
+ */
+function newlyArchivedOf(s: unknown): number {
+  return numberField(s, 'newlyArchived')
+}
+
+/** 摘要里取一个数字字段。取不到判成 0，理由见 `completedOf` */
+function numberField(s: unknown, key: string): number {
   if (typeof s !== 'object' || s === null) return 0
-  const v = (s as { completed?: unknown }).completed
+  const v = (s as Record<string, unknown>)[key]
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
@@ -591,7 +658,7 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
     })()
 
     // 收尾自己再抛出（数据库挂了）时不能变成未处理的 Promise 拒绝——那会在
-    // Bun/Node 上直接把进程带走，而调度器进程死掉意味着四个任务全停。
+    // Bun/Node 上直接把进程带走，而调度器进程死掉意味着五个任务全停。
     inFlight.set(
       name,
       done.catch((err: unknown) => {
@@ -693,7 +760,7 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
       if (timer !== null) return
       timer = setInterval(() => {
         // tick 自己抛出（数据库连不上）时**不许让进程死掉**：调度器进程一死，
-        // 四个任务全停，而数据库通常几秒后就回来了。记一行，下一个 tick 重试。
+        // 五个任务全停，而数据库通常几秒后就回来了。记一行，下一个 tick 重试。
         void tick().catch((err: unknown) => {
           log(`scheduler: tick 失败：${errText(err)}`)
         })
@@ -722,7 +789,7 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
 //
 // 两个进程分工：
 //   bun run worker      一次性补跑（`--from/--to` 指定时间窗），运维手动用
-//   bun run scheduler   常驻，spec §4.8 的四个任务
+//   bun run scheduler   常驻，spec §4.8 的五个任务
 //
 // **下载执行体（runExecutor）在任务一里**（阶段 4 · T14）。任务一 = discover + 入队
 // + 执行下载队列，共用 `./index.ts` 的 `runFetchRound`，与 `bun run worker` 同一条
@@ -777,9 +844,9 @@ function envInt(env: Record<string, string | undefined>, key: string, fallback: 
 const ARCHIVE_SPEC = JOB_CATALOG.find((j) => j.name === 'archive_nas')!
 
 /**
- * 任务一同时下几个资产。**比一次性 worker 的默认值（4）低**，理由是池要分给四个任务。
+ * 任务一同时下几个资产。**比一次性 worker 的默认值（4）低**，理由是池要分给五个任务。
  *
- * 一次性 worker 独占那个连接池，10 条连接全归它一轮用；调度器不是——四个任务体在
+ * 一次性 worker 独占那个连接池，10 条连接全归它一轮用；调度器不是——五个任务体在
  * 同一个进程、同一个池上并发跑，任务一压着 `2 × 并发度` 条（claimNext 的事务连接 +
  * 同一执行体在途的那条 touchProgress，见 `poolQueueLimitFor`），另外三个任务各自
  * 还要一条。取 2 时稳态峰值 = 2 × 2 + 3 = 7 ≤ 10，留得下余量；取 4 就是 8 + 3 = 11，
@@ -916,6 +983,24 @@ async function main(): Promise<number> {
     }
 
     /**
+     * 任务五（方案 2）。**审计 store 在这里才第一次出现在调度器进程里**：
+     * 之前四个任务一条审计都不写（它们都是系统内部动作，痕迹在 `job_runs` 里），
+     * 而自动授权写的是**真的授权行**——那属于 spec §1.4 要求留痕的那一类，
+     * 而且是唯一一批「没有任何人点过」的授权，事后能不能说清全靠这条审计。
+     *
+     * 会议元数据与清单重算共用 `consoleMeetings.getMeetings`：两处对「查不到的
+     * 会议不要造空壳」这条约定的要求逐字相同，各接一个实现早晚会有一处偷懒填空壳。
+     */
+    const autoGrant: AutoGrantDeps = {
+      programs,
+      policy,
+      grants,
+      archives,
+      getMeetings: consoleMeetings.getMeetings,
+      audit: createAuditStore(pool),
+    }
+
+    /**
      * 任务一的一轮。**与 `bun run worker` 同一个 `runFetchRound`**（阶段 4 · T14）——
      * 发现走拉取规则栈（T12 / A7）、执行体的并发与租约、清单收尾全在那一份里，
      * 这边不另写一套下载循环。两个宿主的行为分叉过一次就再也对不齐了。
@@ -964,6 +1049,9 @@ async function main(): Promise<number> {
         cleanup: (at) => executeCleanup({ archives, localRoot: archiveRoot }, at, true),
         listPrograms: () => programs.list(),
         inventory: (programId, at) => computeProgramInventory(visibility, { programId, now: at }),
+        // 冻结的 `ctx.now`，不是活时钟：同一轮里授权行的 granted_at 与审计的
+        // occurred_at 必须是同一个数，否则事后按时间对账时两者对不上号
+        autoGrantRound: (at) => runAutoGrantRound(autoGrant, at),
       }),
     })
 

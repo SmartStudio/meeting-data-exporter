@@ -264,7 +264,7 @@ export function sparkSummaryText(runs: readonly JobRun[]): string {
 
 /**
  * `summary` 里各个键的中文。来源是 `src/worker/scheduler.ts` 的
- * `createJobRunners`——四个任务各自 return 的那个对象。
+ * `createJobRunners`——五个任务各自 return 的那个对象。
  *
  * **认不出的键原样显示**，不丢。后端加一个字段时界面上会出现一个英文键名，
  * 那是一个看得见的提醒；悄悄丢掉才是问题。
@@ -290,6 +290,11 @@ const SUMMARY_LABEL: Record<string, string> = {
   fetchable: '可采集',
   blocked: '被挡下',
   failedPrograms: '算不出的程序',
+  // auto_grant（`programs` / `failedPrograms` 与上一条共用）
+  candidates: '规则放行',
+  granted: '新授权',
+  // 「人工撤销过」是这一条的全部意思：人的决定压过开关，不会被自动补回来
+  skippedRevoked: '人工撤销过，跳过',
   // 多个任务共用
   failed: '失败',
   skipped: '跳过',
@@ -429,8 +434,8 @@ export function fetchStall(jobs: readonly JobItem[]): FetchStall | null {
   }
 }
 
-/** spec §4.8 的表把四个任务排成一、二、三、四——它们串起的是一整条链路。 */
-const CN_ORDINALS = ['一', '二', '三', '四']
+/** spec §4.8 的表把五个任务排成一到五——它们串起的是一整条链路。 */
+const CN_ORDINALS = ['一', '二', '三', '四', '五']
 
 export function jobOrdinal(index: number): string {
   return CN_ORDINALS[index] ?? String(index + 1)
@@ -441,7 +446,7 @@ export function jobOrdinal(index: number): string {
    ══════════════════════════════════════════════════════════════════ */
 
 /**
- * 四个内置任务各自在 `lastRun.summary` 里最该被单独摆出来的那一个键。
+ * 五个内置任务各自在 `lastRun.summary` 里最该被单独摆出来的那一个键。
  *
  * 不是"摘要里第一个数字"这种通用规则——那要求后端按重要性排列对象键，
  * 是一个没人保证过的隐含约定。这里按任务语义显式指定，键名与 `SUMMARY_LABEL`
@@ -452,6 +457,8 @@ const KEY_METRIC_FIELD: Record<string, string> = {
   archive_nas: 'newlyArchived',
   cleanup_expired: 'purged',
   refresh_inventory: 'fetchable',
+  // 「这一轮真的写进 meeting_grants 几条」——candidates 是分母，granted 才是发生的事
+  auto_grant: 'granted',
 }
 
 export interface KeyMetric {

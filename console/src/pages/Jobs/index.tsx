@@ -17,15 +17,15 @@ import styles from './Jobs.module.css'
 /**
  * 定时任务页（spec.md §4.8）。
  *
- * 它回答两个问题：**四个任务跑得怎么样**、**失败项在哪**。
+ * 它回答两个问题：**五个任务跑得怎么样**、**失败项在哪**。
  *
  * ## 「新建任务」按钮不在这里，而且是故意的（计划裁定 G-g）
  *
- * 原型里有这个按钮，点了弹一句「新建任务还没做——四个内置任务已经覆盖整条链路，
+ * 原型里有这个按钮，点了弹一句「新建任务还没做——内置任务已经覆盖整条链路，
  * 先不急着开放自定义」（`docs/console/prototype/gate-console.html:3934`）。
  * 这一轮的处置是**把它删掉**，不是把那句 toast 搬过来：
  *
- * `JOB_CATALOG`（`src/store/jobs.ts`）是代码里的四个常量、不是一张表。要支持
+ * `JOB_CATALOG`（`src/store/jobs.ts`）是代码里的五个常量、不是一张表。要支持
  * 自定义任务，得先回答"执行体从哪来"——那是一个新子系统，不是一个表单。留一个
  * 点了弹「还没做」的按钮，比没有这个按钮更差：它承诺了一件不存在的事。
  *
@@ -75,7 +75,7 @@ export default function JobsPage() {
       title="定时任务"
       // 第二句（「失败项不会静默丢弃，会一直留在下方等重试」）删了：它在下面
       // 那张表里逐行都写着——「已自动重试 2 / 5」就是同一件事的可核对版本
-      description="四个任务串起整条链路。"
+      description="五个任务串起整条链路。"
     >
       {res.state === 'loading' && <Loading />}
       {res.state === 'error' && <ErrorBox message={res.error.message} onRetry={retry} />}
@@ -87,8 +87,8 @@ export default function JobsPage() {
 function Loading() {
   return (
     <div className={styles.loading} data-testid="jobs-loading" role="status">
-      <p className={styles.loadingText}>正在读取四个任务的运行情况…</p>
-      {[0, 1, 2, 3].map((i) => (
+      <p className={styles.loadingText}>正在读取五个任务的运行情况…</p>
+      {[0, 1, 2, 3, 4].map((i) => (
         <div key={i} className={styles.loadingRow}>
           <Skeleton width="34%" />
           <Skeleton width="58%" size="sm" />

@@ -185,7 +185,7 @@ test('未登录返回 401，一次库都不查', async () => {
   expect(spy.listRunsCalls).toHaveLength(0)
 })
 
-test('四个任务全在，顺序与 spec §4.8 一致，频率是人话', async () => {
+test('五个任务全在，顺序与 spec §4.8 一致，频率是人话', async () => {
   const { ctx } = fakeCtx({})
   const body = (await (await listJobs(req('/api/v1/admin/jobs'), ctx)).json()) as JobsBody
   expect(body.jobs.map((j) => j.name)).toEqual(JOB_CATALOG.map((j) => j.name))
@@ -194,8 +194,11 @@ test('四个任务全在，顺序与 spec §4.8 一致，频率是人话', async
     '每小时整点',
     '每天 03:00',
     '每 5 分钟',
+    // 任务五「自动授权」，与任务四同频——它接在同一批新会议后面
+    '每 5 分钟',
   ])
   expect(body.jobs[0]?.label).toBe('拉取新录制')
+  expect(body.jobs[4]?.label).toBe('自动授权')
 })
 
 test('「下次运行」按时间片算，10:07 的下一个整点是 11:00', async () => {

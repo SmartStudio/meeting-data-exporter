@@ -61,6 +61,8 @@ function program(over: Partial<ServiceProgram> = {}): ServiceProgram {
     enabled: true,
     expiresAt: null,
     createdAt: 1600000000,
+    autoGrant: false,
+    autoGrantAssetTypes: null,
     ...over,
   }
 }

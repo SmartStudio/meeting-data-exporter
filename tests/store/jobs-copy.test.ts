@@ -66,7 +66,7 @@ test('原型模式的四个任务逐字等于 JOB_CATALOG —— 截图与视觉
 
 test('spec §4.8 那张表的「干什么」一列逐字等于 JOB_CATALOG', () => {
   const md = read(SPEC)
-  const ordinals = ['一', '二', '三', '四']
+  const ordinals = ['一', '二', '三', '四', '五']
   JOB_CATALOG.forEach((spec, i) => {
     const row = new RegExp(`^\\| ${ordinals[i]}、${spec.label} \\|([^|]*)\\|([^|]*)\\|`, 'm').exec(md)
     expect(row, `${SPEC} §4.8 里找不到「${ordinals[i]}、${spec.label}」那一行`).not.toBeNull()

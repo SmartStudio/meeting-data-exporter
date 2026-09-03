@@ -58,6 +58,9 @@ function program(over: Partial<ServiceProgram> = {}): ServiceProgram {
     enabled: true,
     expiresAt: null,
     createdAt: NOW - 100 * DAY,
+    // 自动授权默认关着、范围不限制——与 migrations/011 的列默认值一致
+    autoGrant: false,
+    autoGrantAssetTypes: null,
     ...over,
   }
 }
@@ -133,6 +136,8 @@ interface Rig {
   enabledCalls: Array<{ id: string; enabled: boolean }>
   /** programs.rotateSecret 收到的入参——新凭据的哈希在这里被截获（阶段 5 · A8） */
   rotateCalls: Array<{ id: string; secretHash: string }>
+  /** programs.setAutoGrant 收到的入参（方案 2）。**`[]` 一次都不该出现在这里** */
+  autoGrantCalls: Array<{ id: string; enabled: boolean; assetTypes: string[] | null }>
 }
 
 interface Fixture {
@@ -158,6 +163,7 @@ function rig(f: Fixture = {}): Rig {
   const created: Parameters<ProgramsStore['create']>[0][] = []
   const enabledCalls: Rig['enabledCalls'] = []
   const rotateCalls: Rig['rotateCalls'] = []
+  const autoGrantCalls: Rig['autoGrantCalls'] = []
 
   const has = (
     keys: readonly { meetingId: string; subMeetingId: string }[],
@@ -194,6 +200,15 @@ function rig(f: Fixture = {}): Rig {
     async rotateSecret(id, secretHash) {
       if (!(f.programs ?? []).some((p) => p.id === id)) return false
       rotateCalls.push({ id, secretHash })
+      return true
+    },
+    async setAutoGrant(id, input) {
+      const target = (f.programs ?? []).find((p) => p.id === id)
+      if (target === undefined) return false
+      // 原地改：handler 会写后重读一次，读到的必须是改过的值
+      target.autoGrant = input.enabled
+      target.autoGrantAssetTypes = input.assetTypes
+      autoGrantCalls.push({ id, ...input })
       return true
     },
   }
@@ -294,6 +309,7 @@ function rig(f: Fixture = {}): Rig {
     created,
     enabledCalls,
     rotateCalls,
+    autoGrantCalls,
   }
 }
 
@@ -333,6 +349,8 @@ test('listPrograms 返回程序列表，响应里不含任何凭据字段', asyn
     enabled: true,
     expiresAt: null,
     createdAt: NOW - 100 * DAY,
+    autoGrant: false,
+    autoGrantAssetTypes: null,
   })
   expect(JSON.stringify(body)).not.toContain('secret')
 })
@@ -1159,6 +1177,195 @@ test('patchProgram 停用不碰任何授权——停用可逆，连带删授权�
   await patchProgram(req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { enabled: false }), r.ctx)
   expect(r.writes.revoke).toEqual([])
   expect(r.writes.revokeOverride).toEqual([])
+})
+
+// ── PATCH 的自动授权家族（方案 2）──────────────────────────────
+
+test('patchProgram：两个家族同时出现 → 400 invalid_patch，一行都不写', async () => {
+  // 允许一次改两样，就得在一次请求里写两条审计（「谁做了什么」要拼两行才读得全），
+  // 或者合成一条含糊的「改了程序设置」——而那一列是审计页的筛选条件
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { enabled: true, autoGrant: true }),
+    r.ctx,
+  )
+  expect(res.status).toBe(400)
+  expect(await res.json()).toMatchObject({ error: 'invalid_patch' })
+  expect(r.enabledCalls).toEqual([])
+  expect(r.autoGrantCalls).toEqual([])
+  expect(r.audits).toEqual([])
+})
+
+test('patchProgram：两个家族都不出现 → 400 invalid_patch，不是「什么都不改的 200」', async () => {
+  // 空 PATCH 多半是前端漏发了字段。回 200 会让界面显示「已保存」，而库里一个字节都没变
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, {}), r.ctx)
+  expect(res.status).toBe(400)
+  expect(await res.json()).toMatchObject({ error: 'invalid_patch' })
+})
+
+test('patchProgram：autoGrant 必须是真布尔——"true" / 1 / 只发范围一律 400', async () => {
+  // 折错的那一侧会替这个程序往授权表里写一批没人点过的授权行
+  for (const body of [
+    { autoGrant: 'true' },
+    { autoGrant: 1 },
+    { autoGrant: null },
+    { autoGrantAssetTypes: ['video'] },
+  ]) {
+    const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+    const res = await patchProgram(req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, body), r.ctx)
+    expect({ body, status: res.status }).toEqual({ body, status: 400 })
+    expect(await res.json()).toMatchObject({ error: 'invalid_auto_grant' })
+    expect(r.autoGrantCalls).toEqual([])
+    expect(r.audits).toEqual([])
+  }
+})
+
+test('patchProgram：autoGrantAssetTypes 是空数组 → 400，绝不当成「不限制」', async () => {
+  // 「什么都不授权的自动授权」写出来的每一行都取不到任何东西，
+  // 而且会因为「已有生效授权就跳过」永远挡住这场会议日后被正确地自动授权
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { autoGrant: true, autoGrantAssetTypes: [] }),
+    r.ctx,
+  )
+  expect(res.status).toBe(400)
+  expect(await res.json()).toMatchObject({ error: 'invalid_auto_grant_asset_types' })
+  expect(r.autoGrantCalls).toEqual([])
+})
+
+test('patchProgram：认不出的资产键 → 400 且**附 issues**，不静默丢掉', async () => {
+  // 丢掉之后管理员看到的是一个比他填的更窄的白名单，而界面上不会有任何提示
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, {
+      autoGrant: true,
+      // 一个合法、一个是原型里的短名（计划 §3.4 D-c 明令不许进代码）
+      autoGrantAssetTypes: ['transcript', 'summary'],
+    }),
+    r.ctx,
+  )
+  expect(res.status).toBe(400)
+  const body = (await res.json()) as { error: string; issues: string[] }
+  expect(body.error).toBe('invalid_auto_grant_asset_types')
+  expect(body.issues).toHaveLength(1)
+  expect(body.issues[0]).toContain('summary')
+  expect(r.autoGrantCalls).toEqual([])
+})
+
+test('patchProgram：非数组的 autoGrantAssetTypes 同样 400 带 issues', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { autoGrant: true, autoGrantAssetTypes: 'video' }),
+    r.ctx,
+  )
+  expect(res.status).toBe(400)
+  const body = (await res.json()) as { error: string; issues?: string[] }
+  expect(body.error).toBe('invalid_auto_grant_asset_types')
+  expect(body.issues ?? []).not.toEqual([])
+})
+
+test('patchProgram 开启自动授权：写库、回显写后重读的真值、记 set_program_auto_grant', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, {
+      autoGrant: true,
+      autoGrantAssetTypes: ['ai_minutes', 'transcript'],
+    }),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  expect(r.autoGrantCalls).toEqual([
+    { id: PROGRAM, enabled: true, assetTypes: ['ai_minutes', 'transcript'] },
+  ])
+  // 回显的是重读的结果，不是请求体
+  expect((await res.json()) as Record<string, unknown>).toMatchObject({
+    id: PROGRAM,
+    autoGrant: true,
+    autoGrantAssetTypes: ['ai_minutes', 'transcript'],
+  })
+
+  expect(r.audits).toHaveLength(1)
+  expect(r.audits[0]).toMatchObject({
+    actorType: 'admin',
+    actorId: 'admin-1',
+    action: 'set_program_auto_grant',
+    assetId: PROGRAM,
+    decision: 'allow',
+    clientKind: 'console',
+  })
+  // 第一行必须同时说清开/关**和**范围：只写「开了自动授权」的话，事后没人说得清
+  // 那一批系统代点的授权当时是按什么范围写出去的
+  expect(r.audits[0]!.detail).toContain('开启')
+  expect(r.audits[0]!.detail).toContain('ai_minutes')
+  expect(r.audits[0]!.detail).toContain('transcript')
+})
+
+test('patchProgram：省略 autoGrantAssetTypes = 不额外限制（null），不是 400', async () => {
+  // 与逐会议授权的 assetTypes 故意不同：那边三态里 [] 合法，少一个字段就分不出
+  // 「不限制」与「什么都不给」；这边 [] 根本不合法，只剩两态
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { autoGrant: true }),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  expect(r.autoGrantCalls).toEqual([{ id: PROGRAM, enabled: true, assetTypes: null }])
+  expect(r.audits[0]!.detail).toContain('不限制')
+})
+
+test("patchProgram：['*'] 展开成八类之后存下去，库里那一列永远只有真实的资产键", async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { autoGrant: true, autoGrantAssetTypes: ['*'] }),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  const stored = r.autoGrantCalls[0]!.assetTypes!
+  expect(stored.length).toBeGreaterThan(1)
+  expect(stored).toContain('transcript')
+  expect(stored).not.toContain('*')
+})
+
+test('patchProgram 关闭自动授权：**不撤销任何授权**，审计里说得出这一条', async () => {
+  // 可逆动作不该带不可逆后果：关开关时把几十上百场一并撤掉，等于让一次
+  // 「先别自动加新的了」变成一次不可逆的批量撤销
+  const r = rig({
+    params: { id: PROGRAM },
+    programs: [program({ autoGrant: true, autoGrantAssetTypes: ['video'] })],
+    grants: [grant('m-1'), grant('m-2')],
+  })
+  const res = await patchProgram(
+    req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { autoGrant: false }),
+    r.ctx,
+  )
+  expect(res.status).toBe(200)
+  expect(r.writes.revoke).toEqual([])
+  expect(r.autoGrantCalls).toEqual([{ id: PROGRAM, enabled: false, assetTypes: null }])
+  expect(r.audits[0]).toMatchObject({ action: 'set_program_auto_grant' })
+  expect(r.audits[0]!.detail).toContain('不收回')
+})
+
+test('patchProgram：对不存在的程序改自动授权返回 404，一行都不写', async () => {
+  const r = rig({ params: { id: 'nope' }, programs: [program()] })
+  const res = await patchProgram(
+    req('PATCH', '/api/v1/admin/programs/nope', { autoGrant: true }),
+    r.ctx,
+  )
+  expect(res.status).toBe(404)
+  expect(await res.json()).toMatchObject({ error: 'program_not_found' })
+  expect(r.autoGrantCalls).toEqual([])
+  expect(r.audits).toEqual([])
+})
+
+test('patchProgram：未登录改自动授权返回 401，且一行都不写', async () => {
+  const r = rig({ params: { id: PROGRAM }, programs: [program()] })
+  const res = await patchProgram(
+    anon('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { autoGrant: true }),
+    r.ctx,
+  )
+  expect(res.status).toBe(401)
+  expect(r.autoGrantCalls).toEqual([])
 })
 
 // ── POST /api/v1/admin/programs/:id/rotate-secret（阶段 5 · A8）──────────

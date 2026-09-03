@@ -159,9 +159,11 @@ const ARCHIVED_WHY =
 
 const TRIAGE = { archiveFailed: 7, expiringIn7d: 3, awaitingGrant: 4, inProgress: 1, nasOnly: 5 }
 
+const AUTO_OFF = { autoGrant: false, autoGrantAssetTypes: null }
+
 const PROGRAMS = [
-  { id: 'kb-indexer', name: '知识库索引器', tmUserId: 'tm-1', enabled: true, expiresAt: null, createdAt: 1 },
-  { id: 'daily-digest', name: '简报机器人', tmUserId: 'tm-2', enabled: true, expiresAt: null, createdAt: 1 },
+  { id: 'kb-indexer', name: '知识库索引器', tmUserId: 'tm-1', enabled: true, expiresAt: null, createdAt: 1, ...AUTO_OFF },
+  { id: 'daily-digest', name: '简报机器人', tmUserId: 'tm-2', enabled: true, expiresAt: null, createdAt: 1, ...AUTO_OFF },
 ]
 
 function emptyHistory(): unknown {

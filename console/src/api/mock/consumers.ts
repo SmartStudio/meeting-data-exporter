@@ -1,3 +1,4 @@
+import { ASSET_KEYS } from '../admin/programs'
 import type { AssetKey, Consumer, Meeting } from '../types'
 
 /**
@@ -12,6 +13,102 @@ export const CONSUMERS: Consumer[] = [
   { id: 'daily-digest', name: '简报机器人' },
   { id: 'dw-sync', name: '数据仓库同步' },
 ]
+
+/* ── 程序自身的可写状态（`PATCH /programs/:id` 改的就是它）───────── */
+
+/**
+ * 一个程序身上两族可写字段的当前值。
+ *
+ * `enabled` 与 `autoGrant` 分属**两族请求体**（后端二选一，同时发或都不发都是
+ * 400 `invalid_patch`），但它们落在同一行里，所以这里也放在同一个对象上。
+ */
+export interface ProtoProgramState {
+  enabled: boolean
+  autoGrant: boolean
+  /** null = 不额外限制；非空数组 = 白名单。**`[]` 进不来**，见 `readAutoGrantPatch` */
+  autoGrantAssetTypes: string[] | null
+}
+
+/**
+ * 种子：**一个开着自动授权、两个关着**。
+ *
+ * 三个都关着的话，采集授权页在原型模式下就只画得出「开启自动授权」那一侧——
+ * 徽标、「关闭自动授权」的按钮与那张关闭确认面板一次都不会被 a11y 门槛扫到。
+ * 开着的那个还限了资产范围，于是「不限制」与「只授权这几类」两种取值也各有一份。
+ */
+export function initialProgramStates(): Record<string, ProtoProgramState> {
+  return {
+    'kb-indexer': { enabled: true, autoGrant: true, autoGrantAssetTypes: ['ai_minutes', 'transcript'] },
+    'daily-digest': { enabled: true, autoGrant: false, autoGrantAssetTypes: null },
+    'dw-sync': { enabled: true, autoGrant: false, autoGrantAssetTypes: null },
+  }
+}
+
+/** `GET /programs` 的下发形状。响应里没有任何凭据字段。 */
+export function buildPrograms(
+  states: Record<string, ProtoProgramState>,
+  nowSec: number,
+): Array<Record<string, unknown>> {
+  return CONSUMERS.map((c) => {
+    const st = states[c.id] ?? { enabled: true, autoGrant: false, autoGrantAssetTypes: null }
+    return {
+      id: c.id,
+      name: c.name,
+      tmUserId: `tm-${c.id}`,
+      enabled: st.enabled,
+      expiresAt: null,
+      createdAt: nowSec - 86400 * 90,
+      autoGrant: st.autoGrant,
+      autoGrantAssetTypes: st.autoGrantAssetTypes,
+    }
+  })
+}
+
+/** 读一族请求体的结果：要么是新的取值，要么是一个 400 的响应体。 */
+export type PatchRead<T> = { ok: true; value: T } | { ok: false; body: Record<string, unknown> }
+
+/**
+ * 读 `{ autoGrant, autoGrantAssetTypes }` 这一族。
+ *
+ * `[]` 单独回一句话：它是这条端点上唯一一个"看起来合法、实际没有意义"的取值
+ *（什么都不授权的自动授权），后端为此专门回了 400，假后端也照回，
+ * 否则界面上那条禁用规则在原型模式下就没有对照。
+ * 认不出的资产键逐个点名进 `issues`——只说"范围不合法"，管理员不知道是哪一类。
+ */
+export function readAutoGrantPatch(body: Record<string, unknown>): PatchRead<{
+  autoGrant: boolean
+  autoGrantAssetTypes: string[] | null
+}> {
+  if (typeof body.autoGrant !== 'boolean') {
+    // 共享契约没给这个码起名字（前端的签名把它挡在编译期），假后端也不装作
+    // 知道后端会回哪一个：这里回一个自明的码，界面上照样原样显示出来。
+    return { ok: false, body: { error: 'invalid_auto_grant', hint: 'autoGrant 必须是 true 或 false' } }
+  }
+  const raw = body.autoGrantAssetTypes
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: { autoGrant: body.autoGrant, autoGrantAssetTypes: null } }
+  }
+  const hint = '省略或 null = 不限制；给数组就必须非空，且每一项都是八类资产键之一。'
+  if (!Array.isArray(raw)) {
+    return { ok: false, body: { error: 'invalid_auto_grant_asset_types', hint } }
+  }
+  if (raw.length === 0) {
+    return {
+      ok: false,
+      body: {
+        error: 'invalid_auto_grant_asset_types',
+        hint: '空数组等于一个什么都不授权的自动授权，存不进去。不想限制就别传这个键。',
+      },
+    }
+  }
+  const issues = raw
+    .filter((k) => typeof k !== 'string' || !ASSET_KEYS.includes(k as AssetKey))
+    .map((k) => `认不出的资产类型「${String(k)}」`)
+  if (issues.length > 0) {
+    return { ok: false, body: { error: 'invalid_auto_grant_asset_types', hint, issues } }
+  }
+  return { ok: true, value: { autoGrant: body.autoGrant, autoGrantAssetTypes: raw as string[] } }
+}
 
 /**
  * 「这个程序实际能取到什么」——`GET /programs/:id/inventory`。

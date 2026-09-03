@@ -490,3 +490,95 @@ test('listMeetingsWithCompletedAssets 传空数组不查库，直接返回空集
     await cleanup()
   }
 })
+
+// ── 「本地文件还在」的全量枚举源（自动授权的候选源，方案 2）────────────
+
+test('listMeetingKeysWithLocalFiles：归档行未清理 / 只有 completed 资产 / 两者兼有，三种来源都在', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+
+    // ① 只有归档行，且没被清理——文件在 NAS 也在本地
+    await store.upsertMeetingArchive({
+      meetingId: 'm-arch', subMeetingId: '', nasDir: '/nas/m-arch',
+      archivedAt: 1000, retentionDays: 30, now: 1000,
+    })
+    // ② 只有 completed 资产、还没归档过——**这一类最容易被漏掉**，
+    //    而「每天新进来的会议」恰恰都是这个形态
+    await seedAsset(pool, { meetingId: 'm-fresh', status: 'completed' })
+    // ③ 两者都有：UNION 去重，只能出现一次
+    await store.upsertMeetingArchive({
+      meetingId: 'm-both', subMeetingId: '', nasDir: '/nas/m-both',
+      archivedAt: 1000, retentionDays: 30, now: 1000,
+    })
+    await seedAsset(pool, { meetingId: 'm-both', status: 'completed' })
+
+    expect(await store.listMeetingKeysWithLocalFiles()).toEqual([
+      { meetingId: 'm-arch', subMeetingId: '' },
+      { meetingId: 'm-both', subMeetingId: '' },
+      { meetingId: 'm-fresh', subMeetingId: '' },
+    ])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingKeysWithLocalFiles：已清理的不算，除非它还剩着 completed 资产', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+    // 已清理、也没有资产行——文件真的没了，不该出现在候选里
+    await store.upsertMeetingArchive({
+      meetingId: 'm-purged', subMeetingId: '', nasDir: '/nas/m-purged',
+      archivedAt: 1000, retentionDays: 30, now: 1000,
+    })
+    await store.markLocalPurged('m-purged', '', 5000)
+    // 已清理、但清理之后又下了新东西——文件确实又在了
+    await store.upsertMeetingArchive({
+      meetingId: 'm-repurged', subMeetingId: '', nasDir: '/nas/m-repurged',
+      archivedAt: 1000, retentionDays: 30, now: 1000,
+    })
+    await store.markLocalPurged('m-repurged', '', 5000)
+    await seedAsset(pool, { meetingId: 'm-repurged', status: 'completed' })
+
+    expect(await store.listMeetingKeysWithLocalFiles()).toEqual([
+      { meetingId: 'm-repurged', subMeetingId: '' },
+    ])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingKeysWithLocalFiles：没下完的资产不算（pending / failed / dead / skipped）', async () => {
+  // 一场只是被拉取列表带出来、一个资产都没下完的会议进了候选，就会被自动授权出去，
+  // 而外部程序此刻一个字节都取不到
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+    for (const status of ['pending', 'failed', 'dead', 'skipped'] as const) {
+      await seedAsset(pool, { meetingId: `m-${status}`, status, remoteId: `r-${status}` })
+    }
+    expect(await store.listMeetingKeysWithLocalFiles()).toEqual([])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('listMeetingKeysWithLocalFiles：空库返回空数组，周期性会议的场次各占一项', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+    expect(await store.listMeetingKeysWithLocalFiles()).toEqual([])
+
+    // 同一个 meeting_id 下的两场：按 (meeting_id, sub_meeting_id) 是两条候选，
+    // 只按 meeting_id 去重的话第二场永远不会被自动授权
+    await seedAsset(pool, { meetingId: 'm-rec', subMeetingId: 's-1' })
+    await seedAsset(pool, { meetingId: 'm-rec', subMeetingId: 's-2' })
+    expect(await store.listMeetingKeysWithLocalFiles()).toEqual([
+      { meetingId: 'm-rec', subMeetingId: 's-1' },
+      { meetingId: 'm-rec', subMeetingId: 's-2' },
+    ])
+  } finally {
+    await cleanup()
+  }
+})

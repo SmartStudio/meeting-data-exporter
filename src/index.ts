@@ -275,7 +275,7 @@ async function main(): Promise<void> {
     media: { nasRoot: nasRoot === '' ? null : nasRoot },
     // 阶段 4 · T11（A4 定时任务）——**只装读侧与手动触发的排队**。
     // 调度器本身在 worker 进程里（src/worker/scheduler.ts），网关一行都不碰：
-    // 网关是多实例的，四个任务各跑 N 份意味着 N 个实例同时对同一批本地文件
+    // 网关是多实例的，五个任务各跑 N 份意味着 N 个实例同时对同一批本地文件
     // 执行不可逆删除。
     jobs: {
       jobs: jobsStore,

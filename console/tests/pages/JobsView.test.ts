@@ -344,7 +344,7 @@ describe('fetchStall() —— tencent-down 的推断，与系统状态条同一�
 })
 
 describe('keyMetric() —— 链上每一段自己的一个关键数（D-jobs-storage brief）', () => {
-  test('四个内置任务各自映到 summary 里的一个键，中文沿用 SUMMARY_LABEL 那一份', () => {
+  test('五个内置任务各自映到 summary 里的一个键，中文沿用 SUMMARY_LABEL 那一份', () => {
     expect(keyMetric(job({ name: 'fetch_recordings', lastRun: run({ summary: { discovered: 19 } }) }))).toEqual({
       label: '发现资产',
       value: '19',
@@ -361,6 +361,10 @@ describe('keyMetric() —— 链上每一段自己的一个关键数（D-jobs-st
       label: '可采集',
       value: '12',
     })
+    // 自动授权那一段的关键数是「这一轮真的写进 meeting_grants 几条」，不是候选数
+    expect(
+      keyMetric(job({ name: 'auto_grant', lastRun: run({ summary: { candidates: 5, granted: 2 } }) })),
+    ).toEqual({ label: '新授权', value: '2' })
   })
 
   test('没有摘要、summary 里没有那个键、或压根没跑过——value 是 null，不编一个数', () => {
@@ -369,7 +373,7 @@ describe('keyMetric() —— 链上每一段自己的一个关键数（D-jobs-st
     expect(keyMetric(job({ name: 'archive_nas', lastRun: run({ summary: { somethingElse: 1 } }) })).value).toBeNull()
   })
 
-  test('认不出的任务名（四个内置之外）没有关键数，label 是空串', () => {
+  test('认不出的任务名（五个内置之外）没有关键数，label 是空串', () => {
     expect(keyMetric(job({ name: 'weird_job', lastRun: run({ summary: { x: 1 } }) }))).toEqual({
       label: '',
       value: null,
@@ -378,11 +382,11 @@ describe('keyMetric() —— 链上每一段自己的一个关键数（D-jobs-st
 })
 
 describe('jobOrdinal()', () => {
-  test('四个内置任务用中文序号（spec §4.8 的表就是这么排的）', () => {
-    expect([0, 1, 2, 3].map(jobOrdinal)).toEqual(['一', '二', '三', '四'])
+  test('五个内置任务用中文序号（spec §4.8 的表就是这么排的）', () => {
+    expect([0, 1, 2, 3, 4].map(jobOrdinal)).toEqual(['一', '二', '三', '四', '五'])
   })
 
-  test('第五个之后退回阿拉伯数字，不越界也不留空', () => {
-    expect(jobOrdinal(4)).toBe('5')
+  test('第六个之后退回阿拉伯数字，不越界也不留空', () => {
+    expect(jobOrdinal(5)).toBe('6')
   })
 })

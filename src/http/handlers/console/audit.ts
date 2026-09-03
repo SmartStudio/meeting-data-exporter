@@ -59,7 +59,7 @@ import {
   type AuditQuery,
   type AuditRecord,
 } from '../../../store/audit'
-import { auditActionLabel, unlabeledActions } from '../../../audit/actions'
+import { AUTO_GRANT_ACTOR_ID, auditActionLabel, unlabeledActions } from '../../../audit/actions'
 import { ASSET_LABEL } from '../../../domain/asset-labels'
 
 // ---------------------------------------------------------------------------
@@ -502,13 +502,32 @@ function resultOf(r: AuditRecord, detail: string | null): AuditRowJson['result']
 }
 
 /**
- * 这一页记录里那些管理员账号的人名。
+ * 系统操作者的固定名字。**按 `actor_id` 逐个登记，不给 `actor_type='system'` 一个
+ * 笼统的「系统」**：将来还会有别的系统操作者（到期清理、归档），全叫「系统」会让
+ * 审计页上一批本来分得开的记录读成同一个人干的，而「哪个系统动作改了这条授权」
+ * 正是这一页要回答的问题。
+ *
+ * 认不出的 `actor_id` **不在表里就留 null**，读侧退回显示原值——与动作标签
+ * （`auditActionLabel`）同一个口径：编一个名字等于假装登记过。
+ */
+const SYSTEM_ACTOR_NAMES: Readonly<Record<string, string>> = {
+  // 键取自登记表里的 AUTO_GRANT_ACTOR_ID（写侧 `src/worker/auto-grant.ts` 用的是
+  // 同一个常量），不写字面量：两处各写一个字符串的话，改名之后写侧照常记账、
+  // 这里照常回 null，界面上那一列会显示成一串裸 id 而没有任何东西会报错
+  [AUTO_GRANT_ACTOR_ID]: '系统 · 自动授权',
+}
+
+/**
+ * 这一页记录里那些操作者的人名。
  *
  * 抽屉里每一行原来都以一串 uuid 开头（`35e7d5ad-9d2d-4989-b437-4f72f733b72b`）,
  * 占掉大半行宽、每行还都一样——用户因此把一列本来各不相同的记录读成了「重复数据」。
  *
  * 只查**去重之后**的管理员 id：同一页历史通常只有一两个人，一页 200 行也就是
  * 一两次点查。查不到就留 null（账号可能已经删了），读侧退回显示 id。
+ *
+ * `actor_type = 'system'` 的行不查库（没有账号可查），走上面那张登记表。
+ * 会议详情的操作历史与列表页走的是同一个函数，所以两处显示的名字必然一致。
  */
 async function resolveActorNames(
   ctx: RouteCtx,
@@ -519,6 +538,13 @@ async function resolveActorNames(
   for (const id of ids) {
     const acc = await ctx.deps.adminStore.findById(id)
     if (acc !== null) out.set(id, acc.username)
+  }
+  for (const r of rows) {
+    if (r.actorType !== 'system') continue
+    const name = SYSTEM_ACTOR_NAMES[r.actorId]
+    // 管理员的 id 是 uuid、系统操作者的 id 是 'auto_grant' 这类固定短串，
+    // 两个空间不会撞；真撞上时以先写进去的管理员名字为准，不覆盖一个真人的名字
+    if (name !== undefined && !out.has(r.actorId)) out.set(r.actorId, name)
   }
   return out
 }

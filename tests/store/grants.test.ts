@@ -622,3 +622,72 @@ test('改写：数据库的 CHECK 挡住绕开 store 的直接 INSERT', async ()
     await cleanup()
   }
 })
+
+// ── 撤销过的会议：自动授权的第二条规矩（方案 2）────────────────────────
+
+test('listRevokedMeetingKeysForProgram 只返回**这个程序**撤销过的会议，去重', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createGrantsStore(pool)
+    // m-1 撤过；m-2 一直生效；m-3 是另一个程序撤的
+    await store.grant({ meetingId: 'm-1', subMeetingId: '', programId: 'p-a', assetTypes: null, now: 1000 })
+    await store.revoke('m-1', '', 'p-a', 2000)
+    await store.grant({ meetingId: 'm-2', subMeetingId: '', programId: 'p-a', assetTypes: null, now: 1000 })
+    await store.grant({ meetingId: 'm-3', subMeetingId: '', programId: 'p-b', assetTypes: null, now: 1000 })
+    await store.revoke('m-3', '', 'p-b', 2000)
+
+    expect(await store.listRevokedMeetingKeysForProgram('p-a')).toEqual([
+      { meetingId: 'm-1', subMeetingId: '' },
+    ])
+    expect(await store.listRevokedMeetingKeysForProgram('p-b')).toEqual([
+      { meetingId: 'm-3', subMeetingId: '' },
+    ])
+    // 从没撤过任何东西的程序拿到的是空数组，不是 null——调用方不必区分「没有」与「没算」
+    expect(await store.listRevokedMeetingKeysForProgram('p-never')).toEqual([])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('撤销过再重新授权的会议**仍然算撤销过**——人的决定不会因为又授权了一次就作废', async () => {
+  // 这一条是自动授权那条规矩的要害：判据是「有过撤销行」，不是「当前没有生效授权」。
+  // 用后者的话，撤销 → 人工重新授权 → 再撤销的会议会在下一轮被自动补回来
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createGrantsStore(pool)
+    await store.grant({ meetingId: 'm-x', subMeetingId: '', programId: 'p-a', assetTypes: null, now: 1000 })
+    await store.revoke('m-x', '', 'p-a', 2000)
+    await store.grant({ meetingId: 'm-x', subMeetingId: '', programId: 'p-a', assetTypes: null, now: 3000 })
+
+    // 此刻这场会议有一条**生效**授权，同时有一条撤销历史——两件事都是真的
+    expect(await store.findActiveGrant('m-x', '', 'p-a')).not.toBeNull()
+    expect(await store.listRevokedMeetingKeysForProgram('p-a')).toEqual([
+      { meetingId: 'm-x', subMeetingId: '' },
+    ])
+
+    // 撤两次也只算一场（DISTINCT），不是「撤过几次」
+    await store.revoke('m-x', '', 'p-a', 4000)
+    expect(await store.listRevokedMeetingKeysForProgram('p-a')).toEqual([
+      { meetingId: 'm-x', subMeetingId: '' },
+    ])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('周期性会议的场次分得开：撤了 s-1 不代表 s-2 也撤过', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createGrantsStore(pool)
+    for (const sub of ['s-1', 's-2']) {
+      await store.grant({ meetingId: 'm-r', subMeetingId: sub, programId: 'p-a', assetTypes: null, now: 1000 })
+    }
+    await store.revoke('m-r', 's-1', 'p-a', 2000)
+
+    expect(await store.listRevokedMeetingKeysForProgram('p-a')).toEqual([
+      { meetingId: 'm-r', subMeetingId: 's-1' },
+    ])
+  } finally {
+    await cleanup()
+  }
+})

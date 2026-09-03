@@ -6,7 +6,7 @@
  * ## 为什么「任务目录」与「时间片算术」在一个 store 文件里
  *
  * 这两样都是**纯数据/纯函数**，看起来该单开一个模块。不开的理由是硬约束：
- * **网关进程不许 import 调度器**（验收判据 5——网关是多实例的，四个任务各跑一份
+ * **网关进程不许 import 调度器**（验收判据 5——网关是多实例的，五个任务各跑一份
  * 是灾难）。而控制台的 `GET /api/v1/admin/jobs` 又必须答得出「这个任务多久跑一次、
  * 下次什么时候跑」。于是这些元数据只能落在一个两边都能安全 import 的地方：
  * 调度器（`src/worker/scheduler.ts`）拿它去挂 `run` 实现，handler 拿它去显示，
@@ -37,6 +37,7 @@ export const JOB_NAMES = [
   'archive_nas',
   'cleanup_expired',
   'refresh_inventory',
+  'auto_grant',
 ] as const
 
 export type JobName = (typeof JOB_NAMES)[number]
@@ -53,7 +54,7 @@ export type JobName = (typeof JOB_NAMES)[number]
 export const JOB_ARCHIVE_NAS: JobName = 'archive_nas'
 
 /**
- * 触发频率。三种形状覆盖 spec §4.8 的四个任务，**不做通用 cron 表达式**：
+ * 触发频率。三种形状覆盖 spec §4.8 的五个任务，**不做通用 cron 表达式**：
  * cron 的表达力这里一条都用不上，而它换来的是一个要自己写解析器与夏令时语义的东西。
  */
 export type JobSchedule =
@@ -80,7 +81,7 @@ export interface JobSpec {
   schedule: JobSchedule
   /**
    * 失败项的「该找人了」阈值——**不是「到此为止」的阈值**。
-   * 四个任务的重试都由各自的枚举源结构性地驱动（归档只要还有未归档的完成资产就会
+   * 五个任务的重试都由各自的枚举源结构性地驱动（归档只要还有未归档的完成资产就会
    * 被再捞回来），没有一个会因为这个数字停下来。真给它一个停止阈值才是错的：
    * 放弃归档意味着那场会议的录制在上游到期后彻底没有了（spec §1.2）。
    * 取 5 与引擎下载执行体的 MAX_ATTEMPTS 同值，好让界面上两处「N / 5」口径一致。
@@ -95,12 +96,17 @@ export interface JobSpec {
 }
 
 /**
- * spec §4.8 的四个任务，顺序即界面顺序（一、二、三、四）。
+ * spec §4.8 的五个任务，顺序即界面顺序（一、二、三、四、五）。
  *
  * **任务四不落缓存表**（计划 E-e 已裁定）：它逐程序算一遍，把 `fetchable.length` /
  * `blocked.length` 写进 `job_runs.summary`。开缓存表会让「控制台显示的可取清单」
  * 与「网关 AccessGate 的实时判定」变成两份真相，而漂移的方向恰好是 §1.3 要防的
  * 那一件事。先开表才是不可逆的那个方向。
+ *
+ * **任务五排在任务四之后**（方案 2）：它是这条链上唯一一个**往授权表里写**的任务，
+ * 而任务四只读。排在最后一格，界面上从左到右读下来就是「拉 → 归 → 清 → 看清单 →
+ * 把该给的给出去」。它同时是 `fetch_recordings` / `archive_nas` 两条接续的终点，
+ * 见 scheduler.ts 的 `JOB_CHAINS`——每 5 分钟那一片只是兜底。
  */
 export const JOB_CATALOG: readonly JobSpec[] = [
   {
@@ -153,6 +159,19 @@ export const JOB_CATALOG: readonly JobSpec[] = [
     // 先说丢了什么（取不到新会议），再说为什么（清单停在上一轮）——
     // 反过来写的话，读的人得先消化一个内部概念才知道这跟自己有什么关系。
     impact: '采集程序取不到新会议，清单停在上一轮',
+  },
+  {
+    name: 'auto_grant',
+    label: '自动授权',
+    // 说的是**这一格干了什么**，不是「怎么判的」：判定是规则那一页的事，
+    // 这一格只把规则已经放行的会议**真的授权出去**。「开了自动授权的程序」
+    // 这半句不能省——没开开关的程序一场都不会被碰，看这一行的人得知道这一点
+    what: '把规则放行的会议授权给开了自动授权的程序',
+    schedule: { kind: 'everyMinutes', minutes: 5 },
+    maxAttempts: 5,
+    // 说的是别人看得见的那件事：新会议没被授权出去，对接方那边就是取不到。
+    // 不写「授权行没写成」——那是我们的说法，对接方感知到的是「拿不到数据」
+    impact: '新会议不会自动授权，程序取不到',
   },
 ]
 

@@ -1,14 +1,15 @@
 import type { Meeting } from '../types'
 
 /**
- * 四个内置定时任务（`JOB_CATALOG`）的种子。
+ * 五个内置定时任务（`JOB_CATALOG`）的种子。
  *
- * ## 四个任务的健康状态各不相同，这是故意的
+ * ## 健康状态各不相同，这是故意的
  *
  * `never_ran` / `running` / `overdue` / `ok` 四个取值在 `pages/Jobs/view.ts` 里
- * 是四种不同的呈现（中性 / 品牌蓝 / 红 + 页面级横幅 / 无标注）。种子里如果四个
+ * 是四种不同的呈现（中性 / 品牌蓝 / 红 + 页面级横幅 / 无标注）。种子里如果每个
  * 任务都正常，a11y 门槛就只扫得到其中一种，而"已经落后"那一条恰恰是红底红字
- * 最容易在深色主题下写错的地方。所以这里让四个任务各占一种。
+ * 最容易在深色主题下写错的地方。所以前四个任务各占一种，第五个（自动授权）
+ * 与拉取同为 `ok`——四种呈现已经各有一份，第五份只需要是一条真实的正常态。
  *
  * ## 失败项从会议世界里推，不另写一份
  *
@@ -110,7 +111,7 @@ function failure(
     impact: o.impact,
     attempts: o.attempts,
     maxAttempts: o.maxAttempts,
-    // "该找人了"，不是"系统放弃了"：四个任务的重试都由各自的枚举源结构性驱动
+    // "该找人了"，不是"系统放弃了"：每个任务的重试都由各自的枚举源结构性驱动
     escalated: o.attempts >= o.maxAttempts,
     firstFailedAt: nowSec - o.firstAgoSec,
     lastFailedAt: nowSec - o.lastAgoSec,
@@ -199,6 +200,39 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     }),
   ]
 
+  /** 自动授权：每一轮逐程序报数。`granted` 是本轮真的写进 `meeting_grants` 的条数。 */
+  const autoGrantRuns: ProtoRun[] = [
+    run(nowSec, {
+      id: 305,
+      status: 'succeeded',
+      agoSec: 140,
+      durationSec: 3,
+      summary: {
+        programs: [{ programId: 'kb-indexer', name: '知识库索引器', candidates: 2, granted: 2, skippedRevoked: 1 }],
+        granted: 2,
+        // 人工撤销过的那一场不会被补回来：人的决定压过开关（共享契约规矩 2）
+        skippedRevoked: 1,
+        failedPrograms: 0,
+      },
+    }),
+    run(nowSec, {
+      id: 304,
+      status: 'succeeded',
+      // 接在 fetch_recordings 那一轮后面跑的：拉取有资产下载完成就紧接着跑一次
+      agoSec: 255,
+      durationSec: 2,
+      trigger: 'chain',
+      summary: {
+        programs: [{ programId: 'kb-indexer', name: '知识库索引器', candidates: 0, granted: 0, skippedRevoked: 1 }],
+        granted: 0,
+        skippedRevoked: 1,
+        failedPrograms: 0,
+      },
+    }),
+    run(nowSec, { id: 303, status: 'succeeded', agoSec: 440, durationSec: 2 }),
+    run(nowSec, { id: 302, status: 'succeeded', agoSec: 740, durationSec: 3 }),
+  ]
+
   const failures = [
     ...failed.map((m, i) =>
       failure(600 + i, nowSec, {
@@ -229,7 +263,7 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     }),
   ]
 
-  // ⚠ 下面四条的 label / schedule / what / impact **逐字抄自后端的 JOB_CATALOG**
+  // ⚠ 下面五条的 label / schedule / what / impact **逐字抄自后端的 JOB_CATALOG**
   //   （`src/store/jobs.ts`），不是原型自己的文案。它们曾经各写各的：这一份比
   //   生产长一倍、任务四的频率还写成「每 30 分钟」（真值 5 分钟），于是所有原型
   //   截图与 `scripts/vqa.ts` 的视觉验收量的都是一页并不存在的文字——谁照着原型
@@ -289,6 +323,19 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
       health: 'never_ran',
       lastRun: null,
       recentRuns: [],
+    },
+    {
+      name: 'auto_grant',
+      label: '自动授权',
+      what: '把规则放行的会议授权给开了自动授权的程序',
+      schedule: '每 5 分钟',
+      nextDueAt: nowSec + 160,
+      impact: '新会议不会自动授权，程序取不到',
+      maxAttempts: 5,
+      openFailures: 0,
+      health: 'ok',
+      lastRun: autoGrantRuns[0]!,
+      recentRuns: autoGrantRuns,
     },
   ]
 

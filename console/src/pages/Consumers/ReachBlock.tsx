@@ -54,10 +54,12 @@ function reachKind(standing: ProgramStanding, res: InventoryRes): ReachKind {
 function ReachContent({
   programId,
   standing,
+  autoGrant,
   res,
 }: {
   programId: string
   standing: ProgramStanding
+  autoGrant: boolean
   res: InventoryRes
 }): ReactNode {
   if (res.state === 'loading') {
@@ -153,11 +155,20 @@ function ReachContent({
               「授权给…」，规则判 deny 的会议显示「规则禁止」、批量授权也会跳过它。
               库里一条放行规则都没有时，会议记录里根本没有授权入口——
               把「先授权」写在前面，管理员会去找一个不存在的按钮。 */}
-          {line.blockedCount === 0 && (
-            <p className={styles.reachNote}>
-              还没有任何会议授权给它。分两步：先到「自动规则」建一条对它放行的采集权限规则（主体选它、动作「准许采集」、勾上资产类型），会议记录里被放行的会议才会出现「授权给…」，然后到「会议记录」把会议授权给它。
-            </p>
-          )}
+          {/* 开了自动授权的程序不该再被告知"去逐场授权"——那一步现在由任务
+              代做。这时 0 场只剩一个解释：**规则栈里没有一条对它放行的规则**
+              （自动授权只在规则已判「准许」的会议上动手，它不改判定）。
+              所以两句话的分岔点不是措辞，是此刻该做的那件事本身不同。 */}
+          {line.blockedCount === 0 &&
+            (autoGrant ? (
+              <p className={styles.reachNote} data-testid={`reach-${programId}-autogrant`}>
+                已开自动授权：规则放行且文件还在本地的会议，会在每轮拉取结束后自动授权给它（最长再等 5 分钟）。现在一场都没有，多半是还没有一条对它放行的采集权限规则，到「自动规则」建一条。
+              </p>
+            ) : (
+              <p className={styles.reachNote}>
+                还没有任何会议授权给它。分两步：先到「自动规则」建一条对它放行的采集权限规则（主体选它、动作「准许采集」、勾上资产类型），会议记录里被放行的会议才会出现「授权给…」，然后到「会议记录」把会议授权给它。
+              </p>
+            ))}
         </>
       )}
     </>
@@ -167,13 +178,15 @@ function ReachContent({
 interface ReachProps {
   programId: string
   standing: ProgramStanding
+  /** 这个程序开没开自动授权。一场都取不到时，两种情况下该走的下一步不同 */
+  autoGrant: boolean
   res: InventoryRes
 }
 
 /** 表格里「现在能取」那一列。data-testid 与改版前同名：`reach-<id>`
  *（加载中是 `reach-<id>-loading`，只标"已经有结论"的那几种渲染，
  *  否则测试里 findByTestId 会抓到还在转的那一帧，断言的是空话）。 */
-export function ReachCell({ programId, standing, res }: ReachProps) {
+export function ReachCell({ programId, standing, autoGrant, res }: ReachProps) {
   const kind = reachKind(standing, res)
   const loading = res.state === 'loading'
   return (
@@ -185,14 +198,14 @@ export function ReachCell({ programId, standing, res }: ReachProps) {
       aria-busy={loading || undefined}
       aria-label={loading ? '正在读取这个程序的清单' : undefined}
     >
-      <ReachContent programId={programId} standing={standing} res={res} />
+      <ReachContent programId={programId} standing={standing} autoGrant={autoGrant} res={res} />
     </td>
   )
 }
 
 /** 接入向导第三步「可取清单」预览用的独立版本——单独一个程序的一次性预览，
  *  不在表格里，所以外壳是块级容器而不是 `<td>`（见 `Wizard.tsx` 的 `AssetsStep`）。 */
-export function ReachBlock({ programId, standing, res }: ReachProps) {
+export function ReachBlock({ programId, standing, autoGrant, res }: ReachProps) {
   const kind = reachKind(standing, res)
   const loading = res.state === 'loading'
   return (
@@ -203,7 +216,7 @@ export function ReachBlock({ programId, standing, res }: ReachProps) {
       aria-busy={loading || undefined}
       aria-label={loading ? '正在读取这个程序的清单' : undefined}
     >
-      <ReachContent programId={programId} standing={standing} res={res} />
+      <ReachContent programId={programId} standing={standing} autoGrant={autoGrant} res={res} />
     </div>
   )
 }

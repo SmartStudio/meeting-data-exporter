@@ -214,7 +214,7 @@
   white-space: nowrap;
 }
 
-/* ── 操作：查看清单 + 停用/启用 + 轮换凭据 ───────────────────────── */
+/* ── 操作：查看清单 + 停用/启用 + 轮换凭据 + 自动授权 ─────────────── */
 
 .actionsCell {
   display: flex;
@@ -350,6 +350,37 @@
 .ackBox {
   accent-color: var(--brand);
   cursor: pointer;
+}
+
+/* ── 自动授权的资产范围 ───────────────────────────────────────────
+   两个单选 + 展开后的八个勾选框。八项在窄屏里竖成一列太长，用自动填充的
+   网格：宽屏两三列，窄屏自己回到一列，不写第二组断点。 */
+
+.scope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.scopeOpt {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--tap-min);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.scopeAssets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0 var(--s-4);
+  padding-left: var(--s-5);
 }
 
 /* ── 列宽 ────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   type Scheduler,
 } from '../../src/worker/scheduler'
 import type { FetchRound } from '../../src/worker/index'
+import type { ServiceProgram } from '../../src/store/programs'
 import type { Pool } from '../../src/store/db'
 
 /**
@@ -63,6 +64,7 @@ async function withScheduler(
         archive_nas: runners.archive_nas ?? noop,
         cleanup_expired: runners.cleanup_expired ?? noop,
         refresh_inventory: runners.refresh_inventory ?? noop,
+        auto_grant: runners.auto_grant ?? noop,
       },
     })
     await fn(
@@ -131,7 +133,8 @@ test('跨到下一片才跑，同一片里 tick 多少次都只跑一次', async
       h.setNow(T0 + 5 * MIN)
       const out = await h.scheduler.tick()
       await h.drain()
-      expect(out.started).toEqual(['refresh_inventory'])
+      // 每 5 分钟那一片上有两个任务（刷新采集清单与自动授权），顺序即 JOB_CATALOG 的顺序
+      expect(out.started).toEqual(['refresh_inventory', 'auto_grant'])
       expect(seen).toEqual([T0 + 5 * MIN])
 
       // 同一片里再 tick 两次，不会再跑
@@ -508,6 +511,21 @@ const EMPTY_FETCH_ROUND: FetchRound = {
   manifests: { written: 0, unchanged: 0, skipped: 0, failed: 0 },
 }
 
+/** 一个采集程序。自动授权默认关着，与 migrations/011 的列默认值一致 */
+function program(id: string, name: string, over: Partial<ServiceProgram> = {}): ServiceProgram {
+  return {
+    id,
+    name,
+    tmUserId: `u-${id}`,
+    enabled: true,
+    expiresAt: null,
+    createdAt: 0,
+    autoGrant: false,
+    autoGrantAssetTypes: null,
+    ...over,
+  }
+}
+
 function bodyDeps(over: Partial<JobBodyDeps>): JobBodyDeps {
   return {
     fetchRound: async () => EMPTY_FETCH_ROUND,
@@ -531,6 +549,13 @@ function bodyDeps(over: Partial<JobBodyDeps>): JobBodyDeps {
       blocked: [],
       assetTypes: [],
     }),
+    autoGrantRound: async () => ({
+      programs: [],
+      granted: 0,
+      skippedRevoked: 0,
+      failedPrograms: 0,
+      failures: [],
+    }),
     ...over,
   }
 }
@@ -539,8 +564,8 @@ test('任务四逐程序算一遍，把 fetchable / blocked 写进摘要——�
   const asked: string[] = []
   const deps = bodyDeps({
     listPrograms: async () => [
-      { id: 'p-1', name: '财务采集', tmUserId: 'u1', enabled: true, expiresAt: null, createdAt: 0 },
-      { id: 'p-2', name: '合规采集', tmUserId: 'u2', enabled: true, expiresAt: null, createdAt: 0 },
+      program('p-1', '财务采集'),
+      program('p-2', '合规采集'),
     ],
     inventory: async (programId) => {
       asked.push(programId)
@@ -577,8 +602,8 @@ test('任务四逐程序算一遍，把 fetchable / blocked 写进摘要——�
 test('任务四某个程序算不出来：其它程序照算，那一个进失败项', async () => {
   const deps = bodyDeps({
     listPrograms: async () => [
-      { id: 'p-1', name: '坏的', tmUserId: 'u1', enabled: true, expiresAt: null, createdAt: 0 },
-      { id: 'p-2', name: '好的', tmUserId: 'u2', enabled: true, expiresAt: null, createdAt: 0 },
+      program('p-1', '坏的'),
+      program('p-2', '好的'),
     ],
     inventory: async (programId) => {
       if (programId === 'p-1') throw new Error('规则表读不到')
@@ -909,9 +934,10 @@ test('拉取轮下完了东西：排一行 chained，下一个 tick 才真的起
       // 上游那一轮照常成功
       expect((await h.jobs.listRuns('fetch_recordings', 1))[0]?.status).toBe('succeeded')
 
-      // 下一个 tick（还在同一片里，没有任何定时任务到点）认领它
+      // 下一个 tick（还在同一片里，没有任何定时任务到点）认领它。
+      // 同一轮拉取还接续排了一行自动授权（见 JOB_CHAINS），所以这一个 tick 认领两行
       h.setNow(T0 + 15 * MIN + 30)
-      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas'])
+      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas', 'auto_grant'])
       await h.drain()
 
       const done = await h.jobs.listRuns('archive_nas', 10)
@@ -1122,9 +1148,10 @@ test('归档正在跑期间接续排了两行：认领时只起一轮，另一�
       gate.release?.()
       await h.drain()
 
-      // 归档空出来了：一次 tick 认领两行，只跑一轮
+      // 归档空出来了：一次 tick 认领两行，只跑一轮。
+      // 那两轮拉取同时也各排了一行自动授权，它们在这一个 tick 里一并被认领（合成一轮）
       h.setNow(T0 + 30 * MIN + 30)
-      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas'])
+      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas', 'auto_grant'])
       await h.drain()
       expect(entered).toBe(2)
 
@@ -1163,6 +1190,156 @@ test('手动触发的那一轮拉取下完了东西，同样排一行 chained', 
       expect(runs[0]?.status).toBe('queued')
       // 接续没有"谁按的"：这一行不该继承上游那一轮的 admin-1
       expect(runs[0]?.requestedBy).toBeNull()
+    },
+  )
+})
+
+// ── 任务五（自动授权）与它的两条接续 ──────────────────────────
+
+test('任务五：摘要就是 auto-grant 那一轮的四个数，failures 不进摘要', async () => {
+  const deps = bodyDeps({
+    autoGrantRound: async () => ({
+      programs: [
+        { programId: 'p-1', name: '财务采集', candidates: 3, granted: 2, skippedRevoked: 1 },
+      ],
+      granted: 2,
+      skippedRevoked: 1,
+      failedPrograms: 0,
+      failures: [],
+    }),
+  })
+  await withScheduler({ auto_grant: createJobRunners(deps).auto_grant }, T0, async (h) => {
+    await h.scheduler.bootstrap()
+    h.setNow(T0 + 5 * MIN)
+    const out = await h.scheduler.tick()
+    await h.drain()
+    expect(out.started).toContain('auto_grant')
+
+    const run = (await h.jobs.listRuns('auto_grant', 1))[0]!
+    expect(run.status).toBe('succeeded')
+    // `failures` 原样丢进 summary 会让每一轮的运行记录里多出一份与失败项表重复的
+    // 错误全文，而 sparkline 那一列本来只该是几个数
+    expect(run.summary).toEqual({
+      programs: [
+        { programId: 'p-1', name: '财务采集', candidates: 3, granted: 2, skippedRevoked: 1 },
+      ],
+      granted: 2,
+      skippedRevoked: 1,
+      failedPrograms: 0,
+    })
+  })
+})
+
+test('任务五某个程序算不出来：其它程序照算，那一个进失败项', async () => {
+  const deps = bodyDeps({
+    autoGrantRound: async () => ({
+      programs: [{ programId: 'p-2', name: '好的', candidates: 0, granted: 0, skippedRevoked: 0 }],
+      granted: 0,
+      skippedRevoked: 0,
+      failedPrograms: 1,
+      failures: [{ programId: 'p-1', name: '坏的', reason: '撤销历史读不到' }],
+    }),
+  })
+  await withScheduler({ auto_grant: createJobRunners(deps).auto_grant }, T0, async (h) => {
+    await h.scheduler.bootstrap()
+    h.setNow(T0 + 5 * MIN)
+    await h.scheduler.tick()
+    await h.drain()
+
+    // 一个程序算不出来不该让整轮 failed——另外那个程序写出去的授权仍然有效
+    const run = (await h.jobs.listRuns('auto_grant', 1))[0]!
+    expect(run.status).toBe('succeeded')
+    expect((run.summary as { failedPrograms: number }).failedPrograms).toBe(1)
+
+    const f = (await h.jobs.listFailures({ jobName: 'auto_grant' }))[0]!
+    expect(f.target).toBe('p-1')
+    expect(f.targetLabel).toBe('坏的')
+    expect(f.reason).toContain('撤销历史读不到')
+    // 「影响」那句话来自 JOB_CATALOG，不是任务体手抄的字符串
+    expect(f.impact).toBe(jobSpec('auto_grant')!.impact)
+  })
+})
+
+test('接续：拉取轮下完了东西，同时排归档**和**自动授权', async () => {
+  // 一场刚拉下来的会议要等最多 5 分钟才被授权出去，而对接方那边看到的是
+  // 「新会议没进来」。两条接续消掉的是同一段等待
+  await withScheduler(
+    { fetch_recordings: async () => ({ completed: 3 }) },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      // 15 分那一片：拉取与两个每 5 分钟的任务到点。先把它们的定时轮次跑掉，
+      // 这样下面数到的 auto_grant 排队行只可能是接续排出来的
+      h.setNow(T0 + 15 * MIN)
+      await h.scheduler.tick()
+      await h.drain()
+
+      const queuedArchive = await h.jobs.listRuns('archive_nas', 10)
+      expect(queuedArchive).toHaveLength(1)
+      expect(queuedArchive[0]?.trigger).toBe('chained')
+
+      // auto_grant 这一片本来就到点跑了一轮（schedule），接续那一行是**另外**一行
+      const autoRuns = await h.jobs.listRuns('auto_grant', 10)
+      const chained = autoRuns.filter((r) => r.trigger === 'chained')
+      expect(chained).toHaveLength(1)
+      expect(chained[0]?.status).toBe('queued')
+    },
+  )
+})
+
+test('接续：归档轮新归档了会议 → 排一轮自动授权（读的是 newlyArchived，不是 completed）', async () => {
+  await withScheduler(
+    {
+      // 归档轮的摘要里**没有** `completed` 这个键。取错键的表现是接续静默不触发，
+      // 而那种失效只有在有人盯着运行记录数轮次时才看得出来
+      archive_nas: async () => ({ newlyArchived: 2, failed: 0 }),
+    },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      // 整点那一片：归档到点。刻意跨到下一个小时，让每 5 分钟那两个也一起到点，
+      // 于是下面数的是「接续排出来的那一行」而不是定时那一轮
+      h.setNow(T0 + HOUR)
+      await h.scheduler.tick()
+      await h.drain()
+
+      const chained = (await h.jobs.listRuns('auto_grant', 10)).filter(
+        (r) => r.trigger === 'chained',
+      )
+      expect(chained).toHaveLength(1)
+      expect(chained[0]?.status).toBe('queued')
+    },
+  )
+})
+
+test('接续：归档轮一场都没新归档 → 不排自动授权', async () => {
+  await withScheduler(
+    { archive_nas: async () => ({ newlyArchived: 0, failed: 3 }) },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      h.setNow(T0 + HOUR)
+      await h.scheduler.tick()
+      await h.drain()
+      expect(
+        (await h.jobs.listRuns('auto_grant', 10)).filter((r) => r.trigger === 'chained'),
+      ).toEqual([])
+    },
+  )
+})
+
+test('接续：拉取轮一个都没下下来 → 不排自动授权', async () => {
+  await withScheduler(
+    { fetch_recordings: async () => ({ completed: 0 }) },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      h.setNow(T0 + 15 * MIN)
+      await h.scheduler.tick()
+      await h.drain()
+      expect(
+        (await h.jobs.listRuns('auto_grant', 10)).filter((r) => r.trigger === 'chained'),
+      ).toEqual([])
     },
   )
 })

@@ -131,6 +131,8 @@ const PROGRAMS = [
     enabled: true,
     expiresAt: null,
     createdAt: 1,
+    autoGrant: false,
+    autoGrantAssetTypes: null,
   },
 ]
 

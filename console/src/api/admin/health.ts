@@ -36,7 +36,7 @@ const BASE = '/api/v1/admin'
 /** 连续失败几轮才当作"拉不通"。一次失败就报警等于天天报警，而天天报警等于没有报警。 */
 export const TENCENT_DOWN_STREAK = 3
 
-/** 拉取任务的名字。四个内置任务之一（`JOB_CATALOG`，`src/store/jobs.ts`）。 */
+/** 拉取任务的名字。五个内置任务之一（`JOB_CATALOG`，`src/store/jobs.ts`）。 */
 export const FETCH_JOB_NAME = 'fetch_recordings'
 
 export interface NasStatus {

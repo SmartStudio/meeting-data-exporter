@@ -69,6 +69,9 @@ const KB = {
   enabled: true,
   expiresAt: null,
   createdAt: 1700000000,
+  // 自动授权默认关着：开着的那一侧由各条用例自己覆盖成 true
+  autoGrant: false,
+  autoGrantAssetTypes: null,
 }
 const DIGEST = {
   id: 'daily-digest',
@@ -77,6 +80,8 @@ const DIGEST = {
   enabled: true,
   expiresAt: null,
   createdAt: 1700000000,
+  autoGrant: false,
+  autoGrantAssetTypes: null,
 }
 
 function inventory(over: Record<string, unknown> = {}): unknown {
@@ -521,6 +526,8 @@ describe('接入向导', () => {
     enabled: true,
     expiresAt: null,
     createdAt: 1700000000,
+    autoGrant: false,
+    autoGrantAssetTypes: null,
     secret: 's_7Qk2vXe4NpR8tLmA3zYbW6hJfD1cGuS',
     secretShownOnce: true,
     // A8 之后建号与轮换下发同一句话，界面上两处都读它、都不改写
@@ -837,6 +844,182 @@ describe('轮换凭据：一次性展示', () => {
   })
 })
 
+/* ─────────────── 自动授权（方案 2：程序级开关）─────────────── */
+
+const KB_AUTO = { ...KB, autoGrant: true, autoGrantAssetTypes: ['ai_minutes', 'transcript'] }
+
+describe('自动授权开关', () => {
+  test('关着时按钮写「开启自动授权」，点了先弹面板，这时还没发任何请求', async () => {
+    await cardReady()
+    const before = calls.length
+    await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
+    expect(await screen.findByTestId('confirm-auto-on')).toBeInTheDocument()
+    expect(calls.length).toBe(before)
+  })
+
+  test('开启面板逐条写着三条规矩，外加"只授权哪些会议"那一句', async () => {
+    await cardReady()
+    await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
+    const box = await screen.findByTestId('confirm-auto-on')
+    // 1 时机：接在拉取 / 归档后面跑，另有 5 分钟兜底
+    expect(box).toHaveTextContent('每 5 分钟')
+    expect(box).toHaveTextContent('拉取新录制')
+    // 2 人工撤销过的不再补回来——人的决定压过开关
+    expect(box).toHaveTextContent('你手动撤销过的会议不会被自动补回来')
+    // 3 关掉开关不收回已有授权
+    expect(box).toHaveTextContent('关掉开关不收回已经授权的会议')
+    // 候选判据：它不改判定，只在规则已判准许、文件还在本地的会议上动手
+    expect(box).toHaveTextContent('只授权规则已判准许、且文件还在本地的会议')
+    // 面板标题是那句问句，不是一个动作名
+    expect(screen.getByRole('dialog', { name: '让规则替它授权？' })).toBeInTheDocument()
+  })
+
+  test('默认「不限制」：请求体里 autoGrantAssetTypes 是 null，不是八类全给', async () => {
+    await cardReady()
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [200, KB_AUTO])
+    await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
+    expect(await screen.findByLabelText('不限制（以规则判定为准）')).toBeChecked()
+    await userEvent.click(screen.getByRole('button', { name: '确认开启' }))
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === 'PATCH')
+      expect(patch).toBeDefined()
+      expect(patch!.body).toEqual({ autoGrant: true, autoGrantAssetTypes: null })
+    })
+  })
+
+  test('切到「只授权这几类」并勾三类，请求体就是那三个键', async () => {
+    await cardReady()
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [200, KB_AUTO])
+    await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
+    await userEvent.click(await screen.findByLabelText('只授权这几类'))
+    for (const name of ['录像', 'AI 纪要', '完整转写']) {
+      await userEvent.click(screen.getByLabelText(name))
+    }
+    await userEvent.click(screen.getByRole('button', { name: '确认开启' }))
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === 'PATCH')
+      expect(patch).toBeDefined()
+      expect(patch!.body).toEqual({
+        autoGrant: true,
+        autoGrantAssetTypes: ['video', 'ai_minutes', 'transcript'],
+      })
+    })
+  })
+
+  test('一类都没勾时确认按钮禁用，并说出该怎么办——不让人点下去等 400', async () => {
+    await cardReady()
+    await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
+    await userEvent.click(await screen.findByLabelText('只授权这几类'))
+
+    expect(screen.getByRole('button', { name: '确认开启' })).toBeDisabled()
+    expect(screen.getByTestId('auto-grant-scope-empty')).toHaveTextContent('至少勾一类，或改回不限制')
+
+    // 勾上一类就点得动了
+    await userEvent.click(screen.getByLabelText('AI 纪要'))
+    expect(screen.getByRole('button', { name: '确认开启' })).toBeEnabled()
+  })
+
+  test('开着时按钮写「关闭自动授权」，面板说清已经授权的一条都不收回', async () => {
+    await cardReady(KB_AUTO)
+    await userEvent.click(screen.getByRole('button', { name: '关闭自动授权' }))
+    const box = await screen.findByTestId('confirm-auto-off')
+    expect(box).toHaveTextContent('关掉之后新会议不再自动授权')
+    expect(box).toHaveTextContent('已经授权的会议一条都不收回')
+    expect(box).toHaveTextContent('要收回去会议记录页批量收回')
+    // 关闭面板里没有资产范围：那一档是开的时候才要决定的事
+    expect(screen.queryByTestId('auto-grant-scope')).toBeNull()
+  })
+
+  test('关掉时请求体是 autoGrant:false，且现有范围原样带回去（不顺手清掉）', async () => {
+    await cardReady(KB_AUTO)
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [200, KB])
+    await userEvent.click(screen.getByRole('button', { name: '关闭自动授权' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认关闭' }))
+
+    await waitFor(() => {
+      const patch = calls.find((c) => c.method === 'PATCH')
+      expect(patch).toBeDefined()
+      expect(patch!.body).toEqual({
+        autoGrant: false,
+        autoGrantAssetTypes: ['ai_minutes', 'transcript'],
+      })
+    })
+  })
+
+  test('成功之后重取列表——不做乐观更新，开关的状态是后端说的', async () => {
+    await cardReady()
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [200, KB_AUTO])
+    const before = calls.filter((c) => c.method === 'GET' && c.url.endsWith('/admin/programs')).length
+
+    await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认开启' }))
+
+    await waitFor(() => {
+      const after = calls.filter((c) => c.method === 'GET' && c.url.endsWith('/admin/programs')).length
+      expect(after).toBeGreaterThan(before)
+    })
+  })
+
+  test('后端拒绝时翻成人话，并把 issues 里逐条点名的资产键带出来', async () => {
+    await cardReady()
+    respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [
+      400,
+      {
+        error: 'invalid_auto_grant_asset_types',
+        hint: '空数组存不进去',
+        issues: ['认不出的资产类型「summary」'],
+      },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认开启' }))
+
+    const err = await screen.findByTestId('action-error-kb-indexer')
+    expect(err).toHaveTextContent('资产范围不合法')
+    expect(err).toHaveTextContent('summary')
+  })
+
+  test('开着的程序在名字旁挂一个徽标；关着的不挂', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, [KB_AUTO, DIGEST]])
+    respond(/GET .*\/inventory$/, () => [200, inventory({ fetchableCount: 1, assetTypes: ['ai_minutes'] })])
+    renderPage()
+
+    // 等清单真的到了：骨架那一帧里两行都还没有名字，那时的断言是空话
+    await screen.findByTestId('reach-kb-indexer')
+    await screen.findByTestId('reach-daily-digest')
+    const rows = screen.getAllByRole('row')
+    // 表头一行 + 两个程序
+    const kbRow = rows[1]!
+    const digestRow = rows[2]!
+    expect(within(kbRow).getByText('自动授权')).toBeInTheDocument()
+    expect(within(digestRow).queryByText('自动授权')).toBeNull()
+  })
+
+  test('一场都取不到时，开着自动授权的那句话指向规则，不再叫人去逐场授权', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, [KB_AUTO]])
+    respond(/GET .*\/inventory$/, () => [200, inventory()])
+    renderPage()
+
+    const reach = await screen.findByTestId('reach-kb-indexer')
+    expect(reach).toHaveTextContent('已开自动授权')
+    expect(reach).toHaveTextContent('多半是还没有一条对它放行的采集权限规则')
+    // 逐场授权那一步现在由任务代做，不该再让人去做一遍
+    expect(reach).not.toHaveTextContent('然后到「会议记录」把会议授权给它')
+  })
+
+  test('关着的时候那句两步提示一个字都没变', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, [KB]])
+    respond(/GET .*\/inventory$/, () => [200, inventory()])
+    renderPage()
+
+    const reach = await screen.findByTestId('reach-kb-indexer')
+    expect(reach).toHaveTextContent('还没有任何会议授权给它')
+    expect(reach).toHaveTextContent('然后到「会议记录」把会议授权给它')
+    expect(reach).not.toHaveTextContent('已开自动授权')
+  })
+})
+
 describe('只读账号（spec §11 缺口 1）', () => {
   async function readonlyCard(): Promise<void> {
     respond(/GET .*\/admin\/programs$/, () => [200, [KB]])
@@ -848,9 +1031,9 @@ describe('只读账号（spec §11 缺口 1）', () => {
     await screen.findByTestId('reach-kb-indexer')
   }
 
-  test('三个写入口全部禁用，且都说得出为什么', async () => {
+  test('四个写入口全部禁用，且都说得出为什么', async () => {
     await readonlyCard()
-    for (const name of ['接入新程序', '停用', '轮换凭据']) {
+    for (const name of ['接入新程序', '停用', '轮换凭据', '开启自动授权']) {
       const btn = screen.getByRole('button', { name })
       expect(btn, name).toBeDisabled()
       expect(btn, name).toHaveAttribute('title', '只读账号不能改')

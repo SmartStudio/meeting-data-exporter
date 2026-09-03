@@ -25,7 +25,7 @@ import {
 } from '../src/api/admin/storage'
 import { listAudit } from '../src/api/admin/audit'
 import { fetchChapters, fetchContentIndex, fetchContentSelection } from '../src/api/admin/content'
-import { programInventory } from '../src/api/admin/grants'
+import { listPrograms, programInventory, setProgramAutoGrant } from '../src/api/admin/grants'
 
 /**
  * 原型模式的假后端 —— 六个新页面那一半（F8）。
@@ -204,12 +204,36 @@ describe('自动规则', () => {
    ══════════════════════════════════════════════════════════════════ */
 
 describe('定时任务', () => {
-  test('四个内置任务都在，形状过得了 jobs.ts 的校验', async () => {
+  test('五个内置任务都在，形状过得了 jobs.ts 的校验', async () => {
     const o = await fetchJobs()
     expect(o.jobs.map((j) => j.name).sort()).toEqual(
-      ['archive_nas', 'cleanup_expired', 'fetch_recordings', 'refresh_inventory'].sort(),
+      ['archive_nas', 'auto_grant', 'cleanup_expired', 'fetch_recordings', 'refresh_inventory'].sort(),
     )
     expect(o.now).toBeGreaterThan(0)
+  })
+
+  test('自动授权那一条的四句文案逐字照后端的 JOB_CATALOG，不是原型自己的说法', async () => {
+    const o = await fetchJobs()
+    const auto = o.jobs.find((j) => j.name === 'auto_grant')
+    expect(auto).toBeDefined()
+    expect(auto!.label).toBe('自动授权')
+    expect(auto!.what).toBe('把规则放行的会议授权给开了自动授权的程序')
+    expect(auto!.schedule).toBe('每 5 分钟')
+    expect(auto!.impact).toBe('新会议不会自动授权，程序取不到')
+    expect(auto!.maxAttempts).toBe(5)
+  })
+
+  test('自动授权的运行摘要按契约的形状给：逐程序一行，外加三个合计', async () => {
+    const o = await fetchJobs()
+    const auto = o.jobs.find((j) => j.name === 'auto_grant')!
+    const sum = auto.lastRun?.summary as Record<string, unknown>
+    expect(Array.isArray(sum.programs)).toBe(true)
+    const first = (sum.programs as Array<Record<string, unknown>>)[0]!
+    expect(Object.keys(first)).toEqual(['programId', 'name', 'candidates', 'granted', 'skippedRevoked'])
+    expect(typeof sum.granted).toBe('number')
+    // 人工撤销过的那一场跳过了：人的决定压过开关，不会被自动补回来
+    expect(sum.skippedRevoked).toBeGreaterThan(0)
+    expect(typeof sum.failedPrograms).toBe('number')
   })
 
   test('形态分支：落后的任务 / 从没跑过 / 正在跑 / 失败的那一轮', async () => {
@@ -546,6 +570,66 @@ describe('采集清单', () => {
 
   test('程序不存在回 404，与「一场都没授权」的空清单分得开', async () => {
     await expect(programInventory('nobody')).rejects.toThrow(/program_not_found/)
+  })
+})
+
+describe('自动授权开关（PATCH /programs/:id）', () => {
+  test('种子里一开一关：两侧的界面在原型模式下都画得出来', async () => {
+    const list = await listPrograms()
+    expect(list.some((p) => p.autoGrant)).toBe(true)
+    expect(list.some((p) => !p.autoGrant)).toBe(true)
+    // 开着的那个还限了范围：`null`（不限制）与白名单两种取值各有一份
+    expect(list.find((p) => p.autoGrant)?.autoGrantAssetTypes).not.toBeNull()
+  })
+
+  test('开一个关着的：回的是写后重读的那一行', async () => {
+    const got = await setProgramAutoGrant('daily-digest', {
+      autoGrant: true,
+      autoGrantAssetTypes: ['ai_minutes', 'transcript'],
+    })
+    expect(got.autoGrant).toBe(true)
+    expect(got.autoGrantAssetTypes).toEqual(['ai_minutes', 'transcript'])
+    const list = await listPrograms()
+    expect(list.find((p) => p.id === 'daily-digest')?.autoGrant).toBe(true)
+  })
+
+  test('不限制就是 null，不是八类全给', async () => {
+    const got = await setProgramAutoGrant('daily-digest', { autoGrant: true, autoGrantAssetTypes: null })
+    expect(got.autoGrantAssetTypes).toBeNull()
+  })
+
+  test('空数组回 400——那是一个什么都不授权的自动授权', async () => {
+    await expect(
+      setProgramAutoGrant('daily-digest', { autoGrant: true, autoGrantAssetTypes: [] }),
+    ).rejects.toThrow(/invalid_auto_grant_asset_types/)
+  })
+
+  test('认不出的资产键逐条点名进 issues，不是只说一句"范围不合法"', async () => {
+    const res = await fetch('/api/v1/admin/programs/daily-digest', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ autoGrant: true, autoGrantAssetTypes: ['ai_minutes', 'summary'] }),
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string; issues?: string[] }
+    expect(body.error).toBe('invalid_auto_grant_asset_types')
+    expect(body.issues?.join('')).toContain('summary')
+  })
+
+  test('两族请求体同时出现是 400 invalid_patch', async () => {
+    const res = await fetch('/api/v1/admin/programs/daily-digest', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false, autoGrant: true }),
+    })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_patch')
+  })
+
+  test('程序不存在回 404', async () => {
+    await expect(
+      setProgramAutoGrant('nobody', { autoGrant: true, autoGrantAssetTypes: null }),
+    ).rejects.toThrow(/program_not_found/)
   })
 })
 
