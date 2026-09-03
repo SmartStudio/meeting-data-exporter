@@ -171,6 +171,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const programsStore = createProgramsStore(dbPool)
   const accessGate = createAccessGate({
     store: policyStore,
+    // 跟随 src/index.ts：同一个 store 按两个接口递进去，改写与授权分得开（阶段 6）
+    overrides: grantsStore,
     grants: grantsStore,
     programs: { isProgramEnabled: async (id) => (await programsStore.find(id))?.enabled === true },
   })
@@ -394,6 +396,28 @@ function webhookRequest(encrypted: string, now: number): Request {
   })
 }
 
+/**
+ * 三个「与」的第一个：把一场会议授权给这个采集程序（阶段 6，spec §1.3）。
+ *
+ * **一条 allow 规则不足以让网关放行**——`AccessGate` 在套完人工改写之后还要过一道
+ * 授权行，没有授权的会议判成 `not_granted`（见 src/policy/grant.ts）。所以本文件里
+ * 凡是断言「取得到」的链路，除了造规则还要造授权。
+ *
+ * 走真实的 `GrantsStore.grant`（控制台按下「授权」时跑的就是这一段），
+ * 不往表里塞 SQL——本文件的规矩是「假腾讯 API + 真网关」，写侧同样要是真的。
+ *
+ * `assetTypes: null` = 不额外限制资产范围，判定完全由规则那一栈说了算。
+ */
+async function grantMeeting(meetingId: string, programId: string): Promise<void> {
+  await createGrantsStore(pool).grant({
+    meetingId,
+    subMeetingId: '',
+    programId,
+    assetTypes: null,
+    now: NOW * 1000,
+  })
+}
+
 test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下载地址', async () => {
   const clock = stepClock(NOW)
   const meetingRecordId = 'rec-e2e-full-1'
@@ -438,6 +462,7 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
     effect: 'allow',
     note: '放行 e2e 全流程采集程序',
   })
+  await grantMeeting(meetingId, 'prog-e2e-full-1')
 
   // STS-Token 就位：真实发起 ensureFresh（对假服务的一次真实带签名 HTTP 调用），
   // 再用真实的 webhook 端点投递回调完成续期——不是直接往 DB 里塞一条 fulfilled 记录。
@@ -626,6 +651,8 @@ test('策略拒绝时整条链路在 download-url 处被拦截', async () => {
     effect: 'allow',
     note: '只放行录像',
   })
+  // 授权不限制范围：这条用例要拦住 audio 的是**规则**，不是授权
+  await grantMeeting(meetingId, 'prog-e2e-deny-1')
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-deny-1', 'ww-e2e-deny-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -710,6 +737,8 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
     effect: 'allow',
     note: '全部放行',
   })
+  // 授权也给上：这条用例要证明的是「改写压过规则」，不能让「没授权」抢在前面
+  await grantMeeting(meetingId, 'prog-e2e-ovr-1')
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-ovr-1', 'ww-e2e-ovr-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -813,6 +842,7 @@ test('STS-Token 未就位时，video 可下载而 ai_minutes 返回 unavailable'
     assetTypes: ['*'],
     effect: 'allow',
   })
+  await grantMeeting(meetingId, 'prog-e2e-sts-1')
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-sts-1', 'ww-e2e-sts-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -885,6 +915,8 @@ test('会议号命中多场时列出候选', async () => {
     assetTypes: ['*'],
     effect: 'allow',
   })
+  await grantMeeting('m-e2e-multi-1', 'prog-e2e-multi-1')
+  await grantMeeting('m-e2e-multi-2', 'prog-e2e-multi-1')
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-multi-1', 'ww-e2e-multi-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -1037,6 +1069,7 @@ test('范围查询经 /v1/corp/records 拿到别人主持的会议——不再�
     effect: 'allow',
     note: '放行 e2e 企业维度采集程序',
   })
+  for (let i = 0; i < hosts.length; i++) await grantMeeting('m-e2e-corp-' + i, 'prog-e2e-corp-1')
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-corp-1', 'ww-e2e-corp-1')
   const headers = { Authorization: 'Bearer ' + access_token }
@@ -1092,6 +1125,7 @@ test('精确查询走 corp + meeting_cache：查得到别人主持的会议，�
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-e2e-exact-1', assetTypes: ['*'], effect: 'allow',
   })
+  await grantMeeting('m-e2e-exact-1', 'prog-e2e-exact-1')
   const { access_token } = await serviceLogin(app, 'prog-e2e-exact-1', 'ww-e2e-exact-1')
   const headers = { Authorization: 'Bearer ' + access_token }
 

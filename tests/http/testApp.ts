@@ -130,6 +130,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const programsStore = createProgramsStore(pool)
   const accessGate = createAccessGate({
     store: policyStore,
+    // 跟随 src/index.ts：同一个 store 按两个接口递进去，改写与授权分得开（阶段 6）
+    overrides: grantsStore,
     grants: grantsStore,
     programs: { isProgramEnabled: async (id) => (await programsStore.find(id))?.enabled === true },
   })
@@ -275,6 +277,44 @@ export async function insertServiceProgram(
       opts.tmUserId ?? `tm-${opts.id}`,
       opts.enabled === false ? 0 : 1,
       opts.expiresAt ?? null,
+    ],
+  )
+}
+
+/**
+ * 往 meeting_grants 插一条逐会议授权（spec §1.3 三个「与」的**第一个**，阶段 6）。
+ *
+ * **一条 allow 规则不足以让网关放行**：`AccessGate` 在套完人工改写之后还要过一道
+ * 授权行，没有授权的会议判成 `not_granted`（见 src/policy/grant.ts）。所以端到端
+ * 用例造完规则还得造授权——两者分别由不同的人在不同的页面维护，测试里也就得分别造。
+ *
+ * `assetTypes` 三态与库里一致：`null` = 不额外限制（**默认**，绝大多数用例问的是
+ * 规则怎么判）· 非空数组 = 白名单 · `[]` = 什么都不授权。**空数组不是不限制**，
+ * 所以这里用 `undefined` 表示「不传」，不能拿 `?? []` 兜底。
+ */
+export async function insertGrant(
+  pool: Pool,
+  opts: {
+    meetingId: string
+    subMeetingId?: string
+    programId: string
+    assetTypes?: string[] | null
+    grantedAt?: number
+  },
+): Promise<void> {
+  await pool.execute(
+    `INSERT INTO meeting_grants
+       (meeting_id, sub_meeting_id, program_id, asset_types, granted_at, revoked_at)
+     VALUES (?, ?, ?, ?, ?, 0)
+     ON DUPLICATE KEY UPDATE asset_types = VALUES(asset_types)`,
+    [
+      opts.meetingId,
+      opts.subMeetingId ?? '',
+      opts.programId,
+      opts.assetTypes === undefined || opts.assetTypes === null
+        ? null
+        : JSON.stringify(opts.assetTypes),
+      opts.grantedAt ?? 0,
     ],
   )
 }

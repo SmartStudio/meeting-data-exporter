@@ -117,6 +117,18 @@ export type DecisionSource =
    * 「管理员填错了」和「管理员就是这么定的」——前者要去改，后者是他自己想要的。
    */
   | 'override_invalid'
+  /**
+   * 规则（或人工改写）**放行了**，但这场会议没有授权给这个采集程序，于是落到拒绝一侧
+   * （阶段 6 · `grant.ts` 的 `applyGrant`，spec §1.3 三个「与」的第一个）。
+   * 规则栈**不会**产出这个取值——授权行是套在 `applyOverride` 外面的又一层，
+   * 引擎本身一个字都不认授权。
+   *
+   * 与 `default` 分开是必要的，不是对称好看：`default` 是「规则一条都没匹配」，
+   * 管理员读完知道**再建一条规则**就能改变结果；`not_granted` 是「规则已经放行了」，
+   * 再建多少规则都没用，要去的是**采集授权页**。两者合成一个取值，界面上就再也分不开
+   * 「规则没覆盖到」和「授权没给」——而这两句话指向两个不同的人、两个不同的页面。
+   */
+  | 'not_granted'
 
 export type RuleOutcome =
   | 'matched'
@@ -660,6 +672,25 @@ export function decisionAllowsAsset(
     allowed: false,
     reason: `${label}覆盖的资产类型是 ${decision.assetTypes.join('、')}，不含「${assetType}」`,
   }
+}
+
+/**
+ * 整场会议对这个 actor 是否**至少有一类资产**取得到。
+ *
+ * 列会议与单场详情用它做展示过滤（**UI 便利，不是安全边界**）。
+ *
+ * 它不能简写成 `effect === 'allow'`：一条 `effect='allow'` 但 `asset_types`
+ * 里一个合法资产键都没有的规则（写坏了，或者只填了原型里的短名），判定是 allow
+ * 而实际一类都取不到。此时把会议列出来，等于在没有任何可取内容的前提下
+ * 泄露它的标题与主持人——旧实现「遍历八类、有一类 allow 就算可见」恰好排除了
+ * 这种情况，这里保持同一口径。
+ *
+ * 长在这里而不是 `access.ts`（阶段 6 搬来）：`grant.ts` 的 `applyGrant` 也要用它
+ * 判「规则侧到底放行了没有」，而 `access.ts` 又要 import `applyGrant`——留在原处
+ * 就是一个互相 import 的环。`access.ts` 原地 re-export，调用方一个都不用改。
+ */
+export function isVisible(decision: AllowDecision): boolean {
+  return decision.effect === 'allow' && decision.assetTypes.length > 0
 }
 
 // ── 静态检查：建完就静默失效的规则要在列表里看得见 ──────────────────

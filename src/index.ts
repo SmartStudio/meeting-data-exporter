@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   const catalog = createCatalog({ addressesApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
-  // 网关这边只读改写，不写。写侧在控制台的管理端点里（阶段 4）
+  // 网关这边只读授权与改写，不写。写侧在控制台的管理端点里（阶段 4）
   const grantsStore = createGrantsStore(pool)
   // 采集程序（`service_accounts`）的控制台读侧。**建在 accessGate 之前**：
   // 判定要问它「这个程序还启用着吗」（阶段 5 · A8，spec §11 缺口 4）。
@@ -89,6 +89,10 @@ async function main(): Promise<void> {
   const programsStore = createProgramsStore(pool)
   const accessGate = createAccessGate({
     store: policyStore,
+    // 同一个 store 递两次：`meeting_overrides` 与 `meeting_grants` 都在它下面，
+    // 但判定层按两个接口读（`OverrideSource` / `GrantSource`）——改写与授权是
+    // 三个「与」里两件不同的事，名字必须分得开（阶段 6）
+    overrides: grantsStore,
     grants: grantsStore,
     // 查不到的程序按「不启用」处理：它被删掉之后令牌可能还没过期，
     // 而「查不到」与「停用了」对判定而言是同一件事（见 ProgramStatusSource）

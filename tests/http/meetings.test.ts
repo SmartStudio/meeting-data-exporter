@@ -3,7 +3,7 @@ import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../src/store/db'
 import type { QueryParams } from '../../src/tencent/url'
 import { withTestDb } from '../helpers/testdb'
-import { buildTestApp, insertPolicyRule, insertServiceProgram, JWT_SECRET } from './testApp'
+import { buildTestApp, insertGrant, insertPolicyRule, insertServiceProgram, JWT_SECRET } from './testApp'
 import { signAccessToken } from '../../src/auth/tokens'
 import type { ActorIdentity } from '../../src/domain/types'
 
@@ -22,6 +22,11 @@ let cleanup: () => Promise<void>
  *
  * 所以这里一次性把它们建出来。停用的表现由 tests/policy/access.test.ts
  * 与 tests/http/console-grants.test.ts 覆盖，本文件只需要它们都是启用的。
+ *
+ * **同理，一条 allow 规则也不足以让判定放行**（阶段 6）：AccessGate 在套完人工改写
+ * 之后还要过一道逐会议授权（`meeting_grants`，spec §1.3 三个「与」的第一个）。
+ * 所以本文件里凡是断言「取得到」的用例，除了造规则还要 `insertGrant`——
+ * 两个条件分别由不同的人在不同的页面维护，测试里也就得分别造。
  */
 const TEST_PROGRAM_IDS = [
     'prog-alice-1',
@@ -36,6 +41,7 @@ const TEST_PROGRAM_IDS = [
     'prog-ivan-1',
     'prog-judy-1',
     'prog-kate-1',
+    'prog-lena-1',
     'prog-noaccess-1',
 ] as const
 
@@ -121,6 +127,10 @@ test('列表按策略过滤，被拒的会议不出现', async () => {
     priority: 10, programId: 'prog-alice-1',
     conds: [{ f: 'host', op: 'is', v: 'tm-alice-1' }], assetTypes: ['*'], effect: 'allow',
   })
+  // 两场都授权，这条用例问的才是「规则把 B 过滤掉了」——只授权 A 的话，
+  // B 不出现在列表里也可能只是因为它没授权，规则那一半就再也没被验证过
+  await insertGrant(pool, { meetingId: 'm-a-1', programId: 'prog-alice-1' })
+  await insertGrant(pool, { meetingId: 'm-b-1', programId: 'prog-alice-1' })
 
   const res = await app(new Request('https://gw/api/v1/meetings', { headers: bearer(alice) }))
   expect(res.status).toBe(200)
@@ -238,6 +248,10 @@ test('download-url 对越权构造的 assetId 返回 403（不是 404）', async
     priority: 10, programId: 'prog-alice-2',
     conds: [{ f: 'host', op: 'is', v: 'tm-alice-2' }], assetTypes: ['*'], effect: 'allow',
   })
+  // 同上：两场都授权，这条 403 才确实是「规则不放行别人主持的会议」，
+  // 而不是「m-b-2 恰好没授权」
+  await insertGrant(pool, { meetingId: 'm-a-2', programId: 'prog-alice-2' })
+  await insertGrant(pool, { meetingId: 'm-b-2', programId: 'prog-alice-2' })
 
   const headers = bearer(alice)
   // 列会议使 meetingB 也进入 meeting_cache（尽管它对 alice 不可见——缓存写入
@@ -295,6 +309,7 @@ test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条�
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-kate-1', assetTypes: ['*'], effect: 'allow',
   })
+  await insertGrant(pool, { meetingId: 'm-kate-1', programId: 'prog-kate-1' })
 
   const headers = bearer(kate)
 
@@ -375,6 +390,8 @@ test('meeting_code 命中多场时返回数组而非单个对象', async () => {
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-erin-1', assetTypes: ['*'], effect: 'allow',
   })
+  await insertGrant(pool, { meetingId: 'm-e-1', programId: 'prog-erin-1' })
+  await insertGrant(pool, { meetingId: 'm-e-2', programId: 'prog-erin-1' })
 
   const res = await app(
     new Request('https://gw/api/v1/meetings?meeting_code=886', { headers: bearer(erin) }),
@@ -445,6 +462,7 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-grace-1', assetTypes: ['*'], effect: 'allow',
   })
+  await insertGrant(pool, { meetingId: 'm-g-1', programId: 'prog-grace-1' })
 
   const headers = bearer(grace)
   const res = await app(new Request('https://gw/api/v1/meetings/m-g-1/assets', { headers }))
@@ -481,6 +499,7 @@ test('STS-Token 不可用时请求 ai_* 资产的 download-url 返回 503（而�
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-ivan-1', assetTypes: ['*'], effect: 'allow',
   })
+  await insertGrant(pool, { meetingId: 'm-i-1', programId: 'prog-ivan-1' })
 
   const headers = bearer(ivan)
   // 先让 meeting 进入缓存（不依赖 /assets 列表，直接用 /meetings 即可）
@@ -508,6 +527,113 @@ test('malformed assetId 返回 400 invalid_asset_id', async () => {
   )
   expect(res.status).toBe(400)
   expect((await res.json()).error).toBe('invalid_asset_id')
+})
+
+// ── 三个「与」的第一个：逐会议授权（阶段 6，2026-09-03）────────────────────
+//
+// 此前网关只判第三个「与」（采集权限规则）。于是**只要库里有一条 allow 规则**，
+// 任何启用中的采集程序不需要任何授权就能列出会议、拿到下载地址，而采集授权页
+// 按授权行枚举，同一场会议在那边显示「0 场对它开放」——控制台说 0、程序实际取得到。
+// 这一条端到端地钉住那道闸门：规则放行了，没有授权行照样一个字节都出不去。
+
+test('有 allow 规则但没有授权行：列不出来、详情 404、download-url 403 且审计说得出是授权', async () => {
+  const lena: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-lena-1', programId: 'prog-lena-1',
+  }
+  const meeting = rawMeeting({
+    meeting_record_id: 'rec-l-1', meeting_id: 'm-l-1', meeting_code: '891', host_user_id: 'tm-lena-1',
+  })
+  const addressFile = {
+    record_file_id: 'file-l-1', download_address: 'https://cos/lena.mp4', download_address_file_type: 'mp4',
+  }
+
+  const { app } = buildTestApp(pool, {
+    now: () => NOW,
+    tencentGet: (path) => {
+      const meetingsRes = recordsFor(path, [meeting])
+      if (meetingsRes) return meetingsRes
+      if (path === '/v1/addresses') return addressesPage([addressFile])
+      return {}
+    },
+  })
+  // 规则放行全部八类，但一条授权行都没有
+  await insertPolicyRule(pool, {
+    priority: 10, programId: 'prog-lena-1', assetTypes: ['*'], effect: 'allow',
+  })
+
+  const headers = bearer(lena)
+
+  const listRes = await app(new Request('https://gw/api/v1/meetings', { headers }))
+  expect(listRes.status).toBe(200)
+  expect(((await listRes.json()) as { meetings: unknown[] }).meetings).toEqual([])
+
+  // 详情走的是 decide 而不是 decideMany——两条路径判得一样，列表里没有的这里也进不去
+  const detailRes = await app(new Request('https://gw/api/v1/meetings/m-l-1', { headers }))
+  expect(detailRes.status).toBe(404)
+
+  const assetId = 'rec-l-1:file-l-1:video:0'
+  const dlRes = await app(
+    new Request(`https://gw/api/v1/assets/${assetId}/download-url`, { method: 'POST', headers }),
+  )
+  expect(dlRes.status).toBe(403)
+
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    'SELECT decision, matched_rule, detail FROM audit_log WHERE asset_id = ?',
+    [assetId],
+  )
+  expect(rows).toHaveLength(1)
+  expect(rows[0]!.decision).toBe('deny')
+  // matched_rule 仍是那条放行的规则：事后看得出「规则放行了、是授权没给」，
+  // 这两句话去的是两个不同的页面（自动规则页 / 采集授权页）
+  expect(rows[0]!.matched_rule).not.toBeNull()
+  expect(String(rows[0]!.detail)).toContain('授权')
+  expect(String(rows[0]!.detail)).toContain('prog-lena-1')
+})
+
+test('补上授权行之后，同一场会议立刻列得出来、下载地址也签得出来', async () => {
+  const lena: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-lena-1', programId: 'prog-lena-1',
+  }
+  const meeting = rawMeeting({
+    meeting_record_id: 'rec-l-2', meeting_id: 'm-l-2', meeting_code: '892', host_user_id: 'tm-lena-1',
+  })
+  const addressFile = {
+    record_file_id: 'file-l-2', download_address: 'https://cos/lena2.mp4', download_address_file_type: 'mp4',
+  }
+
+  const { app } = buildTestApp(pool, {
+    now: () => NOW,
+    tencentGet: (path) => {
+      const meetingsRes = recordsFor(path, [meeting])
+      if (meetingsRes) return meetingsRes
+      if (path === '/v1/addresses') return addressesPage([addressFile])
+      return {}
+    },
+  })
+  // 与上一条用例逐字相同的规则（不靠它跑在前面：用例之间不该有执行顺序上的依赖）。
+  // 这次多出来的只有授权行——两条用例之间**唯一**的差别就是它
+  await insertPolicyRule(pool, {
+    priority: 10, programId: 'prog-lena-1', assetTypes: ['*'], effect: 'allow',
+  })
+  await insertGrant(pool, { meetingId: 'm-l-2', programId: 'prog-lena-1' })
+
+  const headers = bearer(lena)
+
+  const listRes = await app(new Request('https://gw/api/v1/meetings', { headers }))
+  expect(listRes.status).toBe(200)
+  const body = (await listRes.json()) as { meetings: Array<{ meeting_id: string }> }
+  expect(body.meetings.map((m) => m.meeting_id)).toEqual(['m-l-2'])
+
+  const detailRes = await app(new Request('https://gw/api/v1/meetings/m-l-2', { headers }))
+  expect(detailRes.status).toBe(200)
+
+  const dlRes = await app(
+    new Request('https://gw/api/v1/assets/rec-l-2:file-l-2:video:0/download-url', {
+      method: 'POST', headers,
+    }),
+  )
+  expect(dlRes.status).toBe(200)
+  expect(((await dlRes.json()) as { url: string }).url).toBe('https://cos/lena2.mp4')
 })
 
 test('GET /healthz 无需鉴权，返回 200', async () => {

@@ -27,20 +27,47 @@
  * 「没有任何采集权限规则匹配这场会议（采集程序 未指定）」——管理员读了会去
  * **再建一条规则**，而那条规则永远不会生效。判定理由是产品功能（spec §4.2/§4.3），
  * 说错了比不说更贵。所以这里在读规则之前就短路，理由里写清楚是身份类型不对。
+ *
+ * ## 三个「与」里的第一个也在这里判（阶段 6，2026-09-03）
+ *
+ * spec §1.3：`外部程序真能取到 = 有授权 且 在保留期内 且 规则允许`。本模块判**第一个
+ * 和第三个**：授权行（`meeting_grants`）与 allow 栈。此前它只判第三个——于是只要库里
+ * 有一条 allow 规则，任何启用中的采集程序不需要任何授权就能列出会议、拿到下载地址，
+ * 而采集授权页照样显示「0 场对它开放」。**漂移方向是控制台说 0、程序实际取得到**。
+ *
+ * 判定顺序是：`notAProgram` → `programDisabled` → 规则栈 → 套改写 → **套授权行**。
+ * 授权在改写**之后**：改写替换的是「规则怎么判」（spec §5.4），授权是另一个独立的
+ * 「与」，两者管的不是同一件事。给一场会议加一条 allow 改写，没授权的程序照样取不到——
+ * 这也顺带补上了「`meeting_overrides` 没有程序维度、一条 allow 改写等于对所有程序放行」
+ * 那个洞：授权行就是那个按程序过滤的环节。完整理由见 `grant.ts` 的文件头。
+ *
+ * 第二个「与」（在保留期内）**不在这一层**，网关上也还没有：`download-url` 返回的是
+ * 腾讯云的下载地址，不走本地/NAS 文件（见 spec §11 第 10 行登记的缺口）。
+ *
+ * 控制台的采集清单（`src/worker/visibility.ts`）与这里**共用 `grant.ts`**——
+ * 两边各存一份「空数组算不算不限制」的判断，早晚会漂移，而漂移的一侧就是一次
+ * 静默放行或一次没人说得清的静默拒绝。
  */
 
 import { GATEWAY_TYPE_TO_ASSET_KEY, type AssetKey } from '@yaowu/mde-engine'
 import type { ActorIdentity, AssetType, Meeting } from '../domain/types'
 import type { PolicyStore } from '../store/policy'
 import type { MeetingFactKey, MeetingFacts } from './conds'
+import { applyGrant, type GrantLike, type GrantSource } from './grant'
 import { applyOverride, type MeetingOverride, type OverriddenDecision } from './override'
 import {
   decisionAllowsAsset,
   evaluateAllowStack,
+  isVisible,
   STACK_KIND_LABEL,
   type AllowDecision,
   type StackKind,
 } from './stacks'
+
+// `isVisible` 阶段 6 搬去了 `stacks.ts`（`grant.ts` 也要用它，留在这里就是一个
+// 互相 import 的环）。原地 re-export，`handlers/meetings.ts`、`worker/visibility.ts`
+// 那几处调用方一个都不用改
+export { isVisible }
 
 /**
  * `Meeting` + 「这一行**哪几列在库里是 NULL**」（阶段 4 · T13）。
@@ -86,8 +113,8 @@ export interface AccessGate {
    */
   decide(input: AccessInput): Promise<AccessDecision>
   /**
-   * 批量版，列会议用。语义与逐场调 `decide` **完全一致**，只是把规则与改写
-   * 各取一次而不是每场取一次。
+   * 批量版，列会议用。语义与逐场调 `decide` **完全一致**，只是把规则、改写与
+   * 授权行各取一次而不是每场取一次。
    */
   decideMany(inputs: readonly AccessInput[]): Promise<AccessDecision[]>
 }
@@ -115,8 +142,21 @@ export interface AccessGateDeps {
    * 调用点就多一次「忘了递就静默绕过改写」的机会——而绕过的方向是放行。
    * `archived` 那样处理是可以的，因为漏了它最多让一条 `arch` 规则判错；
    * 漏了改写则是让管理员明确按下的那个「不许取」失效。
+   *
+   * **字段叫 `overrides` 而不是 `grants`**（阶段 6 改名）：它从头到尾只取改写，
+   * 一次都没查过授权行。名字说的是「授权」而做的是「改写」，正是这次要补的那个
+   * 缺口能在代码里活这么久的原因之一——读装配处的人看见 `grants: grantsStore`
+   * 会以为授权已经判过了。
    */
-  grants: OverrideSource
+  overrides: OverrideSource
+  /**
+   * 逐会议授权的来源（spec §1.3 三个「与」的**第一个**）。
+   *
+   * **与改写同一个理由，由本模块自己取而不是让调用方递进来**：这是数据出境的闸门
+   * （spec §1.4），每新增一个调用点就多一次「忘了递就静默绕过授权」的机会，
+   * 而绕过的方向是放行。
+   */
+  grants: GrantSource
 }
 
 /**
@@ -247,12 +287,22 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
       }
 
       const rules = await deps.store.listEnabledStackRules('allow')
-      const override = await deps.grants.findActiveOverride(
+      const override = await deps.overrides.findActiveOverride(
         input.meeting.meetingId,
         input.meeting.subMeetingId,
         'allow',
       )
-      return decideOne(rules, input, override)
+      const decision = decideOne(rules, input, override)
+      // 第一个「与」：授权行。**只在规则侧确实放行了的时候才查**——规则已经拒了的
+      // 会议，授权行怎么写都改不了结论（`applyGrant` 的规矩 1 会原样返回），
+      // 多这一次往返只是白花。列会议那条路上这一省就是一页里被拒的那些场次全免。
+      if (!isVisible(decision)) return decision
+      const grant = await deps.grants.findActiveGrant(
+        input.meeting.meetingId,
+        input.meeting.subMeetingId,
+        input.actor.programId,
+      )
+      return applyGrant(decision, grant, input.actor.programId)
     },
 
     async decideMany(inputs) {
@@ -269,15 +319,32 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
         enabledCache.set(programId, value)
         return value
       }
+      // 授权行**按不同的 programId 各取一次**（同一个 actor 的一整批就是一次），
+      // 与上面的启用状态同一个做法。逐场 findActiveGrant 是一页 200 次往返
+      const grantsCache = new Map<string, Map<string, GrantLike>>()
+      const grantsOf = async (programId: string): Promise<Map<string, GrantLike>> => {
+        const hit = grantsCache.get(programId)
+        if (hit !== undefined) return hit
+        const rows = await deps.grants.listActiveGrantsForProgram(programId)
+        const byMeeting = new Map<string, GrantLike>()
+        for (const g of rows) byMeeting.set(overrideKey(g.meetingId, g.subMeetingId), g)
+        grantsCache.set(programId, byMeeting)
+        return byMeeting
+      }
       for (const input of inputs) {
         const pid = input.actor.programId
-        if (pid !== null && pid !== '') await isEnabled(pid)
+        if (pid !== null && pid !== '') {
+          await isEnabled(pid)
+          // 停用的程序不必再取它的授权行：下面那一轮在读规则之前就返回
+          // programDisabled 了，取回来也没人看
+          if (enabledCache.get(pid) === true) await grantsOf(pid)
+        }
       }
 
       // 规则与改写各取一次。逐场取的话，同一次列会议里前后两场可能按不同的
       // 规则集判——列表里两行的判定理由互相矛盾，而且不可复现
       const rules = await deps.store.listEnabledStackRules('allow')
-      const overrides = await deps.grants.listActiveOverridesForMeetings(
+      const overrides = await deps.overrides.listActiveOverridesForMeetings(
         inputs.map((i) => ({
           meetingId: i.meeting.meetingId,
           subMeetingId: i.meeting.subMeetingId,
@@ -297,18 +364,23 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
         if (enabledCache.get(input.actor.programId) !== true) {
           return programDisabled(input.actor.programId)
         }
-        const override = byMeeting.get(
-          overrideKey(input.meeting.meetingId, input.meeting.subMeetingId),
-        )
-        return decideOne(rules, input, override ?? null)
+        const key = overrideKey(input.meeting.meetingId, input.meeting.subMeetingId)
+        const override = byMeeting.get(key)
+        const decision = decideOne(rules, input, override ?? null)
+        // 第一个「与」：授权行。两个缓存在上面都已经填满，这里只读——`decide`
+        // 与本分支因此判得一模一样。`decide` 里那句「不可见就不查」在这里体现为
+        // `applyGrant` 的规矩 1（原样返回），批量路径本来就只查一次，不必再省
+        const grants = grantsCache.get(input.actor.programId)
+        return applyGrant(decision, grants?.get(key) ?? null, input.actor.programId)
       })
     },
   }
 }
 
 /**
- * 两个 id 拼成一场会议的键。用 NUL 分隔而不是 `/`——会议 id 是外部系统给的，
- * 拿可打印分隔符去赌它不出现在 id 里，撞上一次就是两场会议共用一条改写。
+ * 两个 id 拼成一场会议的键。改写与授权行在批量路径上都按它索引。
+ * 用 NUL 分隔而不是 `/`——会议 id 是外部系统给的，拿可打印分隔符去赌它不出现在
+ * id 里，撞上一次就是两场会议共用一条改写（或一条授权）。
  * 与 `override.ts` 的 `targetKey` 同一个理由。
  */
 function overrideKey(meetingId: string, subMeetingId: string): string {
@@ -353,17 +425,3 @@ export function allowsAsset(
   return decisionAllowsAsset(decision, key)
 }
 
-/**
- * 整场会议对这个 actor 是否**至少有一类资产**取得到。
- *
- * 列会议与单场详情用它做展示过滤（**UI 便利，不是安全边界**）。
- *
- * 它不能简写成 `effect === 'allow'`：一条 `effect='allow'` 但 `asset_types`
- * 里一个合法资产键都没有的规则（写坏了，或者只填了原型里的短名），判定是 allow
- * 而实际一类都取不到。此时把会议列出来，等于在没有任何可取内容的前提下
- * 泄露它的标题与主持人——旧实现「遍历八类、有一类 allow 就算可见」恰好排除了
- * 这种情况，这里保持同一口径。
- */
-export function isVisible(decision: AllowDecision): boolean {
-  return decision.effect === 'allow' && decision.assetTypes.length > 0
-}

@@ -63,6 +63,10 @@
 
 import { ALL_ASSET_KEYS, type AssetKey } from '@yaowu/mde-engine'
 import { isVisible, meetingFacts, type MeetingMeta } from '../policy/access'
+// 授权行的资产范围三态（`grantScope`）与求交（`intersectGrantScope`）原本长在本文件里，
+// 阶段 6 搬到了 policy 层：网关的 AccessGate 也要判这第一个「与」，两边各存一份
+// 「空数组算不算不限制」的判断，早晚会漂移，而漂移的一侧就是一次静默放行
+import { grantScope, intersectGrantScope } from '../policy/grant'
 import {
   applyOverride,
   indexOverrides,
@@ -70,12 +74,7 @@ import {
   type MeetingOverride as PolicyOverride,
   type OverriddenDecision,
 } from '../policy/override'
-import {
-  evaluateAllowStack,
-  normalizeAssetTypes,
-  type AllowEffect,
-  type StackRule,
-} from '../policy/stacks'
+import { evaluateAllowStack, type AllowEffect, type StackRule } from '../policy/stacks'
 import { archiveStateKey, type ArchivesStore, type MeetingArchiveRecord } from '../store/archives'
 import type { GrantsStore, MeetingGrant, MeetingKey } from '../store/grants'
 import type { PolicyStore } from '../store/policy'
@@ -260,36 +259,6 @@ function byKey<T extends MeetingKey>(rows: readonly T[]): Map<string, T> {
 /** unix 秒读成一句人话，只为进判定理由——不做本地化，UTC 就是审计里的口径 */
 function stamp(sec: number): string {
   return new Date(sec * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
-}
-
-/**
- * 授权行给这场会议划的资产范围。三态与 D-n 逐字一致：
- * `null` = 不额外限制（以规则栈判定为准）· 非空数组 = 白名单 · `[]` = **什么都不授权**。
- *
- * 返回 `null` 表示「不限制」。**不许把空数组读成不限制**——在授权中枢里让空集合
- * 意外等价于全集，正是「不许静默放行」要防的事故。
- */
-function grantScope(grant: MeetingGrant | null): AssetKey[] | null {
-  if (grant === null) return null
-  if (grant.assetTypes === null) return null
-  // 认不出的资产名在这里被丢掉（normalizeAssetTypes 的既有行为）：授权里写着
-  // 原型的短名 'summary' 时，它不该恰好等价于「不限制」。
-  return normalizeAssetTypes(grant.assetTypes).keys
-}
-
-/**
- * 这个程序实际取得到哪几类。
- *
- * **人工改写那一层不在这里再交一次。** D-y 把它写成「规则 ∩ 授权 ∩ 改写」三者求交，
- * 但改写**优先于所有规则**（spec §5.4 / D-x），`applyOverride` 因此是**替换**语义：
- * 改写指定了范围就用改写的，`null` 才沿用规则那份（D-o）。在这里再与规则侧交一次，
- * 一条把 deny 翻成 allow 的改写会与「规则侧的空集」相交、算出空集，
- * 于是改写等于没写——正好废掉 D-x。所以 `decision.assetTypes` 已经是改写生效之后的
- * 那一份，这里只再交授权行。
- */
-function intersect(ruleKeys: readonly AssetKey[], scope: AssetKey[] | null): AssetKey[] {
-  if (scope === null) return [...ruleKeys]
-  return ruleKeys.filter((k) => scope.includes(k))
 }
 
 // ── 一场会议 ──────────────────────────────────────────────────
@@ -523,7 +492,7 @@ export function evaluateInventory(material: InventoryMaterial): InventoryEntry[]
     // 资产类型求交（D-y）。规则侧那一份已经含了人工改写，见 intersect 的注释
     const ruleKeys = decision === null ? [] : decision.assetTypes
     const scope = grantScope(grant)
-    const assetTypes = intersect(ruleKeys, scope)
+    const assetTypes = intersectGrantScope(ruleKeys, scope)
     // 只有规则确实放行了才谈得上「授权把范围收成了空」——规则本来就不放行时，
     // 空集是规则那条 blocker 已经解释过的事，再报一条只是把同一件事说两遍
     if (ruleOk && grant !== null && assetTypes.length === 0) {
