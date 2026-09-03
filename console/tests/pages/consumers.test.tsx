@@ -355,6 +355,19 @@ describe('「现在可取走 N 场会议的 X」', () => {
     expect(await screen.findByTestId('reach-kb-indexer')).toHaveTextContent('还没有任何会议授权给它')
   })
 
+  test('一场都没授权时给的出路是"先授权、再放行"两步，不是二选一', async () => {
+    respond(/GET .*\/admin\/programs$/, () => [200, [KB]])
+    respond(/GET .*\/inventory$/, () => [200, inventory()])
+    renderPage()
+
+    const reach = await screen.findByTestId('reach-kb-indexer')
+    // spec §1.3 的三个条件是「与」：只补授权、或只放行规则，这个数都还是 0。
+    expect(reach).toHaveTextContent('先在「会议记录」')
+    expect(reach).toHaveTextContent('再到「自动规则」')
+    // 原来那句把两步写成了二选一，照着它走的人一直卡在 0 场。
+    expect(reach).not.toHaveTextContent('或在「会议记录」里逐场授权')
+  })
+
   test('能取走的同时另有取不到的，也要把后者说出来', async () => {
     respond(/GET .*\/admin\/programs$/, () => [200, [KB]])
     respond(/GET .*\/inventory$/, () => [
