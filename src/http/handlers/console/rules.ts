@@ -884,17 +884,33 @@ export async function previewRules(req: Request, ctx: RouteCtx): Promise<Respons
   const oldRules: StackRule[] = await ctx.deps.policyStore.listAllRules()
 
   let newRules: StackRule[]
+  // 编辑器正在编辑的那一条。规则编辑器打开一条已有规则时会把它**原样**发来，
+  // 一个字都没改，`diffRules` 于是一条都不报——预览要说「没有够得着任何会议」，
+  // 而同一屏的规则列表正显示着这条规则命中 N 场。把 id 交给预览器张开考察范围，
+  // 两处说的才是同一件事（`preview.ts` 文件头第一节）。
+  // 整集模式（`rules`）没有「正在编辑哪一条」可言；删除模式下这条规则马上就不在了，
+  // 「它现在命中多少场」不是这次预览要回答的问题——两种情形都不传。
+  let focusRuleId: number | undefined
   if (hasSet) {
     newRules = (body.rules as unknown[]).map(toStackRule)
   } else {
     const draft = toStackRule(body.rule, 0)
     if (body.deleted === true) newRules = oldRules.filter((r) => r.id !== draft.id)
-    else if (oldRules.some((r) => r.id === draft.id))
-      newRules = oldRules.map((r) => (r.id === draft.id ? draft : r))
-    else newRules = [...oldRules, draft]
+    else {
+      focusRuleId = draft.id
+      if (oldRules.some((r) => r.id === draft.id))
+        newRules = oldRules.map((r) => (r.id === draft.id ? draft : r))
+      else newRules = [...oldRules, draft]
+    }
   }
 
   const kinds = isStackKind(wantKind) ? [wantKind] : changedStackKinds(oldRules, newRules)
+  // 不带 kind 时按「这次动了哪几栈」派发。原样打开的那条一栈都没动，但它所在的栈
+  // 仍要算——否则零改动时一栈都不返回，调用方连「现在命中多少场」都拿不到
+  if (focusRuleId !== undefined && !isStackKind(wantKind)) {
+    const focusKind = newRules.find((r) => r.id === focusRuleId)?.kind
+    if (isStackKind(focusKind) && !kinds.includes(focusKind)) kinds.push(focusKind)
+  }
   const limit = clampLimit(body.limit)
   const scan = await scanMeetings(ctx, limit)
   const programs = programsOf(oldRules, newRules)
@@ -913,6 +929,7 @@ export async function previewRules(req: Request, ctx: RouteCtx): Promise<Respons
       newRules,
       subjects,
       now,
+      focusRuleId,
       // 改写是套在规则栈外面的覆盖层：这几场会议的实际结果不会变，
       // 算进「会被改变」是错的，静默丢掉也是错的——`shielded` 单列一类
       overridden: (s) => overridden.has(meta.get(s.key)?.rowId ?? ''),
@@ -972,8 +989,12 @@ export async function previewRules(req: Request, ctx: RouteCtx): Promise<Respons
   // 候选规则里写坏的地方在预览阶段就说出来。不这么做的话，一条「条件字段拼错」的规则
   // 预览出来是「0 场会改变」，管理员分不清那是规则写得窄，还是规则根本不会命中——
   // 而后者正是 spec §4.7 要防的「建完一条静默失效的规则还以为生效了」
+  //
+  // 原样打开的那一条也要查（`focusRuleId`）：它没被改动，进不了 `changedIds`，
+  // 可它照样可能是一条写坏的规则（比如 allow 规则一个资产类型都没勾）。
+  // 编辑器底部不说这句话，管理员就得先存一次才知道自己打开的规则本来就是坏的
   const candidateIssues = newRules
-    .filter((r) => changedIds.has(r.id))
+    .filter((r) => changedIds.has(r.id) || r.id === focusRuleId)
     .map((r) => ({ id: r.id, kind: r.kind, issues: describeStackRuleIssues(r) }))
 
   return json(200, {

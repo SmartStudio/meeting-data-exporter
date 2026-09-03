@@ -810,6 +810,62 @@ test('候选规则里写坏的地方在预览里就说得出来，不必先存�
   expect(issues[0]!.issues.length).toBeGreaterThan(0)
 })
 
+test('原样打开一条已有规则：预览报得出「现在命中多少场」，而不是「没有够得着任何会议」', async () => {
+  // 编辑器打开一条已有规则时发的就是这个：候选与库里那条逐字相同，一个字都没改。
+  // 此时若按「只从改动过的规则张开范围」算，范围是空的，预览会说「没有够得着任何会议」——
+  // 而同一屏的规则列表正显示着这条规则命中 1 场。两处口径相同，不许给出两个数
+  const existing = allowRule({ id: 1 })
+  const policy = fakePolicyStore({ listAllRules: async () => [existing] })
+  const res = await previewRules(
+    req('POST', { rule: existing, kind: 'allow' }),
+    ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+  )
+  expect(res.status).toBe(200)
+  const body = await bodyOf(res)
+  const stacks = body.stacks as Array<{
+    counts: Record<string, number>
+    changedRuleIds: number[]
+    summary: string
+  }>
+  expect(stacks).toHaveLength(1)
+  expect(stacks[0]!.counts.hits).toBe(1)
+  expect(stacks[0]!.counts.scanned).toBe(1)
+  // 一个字都没改，就不能报成「这次改动涉及的规则」
+  expect(stacks[0]!.changedRuleIds).toEqual([])
+  expect(stacks[0]!.summary).toContain('还没有改动')
+  expect(stacks[0]!.summary).not.toContain('这次')
+})
+
+test('原样打开、不带 kind：零改动也要返回这条规则所在的那一栈', async () => {
+  // 不带 kind 时派发按「这次动了哪几栈」算；一个字没改就是零栈，
+  // 调用方会拿到一份没有任何 stacks 的响应，连「现在命中多少场」都没有
+  const existing = allowRule({ id: 1 })
+  const policy = fakePolicyStore({ listAllRules: async () => [existing] })
+  const res = await previewRules(
+    req('POST', { rule: existing }),
+    ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+  )
+  expect(res.status).toBe(200)
+  const body = await bodyOf(res)
+  const stacks = body.stacks as Array<{ kind: string; counts: Record<string, number> }>
+  expect(stacks.map((s) => s.kind)).toEqual(['allow'])
+  expect(stacks[0]!.counts.hits).toBe(1)
+})
+
+test('原样打开的坏规则也报问题：不必先存一次才知道自己打开的规则本来就是坏的', async () => {
+  // 一条准许采集、却一个资产类型都没勾的规则：实际一类都取不到
+  const broken = allowRule({ id: 1, assetTypes: [] })
+  const policy = fakePolicyStore({ listAllRules: async () => [broken] })
+  const res = await previewRules(
+    req('POST', { rule: broken, kind: 'allow' }),
+    ctxOf({ policy: policy.store, meetings: fakeConsoleMeetings([FINANCE, TECH]) }),
+  )
+  const body = await bodyOf(res)
+  const issues = body.candidateIssues as Array<{ id: number; issues: string[] }>
+  expect(issues.map((i) => i.id)).toEqual([1])
+  expect(issues[0]!.issues.length).toBeGreaterThan(0)
+})
+
 test('候选规则集不是数组时 400，不把一份垃圾当成「管理员把规则全删了」去预览', async () => {
   const policy = fakePolicyStore()
   const res = await previewRules(

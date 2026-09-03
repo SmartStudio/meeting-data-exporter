@@ -120,6 +120,112 @@ test('范围里的会议判定没变时不进任何列表，但算进 scanned', 
   expect(p.counts.opened).toBe(1)
 })
 
+// ── 原样打开一条规则：范围不是空的（规则编辑器的影响预览）──────
+
+/**
+ * 编辑器里被打开的那一条：3 场会议里命中 2 场。
+ * 下面几个用例都拿它当 focus，验证「一个字没改」时预览报的是这 2 场。
+ */
+const FOCUS = rule({
+  id: 5, kind: 'allow', priority: 200, effect: 'allow', note: '财务会议给数据组',
+  conds: [{ f: 'title', op: 'has', v: '财务' }],
+})
+const THREE = [
+  subject('m-1', { title: '财务评审' }),
+  subject('m-2', { title: '财务复盘' }),
+  subject('m-3', { title: '技术周会' }),
+]
+
+test('原样打开一条规则（零改动）+ focusRuleId：范围是这条规则自己的命中集，不是空集', () => {
+  const p = previewStackImpact({
+    kind: 'allow', oldRules: [FOCUS], newRules: [FOCUS], subjects: THREE, now: NOW, focusRuleId: 5,
+  })
+  // 与规则列表那一行的命中数是同一个口径（matchesRule），必须是同一个数
+  expect(p.counts.hits).toBe(2)
+  expect(p.counts.scanned).toBe(2)
+  // 范围张开了，但判定一个都没变——两侧是同一条规则
+  expect(p.changed).toHaveLength(0)
+  expect(p.deciderOnly).toHaveLength(0)
+  // 没改过的规则不许被报成「这次改动涉及的规则」
+  expect(p.changedRuleIds).toEqual([])
+  expect(p.summary).toContain('采集权限规则 #5')
+  expect(p.summary).toContain('财务会议给数据组')
+  expect(p.summary).toContain('还没有改动')
+  expect(p.summary).not.toContain('这次')
+})
+
+test('只改 note + focusRuleId：note 不参与判定，范围仍是这条规则的命中集', () => {
+  const renamed = { ...FOCUS, note: '财务会议给数据组（补充：季度复盘另有规则）' }
+  const p = previewStackImpact({
+    kind: 'allow', oldRules: [FOCUS], newRules: [renamed], subjects: THREE, now: NOW, focusRuleId: 5,
+  })
+  expect(p.counts.hits).toBe(2)
+  expect(p.counts.scanned).toBe(2)
+  expect(p.changed).toHaveLength(0)
+  expect(p.deciderOnly).toHaveLength(0)
+  expect(p.changedRuleIds).toEqual([])
+  expect(p.summary).toContain('还没有改动')
+  expect(p.summary).not.toContain('这次')
+  // 摘要里的称呼取的是候选那一版的 note，管理员看到的是自己刚敲的那句话
+  expect(p.summary).toContain('季度复盘另有规则')
+})
+
+test('真的改过的规则不会被 focusRuleId 重复计数：传与不传结果完全一致', () => {
+  // 兜底拒绝在下面，FOCUS 在上面；把 FOCUS 的优先级压到兜底之下，2 场财务会议翻成拒绝
+  const catchAll = rule({ id: 1, kind: 'allow', priority: 100, effect: 'deny', note: '默认不外流' })
+  const oldRules = [catchAll, FOCUS]
+  const newRules = [catchAll, { ...FOCUS, priority: 10 }]
+
+  const withFocus = previewStackImpact({
+    kind: 'allow', oldRules, newRules, subjects: THREE, now: NOW, focusRuleId: 5,
+  })
+  const without = previewStackImpact({ kind: 'allow', oldRules, newRules, subjects: THREE, now: NOW })
+
+  expect(withFocus).toEqual(without)
+  expect(withFocus.counts.hits).toBe(2)
+  expect(withFocus.counts.scanned).toBe(2)
+  expect(withFocus.counts.tightened).toBe(2)
+  expect(withFocus.changedRuleIds).toEqual([5])
+  // 有真实改动，摘要一个字都不变
+  expect(withFocus.summary).toContain('这次')
+  expect(withFocus.summary).not.toContain('还没有改动')
+})
+
+test('focusRuleId 指向另一栈的规则时，本栈一场都不算', () => {
+  const fetchRule = rule({ id: 9, kind: 'fetch', effect: 'all', note: '全拉' })
+  const p = previewStackImpact({
+    kind: 'allow',
+    oldRules: [FOCUS, fetchRule],
+    newRules: [FOCUS, fetchRule],
+    subjects: THREE,
+    now: NOW,
+    focusRuleId: 9,
+  })
+  expect(p.counts.hits).toBe(0)
+  expect(p.counts.scanned).toBe(0)
+  expect(p.changedRuleIds).toEqual([])
+})
+
+test('focusRuleId 指向候选集里不存在的 id：忽略，不虚报范围', () => {
+  const p = previewStackImpact({
+    kind: 'allow', oldRules: [FOCUS], newRules: [FOCUS], subjects: THREE, now: NOW, focusRuleId: 404,
+  })
+  expect(p.counts.hits).toBe(0)
+  expect(p.counts.scanned).toBe(0)
+  expect(p.changedRuleIds).toEqual([])
+})
+
+test('不传 focusRuleId 时旧行为原样保留：原样打开的规则不张开任何范围', () => {
+  // 张开范围是编辑器显式要的一件事，不是对所有调用方的默认行为
+  const p = previewStackImpact({
+    kind: 'allow', oldRules: [FOCUS], newRules: [FOCUS], subjects: THREE, now: NOW,
+  })
+  expect(p.counts.hits).toBe(0)
+  expect(p.counts.scanned).toBe(0)
+  expect(p.changedRuleIds).toEqual([])
+  expect(p.summary).toContain('这次')
+})
+
 // ── §5.4 人工改写优先于所有规则 ───────────────────────────────
 
 test('人工改写过的会议被排除在「会被改变」之外，但要单独说得出来', () => {

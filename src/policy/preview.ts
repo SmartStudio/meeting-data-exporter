@@ -31,6 +31,23 @@
  * 「命中」指**该条规则自身的 conds 匹配**（`matchesRule`），不是整栈求值的结果——
  * 主体不符、被更高优先级顶掉的规则照样算「够得着」，因为改动它们仍可能改变结果。
  *
+ * ### 「一个字都没改」不等于「范围是空的」
+ *
+ * 规则编辑器打开一条已有规则时，会把它**原样**作为候选发来预览。这时新旧两版逐字相同，
+ * `diffRules` 一条都不报，范围塌成空集，预览于是说「没有够得着任何会议」——而同一屏上
+ * 规则列表那一行正显示着这条规则命中 N 场（口径同为 `matchesRule`）。同一件事给出两个数，
+ * 管理员只能认定其中一个在骗人，这一节前面所有的功夫也就白费了。
+ *
+ * 按 §5.5 的公式算本来不会这样：`命中(旧规则) ∪ 命中(新规则)` 里的「规则」是**被编辑的
+ * 那一条**，没改动时两侧是同一条规则，并集就是它自己的命中集，**不是空集**。
+ * 所以 `focusRuleId` 修的是实现对公式的偏离，不是给公式打补丁。
+ *
+ * `focusRuleId` 与 `changedRuleIds` 分工不同，两者不许混：
+ * 前者只回答「这次要考察哪些会议」，后者回答「这次改动涉及哪几条规则」。
+ * 把 focus 规则塞进 `changedRuleIds`，界面上的「改了这几条」就开始说假话——
+ * 一条原样打开、一个字没动的规则会被报成改动过。因此范围用一个列表、
+ * `changedRuleIds` 用另一个，代码里刻意没有往 `touched` 里 push。
+ *
  * ## 二、人工改写过的会议排除在「会被改变」之外（spec §5.4）
  *
  * 改写是引擎结果之上的**覆盖层**，规则怎么变，被改写过的那场会议的实际结果都不变，
@@ -206,6 +223,18 @@ export interface StackImpactOptions {
    * 改写是按「会议 × 栈」记的，所以传进来的集合应当已经按 `kind` 筛过。
    */
   overridden?: ReadonlySet<string> | ((subject: PreviewSubject) => boolean)
+  /**
+   * 规则编辑器当前正在编辑的那条规则的 id。
+   *
+   * 它**只影响考察范围**：一个字都没改时，范围仍是这条规则自己的命中集
+   * （`命中(旧) ∪ 命中(新)`，两侧相同），而不是空集——规则列表上那一行的命中数说的
+   * 就是这件事，预览不能对着同一条规则报出另一个数（见文件头第一节）。
+   *
+   * 它**不把这条规则算成「改动过」**：`changedRuleIds` 始终只列真的改过的规则。
+   * 这条规则若真被改了，它本来就在范围里，这个字段什么都不多做（不会重复计数）；
+   * 它若不属于本栈、或候选集里根本没有这个 id，这个字段被忽略。
+   */
+  focusRuleId?: number
 }
 
 // ── 规则的异同：只比会改变判定的字段 ──────────────────────────
@@ -400,16 +429,26 @@ function diffDecisions(kind: StackKind, before: StackDecision, after: StackDecis
 
 // ── 说人话 ────────────────────────────────────────────────────
 
+/**
+ * 一条规则在文案里的称呼：有 note 就带上，没有就只报编号，不留空引号。
+ *
+ * 与 `stacks.ts` 判定理由里的写法是同一种形式。这里单独拿出来，是为了让
+ * `describeDecider`（判定理由）与 focus 规则的摘要说同一句称呼——
+ * 同一条规则在预览面板的两处出现两种叫法，管理员会以为是两条规则。
+ */
+function ruleText(kind: StackKind, ruleId: number, note: string | null): string {
+  const base = `${STACK_KIND_LABEL[kind]} #${ruleId}`
+  return note !== null && note !== '' ? `${base}「${note}」` : base
+}
+
 /** 一次判定是谁做出的，一句话 */
 function describeDecider(decision: StackDecision): string {
   // 兼容兜底是一条**合成**规则，库里没有它。说成「拉取规则 #0」会把管理员送去
   // 规则页找一条不存在的规则——那正是计划 E-c 骂过的「把一个缺口伪装成一次判定」
   if (decidedByFetchCompat(decision)) return FETCH_COMPAT_DECIDER_LABEL
-  const label = STACK_KIND_LABEL[decision.kind]
-  if (decision.ruleId === null) return `兜底（没有任何${label}匹配）`
-  const note = decision.note !== null && decision.note !== '' ? `「${decision.note}」` : ''
+  if (decision.ruleId === null) return `兜底（没有任何${STACK_KIND_LABEL[decision.kind]}匹配）`
   const broken = decision.source === 'rule_invalid' ? '（这条规则的 effect 是脏数据，判定落到了本栈的安全侧）' : ''
-  return `${label} #${decision.ruleId}${note}${broken}`
+  return `${ruleText(decision.kind, decision.ruleId, decision.note)}${broken}`
 }
 
 function changeSummary(
@@ -434,7 +473,20 @@ const DIRECTION_LABEL: Record<StackKind, Record<Exclude<ImpactDirection, 'unchan
   allow: { opened: '新放行', tightened: '新收紧', moved: '换目标', mixed: '放行的资产类型有增有减' },
 }
 
-function previewSummary(kind: StackKind, counts: ImpactCounts): string {
+/**
+ * 一句话汇总。
+ *
+ * `focusOnly` 是「一个字都没改，只是把这条规则原样打开了」时它的称呼（非 null 即该情形）。
+ * 那一刻两种现成说法都是错的：说「这次改动够得着 N 场」——根本没有改动；
+ * 说「没有够得着任何会议」——这条规则明明命中着 N 场，与规则列表那一行自相矛盾。
+ * 所以换一句话，先报「现在命中多少」，再说明「还没有改动」。
+ * 有真实改动时一个字都不变，走下面原来的路径。
+ */
+function previewSummary(kind: StackKind, counts: ImpactCounts, focusOnly: string | null): string {
+  if (focusOnly !== null) {
+    return `${focusOnly}现在命中 ${counts.hits} 场（共 ${counts.total} 场）；还没有改动，不会有任何判定改变。`
+  }
+
   const label = STACK_KIND_LABEL[kind]
   if (counts.scanned === 0) {
     return `这次${label}改动没有够得着任何会议（共 ${counts.total} 场），不会有任何判定改变。`
@@ -461,6 +513,32 @@ function previewSummary(kind: StackKind, counts: ImpactCounts): string {
 
 // ── 主函数 ────────────────────────────────────────────────────
 
+/**
+ * 把 focus 规则做成一条「前后一模一样」的合成变更项，**只为张开考察范围**。
+ *
+ * 三种情况一律不补，返回 null：
+ * - 这条规则**真的改过了**（已在 `touched` 里）——再补一条，同一场会议会被数两遍；
+ * - 它**不属于本栈**——别的栈的规则够不着本栈的判定，补进来就是虚报范围；
+ * - 候选集里**没有这个 id**（新建还没落库、或这次正要删掉它）——
+ *   一条不存在于新规则集的规则谈不上「现在命中多少场」。
+ *
+ * `before` / `after` 取的是该 id 在两侧的**全部版本**（同 id 多行是脏数据，
+ * `diffRules` 也是整组处理的），这样合成项与真实变更项在后面的代码里一视同仁。
+ */
+function focusEntry(
+  kind: StackKind,
+  focusRuleId: number | undefined,
+  oldRules: readonly StackRule[],
+  newRules: readonly StackRule[],
+  touched: readonly RuleChange[],
+): RuleChange | null {
+  if (focusRuleId === undefined) return null
+  if (touched.some((change) => change.id === focusRuleId)) return null
+  const after = newRules.filter((rule) => rule.id === focusRuleId)
+  if (!after.some((rule) => rule.kind === kind)) return null
+  return { id: focusRuleId, before: oldRules.filter((rule) => rule.id === focusRuleId), after }
+}
+
 function toPredicate(
   overridden: StackImpactOptions['overridden'],
 ): (subject: PreviewSubject) => boolean {
@@ -485,6 +563,13 @@ export function previewStackImpact(options: StackImpactOptions): StackImpactPrev
   const touched = diffRules(oldRules, newRules).filter((change) =>
     [...change.before, ...change.after].some((rule) => rule.kind === kind),
   )
+
+  // 1.5 编辑器原样打开一条规则时新旧两版逐字相同，`touched` 是空的，但 §5.5 的公式给出的
+  //     范围是这条规则自己的命中集（文件头第一节）。所以补一条合成项把范围张开，
+  //     **只补进 `inScope`**：`changedRuleIds` 下面读的仍是 `touched`，
+  //     一条没改过的规则不许被报成「这次改动涉及的规则」
+  const focus = focusEntry(kind, options.focusRuleId, oldRules, newRules, touched)
+  const inScope = focus === null ? touched : [...touched, focus]
 
   // 求值用的是「这一刻实际生效的规则集」，不是库里那份（文件头第三点五节）
   const oldInEffect = rulesInEffect(kind, oldRules)
@@ -513,9 +598,9 @@ export function previewStackImpact(options: StackImpactOptions): StackImpactPrev
   }
 
   for (const subject of subjects) {
-    // 2. 范围：被改动的规则里，新旧任一版命中这场会议就算够得着
-    const hitAfter = touched.some((change) => hitBy(change.after, subject, now))
-    const hitBefore = touched.some((change) => hitBy(change.before, subject, now))
+    // 2. 范围：`inScope` 里的规则（被改动的 + 原样打开的那条）新旧任一版命中就算够得着
+    const hitAfter = inScope.some((change) => hitBy(change.after, subject, now))
+    const hitBefore = inScope.some((change) => hitBy(change.before, subject, now))
     if (hitAfter) counts.hits += 1
     if (!hitAfter && !hitBefore && !fallbackFlipped) continue
     counts.scanned += 1
@@ -564,6 +649,13 @@ export function previewStackImpact(options: StackImpactOptions): StackImpactPrev
     deciderOnly,
     shielded,
     changedRuleIds: touched.map((change) => change.id),
-    summary: previewSummary(kind, counts),
+    // 一条真实改动都没有、只是打开了 focus 规则时，摘要不能再说「这次改动…」
+    summary: previewSummary(
+      kind,
+      counts,
+      touched.length === 0 && focus !== null
+        ? ruleText(kind, focus.id, focus.after.find((rule) => rule.kind === kind)?.note ?? null)
+        : null,
+    ),
   }
 }
