@@ -53,6 +53,14 @@ test('dept in / notin：部门有数据时按集合比对', () => {
   expect(hit('dept', 'notin', ['财务部'], { dept: '财务部' })).toBe(false)
 })
 
+test('host 为空串（设备账号发起、平台没给主持人）：is 一律不成立、isnot 一律成立，解释不印半句话', () => {
+  expect(hit('host', 'is', 'tm-alice', { hostUserId: '' })).toBe(false)
+  expect(hit('host', 'isnot', 'tm-alice', { hostUserId: '' })).toBe(true)
+  const ev = evaluateCond({ f: 'host', op: 'is', v: 'tm-alice' }, facts({ hostUserId: '' }), NOW)
+  expect(ev.detail).toContain('没有主持人')
+  expect(ev.detail).not.toMatch(/主持人是 ，/)
+})
+
 test('host is / isnot：主持人等值比对', () => {
   expect(hit('host', 'is', 'tm-alice')).toBe(true)
   expect(hit('host', 'is', 'tm-bob')).toBe(false)

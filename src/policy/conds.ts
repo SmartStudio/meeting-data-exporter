@@ -393,6 +393,14 @@ function evalDept(op: string, v: string[], dept: string | null): CondEvaluation 
 }
 
 function evalHost(op: string, v: string, hostUserId: string): CondEvaluation {
+  // 空串 = 平台没有给主持人（设备账号发起的会议，见 domain/types.ts）。
+  // 「是 X」对它不成立、「不是 X」成立，与非空时的判法一致；只是解释里不能
+  // 印出「主持人是 ，不是 X」这种半句话。
+  if (hostUserId === '') {
+    return op === 'is'
+      ? no('not_matched', `这场会议没有主持人（平台未返回），不是 ${v}`)
+      : ok(`这场会议没有主持人（平台未返回），不是 ${v}`)
+  }
   const same = hostUserId === v
   if (op === 'is') {
     return same ? ok(`主持人是 ${v}`) : no('not_matched', `主持人是 ${hostUserId}，不是 ${v}`)

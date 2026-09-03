@@ -245,7 +245,17 @@ test('企业维度能拉到别人主持的会议——主持人不再恒等于 o
   expect(ms.map((m) => m.hostUserId)).toEqual(['tm-alice', 'tm-bob', 'tm-carol'])
 })
 
-test('企业维度响应缺 userid 时抛错，不静默产出一场没有主持人的会议', async () => {
+test('userid 是空串（设备账号发起的快速会议）：放行成「没有主持人」，同一页其余会议照常', async () => {
+  // 2026-09-03 实测形状：字段在，值是 ""，host_user_id 也是 ""。它曾让全公司的拉取整轮中止。
+  const device = { ...corpMeeting, meeting_record_id: 'rec-device', meeting_id: 'm-device', subject: '擎天柱的快速会议', userid: '', host_user_id: '' }
+  const { client } = stubClient([
+    onePage([{ ...corpMeeting, meeting_record_id: 'rec-a', userid: 'tm-alice' }, device, { ...corpMeeting, meeting_record_id: 'rec-c', meeting_id: 'm-c', userid: 'tm-carol' }]),
+  ])
+  const ms = await createRecordsApi(client, 'admin', memCache()).listMeetings({ kind: 'range', from: 0, to: 1000 }, NOW)
+  expect(ms.map((m) => [m.meetingRecordId, m.hostUserId])).toEqual([['rec-a', 'tm-alice'], ['rec-device', ''], ['rec-c', 'tm-carol']])
+})
+
+test('企业维度响应**没有** userid 字段时抛错——那是接口形状变了，不静默产出整批没有主持人的会议', async () => {
   const noHost = { ...corpMeeting, meeting_record_id: 'rec-nohost', userid: undefined }
 
   const first = stubClient([onePage([noHost])])

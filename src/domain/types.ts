@@ -21,6 +21,14 @@ export interface Meeting {
   meetingRecordId: string
   meetingCode: string
   subject: string
+  /**
+   * 主持人（会议创建者）的企业成员 id。
+   *
+   * **空串表示平台没有给主持人**：设备账号发起的快速会议就是这样（`/v1/corp/records`
+   * 的 `userid` 为 `""`，见 tencent/records.ts）。它是一场真实的、要照常拉取归档的会议，
+   * 只是规则里的「主持人」条件对它永远不成立。不要用 null：拉取、归档两处把 null
+   * 当「元数据没取到」处理（`missingFacts`），而这里的事实是「取到了，就是没有」。
+   */
   hostUserId: string
   /** unix 秒 UTC */
   startTime: number

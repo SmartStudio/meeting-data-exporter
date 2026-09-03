@@ -11,8 +11,10 @@
  * ——只认得 id 的人没法在勾选前确认自己勾的是谁的会议。内容预览页的抬头
  * （`主持 {host}`）当时漏掉了，同一串 id 在另一页原样上屏，这次一并收进来。
  *
- * ## 三条路径，且中间那条是常态
+ * ## 四条路径，且「查不到姓名」那条是常态
  *
+ * 0. 平台就没给主持人（`host === ''`，设备账号发起的快速会议）→ 说「无主持人」。
+ *    它与下一条不是一回事：这场会议的元数据是取到了的，只是没有人主持；
  * 1. 库里就没有主持人（`missing` 里有 `host`）→ 说「未取到」，不是空白；
  * 2. **查不到姓名**（`hostName === null`）→ 降级：说清这是「未知主持人」，
  *    再挂一截 id 的尾巴让两行区分得开，全量 id 放进 `title` 供复制。
@@ -62,10 +64,16 @@ export function shortHostId(host: string): string {
 
 export const HOST_MISSING_LABEL = '未取到'
 export const HOST_UNKNOWN_LABEL = '未知主持人'
+export const HOST_NONE_LABEL = '无主持人'
+/** 挂在「无主持人」上的解释。设备账号是 2026-09-03 实际碰到的那一种，不是唯一可能 */
+export const HOST_NONE_TITLE = '腾讯会议没有返回主持人：设备账号发起的会议就是这样'
 
 export function hostView(m: HostSource): HostView {
-  if (m.missing.includes('host') || m.host === '') {
+  if (m.missing.includes('host')) {
     return { text: HOST_MISSING_LABEL, tail: null, title: null, resolved: false }
+  }
+  if (m.host === '') {
+    return { text: HOST_NONE_LABEL, tail: null, title: HOST_NONE_TITLE, resolved: false }
   }
   if (m.hostName !== null && m.hostName !== '') {
     return { text: m.hostName, tail: null, title: `主持人 ID：${m.host}`, resolved: true }
@@ -83,5 +91,6 @@ export function hostLabel(m: HostSource): string {
   const v = hostView(m)
   // 离开「主持人」那一列之后就没有列头了，光说「未取到」不知道说的是哪一样东西
   if (v.text === HOST_MISSING_LABEL) return `主持人${HOST_MISSING_LABEL}`
+  if (v.text === HOST_NONE_LABEL) return HOST_NONE_LABEL
   return v.tail === null ? v.text : `${v.text} · ${v.tail}`
 }

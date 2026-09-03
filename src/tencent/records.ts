@@ -87,7 +87,15 @@ export class MeetingNotFoundInRangeError extends Error {
   }
 }
 
-/** 企业维度响应缺主持人字段时抛出：不静默产出一场没有主持人的会议 */
+/**
+ * 企业维度响应**没有** `userid` 字段（或不是字符串）时抛出：那是接口形状变了，
+ * 错的是整批，整轮中止是对的。
+ *
+ * **字段在、值是空串不算**。2026-09-03 实测：设备账号发起的快速会议
+ * （meeting_record_id=2095448286274887680，`userid` 与 `host_user_id` 都是 `""`）
+ * 就是这样返回的，同一页其余 94 条都正常。那是一条会反复出现的正常数据，
+ * 由 `toMeeting` 放行成「没有主持人」，不走这里。
+ */
 export class CorpRecordShapeError extends Error {
   constructor(readonly meetingRecordId: string, readonly field: string) {
     super(
@@ -132,6 +140,7 @@ interface RawCorpRecordMeeting {
   subject: string
   state: number
   record_files?: RawRecordFile[]
+  /** 会议创建者的企业成员 id。**空串是合法值**：设备账号发起的会议没有成员身份 */
   userid?: string
 }
 
@@ -174,9 +183,15 @@ const STATE_MAP: Record<number, RecordState> = {
 
 function toMeeting(r: RawCorpRecordMeeting): Meeting {
   // 主持人字段在这个接口里叫 userid。照搬 host_user_id 会让它静默变成 undefined，
-  // 而 hostUserId 是策略引擎 host 条件的唯一输入——空值不会报错，只会让规则全部
-  // 不匹配，整批会议悄悄变成「不可见」。
-  if (typeof r.userid !== 'string' || r.userid === '') {
+  // 而 hostUserId 是策略引擎 host 条件的唯一输入——undefined 不会报错，只会让规则
+  // 全部不匹配，整批会议悄悄变成「不可见」。所以**字段不存在**要整轮抛出。
+  //
+  // **字段存在但是空串**是另一回事：设备账号发起的快速会议就是这样返回的
+  // （见 CorpRecordShapeError 的注释），错的只是这一条、而且它本来就没有主持人。
+  // 这里曾把两者一起抛，结果一条正常数据让全公司的拉取整轮中止了三个小时
+  // （2026-09-03 18:15 起连续 13 轮）。空串照原样放行：`hostUserId === ''` 的语义
+  // 在 domain/types.ts 上写明，规则引擎的 host 条件对它一律不匹配（policy/conds.ts）。
+  if (typeof r.userid !== 'string') {
     throw new CorpRecordShapeError(r.meeting_record_id, 'userid')
   }
   return {

@@ -4,6 +4,7 @@ import {
   HOST_UNKNOWN_LABEL,
   hostLabel,
   hostView,
+  HOST_NONE_LABEL,
   shortHostId,
 } from '../../src/lib/host'
 
@@ -22,6 +23,17 @@ const REAL_ID = 'woaJARCQAAt_hKBw--YKZeVjEaIMGFQQ'
 const OTHER_ID = 'woaJARCQAAA1LL0U0f3ZkO1CNpkzWNrQ'
 
 describe('三条路径', () => {
+  test('平台没给主持人（host 为空串、元数据齐全）→ 说「无主持人」，带一句解释，不是「未取到」', () => {
+    // 设备账号发起的快速会议就是这样（2026-09-03 实测）。它与「元数据没取到」不是一回事。
+    const v = hostView({ host: '', hostName: null, missing: [] })
+    expect(v.text).toBe(HOST_NONE_LABEL)
+    expect(v.text).not.toBe(HOST_MISSING_LABEL)
+    expect(v.tail).toBeNull()
+    expect(v.title).toContain('设备账号')
+    expect(v.resolved).toBe(false)
+    expect(hostLabel({ host: '', hostName: null, missing: [] })).toBe(HOST_NONE_LABEL)
+  })
+
   test('库里没有主持人 → 说「未取到」，不是空白', () => {
     const v = hostView({ host: '', hostName: null, missing: ['host'] })
     expect(v.text).toBe(HOST_MISSING_LABEL)
