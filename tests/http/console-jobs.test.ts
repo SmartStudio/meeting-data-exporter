@@ -101,6 +101,7 @@ function fakeCtx(opts: {
     finishRun: notUsed('finishRun'),
     recordSkip: notUsed('recordSkip'),
     claimQueued: notUsed('claimQueued'),
+    enqueueChainedRun: notUsed('enqueueChainedRun'),
     coalesceRuns: notUsed('coalesceRuns'),
     markInterrupted: notUsed('markInterrupted'),
     findRun: notUsed('findRun'),

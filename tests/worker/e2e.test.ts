@@ -774,8 +774,16 @@ describe('定时任务的任务一（fetch_recordings）', () => {
       })
 
       // ④ 任务一**不越界去归档**：归档是任务二自己那一格。两个任务体各起各的归档轮
-      //    意味着两轮同时往同一个 NAS 目录搬同一批文件
+      //    意味着两轮同时往同一个 NAS 目录搬同一批文件。
+      //
+      //    这一轮下到了东西，所以调度器把归档**排进了队列**（trigger 'chained'，见
+      //    scheduler.ts 的 JOB_CHAINS）——排队而已，起它的是下一个 tick 的认领路径，
+      //    而这条用例里没有第二个 tick，所以归档任务体一次都没跑。两条断言一起看
+      //    才钉得住这个区别：归档被安排了，但仍然只会发生在归档那一格里。
       expect(counters.archive).toBe(0)
+      const archiveRuns = await jobs.listRuns('archive_nas', 10)
+      expect(archiveRuns.map((r) => r.trigger)).toEqual(['chained'])
+      expect(archiveRuns[0]?.status).toBe('queued')
       expect(await readdir(nasRoot)).toEqual([])
     })
   }, 30_000)

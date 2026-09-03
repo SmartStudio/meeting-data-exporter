@@ -864,3 +864,305 @@ test('任务一：dead 资产的失败项是资产状态的镜像——一直开
     expect(again.reason).not.toContain('meeting_summary') // reason 是这一次的，纪要已经下下来了
   })
 })
+
+
+// ── 接续：拉取轮下完东西，就排一轮归档 ────────────────────────
+
+/**
+ * 资产在拉取轮里就落了盘，归档却每小时才一次——控制台的「内容预览」只读已归档的
+ * 那一份，于是那最多 60 分钟里界面上这场会议什么都没有。接续要消掉的就是这段等待。
+ *
+ * 接续**只往 `job_runs` 排一行 queued**，起它的仍然是 `tick()` 那条现成的认领路径。
+ * 下面几条各钉一件事：排了（而且当场没跑，下一个 tick 才起）/ 该不排时不排 /
+ * 上游失败不排 / 排出来的那轮失败不牵连上游 / 下游正忙时那行留在队里 /
+ * 排了两行只起一轮 / 手动触发的那一轮同样接。
+ */
+
+test('拉取轮下完了东西：排一行 chained，下一个 tick 才真的起', async () => {
+  const seen: string[] = []
+  await withScheduler(
+    {
+      fetch_recordings: async () => ({ completed: 3 }),
+      archive_nas: async (ctx) => {
+        seen.push(ctx.trigger)
+        return {}
+      },
+    },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      // 15 分那一片只有拉取（和每 5 分钟的清单）到点，归档的整点还没到——
+      // 所以归档这一行**只可能**是接续排出来的
+      h.setNow(T0 + 15 * MIN)
+      const out = await h.scheduler.tick()
+      expect(out.started).not.toContain('archive_nas')
+      await h.drain()
+
+      // 这一刻只排了队：起任务是 tick 的活，接续自己不起
+      const queued = await h.jobs.listRuns('archive_nas', 10)
+      expect(queued).toHaveLength(1)
+      expect(queued[0]?.trigger).toBe('chained')
+      expect(queued[0]?.status).toBe('queued')
+      // 排队中还没开跑，界面上「排队中」与「正在跑」不能长得一样
+      expect(queued[0]?.startedAt).toBeNull()
+      expect(seen).toEqual([])
+      // 上游那一轮照常成功
+      expect((await h.jobs.listRuns('fetch_recordings', 1))[0]?.status).toBe('succeeded')
+
+      // 下一个 tick（还在同一片里，没有任何定时任务到点）认领它
+      h.setNow(T0 + 15 * MIN + 30)
+      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas'])
+      await h.drain()
+
+      const done = await h.jobs.listRuns('archive_nas', 10)
+      expect(done).toHaveLength(1)
+      expect(done[0]?.status).toBe('succeeded')
+      expect(done[0]?.trigger).toBe('chained')
+      // 任务体拿到的 trigger 与 job_runs 那一行说的是同一件事，不是硬写的 'manual'
+      expect(seen).toEqual(['chained'])
+    },
+  )
+})
+
+test('拉取轮一个都没下下来：不排队——多数轮次都是这样，排了只是让归档空跑', async () => {
+  let archived = 0
+  await withScheduler(
+    {
+      fetch_recordings: async () => ({ completed: 0 }),
+      archive_nas: async () => {
+        archived++
+        return {}
+      },
+    },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      h.setNow(T0 + 15 * MIN)
+      await h.scheduler.tick()
+      await h.drain()
+      expect(await h.jobs.listRuns('archive_nas', 10)).toHaveLength(0)
+      // 再走一个 tick 也没有可认领的
+      h.setNow(T0 + 15 * MIN + 30)
+      await h.scheduler.tick()
+      await h.drain()
+      expect(archived).toBe(0)
+      expect(await h.jobs.listRuns('archive_nas', 10)).toHaveLength(0)
+    },
+  )
+})
+
+test('拉取整轮失败：不排队（这一轮下没下到东西根本不知道），失败记账不变', async () => {
+  await withScheduler(
+    {
+      fetch_recordings: async () => {
+        throw new Error('腾讯接口 502')
+      },
+    },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      h.setNow(T0 + 15 * MIN)
+      await h.scheduler.tick()
+      await h.drain()
+
+      expect(await h.jobs.listRuns('archive_nas', 10)).toHaveLength(0)
+      // 现有行为一个字都没变：那一行 failed，外加一条整轮的失败项
+      const run = (await h.jobs.listRuns('fetch_recordings', 1))[0]!
+      expect(run.status).toBe('failed')
+      expect(run.error).toContain('腾讯接口 502')
+      const fs = await h.jobs.listFailures({ jobName: 'fetch_recordings' })
+      expect(fs.map((f) => f.target)).toEqual([ROUND_FAILURE_TARGET])
+    },
+  )
+})
+
+/**
+ * 接续排出来的那一轮自己炸了，**不许把上游那一轮也拖成 failed**。
+ *
+ * 拉取明明成功了：会议发现了、文件下下来了。把它记成 failed 会让 sparkline 上
+ * 那一格红着，运维照着「拉取挂了」去查腾讯接口，而真正坏的是归档。
+ */
+test('接续排出来的归档整轮失败：归档那行 failed，拉取那行仍然 succeeded', async () => {
+  await withScheduler(
+    {
+      fetch_recordings: async () => ({ completed: 1 }),
+      archive_nas: async () => {
+        throw new Error('NAS 挂载点没了')
+      },
+    },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      h.setNow(T0 + 15 * MIN)
+      await h.scheduler.tick()
+      await h.drain()
+      // 排出来的那一行由下一个 tick 认领，跑起来才炸
+      h.setNow(T0 + 15 * MIN + 30)
+      await h.scheduler.tick()
+      await h.drain()
+
+      const archive = (await h.jobs.listRuns('archive_nas', 10))[0]!
+      expect(archive.trigger).toBe('chained')
+      expect(archive.status).toBe('failed')
+      expect(archive.error).toContain('NAS 挂载点没了')
+
+      const fetch = (await h.jobs.listRuns('fetch_recordings', 1))[0]!
+      expect(fetch.status).toBe('succeeded')
+      expect(fetch.error).toBeNull()
+      // 上游也没被扣一条整轮失败项
+      expect(await h.jobs.listFailures({ jobName: 'fetch_recordings' })).toHaveLength(0)
+    },
+  )
+})
+
+/**
+ * 归档正忙时排进来的那一行**留在队里**，不必另设脏标记：`tick()` 本来就只在任务
+ * 不在 running 时才认领。这一条同时钉住重叠保护没被绕开——排队这条路不是第二个
+ * 「起任务」的入口，它只写一行。
+ */
+test('归档正在跑时：接续那行留在队里，tick 多少次都不认领', async () => {
+  const gate: { release: (() => void) | null } = { release: null }
+  let entered = 0
+  await withScheduler(
+    {
+      fetch_recordings: async () => ({ completed: 2 }),
+      archive_nas: async () => {
+        entered++
+        // 只卡住第一轮，被认领的那一轮要能正常收尾
+        if (entered === 1) await new Promise<void>((r) => { gate.release = r })
+        return {}
+      },
+    },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      // 用手动触发把归档先卡住：这一刻拉取还没到点，两者不在同一个 tick 里起，
+      // 免得"谁先起"变成一条随机挂的用例
+      await h.jobs.enqueueManualRun({ jobName: 'archive_nas', requestedBy: 'a', now: T0 })
+      h.setNow(T0 + 60)
+      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas'])
+      expect(entered).toBe(1)
+
+      // 拉取跑完，下到了东西 → 排一行 queued（归档正忙也照排）
+      h.setNow(T0 + 15 * MIN)
+      await h.scheduler.tick()
+      await settleExcept(h, 'archive_nas')
+
+      // 归档还卡着：这一行认领不走，`tick` 多少次都一样
+      for (const at of [T0 + 15 * MIN + 30, T0 + 15 * MIN + 60]) {
+        h.setNow(at)
+        expect((await h.scheduler.tick()).claimed).not.toContain('archive_nas')
+        await settleExcept(h, 'archive_nas')
+      }
+      const waiting = await h.jobs.listRuns('archive_nas', 10)
+      expect(waiting.map((r) => r.status)).toEqual(['queued', 'running'])
+      expect(waiting[0]?.trigger).toBe('chained')
+      // 重叠保护仍然只让它跑着一份
+      expect(h.scheduler.runningJobs().filter((n) => n === 'archive_nas')).toHaveLength(1)
+      expect(entered).toBe(1)
+
+      // 放开那一轮，它自己不会去起排着的那一行——起它的是下一个 tick
+      gate.release?.()
+      await h.drain()
+      expect(entered).toBe(1)
+      expect((await h.jobs.listRuns('archive_nas', 10)).map((r) => r.status)).toEqual([
+        'queued',
+        'succeeded',
+      ])
+
+      h.setNow(T0 + 15 * MIN + 90)
+      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas'])
+      await h.drain()
+      expect(entered).toBe(2)
+      const runs = await h.jobs.listRuns('archive_nas', 10)
+      expect(runs).toHaveLength(2)
+      expect(runs[0]?.trigger).toBe('chained')
+      expect(runs[0]?.status).toBe('succeeded')
+      expect(runs[1]?.trigger).toBe('manual')
+      expect(runs[1]?.status).toBe('succeeded')
+    },
+  )
+})
+
+/**
+ * 归档跑着的时候接续排了两行，认领时合并成**一轮**。
+ *
+ * "新下的这批赶紧归一次"要的就是一轮，跑两轮完整的归档没有任何额外收获。这件事
+ * 不必为接续另写一遍：手动触发连按三次走的是同一段 `coalesceRuns`。
+ */
+test('归档正在跑期间接续排了两行：认领时只起一轮，另一行标成已合并', async () => {
+  const gate: { release: (() => void) | null } = { release: null }
+  let entered = 0
+  await withScheduler(
+    {
+      fetch_recordings: async () => ({ completed: 2 }),
+      archive_nas: async () => {
+        entered++
+        if (entered === 1) await new Promise<void>((r) => { gate.release = r })
+        return {}
+      },
+    },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      await h.jobs.enqueueManualRun({ jobName: 'archive_nas', requestedBy: 'a', now: T0 })
+      h.setNow(T0 + 60)
+      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas'])
+      expect(entered).toBe(1)
+
+      // 两轮拉取，各下到了东西 → 队里排出两行
+      for (const at of [T0 + 15 * MIN, T0 + 30 * MIN]) {
+        h.setNow(at)
+        await h.scheduler.tick()
+        await settleExcept(h, 'archive_nas')
+      }
+      const queued = await h.jobs.listRuns('archive_nas', 10)
+      expect(queued.map((r) => r.status)).toEqual(['queued', 'queued', 'running'])
+
+      gate.release?.()
+      await h.drain()
+
+      // 归档空出来了：一次 tick 认领两行，只跑一轮
+      h.setNow(T0 + 30 * MIN + 30)
+      expect((await h.scheduler.tick()).claimed).toEqual(['archive_nas'])
+      await h.drain()
+      expect(entered).toBe(2)
+
+      const runs = await h.jobs.listRuns('archive_nas', 10)
+      expect(runs).toHaveLength(3)
+      const [second, first, manual] = [runs[0]!, runs[1]!, runs[2]!]
+      // 合并的痕迹留着，不是悄悄删掉——按下（或接续排下）的那一行得看得见去向
+      expect(second.status).toBe('skipped')
+      expect((second.summary as { coalescedIntoRunId: number }).coalescedIntoRunId).toBe(first.id)
+      expect(first.status).toBe('succeeded')
+      expect(first.trigger).toBe('chained')
+      expect(manual.status).toBe('succeeded')
+    },
+  )
+})
+
+test('手动触发的那一轮拉取下完了东西，同样排一行 chained', async () => {
+  await withScheduler(
+    { fetch_recordings: async () => ({ completed: 5 }) },
+    T0,
+    async (h) => {
+      await h.scheduler.bootstrap()
+      const id = await h.jobs.enqueueManualRun({
+        jobName: 'fetch_recordings',
+        requestedBy: 'admin-1',
+        now: T0,
+      })
+      h.setNow(T0 + 60)
+      expect((await h.scheduler.tick()).claimed).toEqual(['fetch_recordings'])
+      await h.drain()
+
+      expect((await h.jobs.findRun(id))?.status).toBe('succeeded')
+      const runs = await h.jobs.listRuns('archive_nas', 10)
+      expect(runs).toHaveLength(1)
+      expect(runs[0]?.trigger).toBe('chained')
+      expect(runs[0]?.status).toBe('queued')
+      // 接续没有"谁按的"：这一行不该继承上游那一轮的 admin-1
+      expect(runs[0]?.requestedBy).toBeNull()
+    },
+  )
+})

@@ -92,10 +92,11 @@ CREATE TABLE IF NOT EXISTS job_runs (
   id           BIGINT       NOT NULL AUTO_INCREMENT,
   -- 任务名。取值见 src/store/jobs.ts 的 JOB_CATALOG，与 spec §4.8 的四个任务一一对应
   job_name     VARCHAR(32)  NOT NULL,
-  -- schedule = 到点自动跑，manual = 管理员在界面上按的。列名不叫 trigger:
-  -- 那是 MySQL 的保留字，每次引用都要反引号
+  -- schedule = 到点自动跑，manual = 管理员在界面上按的，
+  -- chained = 上一个任务的一轮成功结束后接着排进队列的（见 src/worker/scheduler.ts 的 JOB_CHAINS）。
+  -- 列名不叫 trigger: 那是 MySQL 的保留字，每次引用都要反引号
   trigger_kind VARCHAR(16)  NOT NULL DEFAULT 'schedule',
-  -- 手动触发的管理员（admin_accounts.id）。schedule 的行为 NULL
+  -- 手动触发的管理员（admin_accounts.id）。schedule 与 chained 的行为 NULL——没有人按过
   requested_by VARCHAR(128) NULL,
   -- queued / running / succeeded / failed / interrupted / skipped，含义见表头第一节
   status       VARCHAR(16)  NOT NULL,

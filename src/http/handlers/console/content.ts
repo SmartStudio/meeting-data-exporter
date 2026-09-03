@@ -598,7 +598,8 @@ function buildAssetIndex(src: AssetSources): ContentAsset[] {
       chars: null,
       reason:
         '本地已下载完成，但还没归档到 NAS——正文入库发生在归档那一刻（见 src/worker/archive.ts），' +
-        '所以这一段还读不到正文。等下一轮归档任务（每小时整点）跑过就有了。',
+        '所以这一段还读不到正文。拉取轮次结束后会紧接着排一轮归档（最多再等半分钟起跑）；' +
+        '每小时整点另有一轮兜底。',
       contentHash: null,
       parsedAt: null,
       nasPath: null,

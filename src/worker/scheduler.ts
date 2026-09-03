@@ -56,6 +56,40 @@
  *
  * 混成一件事的后果是：sparkline 会因为一场会议归不上就把整个归档任务标红，
  * 而真正"归档任务挂了"的那一次淹没在里面——告警一旦天天红，就没人看了。
+ *
+ * ## 接续：一轮拉取真下到了东西，就排一轮归档
+ *
+ * 归档每小时整点一次，拉取每 15 分钟一次。资产在拉取轮里就已经落了盘，却要再等
+ * 最多 60 分钟才被归档——而控制台的「内容预览」只读**已归档**的那一份（正文在归档
+ * 那一刻才进 `asset_contents`，录像只从 NAS 播）。那个空档里，界面上这场会议看起来
+ * 什么都没有，而实际上文件就在本地。接续要补的就是这一段。
+ *
+ * 规则声明在 `JOB_CHAINS` 里：某个任务的一轮**成功**结束、且它的摘要满足 `when` 时，
+ * 往 `job_runs` 排一行 `status='queued'`、`trigger_kind='chained'`。几处是刻意的：
+ *
+ *   - **只排队，不自己起**。起任务从头到尾只有 `tick()` 一个入口，接续走的是它第①步
+ *     那条现成的认领路径（不在 running 时才认领、多行合并成一轮、顺手把这一片标成
+ *     已触发）。自己起的那一版做不到这一点：`tick` 的「查 running → await 认领/写库
+ *     → launch」与接续的「查 running → await 写库 → launch」各有一段 await 窗口，
+ *     两边一交错就是**两轮归档同时往同一个 NAS 目录搬同一批文件**——正是文件头
+ *     那个方框与上面的重叠保护要杜绝的那件事。少一个入口，这个窗口整个消失
+ *   - **代价是最多晚一个 tick（30 秒）才起跑**。这一段要消掉的是「最多 60 分钟」，
+ *     半分钟的排队时间不在同一个量级上；换来的是并发窗口不存在、且控制台在这半分钟里
+ *     显示的是一行诚实的「排队中」，而不是什么都看不见
+ *   - **只在 `completed > 0` 时接**。多数拉取轮什么都没下下来，每轮都接一次只是把
+ *     归档从每小时一次变成每 15 分钟空跑一次：没有新东西可归，却每一轮都要扫一遍
+ *     待归档的会议，还白占着归档那个几十分钟量级的重叠窗口
+ *   - **整点那一片照常跑**。接续是补空档的，不是替代：归档还有别的入口（上一轮归不上
+ *     的会议、人工补进来的文件），它们不跟着拉取轮走。接续这条路哪天判空了或者被改坏，
+ *     整点那一片仍然兜得住
+ *   - **下游正在跑时那一行原样留在队里**，不必另设脏标记：`tick()` 本来就只在任务不在
+ *     running 时才认领。归档跑了几十分钟、期间接续排进来三行，认领时 `coalesceRuns`
+ *     把它们合成一轮（另外两行留下指向那一轮的痕迹）——"新下的这批赶紧归一次"要的
+ *     就是一轮，多跑两轮没有任何额外收获。合并这件事也不必再写一遍，手动触发连按三次
+ *     用的是同一段代码
+ *
+ * 排队本身失败（写不进库）只记一行日志，**绝不许冒到 `launch` 外层的 catch 里**：
+ * 那个 catch 会把**上游**那一轮记成 failed，而上游明明成功了。
  */
 import { DEFAULT_ASSET_KEYS, createLocalStorage, type MeetingSelector } from '@yaowu/mde-engine'
 import {
@@ -396,7 +430,7 @@ export interface TickOutcome {
   started: JobName[]
   /** 到点了但上一轮还在跑，本轮不起（每个都在 job_runs 里留了一行 skipped） */
   skipped: JobName[]
-  /** 认领了排队中的手动触发并起了一轮的任务 */
+  /** 认领了队里排着的一行（手动触发或接续）并起了一轮的任务 */
   claimed: JobName[]
 }
 
@@ -417,6 +451,41 @@ export interface Scheduler {
   stop(): Promise<void>
 }
 
+/**
+ * 接续：`after` 的一轮**成功**结束、且 `when(summary)` 为真时，把 `run` 排进队列
+ * （`trigger_kind='chained'`），由下一个 tick 认领起跑。整点那一片照常跑，是兜底，
+ * 不是替代。见文件头「接续」。
+ */
+interface JobChain {
+  after: JobName
+  run: JobName
+  when: (summary: unknown) => boolean
+  /** 日志里给人看的一句理由 */
+  why: (summary: unknown) => string
+}
+
+export const JOB_CHAINS: readonly JobChain[] = [
+  {
+    after: 'fetch_recordings',
+    run: 'archive_nas',
+    when: (s) => completedOf(s) > 0,
+    why: (s) => `这一轮有 ${completedOf(s)} 个资产下载完成，不等整点`,
+  },
+]
+
+/**
+ * 安全地从一轮的摘要里取 `completed`。
+ *
+ * 摘要是任务体的返回值，类型上是 `unknown`——这里宁可判成 0（不接续、等整点兜底）
+ * 也不能因为它形状不对就抛出：抛出会顺着 `launch` 的外层 catch 把**上游**那一轮
+ * 记成 failed。
+ */
+function completedOf(s: unknown): number {
+  if (typeof s !== 'object' || s === null) return 0
+  const v = (s as { completed?: unknown }).completed
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
 export function createScheduler(cfg: SchedulerConfig): Scheduler {
   const tz = cfg.tzOffsetSec ?? 0
   const log = cfg.log ?? ((m: string) => console.log(m))
@@ -428,6 +497,30 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
   const currentRunId = new Map<JobName, number>()
   const inFlight = new Map<JobName, Promise<void>>()
   let timer: ReturnType<typeof setInterval> | null = null
+
+  /**
+   * `after` 的一轮成功收尾之后，按 `JOB_CHAINS` 决定要不要**排**一轮别的。
+   *
+   * 只写一行 queued 就完事：起任务是 `tick()` 的活，这里不碰 `running` 也不碰
+   * `launch`。下游此刻正忙也不用管——那一行留在队里，`tick` 本来就只在它不忙时
+   * 才认领，同时排进来的几行还会被 `coalesceRuns` 合成一轮。见文件头「接续」。
+   *
+   * **不抛**：每条链各自 try/catch，排不进去只记一行日志。让它冒出去的话，
+   * `launch` 的外层 catch 会把**上游**那一轮记成 failed，而上游明明成功了。
+   */
+  async function chainAfter(after: JobName, summary: unknown): Promise<void> {
+    for (const chain of JOB_CHAINS) {
+      if (chain.after !== after) continue
+      const run = chain.run
+      try {
+        if (!chain.when(summary)) continue
+        await cfg.jobs.enqueueChainedRun({ jobName: run, now: cfg.now() })
+        log(`scheduler: ${chain.why(summary)}，已把 ${run} 排进队列（chained），下一个 tick 起`)
+      } catch (err) {
+        log(`scheduler: ${after} 跑完想接着排一轮 ${run}，但没排进去：${errText(err)}`)
+      }
+    }
+  }
 
   function launch(spec: JobSpec, trigger: JobTrigger, runId: number, startedAt: number): void {
     const name = spec.name
@@ -467,6 +560,11 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
         // 过一次的对象，`last_failed_at` 一定 >= 它。
         const resolved = await cfg.jobs.resolveStaleFailures(name, startedAt, cfg.now())
         if (resolved > 0) log(`scheduler: ${name} 有 ${resolved} 个失败项这一轮没再失败，已标为已恢复`)
+        // 记账都干净了才接续：接续的前提是"这一轮**成功**结束"。chainAfter 只往
+        // job_runs 排一行 queued（起它是下一个 tick 的活），而且自己不抛，
+        // 所以它既不会把这一轮拖进下面的 catch，也不会与 tick 抢着起任务。
+        // 见文件头「接续」。
+        await chainAfter(name, summary)
       } catch (err) {
         const text = errText(err)
         log(`scheduler: ${name} 整轮失败：${text}`)
@@ -509,22 +607,33 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
     for (const spec of JOB_CATALOG) {
       const name = spec.name
 
-      // ① 手动触发优先于定时。一个人明确按下的按钮比一个到点的闹钟更该被执行，
+      // ① 排队中的触发优先于定时。一个人明确按下的按钮比一个到点的闹钟更该被执行，
       //    而且两者在同一个 tick 里撞上时只该跑一次（下面顺手把这一片标成已触发）。
+      //    队里除了手动触发还有接续排进来的那些（trigger 'chained'，见文件头），
+      //    两者在这里走的是同一条路——**这是全文件唯一起任务的地方**。
       if (!running.has(name)) {
-        const ids = await cfg.jobs.claimQueued(name, now)
-        const primary = ids[0]
+        const claimed = await cfg.jobs.claimQueued(name, now)
+        const primary = claimed[0]
         if (primary !== undefined) {
-          // 连按三次是常事。合并成一轮，另外两行标明合并去向——直接跑三轮
-          // 意味着三次完整的归档，而管理员想要的只是"现在就跑一次"。
-          if (ids.length > 1) await cfg.jobs.coalesceRuns(ids.slice(1), primary, now)
+          // 连按三次是常事，接续在下游忙的时候连排几行也是。合并成一轮，另外几行
+          // 标明合并去向——直接跑三轮意味着三次完整的归档，而管理员（或接续）
+          // 想要的只是"现在就跑一次"。
+          if (claimed.length > 1) {
+            await cfg.jobs.coalesceRuns(
+              claimed.slice(1).map((c) => c.id),
+              primary.id,
+              now,
+            )
+          }
           lastSlot.set(name, slotOf(spec.schedule, now, tz))
-          launch(spec, 'manual', primary, now)
+          // trigger 照那一行原样传，不硬写 'manual'：任务体拿到的 `ctx.trigger`
+          // 要跟 job_runs 里那一行说的是同一件事
+          launch(spec, primary.trigger, primary.id, now)
           out.claimed.push(name)
           continue
         }
       }
-      // 任务正在跑时**不认领**排队中的手动触发：认领了就得当场跑（重叠保护不让跑），
+      // 任务正在跑时**不认领**队里的行：认领了就得当场跑（重叠保护不让跑），
       // 于是只能把它标成 skipped——那等于把管理员按过的那次触发悄悄吞掉。
       // 留在队里，下一个 tick 再说。
 

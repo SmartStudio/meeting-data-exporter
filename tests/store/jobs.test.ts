@@ -188,13 +188,28 @@ test('手动触发在网关侧只排队，认领之后才变 running', async () 
     expect(queued?.trigger).toBe('manual')
     expect(queued?.requestedBy).toBe('admin-1')
 
+    // 认领带出 trigger：队里既有手动触发也有接续排的行，调度器要照原样传给任务体
     const claimed = await store.claimQueued('refresh_inventory', 600)
-    expect(claimed).toEqual([id])
+    expect(claimed).toEqual([{ id, trigger: 'manual' }])
     expect((await store.findRun(id))?.status).toBe('running')
     expect((await store.findRun(id))?.startedAt).toBe(600)
 
     // 认领过的不会被第二次认领
     expect(await store.claimQueued('refresh_inventory', 700)).toEqual([])
+  })
+})
+
+test('接续触发同样只排队，trigger 记 chained 且没有"谁按的"', async () => {
+  await withStore(async (store) => {
+    const id = await store.enqueueChainedRun({ jobName: 'archive_nas', now: 500 })
+    const queued = await store.findRun(id)
+    expect(queued?.status).toBe('queued')
+    expect(queued?.startedAt).toBeNull()
+    expect(queued?.trigger).toBe('chained')
+    // 接续是机器接的，没有人按过。填个进程名会让界面上那一列看起来像有这么个账号
+    expect(queued?.requestedBy).toBeNull()
+
+    expect(await store.claimQueued('archive_nas', 600)).toEqual([{ id, trigger: 'chained' }])
   })
 })
 
@@ -206,7 +221,7 @@ test('claimQueued 只认领指定任务的排队行', async () => {
       requestedBy: 'a',
       now: 2,
     })
-    expect(await store.claimQueued('cleanup_expired', 3)).toEqual([b])
+    expect(await store.claimQueued('cleanup_expired', 3)).toEqual([{ id: b, trigger: 'manual' }])
   })
 })
 
@@ -217,7 +232,9 @@ test('同一任务连按三次只会被认领成三行，交给调度器合并�
       await store.enqueueManualRun({ jobName: 'archive_nas', requestedBy: 'a', now: 2 }),
       await store.enqueueManualRun({ jobName: 'archive_nas', requestedBy: 'b', now: 3 }),
     ]
-    expect(await store.claimQueued('archive_nas', 4)).toEqual(ids)
+    expect(await store.claimQueued('archive_nas', 4)).toEqual(
+      ids.map((id) => ({ id, trigger: 'manual' })),
+    )
   })
 })
 

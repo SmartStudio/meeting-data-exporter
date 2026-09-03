@@ -263,7 +263,11 @@ export function nextDueAt(s: JobSchedule, afterSec: number, tzOffsetSec: number)
 
 // ── 运行记录 ──────────────────────────────────────────────────
 
-export type JobTrigger = 'schedule' | 'manual'
+export type JobTrigger =
+  | 'schedule'
+  | 'manual'
+  /** 由上一个任务的一轮成功结束触发（见 scheduler.ts 的 JOB_CHAINS） */
+  | 'chained'
 
 /**
  * 一次运行的状态。含义见 `migrations/008_job_runs.sql` 的表头第一节。
@@ -410,8 +414,26 @@ export interface JobsStore {
     now: number
   }): Promise<number>
 
-  /** 认领这个任务全部排队中的手动触发，按 id 升序。已认领的不会被第二次取到 */
-  claimQueued(jobName: string, now: number): Promise<number[]>
+  /**
+   * 接续触发：上一个任务的一轮成功结束时，把下游任务排进队列（见 scheduler.ts 的
+   * `JOB_CHAINS`）。同样只排队不执行——**起任务只留 `tick()` 一个入口**，接续这条路
+   * 若自己也去起一轮，就会与 tick 的认领路径各开一段 await 窗口、交错出两轮并发。
+   *
+   * 与 `enqueueManualRun` 只差 `trigger_kind` 与 `requested_by`，仍然各写一个方法：
+   * 两个调用方的语义不同（一个是人按的、记得住是谁按的，一个是机器接的、没有人），
+   * 合成一个带 trigger 参数的通用方法之后，调用点上就看不出这一行是从哪儿来的了。
+   */
+  enqueueChainedRun(input: { jobName: string; now: number }): Promise<number>
+
+  /**
+   * 认领这个任务全部排队中的运行，按 id 升序。已认领的不会被第二次取到。
+   *
+   * 带出 `trigger` 而不只是 id：排队里既有人按出来的 manual，也有接续排的 chained，
+   * 调度器起这一轮时要照原样把它传给任务体（`ctx.trigger`）。只回 id 的话调用方
+   * 只能硬写一个 'manual'，于是 `job_runs` 里那一行写着 chained、任务体收到的却是
+   * manual——同一次运行两种说法。
+   */
+  claimQueued(jobName: string, now: number): Promise<Array<{ id: number; trigger: JobTrigger }>>
 
   /**
    * 把 `ids` 这几行标成「已合并进 `intoRunId`」。
@@ -484,8 +506,9 @@ interface FailureSqlRow extends RowDataPacket {
   resolved_at: number | null
 }
 
-interface IdRow extends RowDataPacket {
+interface ClaimRow extends RowDataPacket {
   id: number
+  trigger_kind: string
 }
 
 interface CountByJobRow extends RowDataPacket {
@@ -510,6 +533,18 @@ function num(v: number | string): number {
 
 function nullableNum(v: number | string | null): number | null {
   return v === null ? null : Number(v)
+}
+
+/**
+ * 库里的 `trigger_kind` 收窄回 `JobTrigger`。**只在这一处收窄**（`claimQueued` 用）。
+ *
+ * 与 `JobRunRecord.trigger` 放宽成 `string` 不冲突，两者要的东西不同：读侧只是显示，
+ * 认不出的值映成某个已知触发方式是在编造；而认领之后要拿它去起一轮，`launch` 只认
+ * 这个联合，总得给出一个值。落到 `'manual'` 是这里最保守的那个选择——能被认领的行
+ * 本来就是排队来的，而 manual 是排队这件事最早、也最没有额外含义的那一种。
+ */
+function asTrigger(v: string): JobTrigger {
+  return v === 'schedule' || v === 'manual' || v === 'chained' ? v : 'manual'
 }
 
 /**
@@ -603,24 +638,38 @@ export function createJobsStore(pool: Pool): JobsStore {
       return res.insertId
     },
 
+    async enqueueChainedRun({ jobName, now }) {
+      // 与 enqueueManualRun 同一条语句，差在 trigger_kind 与 requested_by：
+      // 接续没有"谁按的"，requested_by 留 NULL 而不是编一个 'scheduler'——
+      // 界面上那一列写的是「谁触发的」，填个进程名会让人以为有个账号叫这个。
+      const [res] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO job_runs
+           (job_name, trigger_kind, requested_by, status, started_at, created_at)
+         VALUES (?, 'chained', NULL, 'queued', NULL, ?)`,
+        [jobName, now],
+      )
+      return res.insertId
+    },
+
     async claimQueued(jobName, now) {
       // 先取 id 再按 id 更新，而不是「UPDATE … WHERE status='queued'」之后
       // 反查——那样拿不到究竟改了哪几行。`status = 'queued'` 在 UPDATE 的
       // WHERE 里再写一遍是必要的：两条语句之间调度器自己不会插手，但
       // 万一将来真开了第二个实例，这一条至少让重复认领改不动行。
-      const [rows] = await pool.execute<IdRow[]>(
-        `SELECT id FROM job_runs WHERE job_name = ? AND status = 'queued' ORDER BY id ASC`,
+      const [rows] = await pool.execute<ClaimRow[]>(
+        `SELECT id, trigger_kind FROM job_runs
+          WHERE job_name = ? AND status = 'queued' ORDER BY id ASC`,
         [jobName],
       )
-      const ids = rows.map((r) => num(r.id))
-      if (ids.length === 0) return []
-      const placeholders = ids.map(() => '?').join(', ')
+      const claimed = rows.map((r) => ({ id: num(r.id), trigger: asTrigger(r.trigger_kind) }))
+      if (claimed.length === 0) return []
+      const placeholders = claimed.map(() => '?').join(', ')
       await pool.execute(
         `UPDATE job_runs SET status = 'running', started_at = ?
           WHERE status = 'queued' AND id IN (${placeholders})`,
-        [now, ...ids],
+        [now, ...claimed.map((c) => c.id)],
       )
-      return ids
+      return claimed
     },
 
     async coalesceRuns(ids, intoRunId, now) {
