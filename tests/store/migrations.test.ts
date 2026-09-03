@@ -311,6 +311,73 @@ describe('runMigrations', () => {
  * 若只靠读代码确认，代价是某次重启把管理员建的规则全清掉——而表现是
  * 「所有采集程序突然什么都取不到」，与「腾讯侧挂了」在现场看起来一模一样。
  */
+describe('runMigrations 的迁移锁', () => {
+  // 复现 2026-09-03 网关启动时那次 fatal：两个进程同时走到 011，
+  // 一边的「列存在吗」检查落在另一边的 ALTER 提交之前，随后自己的 ALTER 撞 Duplicate column。
+  // 把 011 加的两列删掉，就能让「同时跑两遍」真的有 DDL 要做，而不是两遍都是空转。
+  async function dropAutoGrantColumns(pool: import('../../src/store/db').Pool): Promise<void> {
+    await pool.query(
+      `ALTER TABLE service_accounts DROP COLUMN auto_grant, DROP COLUMN auto_grant_asset_types`,
+    )
+  }
+  async function autoGrantColumns(pool: import('../../src/store/db').Pool): Promise<string[]> {
+    const [rows] = await pool.query<any[]>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = 'service_accounts'
+          AND column_name IN ('auto_grant', 'auto_grant_asset_types') ORDER BY column_name`,
+    )
+    return rows.map((r) => (r.column_name ?? r.COLUMN_NAME) as string)
+  }
+
+  test('两个进程同时跑迁移不会撞 Duplicate column：锁把它们串成先后', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const { runMigrations } = await import('../../src/store/db')
+      await dropAutoGrantColumns(pool)
+      expect(await autoGrantColumns(pool)).toEqual([])
+      // 两条不同的连接、同一个库、同时起跑——没有锁的话这里是概率性的 ER_DUP_FIELDNAME
+      await Promise.all([runMigrations(pool), runMigrations(pool)])
+      expect(await autoGrantColumns(pool)).toEqual(['auto_grant', 'auto_grant_asset_types'])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('迁移跑完锁已经释放，不会跟着归还回池的连接活下去', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const { runMigrations, MIGRATION_LOCK_NAME_SQL } = await import('../../src/store/db')
+      await runMigrations(pool)
+      const [rows] = await pool.query<any[]>(`SELECT IS_FREE_LOCK(${MIGRATION_LOCK_NAME_SQL}) AS free`)
+      expect(Number(rows[0]!.free)).toBe(1)
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('别的进程握着锁不放：等到超时就抛，并且一条迁移都没跑', async () => {
+    const { pool, cleanup } = await withTestDb()
+    const holder = await pool.getConnection()
+    try {
+      const { runMigrations, MIGRATION_LOCK_NAME_SQL } = await import('../../src/store/db')
+      const [got] = await holder.query<any[]>(`SELECT GET_LOCK(${MIGRATION_LOCK_NAME_SQL}, 0) AS got`)
+      expect(Number(got[0]!.got)).toBe(1)
+      await dropAutoGrantColumns(pool)
+
+      await expect(runMigrations(pool, { lockTimeoutSec: 1 })).rejects.toThrow('等迁移锁')
+      // 抛出来的时候库里什么都没动：不能在别人建表的半路上开始跑自己的那一份
+      expect(await autoGrantColumns(pool)).toEqual([])
+
+      await holder.query(`SELECT RELEASE_LOCK(${MIGRATION_LOCK_NAME_SQL})`)
+      await runMigrations(pool, { lockTimeoutSec: 1 })
+      expect(await autoGrantColumns(pool)).toEqual(['auto_grant', 'auto_grant_asset_types'])
+    } finally {
+      holder.release()
+      await cleanup()
+    }
+  })
+})
+
 describe('004 三栈规则模型迁移', () => {
   test('policy_rules 换成三栈结构：新增 kind/join_op/conds/note/created_by，删掉 resource_expr', async () => {
     const { pool, cleanup } = await withTestDb()

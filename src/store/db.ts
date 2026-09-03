@@ -1,5 +1,5 @@
 import { readdir } from 'node:fs/promises'
-import mysql from 'mysql2/promise'
+import mysql, { type RowDataPacket } from 'mysql2/promise'
 
 export type Pool = mysql.Pool
 
@@ -132,13 +132,64 @@ export async function closePool(
  * 004 用这套写法实现幂等的条件 DDL（MySQL 的 ADD/DROP COLUMN 没有 IF EXISTS），
  * 靠池「多半会把刚归还的那条连接再发出来」是碰运气，一旦不成立，迁移会以
  * 「@变量是 NULL、条件判空、DDL 静默不执行」的方式失败——查不出来的那一种。
+ *
+ * **整段迁移在一把 MySQL 命名锁（`GET_LOCK`）里跑。** 网关与调度器两个进程启动时
+ * 各跑一遍本函数，同时起的话两边会同时走到同一份幂等迁移：`SELECT COUNT(*) FROM
+ * information_schema.COLUMNS` 判「列不存在」与随后的 `ALTER TABLE ADD COLUMN` 之间
+ * 有一个窗口，另一个进程的 ALTER 恰好落在窗口里，这边就撞 `Duplicate column`
+ * 直接 fatal 退出（2026-09-03 迁移 011 上线时网关就是这么死的一次）。
+ * 幂等只保证「先后跑两遍」没事，保证不了「同时跑两遍」——那要靠互斥。
+ *
+ * 锁名按**当前库名**派生（`mde_mig_` + 库名的 SHA2 前 40 位，48 字符，在 MySQL
+ * 64 字符的锁名上限之内）：`GET_LOCK` 是服务器级的，不按库分；不带库名的话，
+ * 同一台 MySQL 上并行跑测试的几十个测试库会排成一队，各等前一个建完库。
+ * 锁是**会话级**的，所以它和迁移语句必须在同一条连接上——这也是本函数只用一条
+ * 连接的第二个理由。`finally` 里先 `RELEASE_LOCK` 再归还连接：连接断开锁也会自动
+ * 释放，但归还回池的连接不会断开，不显式释放的话锁会跟着这条连接活到池关闭。
+ *
+ * 拿不到锁（`lockTimeoutSec` 内另一个进程一直没跑完）就**抛**，不静默跳过：跳过等于
+ * 在另一个进程还没建完表的时候就开始服务请求。缺省 120 秒——本地实测一整套迁移
+ * 2.6–6.8 秒，留 20 倍余量给慢磁盘；测试里把它调小来验证超时路径。
  */
-export async function runMigrations(pool: Pool): Promise<void> {
+export const MIGRATION_LOCK_TIMEOUT_SEC = 120
+
+/**
+ * 锁名的 SQL 表达式（不是字面量：锁名要在服务器上按 `DATABASE()` 现算）。
+ * 导出给测试用 `IS_FREE_LOCK(...)` 核对锁确实释放了；生产代码只在本文件用。
+ */
+export const MIGRATION_LOCK_NAME_SQL = "CONCAT('mde_mig_', LEFT(SHA2(DATABASE(), 256), 40))"
+
+export interface RunMigrationsOptions {
+  /** 等锁最多多少秒，缺省 `MIGRATION_LOCK_TIMEOUT_SEC` */
+  lockTimeoutSec?: number
+}
+
+export async function runMigrations(pool: Pool, opts: RunMigrationsOptions = {}): Promise<void> {
   const dir = `${import.meta.dir}/../../migrations`
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort()
+  const lockTimeoutSec = opts.lockTimeoutSec ?? MIGRATION_LOCK_TIMEOUT_SEC
 
   const conn = await pool.getConnection()
+  let locked = false
   try {
+    // GET_LOCK：1 = 拿到，0 = 等到超时还没拿到，NULL = 出错（比如锁名非法）。
+    // 三种都要分开说：0 是「另一个进程还在跑迁移」，NULL 是「这条路本身坏了」
+    const [rows] = await conn.query<RowDataPacket[]>(
+      `SELECT GET_LOCK(${MIGRATION_LOCK_NAME_SQL}, ?) AS got`,
+      [lockTimeoutSec],
+    )
+    const got = rows[0]?.got
+    if (got === null || got === undefined) {
+      throw new Error('迁移锁 GET_LOCK 返回 NULL：MySQL 没能建这把锁，迁移没有开始')
+    }
+    if (Number(got) !== 1) {
+      throw new Error(
+        `等迁移锁 ${lockTimeoutSec} 秒没等到：另一个进程（网关或调度器）正在这个库上跑迁移还没跑完。` +
+          '本进程没有开始任何迁移，也不能在别人建表的半路上开始服务，请稍后重启',
+      )
+    }
+    locked = true
+
     for (const name of files) {
       const sql = await Bun.file(`${dir}/${name}`).text()
       const statements = sql
@@ -151,6 +202,15 @@ export async function runMigrations(pool: Pool): Promise<void> {
       }
     }
   } finally {
+    // 先放锁再还连接。RELEASE_LOCK 本身失败（连接已经断了之类）不该盖掉迁移
+    // 真正的错误：连接一断锁自动没了，吞掉这一个异常不会让锁泄漏
+    if (locked) {
+      try {
+        await conn.query(`SELECT RELEASE_LOCK(${MIGRATION_LOCK_NAME_SQL})`)
+      } catch {
+        /* 见上 */
+      }
+    }
     conn.release()
   }
 }
