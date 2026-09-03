@@ -98,9 +98,13 @@ export default function AppShell() {
   // 继续留 72px，就是为一条不存在的东西空出一屏的底部。
   const hasShortcuts = shortcutsFor(location.pathname).length > 0
 
+  // 一级栏目（左栏那六项之一，`/preview/:id` 是 preview）。它一变，`SystemHealthProvider`
+  // 就重读一次系统状态；页内的子路由不算（理由见那个 Provider 的头注释）。
+  const section = location.pathname.split('/')[1] ?? ''
+
   return (
     <SessionProvider identity={probe.data.identity}>
-      <SystemHealthProvider>
+      <SystemHealthProvider section={section}>
         <div className={styles.shell}>
           <Rail />
           <div className={styles.main}>

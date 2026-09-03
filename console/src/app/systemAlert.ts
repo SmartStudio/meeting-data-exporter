@@ -5,19 +5,20 @@ import { createContext, useContext } from 'react'
  *
  * ## 为什么要单独一个文件
  *
- * 这些 hook 的消费者是**页面**（`pages/Jobs`、`pages/Meetings/useMeetings`），
- * 而 `app/SystemStatus.tsx` 里同时装着那条告警条组件和它的 `SystemStatus.module.css`。
- * 页面为了读一个 context，就得连那份 CSS 一起拖进模块图——而 **CSS Module 在打包
- * 产物里的先后顺序就是模块图的遍历顺序**，于是「某个页面多 import 了一个 hook」
- * 会改变全站样式的注入次序。
+ * 读这个 context 的除了外壳（`app/SystemStatus.tsx`、`app/Rail.tsx`），随时可能是某个
+ * **页面**；而 `app/SystemStatus.tsx` 里同时装着那条告警条组件和它的
+ * `SystemStatus.module.css`。页面为了读一个 context，就得连那份 CSS 一起拖进模块图
+ * ——而 **CSS Module 在打包产物里的先后顺序就是模块图的遍历顺序**，于是「某个页面
+ * 多 import 了一个 hook」会改变全站样式的注入次序。
  *
- * 这不是假想：`pages/Jobs/index.tsx` 加了一行 `import { useSystemAlertKind }`
- * 之后，**会议记录页**的对比度检查当场变红（`ui/Table` 那四层渐变背景与卡片形态下
- * 的底色调了个个儿，门槛判不出底色）。两次干净复现、切掉那一行就恢复。改动的文件
- * 里没有一个属于会议记录页。
+ * 这不是假想：定时任务页曾为了判断「顶栏是不是已经在说拉取连续失败」import 过这里的
+ * 一个 hook（那条判断后来随全局横幅上的这一句一起去掉了，见 `SystemStatus.tsx`），
+ * 它一度写成从 `app/SystemStatus` 取，**会议记录页**的对比度检查当场变红（`ui/Table`
+ * 那四层渐变背景与卡片形态下的底色调了个个儿，门槛判不出底色）。两次干净复现、
+ * 切掉那一行就恢复。改动的文件里没有一个属于会议记录页。
  *
  * 所以这个文件**不许 import 任何 `.css`**，也不该长出组件。它只放类型、context
- * 和读它的 hook——这样页面读状态就不再牵动样式顺序。
+ * 和读它的 hook——页面要读系统状态就从这里取，样式顺序不会因此变动。
  */
 
 /**
@@ -45,6 +46,8 @@ export interface SystemStatusView {
   alert: SystemAlert
   /** 需要人处理的失败项总数；读不到时是 `null`——`0` 是"没有失败"，不是同一件事 */
   openFailures: number | null
+  /** 失败项里最近一次失败的时间；读不到或没有失败项都是 `null`。左栏红点拿它和「看过」的记号比（`failuresSeen.ts`） */
+  newestFailedAt: number | null
   retry: () => void
 }
 
@@ -58,21 +61,4 @@ export function useSystemStatusView(): SystemStatusView {
   const ctx = useContext(SystemStatusContext)
   if (!ctx) throw new Error('useSystemStatusView 必须在 SystemHealthProvider 内使用')
   return ctx
-}
-
-/**
- * 顶栏那条状态条**此刻在说哪一件事**（没有则 `none` / `checking`）。
- *
- * 与 `useSystemStatusView()` 同一份数据，差别只有一处：**没有 Provider 时返回
- * `null` 而不是抛**。它服务的是一类特定的调用方——页面拿它来决定「这句话顶栏
- * 已经说了，我就不再说一遍」。
- *
- * 那类判断的兜底方向是定死的：**拿不准时要照常说出来**。抛出去会让一个本来
- * 只是少了 Provider 的结构问题变成整页白屏；而悄悄返回一个"顶栏正在说"的假值
- * 更糟——那会把一条真实的告警藏掉，屏幕上剩下一个看起来一切正常的页面。
- * `null` 让调用方落到"多说一句"那一侧，这是这两者之间唯一安全的落点。
- * （同 `app/session.tsx` 的 `useSession()`：结构问题不该升级成信息丢失。）
- */
-export function useSystemAlertKind(): SystemAlert['kind'] | null {
-  return useContext(SystemStatusContext)?.alert.kind ?? null
 }

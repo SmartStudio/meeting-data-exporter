@@ -9,7 +9,7 @@
  * 归它们独占（计划 §2 的任务表）。地基（F0）如果先把那两个文件建出来，
  * 就正好在两个并行任务的独占区里落了笔——F0 存在的意义恰恰是不这么干。
  *
- * 所以这里只做一件很窄的事：**从那两条端点里读出状态条要的三个事实**，
+ * 所以这里只做一件很窄的事：**从那两条端点里读出状态条与左栏要的那几个事实**，
  * 别的字段一个都不碰。F5a / F5b 建自己的域文件时不需要动这个文件，
  * 也不要把这里的类型当成那两条端点的完整建模——它不是。
  *
@@ -30,6 +30,7 @@
 
 import { apiGet } from '../client'
 import { reader } from '../validate'
+import { newestFailedAt } from './jobs'
 
 const BASE = '/api/v1/admin'
 
@@ -82,6 +83,8 @@ export interface SystemHealth {
   fetchJob: FetchJobStatus | null
   /** `failuresTotal`：需要人处理的失败项总数（不受列表 100 条上限截断） */
   openFailures: number
+  /** 失败项里最近一次失败的时间（`newestFailedAt()`）；没有失败项是 null。左栏红点拿它和「看过」的记号比 */
+  newestFailedAt: number | null
 }
 
 /**
@@ -139,6 +142,10 @@ export async function fetchSystemHealth(): Promise<SystemHealth> {
   const jobs = jr.object(jobsRaw, '')
   const list = jr.objList(jobs, 'jobs', '')
   const openFailures = jr.num(jobs, 'failuresTotal', '')
+  // 每条只读 lastFailedAt 这一个字段，其余不碰（文件头的约定）
+  const newest = newestFailedAt(
+    jr.objList(jobs, 'failures', '').map((f, i) => ({ lastFailedAt: jr.num(f, 'lastFailedAt', `failures[${i}]`) })),
+  )
 
   const idx = list.findIndex((j) => j.name === FETCH_JOB_NAME)
   let fetchJob: FetchJobStatus | null = null
@@ -157,5 +164,5 @@ export async function fetchSystemHealth(): Promise<SystemHealth> {
     }
   }
 
-  return { nas, fetchJob, openFailures }
+  return { nas, fetchJob, openFailures, newestFailedAt: newest }
 }

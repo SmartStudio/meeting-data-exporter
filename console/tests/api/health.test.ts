@@ -212,3 +212,33 @@ describe('fetchSystemHealth · 两条真实端点', () => {
     await expect(fetchSystemHealth()).rejects.toThrow(/\/api\/v1\/admin\/jobs/)
   })
 })
+
+describe('fetchSystemHealth · 最近一次失败的时间（左栏红点用）', () => {
+  const row = (lastFailedAt: number): Record<string, unknown> => ({
+    id: lastFailedAt,
+    jobName: 'archive_nas',
+    target: 'm|',
+    targetLabel: '',
+    meetingId: 'm',
+    subMeetingId: '',
+    reason: 'r',
+    impact: 'i',
+    attempts: 1,
+    maxAttempts: 5,
+    escalated: false,
+    firstFailedAt: lastFailedAt,
+    lastFailedAt,
+  })
+
+  test('取 failures 里最大的 lastFailedAt，不管顺序；没有失败项是 null', async () => {
+    ok({ ...jobsPayload(['succeeded'], 3), failures: [row(100), row(250), row(200)] })
+    expect((await fetchSystemHealth()).newestFailedAt).toBe(250)
+    ok(jobsPayload(['succeeded']))
+    expect((await fetchSystemHealth()).newestFailedAt).toBeNull()
+  })
+
+  test('failures 里少了 lastFailedAt 是形状错误，不是悄悄当成 null', async () => {
+    ok({ ...jobsPayload(['succeeded'], 1), failures: [{ id: 1 }] })
+    await expect(fetchSystemHealth()).rejects.toBeInstanceOf(ApiShapeError)
+  })
+})

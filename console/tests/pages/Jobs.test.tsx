@@ -90,6 +90,7 @@ function payload(over: Record<string, unknown> = {}): Record<string, unknown> {
     timezoneOffsetSec: 28800,
     jobs: FIVE,
     failuresTotal: 0,
+    fetchLookbackHours: 24,
     failures: [],
     ...over,
   }
@@ -151,8 +152,8 @@ async function mount(body: unknown = payload(), opts: StubOpts = {}) {
  *
  * 不手工注入一个假的 alert：那样测的是"我以为 liveAlert() 会返回什么"。
  * 这里喂的是两条真端点的响应（`/storage` 与 `/jobs`，`fetchSystemHealth()`
- * 两条都要），让顶栏那一侧走完自己的推导——「NAS 断连会挡住 fetch-stalled」
- * 这条分支因此是被真的执行到的，不是被断言假设的。
+ * 两条都要），让顶栏那一侧走完自己的推导——「顶栏正推出 fetch-stalled 时页内那条
+ * 照样在」这件事因此是被真的执行到的，不是被断言假设的。
  */
 async function mountWithAlert(opts: { nasReachable: boolean }, body: unknown = payload()) {
   const storage = {
@@ -211,22 +212,53 @@ describe('五个任务格子', () => {
     await mount()
     const cards = await screen.findAllByTestId('job-card')
     expect(cards).toHaveLength(5)
-    expect(cards[0]).toHaveTextContent('拉取新录制')
-    expect(cards[0]).toHaveTextContent('每 15 分钟')
-    expect(cards[0]).toHaveTextContent('发现新录制、入队并下载')
-    expect(cards[2]).toHaveTextContent('清理到期文件')
-    expect(cards[2]).toHaveTextContent('每天 03:00')
+    const byName = (n: string) => cards.find((c) => c.getAttribute('data-job') === n)!
+    expect(byName('fetch_recordings')).toHaveTextContent('拉取新录制')
+    expect(byName('fetch_recordings')).toHaveTextContent('每 15 分钟')
+    expect(byName('fetch_recordings')).toHaveTextContent('发现新录制、入队并下载')
+    expect(byName('cleanup_expired')).toHaveTextContent('清理到期文件')
+    expect(byName('cleanup_expired')).toHaveTextContent('每天 03:00')
   })
 
-  test('第五段是自动授权，序号排到「五」——它与前四段串在同一条链路上', async () => {
+  test('分两组：拉取 → 归档 → 自动授权串成主链路，清理与刷新各自独立', async () => {
     await mount()
-    const cards = await screen.findAllByTestId('job-card')
-    const auto = cards[4]!
+    const chain = await screen.findByTestId('jobs-lane-chain')
+    const solo = await screen.findByTestId('jobs-lane-solo')
+    const names = (el: HTMLElement) =>
+      within(el)
+        .getAllByTestId('job-card')
+        .map((c) => c.getAttribute('data-job'))
+    // 后端 JOB_CHAINS 的拓扑：归档接在拉取后面，自动授权接在两者后面。
+    // 原来五个格子一行排开、格格之间画箭头，把「清理 → 刷新」也画成了因果。
+    expect(names(chain)).toEqual(['fetch_recordings', 'archive_nas', 'auto_grant'])
+    expect(names(solo)).toEqual(['cleanup_expired', 'refresh_inventory'])
+    expect(chain).toHaveTextContent('主链路')
+    expect(solo).toHaveTextContent('独立运行')
+    const auto = within(chain).getAllByTestId('job-card')[2]!
     expect(auto).toHaveTextContent('自动授权')
     expect(auto).toHaveTextContent('把规则放行的会议授权给开了自动授权的程序')
     expect(auto).toHaveTextContent('每 5 分钟')
-    // 序号原来只数到「四」，第五段会退回阿拉伯数字「5」，与前四个不是一套
-    expect(auto).toHaveTextContent('五')
+  })
+
+  test('序号只标链上的步数（一、二、三）；独立任务没有序号', async () => {
+    await mount()
+    const chain = await screen.findByTestId('jobs-lane-chain')
+    const solo = await screen.findByTestId('jobs-lane-solo')
+    // 序号是标题前面那个元素；没有序号时标题前面什么都没有
+    const ord = (c: HTMLElement) => c.querySelector('h3')?.previousElementSibling?.textContent ?? null
+    expect(within(chain).getAllByTestId('job-card').map(ord)).toEqual(['一', '二', '三'])
+    for (const c of within(solo).getAllByTestId('job-card')) expect(ord(c)).toBeNull()
+  })
+
+  test('段间的方向有读屏文字：链上每一段说清它通向哪，链尾与独立任务不说', async () => {
+    await mount()
+    const chain = await screen.findByTestId('jobs-lane-chain')
+    const [fetch, archive, auto] = within(chain).getAllByTestId('job-card')
+    expect(fetch).toHaveTextContent('「拉取新录制」有新产出时，「归档到 NAS」立刻接着跑')
+    expect(archive).toHaveTextContent('「归档到 NAS」有新产出时，「自动授权」立刻接着跑')
+    expect(auto).not.toHaveTextContent('立刻接着跑')
+    const solo = await screen.findByTestId('jobs-lane-solo')
+    expect(solo).not.toHaveTextContent('立刻接着跑')
   })
 
   test('自动授权那一轮的关键数是「新授权」，不是候选数', async () => {
@@ -572,38 +604,43 @@ describe('「拉取连续失败」的措辞（计划 G-d）', () => {
     expect(screen.queryByTestId('jobs-fetch-stalled')).toBeNull()
   })
 
-  // ── 顶栏已经在说的时候，这一页不再说第二遍 ──────────────────────
+  // ── 顶栏不再说这一句，这一页是它唯一的出口 ──────────────────────
   //
-  // 那条全局状态条在每一页都显示，包括这一页，文案比这条还全（多一句「这是从
-  // 任务运行记录推出来的判断」），还带着一颗指向 /jobs 的「查看失败原因」——
-  // 指向你已经站着的地方。同一屏说两遍、第二遍还更短且不可点。
+  // 全局状态条留给「此刻有动作能阻止损失」的事（spec §7.1）。所以就算顶栏的
+  // Provider 正推出 fetch-stalled，页内这条也照样在——以前那条「顶栏正在说时让位」
+  // 的规则把唯一带关闭按钮的横幅藏掉了，× 在正常路径下永远看不到。
 
-  test('顶栏正在说 fetch-stalled 时，页内这条不再出现', async () => {
+  test('顶栏 Provider 正推出 fetch-stalled 时，页内这条照样出现——顶栏已不显示它', async () => {
     await mountWithAlert(
       { nasReachable: true },
       payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
     )
-    await waitFor(() => expect(screen.queryByTestId('jobs-fetch-stalled')).toBeNull())
-  })
-
-  test('顶栏被 NAS 断连占住时，这条要回来 —— 那时没人替它说', async () => {
-    // liveAlert() 先判 nas.reachable，一旦为假就直接返回 nas-down，
-    // 再也走不到 fetch-stalled 那一支
-    await mountWithAlert(
-      { nasReachable: false },
-      payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
-    )
     expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
   })
 
-  test('压根没有 Provider 时也要出现 —— 兜底落在「多说一句」那一侧', async () => {
-    // useSystemAlertKind() 缺 Provider 时返回 null（不抛）。反过来兜底
-    // （当成"顶栏正在说"）会把一条真实告警藏掉，屏幕上剩下一个看起来
-    // 一切正常的页面 —— 那比多说一遍糟得多。
+  test('第二句写的是能做什么：自动重试、超过拉取窗口要人工补拉，小时数来自后端', async () => {
     await mount(
-      payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
+      payload({
+        fetchLookbackHours: 24,
+        jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })],
+      }),
     )
-    expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
+    const bar = await screen.findByTestId('jobs-fetch-stalled')
+    expect(bar).toHaveTextContent('自己再试')
+    expect(bar).toHaveTextContent('超过 24 小时')
+    expect(bar).toHaveTextContent('修好后需要人工补拉')
+  })
+
+  test('拉取窗口不是硬编码的 24：后端给 48 就说 48', async () => {
+    await mount(
+      payload({
+        fetchLookbackHours: 48,
+        jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })],
+      }),
+    )
+    const bar = await screen.findByTestId('jobs-fetch-stalled')
+    expect(bar).toHaveTextContent('超过 48 小时')
+    expect(bar.textContent ?? '').not.toContain('24 小时')
   })
 })
 
@@ -744,25 +781,29 @@ describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
     const labels = [...row.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
     // 「影响」改名「如果不处理」（D-jobs-storage brief）：这句话现在只在这张表
     // 里、只对真正失败的那一项写一次，不再是每张任务卡固定挂的一行。
-    expect(labels).toEqual(['最近失败', '任务', '对象', '原因', '已自动重试', '如果不处理'])
+    // 一行是一件事（按任务 + 原因归并），所以任务与原因在前，「涉及」说这件事牵扯了什么
+    expect(labels).toEqual(['任务', '原因', '涉及', '最近失败', '已自动重试', '如果不处理'])
   })
 })
 
 describe('任务链：横排 → 窄屏退回竖排（D-jobs-storage brief）', () => {
-  test('五段挂在同一个 ul[aria-label] 容器里（a11y 门槛认的就是这个选择器）', async () => {
+  test('两组各挂在一个 ul[aria-label] 容器里（a11y 门槛认的就是这两个选择器）', async () => {
     await mount()
-    const chain = screen.getByRole('list', { name: '内置定时任务' })
+    const chain = screen.getByRole('list', { name: '主链路' })
+    const solo = screen.getByRole('list', { name: '独立运行' })
     expect(chain.tagName).toBe('UL')
-    expect(within(chain).getAllByTestId('job-card')).toHaveLength(5)
+    expect(solo.tagName).toBe('UL')
+    expect(within(chain).getAllByTestId('job-card')).toHaveLength(3)
+    expect(within(solo).getAllByTestId('job-card')).toHaveLength(2)
   })
 
-  test('Jobs.module.css 里有一条按宽度收窄的媒体查询，把 .chain 收回单列——\n      1440 / 1050 / 375 三个宽度都不许横向溢出，五段横排在 1050 会溢出', () => {
+  test('Jobs.module.css 里有一条按宽度收窄的媒体查询，把 .cards 收回单列——\n      1440 / 1050 / 375 三个宽度都不许横向溢出，三段横排在 900 以下会溢出', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/pages/Jobs/Jobs.module.css'), 'utf-8')
     const at = css.search(/@media\s*\(max-width:\s*[\d.]+em\)/)
     expect(at, '应该有一条按宽度收窄的媒体查询——硬规矩 7 盯着 1050 / 375 不许横向溢出').toBeGreaterThanOrEqual(0)
     const body = blockAfter(css, at)
     expect(body, '媒体查询的花括号应该配得平').not.toBeNull()
-    expect(body).toMatch(/\.chain\s*\{[^}]*grid-template-columns:\s*1fr/)
+    expect(body).toMatch(/\.cards\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/)
   })
 })
 
@@ -819,5 +860,111 @@ describe('只读账号（spec §11 缺口 1）', () => {
     const btns = await screen.findAllByRole('button', { name: '立即运行' })
     expect(btns[0]).toBeEnabled()
     expect(screen.queryByTestId('readonly-banner')).toBeNull()
+  })
+})
+
+describe('失败项按「任务 + 原因」归并', () => {
+  /** 拉取那一轮里在腾讯会议那头 404 的一场：没有标题，只有会议 id。 */
+  const same = (i: number, over: Record<string, unknown> = {}) =>
+    failure({
+      id: i,
+      jobName: 'fetch_recordings',
+      target: `m-${i}|`,
+      targetLabel: '',
+      meetingId: `90708${i}`,
+      reason: '下载重试用尽，已放弃：video（http 404）',
+      impact: '录制在腾讯会议过期后就再也拉不回来了',
+      attempts: 5,
+      escalated: true,
+      ...over,
+    })
+
+  test('18 条一模一样的原因是一行，不是 18 行；涉及写成「18 场会议」', async () => {
+    const many = Array.from({ length: 18 }, (_, i) => same(i + 1))
+    await mount(payload({ failuresTotal: 18, failures: many }))
+    const rows = await screen.findAllByTestId('failure-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('18 场会议')
+    expect(rows[0]).toHaveTextContent('5 / 5')
+    expect(rows[0]).toHaveAttribute('data-escalated', 'true')
+    expect(rows[0]).toHaveTextContent('已到上限 · 需要人工介入')
+    // 原因只印一遍
+    expect(screen.getAllByText('下载重试用尽，已放弃：video（http 404）')).toHaveLength(1)
+  })
+
+  test('原因差一段就是另一件事，另占一行', async () => {
+    await mount(
+      payload({
+        failuresTotal: 3,
+        failures: [
+          same(1),
+          same(2),
+          same(3, { reason: '下载重试用尽，已放弃：video（http 404）；meeting_summary（ENOENT）' }),
+        ],
+      }),
+    )
+    expect(await screen.findAllByTestId('failure-row')).toHaveLength(2)
+  })
+
+  test('展开一组能看到每一场会议的 id、多久前、重试次数；超过 20 条再翻', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => same(i + 1, { attempts: 2, escalated: false }))
+    await mount(payload({ failuresTotal: 25, failures: many }))
+    const user = userEvent.setup()
+    expect(screen.queryByTestId('failure-items')).toBeNull()
+    await user.click(await screen.findByTestId('failure-scope'))
+    const items = await screen.findByTestId('failure-items')
+    expect(within(items).getAllByRole('listitem')).toHaveLength(20)
+    expect(items).toHaveTextContent('907081')
+    expect(items).toHaveTextContent('2 / 5')
+    expect(items).toHaveTextContent('还有 5 条')
+    await user.click(within(items).getByRole('button', { name: /再显示 5 条/ }))
+    expect(within(items).getAllByRole('listitem')).toHaveLength(25)
+  })
+
+  test('会议维度的失败项拿不到标题时显示会议 id，不显示 `id|` 那个规范化键', async () => {
+    await mount(payload({ failuresTotal: 1, failures: [same(1)] }))
+    const row = await screen.findByTestId('failure-row')
+    expect(row).toHaveTextContent('907081')
+    expect(row).not.toHaveTextContent('m-1|')
+  })
+
+  test('一部分到上限时说清几条到了，不把整组标成已到上限；重试次数给区间不取平均', async () => {
+    await mount(payload({ failuresTotal: 2, failures: [same(1), same(2, { attempts: 2, escalated: false })] }))
+    const row = await screen.findByTestId('failure-row')
+    expect(row).toHaveAttribute('data-escalated', 'partial')
+    expect(row).toHaveTextContent('2–5 / 5')
+    expect(row).toHaveTextContent('1 条已到上限')
+  })
+
+  test('失败项散在两个以上任务时才给按任务筛选；筛选后只剩那个任务的组', async () => {
+    await mount(payload({ failuresTotal: 3, failures: [same(1), same(2), failure({ id: 3 })] }))
+    const user = userEvent.setup()
+    const facets = await screen.findByTestId('failures-facets')
+    expect(facets).toHaveTextContent('全部 3')
+    expect(facets).toHaveTextContent('拉取新录制 2')
+    expect(facets).toHaveTextContent('归档到 NAS 1')
+    expect(screen.getAllByTestId('failure-row')).toHaveLength(2)
+    await user.click(within(facets).getByRole('button', { name: '归档到 NAS 1' }))
+    const rows = screen.getAllByTestId('failure-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('客户沟通 · 华东区')
+  })
+
+  test('全在一个任务里时没有筛选——「全部 19」与「拉取新录制 19」说的是同一件事', async () => {
+    await mount(payload({ failuresTotal: 2, failures: [same(1), same(2)] }))
+    await screen.findByTestId('failures-table')
+    expect(screen.queryByTestId('failures-facets')).toBeNull()
+  })
+
+  test('组超过 12 个时分页，页面高度不随失败项数无限长', async () => {
+    const distinct = Array.from({ length: 15 }, (_, i) => same(i + 1, { reason: `原因 ${i + 1}` }))
+    await mount(payload({ failuresTotal: 15, failures: distinct }))
+    const user = userEvent.setup()
+    expect(await screen.findAllByTestId('failure-row')).toHaveLength(12)
+    const more = screen.getByTestId('failures-more-groups')
+    expect(more).toHaveTextContent('再显示 3 组')
+    await user.click(more)
+    expect(screen.getAllByTestId('failure-row')).toHaveLength(15)
+    expect(screen.queryByTestId('failures-more-groups')).toBeNull()
   })
 })

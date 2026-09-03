@@ -64,7 +64,7 @@ function installFetch() {
         })
       }
       if (url.endsWith('/api/v1/admin/jobs')) {
-        return json({ now: 1700000000, timezoneOffsetSec: 28800, jobs: [], failuresTotal: 0, failures: [] })
+        return json({ now: 1700000000, timezoneOffsetSec: 28800, jobs: [], failuresTotal: 0, fetchLookbackHours: 24, failures: [] })
       }
       if (url.includes('/api/v1/admin/meetings/triage')) {
         return json({ archiveFailed: 0, expiringIn7d: 0, awaitingGrant: 0, inProgress: 0, nasOnly: 0 })

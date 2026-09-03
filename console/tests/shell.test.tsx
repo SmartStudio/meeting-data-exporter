@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { routes } from '../src/app/routes'
 import { PROTO_STORAGE_KEY } from '../src/app/proto'
+import { FAILURES_SEEN_KEY } from '../src/app/failuresSeen'
 import { SystemStateProvider } from '../src/app/SystemStatus'
 
 /**
@@ -83,6 +84,7 @@ export function healthyJobs(): unknown {
       },
     ],
     failuresTotal: 0,
+    fetchLookbackHours: 24,
     failures: [],
   }
 }
@@ -127,7 +129,11 @@ const SHELL_MEETING = {
 /** 分诊五格。**它有自己的端点**，与上面那一行没有关系（F2 的回归点之一）。 */
 const TRIAGE = { archiveFailed: 1, expiringIn7d: 0, awaitingGrant: 1, inProgress: 0, nasOnly: 0 }
 
-beforeEach(() => {
+/**
+ * 默认的假后端。`over.jobs` 可以换掉 `GET /admin/jobs` 的响应体（红点那几条要喂失败项），
+ * 返回一个永不 resolve 的 Promise 就能让这一条请求挂住（测"重读期间旧数据留在屏幕上"）。
+ */
+function installFetch(over: { jobs?: () => unknown | Promise<unknown> } = {}): void {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
@@ -141,7 +147,7 @@ beforeEach(() => {
         return json({ adminId: 'admin-1', username: 'chen.yw', role: 'admin' })
       }
       if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
-      if (url.endsWith('/api/v1/admin/jobs')) return json(healthyJobs())
+      if (url.endsWith('/api/v1/admin/jobs')) return json(await (over.jobs ?? healthyJobs)())
       // 接完线的页面挂载时会真的去读自己那条端点。这个文件测的是外壳的导航
       // 与系统状态、不是各页的内容，所以一律给一份最小的合法响应就够——各页
       // 自己的行为在 `tests/pages/` 下各自那份测试里。
@@ -165,7 +171,40 @@ beforeEach(() => {
       throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
     }),
   )
-})
+}
+
+/** 一条失败项，字段照 `api/admin/jobs.ts` 的 readFailure（少一个前端就崩）。 */
+function failureRow(lastFailedAt: number): Record<string, unknown> {
+  return {
+    id: lastFailedAt,
+    jobName: 'fetch_recordings',
+    target: 'm-1|',
+    targetLabel: '',
+    meetingId: 'm-1',
+    subMeetingId: '',
+    reason: '腾讯会议返回 404',
+    impact: '这一场拉不到',
+    attempts: 1,
+    maxAttempts: 5,
+    escalated: false,
+    firstFailedAt: lastFailedAt,
+    lastFailedAt,
+  }
+}
+
+/** `healthyJobs()` 外加几条失败项；`failuresTotal` 与卡片上的 `openFailures` 跟着对齐。 */
+function jobsWithFailures(lastFailedAts: number[]): unknown {
+  const base = healthyJobs() as { jobs: Array<Record<string, unknown>> }
+  return {
+    ...base,
+    jobs: base.jobs.map((j, i) => (i === 0 ? { ...j, openFailures: lastFailedAts.length } : j)),
+    failuresTotal: lastFailedAts.length,
+    fetchLookbackHours: 24,
+    failures: lastFailedAts.map(failureRow),
+  }
+}
+
+beforeEach(() => installFetch())
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -343,19 +382,16 @@ describe('AppShell · 顶栏', () => {
     expect(nasBar).toHaveAttribute('data-sev', 'fail')
     expect(within(nasBar).getByRole('link', { name: '暂停到期清理' })).toBeInTheDocument()
 
-    // tencent-down：告警条 sev=warn，没有暂停入口（那是 NAS 专属的动作）
+    // tencent-down：**没有**告警条（spec §7.1）。这件事在控制台里没有一个能按的动作，
+    // 它的出口是左栏底部的摘要——措辞是观察到的事实，不是一句我们探测不到的结论
     await user.selectOptions(picker, 'tencent-down')
-    await waitFor(() => expect(systemBanner()).toHaveAttribute('data-sev', 'warn'))
-    const tencentBar = systemBanner()!
-    expect(tencentBar).toHaveAttribute('data-sev', 'warn')
-    expect(within(tencentBar).queryByRole('link', { name: '暂停到期清理' })).not.toBeInTheDocument()
-    // 措辞是观察到的事实，不是一句我们探测不到的结论
-    expect(tencentBar.textContent).toContain('轮拉取连续失败')
-    expect(tencentBar.textContent).not.toContain('腾讯会议接口不可达')
+    await waitFor(() => expect(document.body.textContent).toContain('拉取连续失败'))
+    expect(systemBanner()).toBeNull()
+    expect(document.body.textContent).not.toContain('腾讯会议接口不可达')
 
-    // 切回正常，告警条消失
+    // 切回正常，左栏摘要也不再说这件事
     await user.selectOptions(picker, 'ok')
-    await waitFor(() => expect(systemBanner()).toBeNull())
+    await waitFor(() => expect(document.body.textContent).not.toContain('拉取连续失败'))
   })
 
   test('rail 宽度取自 --rail-w，不是写死的 196px', () => {
@@ -394,48 +430,102 @@ describe('AppShell · 顶栏标题从路由派生', () => {
 })
 
 /**
- * 简报「一」的计数徽标：只加得出「定时任务」这一项，因为壳层唯一能读到的
- * 共享数字是 `useSystemStatusView().openFailures`（逐字来自 `GET /admin/jobs`
- * 的 `failuresTotal`）。会议数 / 程序数 / 规则数壳层拿不到真实数据，
- * 按简报「拿不到就不显示，不要编」的口径没有加——这条测试盯的正是这两半：
- * 有数据时显示，且颜色语义正确；默认（没有失败项）时不显示。
+ * 左栏「定时任务」旁那颗红点。
+ *
+ * 它以前是一枚计数徽标（`failuresTotal`）。数字与底部「N 项需要处理」重复，而且
+ * 整个会话只读一次、处理完了还写着老数。现在它只回答「我看过之后又出事了吗」：
+ * 定时任务页读完列表记下最新一条失败的时间（`app/failuresSeen.ts`），比它更新的
+ * 失败出现时才亮；换栏目、回前台时 `SystemHealthProvider` 会重读，红点才有机会再亮。
+ * 下面盯的是这一整条链：亮 → 看过就灭 → 老的不再亮 → 新的再亮，以及重读本身。
  */
-describe('AppShell · 左栏「定时任务」计数徽标', () => {
-  test('没有失败项时不显示徽标', async () => {
+describe('AppShell · 左栏「定时任务」旁的红点', () => {
+  beforeEach(() => localStorage.clear())
+  afterEach(() => localStorage.clear())
+
+  const T1 = 1700000100
+  const T2 = 1700000200
+  const T3 = 1700000300
+  const dot = () => screen.queryByTestId('jobs-dot')
+  const jobsReads = () =>
+    vi.mocked(fetch).mock.calls.filter(([u]) => String(u).endsWith('/api/v1/admin/jobs')).length
+
+  test('没有失败项：没有红点，链接上也没有数字', async () => {
     renderApp('/meetings')
     await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
     const jobsLink = screen.getByRole('link', { name: '定时任务' })
-    expect(within(jobsLink).queryByText(/^\d+$/)).not.toBeInTheDocument()
+    expect(within(jobsLink).queryByText(/\d/)).not.toBeInTheDocument()
+    expect(dot()).toBeNull()
+    expect(jobsLink).not.toHaveAttribute('aria-describedby')
   })
 
-  test('有失败项时显示红色徽标，数字就是 jobs 端点的 failuresTotal', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
-        const url = String(input)
-        const json = (body: unknown): Response =>
-          new Response(JSON.stringify(body), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          })
-        if (url.endsWith('/api/v1/admin/auth/me')) {
-          return json({ adminId: 'admin-1', username: 'chen.yw', role: 'admin' })
-        }
-        if (url.endsWith('/api/v1/admin/storage')) return json(healthyStorage())
-        if (url.endsWith('/api/v1/admin/jobs')) {
-          return json({ ...(healthyJobs() as Record<string, unknown>), failuresTotal: 2 })
-        }
-        if (url.includes('/api/v1/admin/meetings/triage')) return json(TRIAGE)
-        if (url.includes('/api/v1/admin/meetings')) {
-          return json({ rows: [SHELL_MEETING], total: 1, limit: 10, offset: 0 })
-        }
-        throw new Error(`shell.test.tsx: 未预期的 fetch ${url}`)
-      }),
-    )
+  test('有还没看过的失败项：亮红点、不印数字；读屏得到「有新的失败项」；底部摘要照旧说总数', async () => {
+    installFetch({ jobs: () => jobsWithFailures([T1, T2]) })
+    renderApp('/meetings')
+    const jobsLink = await screen.findByRole('link', { name: '定时任务' })
+    await waitFor(() => expect(dot()).not.toBeNull())
+    expect(within(jobsLink).queryByText(/\d/)).not.toBeInTheDocument()
+    expect(jobsLink).toHaveAccessibleDescription('有新的失败项')
+    expect(jobsLink).toHaveAttribute('title', '定时任务 · 有新的失败项')
+    expect(screen.getByText('2 项需要处理')).toBeInTheDocument()
+  })
+
+  test('打开定时任务页、列表读完：红点灭，记号是最新那条的 lastFailedAt', async () => {
+    installFetch({ jobs: () => jobsWithFailures([T2, T1]) })
+    const user = userEvent.setup()
+    renderApp('/meetings')
+    await waitFor(() => expect(dot()).not.toBeNull())
+    await user.click(screen.getByRole('link', { name: '定时任务' }))
+    await waitFor(() => expect(dot()).toBeNull())
+    expect(localStorage.getItem(FAILURES_SEEN_KEY)).toBe(String(T2))
+    expect(screen.getByRole('link', { name: '定时任务' })).not.toHaveAttribute('aria-describedby')
+  })
+
+  test('看过之后：换栏目会重读；老的那几条不再亮，来了更新的才再亮', async () => {
+    let times = [T1, T2]
+    installFetch({ jobs: () => jobsWithFailures(times) })
+    const user = userEvent.setup()
+    renderApp('/jobs')
+    await waitFor(() => expect(localStorage.getItem(FAILURES_SEEN_KEY)).toBe(String(T2)))
+    expect(dot()).toBeNull()
+
+    const before = jobsReads()
+    await user.click(screen.getByRole('link', { name: '会议记录' }))
+    await waitFor(() => expect(screen.getByTestId('topbar-title')).toHaveTextContent('会议记录'))
+    await waitFor(() => expect(jobsReads()).toBeGreaterThan(before))
+    expect(dot()).toBeNull()
+
+    times = [T1, T2, T3]
+    await user.click(screen.getByRole('link', { name: '采集授权' }))
+    await waitFor(() => expect(dot()).not.toBeNull())
+    expect(screen.getByText('3 项需要处理')).toBeInTheDocument()
+  })
+
+  test('标签页回到前台也重读', async () => {
+    let times: number[] = []
+    installFetch({ jobs: () => jobsWithFailures(times) })
     renderApp('/meetings')
     await waitFor(() => expect(screen.getByTestId('triage-count-archfail')).toBeInTheDocument())
-    const jobsLink = await screen.findByRole('link', { name: '定时任务' })
-    await waitFor(() => expect(within(jobsLink).getByText('2')).toBeInTheDocument())
+    expect(dot()).toBeNull()
+    times = [T1]
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await waitFor(() => expect(dot()).not.toBeNull())
+  })
+
+  test('重读期间上一份数据留在屏幕上，不闪「正在检测」', async () => {
+    let hang = false
+    installFetch({
+      jobs: () => (hang ? new Promise<never>(() => undefined) : healthyJobs()),
+    })
+    const user = userEvent.setup()
+    renderApp('/meetings')
+    await waitFor(() => expect(screen.getByText('一切正常')).toBeInTheDocument())
+    hang = true
+    await user.click(screen.getByRole('link', { name: '采集授权' }))
+    await waitFor(() => expect(screen.getByTestId('topbar-title')).toHaveTextContent('采集授权'))
+    expect(screen.getByText('一切正常')).toBeInTheDocument()
+    expect(screen.queryByText('正在检测…')).not.toBeInTheDocument()
   })
 })
 
@@ -480,7 +570,8 @@ describe('SystemStatus · NAS 断连：横幅是前端的活，数据不是', ()
     const before = screen.getByTestId('row-m1').textContent
 
     await user.selectOptions(screen.getByRole('combobox', { name: /系统状态/ }), 'tencent-down')
-    await waitFor(() => expect(systemBanner()).not.toBeNull())
+    // tencent-down 不再出横幅（spec §7.1），等左栏摘要说出来就算状态切过去了
+    await waitFor(() => expect(document.body.textContent).toContain('拉取连续失败'))
     expect(screen.getByTestId('row-m1').textContent).toBe(before)
   })
 

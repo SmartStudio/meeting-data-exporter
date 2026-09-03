@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { NavLink } from 'react-router-dom'
 import { fetchStreakText } from '@/api/admin/health'
-import { Pill } from '@/ui/Pill'
+import { useUnseenFailures } from './failuresSeen'
 import { useSystemStatusView } from './SystemStatus'
 import styles from './Rail.module.css'
 
@@ -144,37 +144,42 @@ function RailStatus() {
   )
 }
 
+/** `aria-describedby` 指向的那个隐藏节点的 id（一页只有一个左栏） */
+const JOBS_DOT_DESC_ID = 'nav-jobs-new-failures'
+
 /**
- * 「定时任务」导航项右侧的红色计数徽标。
+ * 「定时任务」右侧那颗红点：**有你还没看过的失败项**时才亮。
  *
- * 会议数 / 程序数 / 规则数（简报点名的另外三个）**没有加**：左栏是全局挂载的
- * 壳组件，能读到的只有 `useSystemStatusView()`（NAS/任务健康）与会话身份——
- * 没有一条共享的「当前有几场会议 / 几个程序 / 几条规则」数据源，六个页面各自
- * 拉自己的列表，壳层拿不到。拿不到就不显示，不编一个数字出来（简报原话）。
+ * 以前这里是一枚红底白字的计数徽标（`failuresTotal`）。去掉数字有三个理由：
+ * 1. 它说的是底部 `RailStatus` 已经在说的同一个数（「N 项需要处理」），一个事实印两遍；
+ * 2. 那个数只在进控制台时读一次，处理完几条它还写着老数——一个不动的数字比没有更误导
+ *    （现在 `SystemHealthProvider` 换栏目、回前台会重读，但即便如此，数字仍然是重复的）；
+ * 3. 收起态（1120px 以下）它要叠在 15px 的图标上，为此压了一堆尺寸特例。
+ * 红点只回答一个问题——「我看过之后又出事了吗」——答案来自 `app/failuresSeen.ts`：
+ * 定时任务页读完列表就记下最新一条失败的时间，之后出现比它更新的失败才再亮。
  *
- * 这一项能加，是因为 `openFailures` 恰好是共享数据：`fetchSystemHealth()`
- * 读的是 `GET /admin/jobs` 的顶层 `failuresTotal`——逐字对应「定时任务」这一页
- * 要管的东西，不是东拼西凑出来的近似值。颜色用 `--fail` 实底 + `--on-fail`
- * 字（`ui/Pill` 的 `solid` 变体），不是把 `--fail` 直接当文字色压在 `--nav`
- * 上——那样浅色主题下只有 2.98:1，过不了图形最低的 3:1，文字口径的 4.5:1
- * 更够不着。
- *
- * `aria-hidden`：数字本身不单独读出来，读屏使用者已经从下面 `RailStatus`
- * 的「N 项需要处理」那句里听到了同一个事实，这里再读一遍是重复。
+ * 点本身 `aria-hidden`：它没有文字，也不该进链接的可及名（名字必须还是「定时任务」，
+ * 测试与读屏都按这个名字找它）。「有新的失败项」这句放在 `aria-describedby` 指向的
+ * 隐藏节点里，读屏念成"定时任务，链接，有新的失败项"；鼠标那一侧由链接的 title 兜住
+ * （收起态文字看不见，点是唯一的信号）。
+ * 颜色是 `--nav-fail`（tokens.css）而不是 `--fail`：后者是给纸面用的红，压在暗带上
+ * 浅色主题只有 2.98:1，不到图形 3:1 的线。
  */
-function JobsBadge() {
-  const { openFailures } = useSystemStatusView()
-  if (openFailures === null || openFailures <= 0) return null
+function JobsDot() {
   return (
-    <span className={styles.navBadge} aria-hidden="true">
-      <Pill tone="fail" solid>
-        {openFailures}
-      </Pill>
-    </span>
+    <>
+      <span className={styles.navDot} data-testid="jobs-dot" aria-hidden="true" />
+      <span id={JOBS_DOT_DESC_ID} hidden>
+        有新的失败项
+      </span>
+    </>
   )
 }
 
 export default function Rail() {
+  const { newestFailedAt } = useSystemStatusView()
+  const unseen = useUnseenFailures(newestFailedAt)
+
   return (
     <aside className={styles.rail}>
       <div className={styles.brand}>
@@ -188,22 +193,26 @@ export default function Rail() {
       </div>
 
       <nav className={styles.nav} aria-label="主导航">
-        {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            className={({ isActive }) => (isActive ? `${styles.navItem} ${styles.navItemActive}` : styles.navItem)}
-            /* 收起态（1120px 以下）`.navLabel` 视觉隐藏之后，鼠标用户面对的是
-               六个没有名字的图标。可及名字仍然来自 `.navLabel` 的文本（title
-               只是可及名的兜底，有内容时不参与），所以这一条纯粹是给鼠标的。
-               理由同 RailStatus 里那段：不按断点加。 */
-            title={item.label}
-          >
-            <span className={styles.navIco}>{item.icon}</span>
-            <span className={styles.navLabel}>{item.label}</span>
-            {item.to === '/jobs' && <JobsBadge />}
-          </NavLink>
-        ))}
+        {NAV_ITEMS.map((item) => {
+          const dotted = item.to === '/jobs' && unseen
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) => (isActive ? `${styles.navItem} ${styles.navItemActive}` : styles.navItem)}
+              /* 收起态（1120px 以下）`.navLabel` 视觉隐藏之后，鼠标用户面对的是
+                 六个没有名字的图标。可及名字仍然来自 `.navLabel` 的文本（title
+                 只是可及名的兜底，有内容时不参与），所以这一条纯粹是给鼠标的。
+                 理由同 RailStatus 里那段：不按断点加。 */
+              title={dotted ? `${item.label} · 有新的失败项` : item.label}
+              aria-describedby={dotted ? JOBS_DOT_DESC_ID : undefined}
+            >
+              <span className={styles.navIco}>{item.icon}</span>
+              <span className={styles.navLabel}>{item.label}</span>
+              {dotted && <JobsDot />}
+            </NavLink>
+          )
+        })}
       </nav>
 
       <RailStatus />

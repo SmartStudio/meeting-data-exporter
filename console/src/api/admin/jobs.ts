@@ -124,6 +124,12 @@ export interface JobsOverview {
   jobs: JobItem[]
   /** 需要人处理的失败项**全量总数**，不受 `failures` 那 100 条上限截断 */
   failuresTotal: number
+  /**
+   * 调度器每轮往回看几个小时（`MDE_SCHEDULER_FETCH_LOOKBACK_HOURS`，网关与调度器读的是
+   * 同一个环境变量、同一份定义）。在前端只有一个用途：把「连续失败超过多少小时要人工补拉」
+   * 那句说准。控制台不自己写 24——运维改了这个数，硬编码的横幅就会说谎，而且不报错。
+   */
+  fetchLookbackHours: number
   /** 最多 `FAILURES_PAGE_LIMIT` 条，按最近失败时间倒序 */
   failures: JobFailure[]
 }
@@ -201,6 +207,7 @@ export async function fetchJobs(): Promise<JobsOverview> {
     timezoneOffsetSec: r.num(o, 'timezoneOffsetSec', ''),
     jobs: r.objList(o, 'jobs', '').map((x, i) => readJob(r, x, `jobs[${i}]`)),
     failuresTotal: r.num(o, 'failuresTotal', ''),
+    fetchLookbackHours: r.num(o, 'fetchLookbackHours', ''),
     failures: r.objList(o, 'failures', '').map((x, i) => readFailure(r, x, `failures[${i}]`)),
   }
 }
@@ -224,4 +231,23 @@ export async function runJob(name: string): Promise<RunJobAccepted> {
     status: r.str(o, 'status', ''),
     message: r.str(o, 'message', ''),
   }
+}
+
+/**
+ * 失败项里**最近一次失败发生的时间**（`lastFailedAt` 的最大值）；没有失败项是 `null`。
+ *
+ * 左栏「定时任务」旁那颗红点靠它判断"有没有你还没看过的失败"（`app/failuresSeen.ts`）：
+ * 看过的那一刻记住这个数，之后出现比它更新的失败就再亮。**按时间不按条数**：
+ * 条数会先降后升回同一个值，看起来像什么都没发生。
+ *
+ * 列表最多 `FAILURES_PAGE_LIMIT` 条、后端按最近失败时间倒序，所以被截断时最新的
+ * 那条也一定在返回的这一页里——这个最大值就是全量的最大值。顶栏那一路
+ * （`api/admin/health.ts`）读的是同一条端点，用同一个函数，不另写一遍。
+ */
+export function newestFailedAt(failures: ReadonlyArray<Pick<JobFailure, 'lastFailedAt'>>): number | null {
+  let newest: number | null = null
+  for (const f of failures) {
+    if (newest === null || f.lastFailedAt > newest) newest = f.lastFailedAt
+  }
+  return newest
 }

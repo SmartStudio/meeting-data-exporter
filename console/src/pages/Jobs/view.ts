@@ -403,7 +403,7 @@ export interface FetchStall {
  * 这个观察。所以措辞必须是观察（"最近 N 轮拉取连续失败"），不能是结论
  * （"腾讯会议不可达"）——那是在替一个我们没有的探测下结论。
  *
- * 这句话本页与顶栏的系统状态条两处都要显示，**所以它只能有一个出处**：
+ * 这句话本页与左栏底部的状态摘要两处都要显示，**所以它只能有一个出处**：
  * `fetchStreakText()`。这里 import 它，不另写一句；连续失败的数法也直接用
  * `countConsecutiveFailures()`（排队 / 正在跑 / 跳过跨过去，成功与被中断打断计数），
  * 两处口径差一点，界面上就会出现"状态条说连续失败、任务页说正常"。
@@ -483,4 +483,211 @@ export function keyMetric(job: Pick<JobItem, 'name' | 'lastRun'>): KeyMetric {
   if (sum.kind !== 'pairs') return { label, value: null }
   const pair = sum.pairs.find((p) => p.key === field)
   return { label, value: pair === undefined ? null : pair.value }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   任务之间的关系：哪些串成一条链，哪些各跑各的
+   ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * 接续关系：键是**下游**任务名，值是它接在哪些上游之后。
+ *
+ * 与后端 `JOB_CHAINS`（`src/worker/scheduler.ts`）是同一份拓扑。`GET /admin/jobs`
+ * 眼下不下发这层关系，所以这里抄一份，由 `tests/store/jobs-chain-copy.test.ts`
+ * 钉住两处一致——后端哪天把它放进契约，这个常量就该删掉改读契约。
+ *
+ * 只记「谁接在谁后面」，不记触发条件（后端的 `when`）：条件是后端的判断
+ * （`completed > 0` / `newlyArchived > 0`），界面上只说「上一步有新产出就接着跑」。
+ */
+export const CHAIN_AFTER: Readonly<Record<string, readonly string[]>> = {
+  archive_nas: ['fetch_recordings'],
+  auto_grant: ['fetch_recordings', 'archive_nas'],
+}
+
+export type JobLane = 'chain' | 'solo'
+
+/** 一个任务在页面上归哪一组：串在链上的，还是各按自己周期跑的。 */
+export function laneOf(name: string): JobLane {
+  if (name in CHAIN_AFTER) return 'chain'
+  for (const ups of Object.values(CHAIN_AFTER)) {
+    if (ups.includes(name)) return 'chain'
+  }
+  return 'solo'
+}
+
+export interface JobLanes {
+  /** 串成一条链的任务，按上游 → 下游排好 */
+  chain: JobItem[]
+  /** 不接在谁后面、也没人接在它后面的任务，保持后端顺序 */
+  solo: JobItem[]
+}
+
+/**
+ * 把任务分成「主链路」与「独立运行」两组。
+ *
+ * 原来五个任务是一行四段、段间画箭头——箭头把「清理到期文件 → 刷新采集清单」
+ * 也画成了因果，而那两个任务谁也不接谁。链路只有一条（拉取 → 归档 → 自动授权），
+ * 其余各按自己的周期跑，页面上就该是两组。
+ *
+ * 链内顺序是拓扑序：一个任务的所有上游都排在它前面。用「反复挑出已就绪的」
+ * 而不是递归——三个节点用不着递归，而且关系表哪天写出环（配置错）也不会死循环：
+ * 剩下挑不出来的按后端顺序原样接在末尾，页面照样画得出。
+ * 上游不在清单里（后端少发了一个任务）不算"没就绪"，否则整条链都排不出来。
+ */
+export function splitLanes(jobs: readonly JobItem[]): JobLanes {
+  const inChain = jobs.filter((j) => laneOf(j.name) === 'chain')
+  const solo = jobs.filter((j) => laneOf(j.name) === 'solo')
+  const present = new Set(inChain.map((j) => j.name))
+  const placed = new Set<string>()
+  const chain: JobItem[] = []
+  let rest = inChain
+  while (rest.length > 0) {
+    const ready = rest.filter((j) =>
+      (CHAIN_AFTER[j.name] ?? []).every((up) => placed.has(up) || !present.has(up)),
+    )
+    if (ready.length === 0) {
+      chain.push(...rest)
+      break
+    }
+    for (const j of ready) {
+      chain.push(j)
+      placed.add(j.name)
+    }
+    rest = rest.filter((j) => !placed.has(j.name))
+  }
+  return { chain, solo }
+}
+
+/** 链上两段之间那个箭头的可读文本（读屏与悬浮提示）。 */
+export function chainEdgeText(from: Pick<JobItem, 'label'>, to: Pick<JobItem, 'label'>): string {
+  // 任务名用「」括起来：名字以拉丁字母结尾（「归档到 NAS」）时，直接拼在中文前面
+  // 会黏成「NAS立刻」；括号把词界画出来，不用再按字符猜要不要补空格。
+  return `「${from.label}」有新产出时，「${to.label}」立刻接着跑`
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   失败项归并：同一个任务、同一句原因的失败项是一件事，不是 N 行
+   ══════════════════════════════════════════════════════════════════ */
+
+/** 一次最多展开多少组。超过的用「再显示」翻页，页面高度不随失败项数无限长。 */
+export const FAILURE_GROUPS_PAGE = 12
+/** 展开一组时一次最多列多少条对象。 */
+export const FAILURE_ITEMS_PAGE = 20
+/** 整轮维度失败项的 target 键。与 `src/worker/scheduler.ts` 的 `ROUND_FAILURE_TARGET` 同值。 */
+export const ROUND_FAILURE_TARGET = '__round__'
+
+export interface FailureGroup {
+  key: string
+  jobName: string
+  reason: string
+  impact: string
+  /** 按最近失败时间倒序 */
+  items: JobFailure[]
+  /** 这一组里最近的一次失败 */
+  latestAt: number
+  /** 已到重试上限的条数 */
+  escalated: number
+}
+
+/**
+ * 按「任务 + 原因 + 影响」归并。
+ *
+ * 判据是**三段文字逐字相同**，不做任何原因分类：后端没有给失败项一个错误码，
+ * 前端按关键词猜"这是不是同一类错"就是在编一层后端没有的语义。逐字相同足够解决
+ * 眼前的问题——一轮拉取里 18 场会议在腾讯会议那头 404，18 行的原因一个字都不差；
+ * 而那一行多带了一段 ENOENT 的，本来就是另一件事，该单独占一行。
+ *
+ * 影响也进键：失败行的 `impact` 是独立的一列，可以逐条不同（见 `index.tsx` 的
+ * `impactShownBelow`），两条影响不同的行合成一组就只能显示其中一句。
+ */
+export function groupFailures(failures: readonly JobFailure[]): FailureGroup[] {
+  const map = new Map<string, FailureGroup>()
+  for (const f of failures) {
+    const key = JSON.stringify([f.jobName, f.reason, f.impact])
+    let g = map.get(key)
+    if (g === undefined) {
+      g = { key, jobName: f.jobName, reason: f.reason, impact: f.impact, items: [], latestAt: f.lastFailedAt, escalated: 0 }
+      map.set(key, g)
+    }
+    g.items.push(f)
+    if (f.lastFailedAt > g.latestAt) g.latestAt = f.lastFailedAt
+    if (f.escalated) g.escalated += 1
+  }
+  const groups = [...map.values()]
+  for (const g of groups) g.items.sort((a, b) => b.lastFailedAt - a.lastFailedAt)
+  groups.sort((a, b) => b.latestAt - a.latestAt)
+  return groups
+}
+
+/**
+ * 一组的「已自动重试」。全组一样就是 `2 / 5`（spec §4.8 的分数形式）；
+ * 不一样给区间 `2–5 / 5`——不取平均，平均数在这里不是任何一条的事实。
+ */
+export function groupAttemptsText(g: Pick<FailureGroup, 'items'>): string {
+  const attempts = g.items.map((i) => i.attempts)
+  const min = Math.min(...attempts)
+  const max = Math.max(...attempts)
+  const cap = Math.max(...g.items.map((i) => i.maxAttempts))
+  return min === max ? `${min} / ${cap}` : `${min}–${max} / ${cap}`
+}
+
+/** 一组涉及了什么：都是会议就说「N 场会议」，混着程序或整轮的说「N 项」。 */
+export function groupScopeText(g: Pick<FailureGroup, 'items'>): string {
+  const n = g.items.length
+  const allMeetings = g.items.every((i) => i.meetingId !== null && i.meetingId !== '')
+  return allMeetings ? `${n} 场会议` : `${n} 项`
+}
+
+export interface TargetView {
+  /** 主行：人读的名字；拿不到时是会议 id；再拿不到（程序 / 整轮）照 target */
+  name: string
+  /** 副行：主行是名字时带上会议 id，主行已经是 id 时留空——不把同一个 id 印两遍 */
+  sub: string
+}
+
+/**
+ * 「对象」那一格怎么显示。
+ *
+ * 原来的写法是「名字拿不到就显示 `target`」，而会议维度的 `target` 是规范化键
+ * `meetingId|subMeetingId`——拉取失败项的 `targetLabel` 眼下全是空串，屏幕上于是
+ * 一行 `9070851125301166808|`、下面再一行同一个 id。键是给机器对的，人要看的是
+ * 会议 id 本身。
+ */
+export function targetView(
+  f: Pick<JobFailure, 'target' | 'targetLabel' | 'meetingId' | 'subMeetingId'>,
+): TargetView {
+  const hasMeeting = f.meetingId !== null && f.meetingId !== ''
+  const meetingText = hasMeeting
+    ? f.subMeetingId === ''
+      ? String(f.meetingId)
+      : `${f.meetingId} · ${f.subMeetingId}`
+    : ''
+  if (f.targetLabel !== '') return { name: f.targetLabel, sub: meetingText }
+  if (hasMeeting) return { name: meetingText, sub: '' }
+  // 整轮维度的失败项（挂载点探测失败这类）：后端的键是 `__round__`
+  // （`scheduler.ts` 的 `ROUND_FAILURE_TARGET`），人要看的是「这一轮整体」。
+  if (f.target === ROUND_FAILURE_TARGET) return { name: '整轮', sub: '' }
+  return { name: f.target, sub: '' }
+}
+
+export interface JobFailureCount {
+  name: string
+  label: string
+  count: number
+}
+
+/** 屏幕上这一批失败项按任务的条数。只含有失败的任务，顺序照 `jobs`；认不出的任务名排最后。 */
+export function failureCountsByJob(o: Pick<JobsOverview, 'jobs' | 'failures'>): JobFailureCount[] {
+  const counts = new Map<string, number>()
+  for (const f of o.failures) counts.set(f.jobName, (counts.get(f.jobName) ?? 0) + 1)
+  const out: JobFailureCount[] = []
+  for (const j of o.jobs) {
+    const n = counts.get(j.name)
+    if (n !== undefined) {
+      out.push({ name: j.name, label: j.label, count: n })
+      counts.delete(j.name)
+    }
+  }
+  for (const [name, count] of counts) out.push({ name, label: name, count })
+  return out
 }

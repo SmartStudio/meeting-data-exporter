@@ -1,23 +1,29 @@
 import { useCallback, useState } from 'react'
-import { fetchJobs, runJob, type JobsOverview } from '@/api/admin/jobs'
+import type { CSSProperties, ReactNode } from 'react'
+import { fetchJobs, newestFailedAt, runJob, type JobItem, type JobsOverview } from '@/api/admin/jobs'
 import { useResource } from '@/lib/useResource'
 import { Button } from '@/ui/Button'
 import { PageShell } from '@/ui/PageShell'
 import { Skeleton } from '@/ui/Skeleton'
 import { FailuresTable } from './FailuresTable'
 import { JobCard, type RunState } from './JobCard'
-// 直连 `app/systemAlert`（无 CSS）而不是 `app/SystemStatus`：后者带着
-// `SystemStatus.module.css`，多一条 import 边就会改变全站样式的注入顺序。
-// 这一行曾经写成前者，结果把会议记录页的对比度检查搞红了。
-import { useSystemAlertKind } from '@/app/systemAlert'
+import { useMarkFailuresSeen } from '@/app/failuresSeen'
 import { useDismissedStall } from './dismiss'
-import { fetchStall, overdueJobs, runQueuedNote } from './view'
+import { chainEdgeText, fetchStall, jobOrdinal, overdueJobs, runQueuedNote, splitLanes } from './view'
 import styles from './Jobs.module.css'
 
 /**
  * 定时任务页（spec.md §4.8）。
  *
- * 它回答两个问题：**五个任务跑得怎么样**、**失败项在哪**。
+ * 它回答两个问题：**任务跑得怎么样**、**失败项在哪**。
+ *
+ * ## 两组，不是一行五格
+ *
+ * 五个任务原来排成一行四格（第五个孤零零掉到第二行），格与格之间一律画箭头——
+ * 于是「清理到期文件 → 刷新采集清单」也被画成了因果，而那两个任务谁也不接谁。
+ * 真正串成一条链的只有三个（拉取 → 归档 → 自动授权，后端 `JOB_CHAINS`），
+ * 页面就按这个事实分两组：**主链路**连着画、段间有箭头；**独立运行**是普通卡片。
+ * 分组的判据在 `view.ts` 的 `splitLanes`，任务再多也只是两组各自变长。
  *
  * ## 「新建任务」按钮不在这里，而且是故意的（计划裁定 G-g）
  *
@@ -41,6 +47,10 @@ import styles from './Jobs.module.css'
 export default function JobsPage() {
   const res = useResource(() => fetchJobs(), [])
   const { retry } = res
+
+  // 列表读完 = 失败项「看过了」，左栏那颗红点靠这个灭（`app/failuresSeen.ts`）。
+  // 加载中 / 读失败传 undefined：没看到列表不算看过。
+  useMarkFailuresSeen(res.state === 'ready' ? newestFailedAt(res.data.failures) : undefined)
   const [runStates, setRunStates] = useState<Record<string, RunState>>({})
 
   const onRun = useCallback(
@@ -71,12 +81,10 @@ export default function JobsPage() {
   )
 
   return (
-    <PageShell
-      title="定时任务"
-      // 第二句（「失败项不会静默丢弃，会一直留在下方等重试」）删了：它在下面
-      // 那张表里逐行都写着——「已自动重试 2 / 5」就是同一件事的可核对版本
-      description="五个任务串起整条链路。"
-    >
+    /* 页头那句「五个任务串起整条链路。」删了：它说的不是事实（只有三个串在
+       一条链上），而两组各自的标题下面现在各有一句准确的。没有说明句时
+       PageShell 整条页头都不画，内容直接从顶栏下面开始。 */
+    <PageShell title="定时任务">
       {res.state === 'loading' && <Loading />}
       {res.state === 'error' && <ErrorBox message={res.error.message} onRetry={retry} />}
       {res.state === 'ready' && <Ready o={res.data} runStates={runStates} onRun={onRun} />}
@@ -87,7 +95,7 @@ export default function JobsPage() {
 function Loading() {
   return (
     <div className={styles.loading} data-testid="jobs-loading" role="status">
-      <p className={styles.loadingText}>正在读取五个任务的运行情况…</p>
+      <p className={styles.loadingText}>正在读取任务运行情况…</p>
       {[0, 1, 2, 3, 4].map((i) => (
         <div key={i} className={styles.loadingRow}>
           <Skeleton width="34%" />
@@ -124,6 +132,45 @@ function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }
   )
 }
 
+/**
+ * 一组任务：一个标题、一句这组是怎么跑的、一排卡片。
+ *
+ * `--cols` 两组都传同一个数（链的长度），所以两组的卡片一样宽；链上有几段就
+ * 几列，独立组按同样的列数折行。窄屏（≤72em）两组都退回单列（见 CSS）。
+ */
+function Lane({
+  id,
+  lane,
+  title,
+  sub,
+  cols,
+  children,
+}: {
+  id: string
+  lane: 'chain' | 'solo'
+  title: string
+  sub: string
+  cols: number
+  children: ReactNode
+}) {
+  const titleId = `jobs-lane-${id}`
+  return (
+    <section className={styles.lane} aria-labelledby={titleId} data-testid={`jobs-lane-${id}`}>
+      <div className={styles.laneHead}>
+        <h2 id={titleId} className={styles.laneTitle}>
+          {title}
+        </h2>
+        <p className={styles.laneSub}>{sub}</p>
+      </div>
+      {/* aria-label 就是组标题：a11y 门槛（`scripts/a11y-check.ts`）按 `ul[aria-label="主链路"]`
+          找这一组，测试也按名字找。 */}
+      <ul className={styles.cards} data-lane={lane} aria-label={title} style={{ '--cols': cols } as CSSProperties}>
+        {children}
+      </ul>
+    </section>
+  )
+}
+
 function Ready({
   o,
   runStates,
@@ -135,34 +182,18 @@ function Ready({
 }) {
   const overdue = overdueJobs(o.jobs)
   const stall = fetchStall(o.jobs)
-
-  /**
-   * 顶栏那条全局状态条是不是已经在说「拉取连着没跑成」。
-   *
-   * 它在**每一页**都显示，包括这一页，文案比下面这条还全（多一句「这是从任务
-   * 运行记录推出来的判断」），而且带着一颗「查看失败原因」的链接——指向 `/jobs`，
-   * 也就是你已经站着的地方。同一件事在一屏里说两遍，第二遍还比第一遍少说一句，
-   * 且没有任何动作可点。
-   *
-   * **不是直接删掉这条横幅**，因为有两种情形顶栏说不出来：
-   *
-   * 1. NAS 也断了。`liveAlert()` 先判 `nas.reachable`，一旦为假就直接返回
-   *    `nas-down`，再也走不到 `fetch-stalled` 那一支——那时顶栏只讲 NAS，
-   *    而「新录制正在积压」这件事在这一页仍然要有人说。
-   * 2. 顶栏读的是另一条端点（`GET /admin/health`），这一页读的是 `/admin/jobs`。
-   *    前者挂了顶栏会显示「系统状态读取失败」，那时它同样说不出这一句。
-   *
-   * 所以判据是「顶栏此刻正在说这件事吗」，不是「顶栏存在吗」。
-   *
-   * `useSystemAlertKind()` 在没有 Provider 时给 `null`（不抛），于是这里落到
-   * `false`——**照常把这句说出来**。少了一个 Provider 就把告警藏掉，屏幕上会
-   * 剩下一个看起来一切正常的页面，那比多说一遍糟得多。
-   */
-  const globalSaysStalled = useSystemAlertKind() === 'fetch-stalled'
+  const lanes = splitLanes(o.jobs)
+  // 链是空的（后端一个链上任务都没发）时按三列排独立组，别让它们铺成整行宽。
+  const cols = Math.max(lanes.chain.length, 3)
 
   /**
    * 这条横幅关得掉——但只对**眼前这一段**故障有效。身份、存储与"故障结束就忘掉"
    * 的理由都写在 `./dismiss.ts` 的文件头。
+   *
+   * 它是这句话在页面上的唯一出口：顶栏的全局状态条不再显示「拉取连续失败」
+   * （理由见 `app/SystemStatus.tsx` 里 `fetch-stalled` 那一行的注释），左栏底部摘要
+   * 与红点只提一句。所以这里既要把话说全，也要能关——知道了的人在等修复期间
+   * 还要继续用这一页。
    *
    * 只有这一条给关闭按钮。上面那条 `jobs-overdue`（「调度器多半已经不在跑了」）
    * 不给：它是这一页独有的出处，顶栏的 `liveAlert()` 根本不报 overdue，关掉它
@@ -186,6 +217,19 @@ function Ready({
   const impactShownBelow = (name: string, impact: string): boolean =>
     o.failures.some((f) => f.jobName === name && f.impact === impact)
 
+  const card = (job: JobItem, ordinal: string | null, next: JobItem | undefined) => (
+    <JobCard
+      key={job.name}
+      job={job}
+      ordinal={ordinal}
+      now={o.now}
+      runState={runStates[job.name]}
+      impactShownBelow={impactShownBelow(job.name, job.impact)}
+      edgeText={next === undefined ? null : chainEdgeText(job, next)}
+      onRun={onRun}
+    />
+  )
+
   return (
     <>
       {overdue.length > 0 && (
@@ -205,16 +249,19 @@ function Ready({
         </div>
       )}
 
-      {stall !== null && !globalSaysStalled && !stallDismissed && (
+      {stall !== null && !stallDismissed && (
         <div className={styles.banner} data-sev="warn" data-testid="jobs-fetch-stalled" role="status">
           <p className={styles.bannerText}>
             <b>{stall.text}</b>——「{stall.label}」连着没跑成，新的录制多半正在积压。
             <br />
-            {/* 主语从头到尾是那个**任务**（「最近 N 轮拉取连续失败」），
-                所以「这不是对腾讯会议接口的探测」那句免责已经不必写。
-                留下的是它说不出来的那件事：受影响的范围到哪儿为止。 */}
+            {/* 第二句写的是**能做什么**，不是免责。这条告警在控制台里没有一个能按的
+                动作：调度器自己会一轮轮再试，「立即运行」只是再排一轮同样的事。唯一要
+                人出手的情形是中断超过拉取窗口——调度器每轮只回看那么久，中间的会议
+                不会被回头补上。窗口的小时数来自后端（与调度器读同一个环境变量），
+                这里不写 24：运维一改，硬编码的句子就会说谎。整句放在一行里：JSX 会把
+                文字中间的换行折成一个空格，中文句子里不该冒出空格。 */}
             <span className={styles.bannerSub}>
-              已经拉下来的会议、归档与对外采集<b>不受影响</b>。
+              调度器每轮都会自己再试，不用手动触发。连续失败超过 {o.fetchLookbackHours} 小时，这段时间里的会议会落在拉取窗口之外，修好后需要人工补拉。已经拉下来的会议、归档与对外采集<b>不受影响</b>。
             </span>
           </p>
           {/* 可访问名不叫「关闭」，叫「关闭这条提醒」：一个光说「关闭」的名字没有
@@ -233,23 +280,23 @@ function Ready({
         </div>
       )}
 
-      {/* 「N 个任务已经落后」那条**不做同样的抑制**：顶栏的 `liveAlert()` 只报
-          nas-down / fetch-unknown / fetch-stalled 三种，没有 overdue——这一页
-          是它唯一的出处。 */}
+      {lanes.chain.length > 0 && (
+        <Lane
+          id="chain"
+          lane="chain"
+          title="主链路"
+          sub="上一步有新产出，下一步立刻接着跑；到点也照常跑。"
+          cols={cols}
+        >
+          {lanes.chain.map((job, i) => card(job, jobOrdinal(i), lanes.chain[i + 1]))}
+        </Lane>
+      )}
 
-      <ul className={styles.chain} aria-label="内置定时任务">
-        {o.jobs.map((job, i) => (
-          <JobCard
-            key={job.name}
-            job={job}
-            index={i}
-            now={o.now}
-            runState={runStates[job.name]}
-            impactShownBelow={impactShownBelow(job.name, job.impact)}
-            onRun={onRun}
-          />
-        ))}
-      </ul>
+      {lanes.solo.length > 0 && (
+        <Lane id="solo" lane="solo" title="独立运行" sub="各按自己的周期跑，不接在别的任务后面。" cols={cols}>
+          {lanes.solo.map((job) => card(job, null, undefined))}
+        </Lane>
+      )}
 
       <FailuresTable o={o} now={o.now} />
     </>

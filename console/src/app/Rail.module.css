@@ -108,9 +108,15 @@
   color: var(--nav-ink);
 }
 
-.navBadge {
+/* 「定时任务」右侧那颗红点：有你还没看过的失败项时才亮（Rail.tsx 的 JobsDot）。
+   8px = --s-3，与底部的状态点同一个尺寸；颜色是 --nav-fail 而不是 --fail
+   （tokens.css 里那条注释：--fail 压在暗带上浅色主题只有 2.98:1）。 */
+.navDot {
   flex: none;
-  font-variant-numeric: tabular-nums;
+  width: var(--s-3);
+  height: var(--s-3);
+  border-radius: var(--r-pill);
+  background: var(--nav-fail);
 }
 
 .railFoot {
@@ -246,7 +252,7 @@
   }
 
   .navItem {
-    /* 计数徽标要叠在这个盒子的右上角，定位基准得是它自己 */
+    /* 红点要叠在这个盒子的右上角，定位基准得是它自己 */
     position: relative;
     justify-content: center;
     gap: 0;
@@ -257,34 +263,15 @@
     min-height: var(--tap-min);
   }
 
-  /* 徽标不许消失：它是「这一项有事要处理」的信号，而 .navLabel 在这一档
-     已经看不见了，把它一起收掉等于把这条信号也收掉。56px 放不下并排的
-     徽标，改叠在图标右上角。 */
-  .navBadge {
+  /* 红点不许消失：它是「有新失败」的信号，而 .navLabel 在这一档已经看不见了，
+     把它一起收掉等于把这条信号也收掉。56px 放不下并排，改叠在图标右上角：
+     导航项是 39×44 的格子（55px 减去 .nav 两边 8px 内边距），15px 图标居中在
+     x 12–27、y 14.5–29.5；点 8px 贴右上角各内缩 --s-1（4px）落在 x 27–35、
+     y 4–12——与图标不相交，也在格子里，不会被 .nav 的 overflow 裁掉。 */
+  .navDot {
     position: absolute;
-    top: 0;
-    right: 0;
-    /* flex 而不是默认的 block：这个外层 span 里躺着的是一枚 inline-flex 药丸，
-       走行内布局的话它会被基线对齐推到 21.7px 行盒的下沿——实测药丸因此比
-       `top: 0` 低 5px，正好压进图标的上边缘（相交 18–53px²）。改成 flex
-       容器，药丸成为流内子项贴着顶边，相交面积回到 0。 */
-    display: flex;
-  }
-
-  /* 直接压 `ui/Pill` 的尺寸（同 `MeetingTable.module.css` 压 `ui/Table`
-     表头的做法）。药丸默认那一档是 12px 字 + 继承来的 1.55 行高 + 6px 横向
-     内边距，实测 21.7×24.6，叠在 39×44 的图标格上会盖住图标本身；收成 11px
-     字 + 行高 1 + 4px 内边距后是 17.2×13（三位数 31.4×13），落在格子上沿的
-     0–13，而图标居中在 14.5–29.5——**实测相交面积 0**，三位数也仍在格子里，
-     没有被 .nav 的 overflow 裁掉。
-     靠**特异度**赢，不靠注入顺序：`.navBadge > span` 是 (0,1,1)，
-     Pill 的 `.pill` 是 (0,1,0)，谁先注入都一样。 */
-  .navBadge > span {
-    padding: 0 var(--s-1);
-    font-size: var(--t-2xs);
-    /* 行盒等于字形本身：药丸的高度全部由内边距决定，才压得进图标格上沿
-       那 14px。与 `Pill.module.css` 里 `.remove` 的 line-height:1 同一个理由。 */
-    line-height: 1;
+    top: var(--s-1);
+    right: var(--s-1);
   }
 
   /* 状态点留着——它是这条暗带上唯一还在说话的东西。文字由上面那条

@@ -52,6 +52,7 @@ export interface ProtoJobs {
   timezoneOffsetSec: number
   jobs: ProtoJob[]
   failuresTotal: number
+  fetchLookbackHours: number
   failures: Array<Record<string, unknown>>
 }
 
@@ -251,7 +252,7 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     // 整轮维度的失败项：没有会议，`meetingId` 是 null，人读的名字也给不出
     failure(690, nowSec, {
       jobName: 'archive_nas',
-      target: 'round',
+      target: '__round__',
       targetLabel: '',
       meetingId: null,
       reason: '挂载点探测失败：/nas/meetings 在 5s 内没有响应，本轮整轮没跑成。',
@@ -344,6 +345,8 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
     timezoneOffsetSec: -new Date().getTimezoneOffset() * 60,
     jobs,
     failuresTotal: failures.length,
+    // 生产默认值。原型里没有调度器，这个数只是让横幅那句「超过 N 小时要补拉」有话可说
+    fetchLookbackHours: 24,
     failures,
   }
 }
@@ -380,7 +383,7 @@ export function applyTencentDown(o: ProtoJobs, nowSec: number): ProtoJobs {
 
   const extra = failure(700, nowSec, {
     jobName: 'fetch_recordings',
-    target: 'round',
+    target: '__round__',
     targetLabel: '',
     meetingId: null,
     reason: '腾讯会议接口连不上：连接超时（ETIMEDOUT）。',

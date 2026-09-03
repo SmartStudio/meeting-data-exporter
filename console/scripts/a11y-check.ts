@@ -640,7 +640,8 @@ const SCENES: Scene[] = [
     why: '定时任务：已经落后的红横幅 + 从没跑过 + 正在跑 + 失败项表',
     route: '/jobs',
     expect: [
-      'ul[aria-label="内置定时任务"]',
+      'ul[aria-label="主链路"]',
+      'ul[aria-label="独立运行"]',
       '[data-testid="jobs-overdue"]',
       '[data-testid="job-spark"]',
       '[data-testid="failure-row"][data-escalated="true"]',
@@ -652,15 +653,12 @@ const SCENES: Scene[] = [
     // 先在会议记录页把状态拨过去，再走左栏进定时任务页，见 viaState()
     route: '/meetings',
     setup: (p) => viaState(p, 'tencent-down', '/jobs'),
-    // 判据从页内那条横幅（`jobs-fetch-stalled`）换成**顶栏那条**
-    // （`[data-alert="fetch-stalled"]`）：这一句现在由全局状态条说，页内那条只在
-    // 顶栏说不出来时才出现（NAS 也断了、或 health 端点自己挂了——见
-    // `pages/Jobs/index.tsx` 的 `globalSaysStalled`）。在这个场景里顶栏正说着，
-    // 所以页内那条按设计不该在。
-    //
-    // 页内那条的样式仍然被门槛盖着：它和 `jobs-overdue` 共用 `.banner`，
-    // 而那一条由上面的 `jobs` 场景检查。这里少的只是它那段文字本身。
-    expect: ['[data-alert="fetch-stalled"]', 'ul[aria-label="内置定时任务"]'],
+    // 判据是**页内那条**横幅（`jobs-fetch-stalled`）和它的关闭按钮：顶栏的全局状态条
+    // 不再显示「拉取连续失败」（spec §7.1，理由见 `app/SystemStatus.tsx`），这一句
+    // 在页面上只有这一个出口，关闭按钮的对比度（--ink-2 压 --warn-soft）也只在
+    // 这里量得到。这个脚本没有「某选择器必须不存在」的断言，顶栏那条不在的事实
+    // 由 `tests/systemStatus.test.tsx` 钉。
+    expect: ['[data-testid="jobs-fetch-stalled"]', 'button[aria-label="关闭这条提醒"]', 'ul[aria-label="主链路"]'],
   },
   {
     id: 'storage',

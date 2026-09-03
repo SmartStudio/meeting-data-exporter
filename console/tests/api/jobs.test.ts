@@ -68,6 +68,7 @@ function payload(over: Record<string, unknown> = {}): Record<string, unknown> {
     timezoneOffsetSec: 28800,
     jobs: [job()],
     failuresTotal: 1,
+    fetchLookbackHours: 24,
     failures: [failure()],
     ...over,
   }
@@ -198,6 +199,13 @@ describe('fetchJobs()', () => {
     delete bad.failuresTotal
     stubFetch(bad)
     await expect(fetchJobs()).rejects.toThrow(/failuresTotal/)
+  })
+
+  test('`fetchLookbackHours` 缺失也是坏响应——横幅那句「超过 N 小时要人工补拉」没有 N 就说不出口', async () => {
+    const bad = payload()
+    delete bad.fetchLookbackHours
+    stubFetch(bad)
+    await expect(fetchJobs()).rejects.toThrow(/fetchLookbackHours/)
   })
 
   test('非 2xx 抛 ApiError（带端点名），不是 ApiShapeError', async () => {

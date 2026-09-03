@@ -87,7 +87,7 @@ function jobsPayload(fetchRuns: string[] | null, failuresTotal = 0): unknown {
       recentRuns: fetchRuns.map(run),
     })
   }
-  return { now: 1700000000, timezoneOffsetSec: 28800, jobs, failuresTotal, failures: [] }
+  return { now: 1700000000, timezoneOffsetSec: 28800, jobs, failuresTotal, fetchLookbackHours: 24, failures: [] }
 }
 
 interface Backend {
@@ -225,19 +225,18 @@ describe('nas-down：来自 storage 的 nas.reachable', () => {
 })
 
 describe('tencent-down：从拉取任务的最近运行推断（不是直报）', () => {
-  test('连续 3 轮失败 → 告警条，措辞是观察到的事实', async () => {
+  test('连续 3 轮失败 → 顶栏不出横幅；左栏摘要在说，措辞是观察到的事实', async () => {
     install({ jobs: () => jsonOf(jobsPayload(['failed', 'failed', 'failed', 'succeeded'])) })
     renderApp()
     await shellReady()
 
-    await waitFor(() => expect(banner()).not.toBeNull())
-    const bar = banner()!
-    expect(bar).toHaveAttribute('data-sev', 'warn')
-    expect(bar).toHaveAttribute('data-alert', 'fetch-stalled')
-    expect(bar.textContent).toContain('最近 3 轮拉取连续失败')
+    // 左栏摘要说出来了，说明 Provider 已经把这份数据推成了 fetch-stalled
+    await waitFor(() => expect(document.body.textContent).toContain('最近 3 轮拉取连续失败'))
+    // 顶栏那条横幅**不出现**（spec §7.1）：这件事在控制台里没有一个能按的动作，
+    // 它的出口是左栏摘要、红点和定时任务页那条能关的横幅
+    expect(banner()).toBeNull()
     // **这是推断，不是探测**：界面上不许出现一句肯定的结论
-    expect(bar.textContent).not.toContain('腾讯会议接口不可达')
-    expect(bar.textContent).toContain('推出来的判断')
+    expect(document.body.textContent).not.toContain('腾讯会议接口不可达')
   })
 
   test('只失败 2 轮（没到阈值）→ 不报，一次抖动不是一次故障', async () => {

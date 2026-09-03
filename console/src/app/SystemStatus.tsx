@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   SystemStatusContext,
   useSystemStatusView,
@@ -9,7 +9,6 @@ import { Link } from 'react-router-dom'
 import type { SystemState } from '@/api/types'
 import {
   TENCENT_DOWN_STREAK,
-  fetchStreakText,
   fetchSystemHealth,
   type SystemHealth,
 } from '@/api/admin/health'
@@ -117,18 +116,52 @@ function liveAlert(health: SystemHealth): SystemAlert {
  * 真实系统状态的唯一取数点。挂在 `AppShell` 里（登录态确认之后），
  * 状态条与左栏摘要共用同一份，不各发一遍请求。
  *
+ * ## 什么时候重读
+ *
+ * 一次会话只读一次是不够的：左栏那颗「有新失败」的红点要在后续再出错时重新亮，
+ * 底部「N 项需要处理」也不该处理完了还写着老数。重读的时机是**人动了一下**：
+ * - `section` 变了——点左栏换了一个栏目（`AppShell` 从路由算出来传进来；
+ *   页内的子路由、比如会议详情抽屉，不算换栏目，不重读）；
+ * - 这个标签页回到前台（`visibilitychange` / `focus`；切标签页时两者先后到，
+ *   1 秒内只算一次）。
+ * 不轮询：没人看的标签页没有理由每分钟去探一次 NAS。
+ *
+ * 重读期间**上一份数据留在屏幕上**：不然每换一页顶栏就闪一下「正在检测」、左栏
+ * 闪一下「读不到」。只有首次读取才是真的「还不知道」。重读失败则照实说「读不到」——
+ * 拿一份旧的当现在的，正是 spec §7 不许的那种"默认成正常"。
+ *
  * **原型模式下一次请求都不发**：那时的状态来自顶栏那个下拉。这是"默认路径
  * 一步都不许碰 mock、原型路径一步都不许碰真实后端"的那条分界线。
  */
-export function SystemHealthProvider({ children }: { children: ReactNode }) {
+export function SystemHealthProvider({ children, section = '' }: { children: ReactNode; section?: string }) {
   // 冻结在挂载那一刻：原型模式中途不会切换，而每次渲染都重读 sessionStorage
   // 会让 `useResource` 的 deps 抖动。
   const [proto] = useState(() => isProtoMode())
   const { state } = useSystemState()
 
+  // 回到前台的次数。变了就重读一次。
+  const [wake, setWake] = useState(0)
+  useEffect(() => {
+    if (proto) return
+    let last = 0
+    const bump = () => {
+      if (document.visibilityState !== 'visible') return
+      const t = Date.now()
+      if (t - last < 1000) return
+      last = t
+      setWake((n) => n + 1)
+    }
+    window.addEventListener('focus', bump)
+    document.addEventListener('visibilitychange', bump)
+    return () => {
+      window.removeEventListener('focus', bump)
+      document.removeEventListener('visibilitychange', bump)
+    }
+  }, [proto])
+
   const res = useResource<SystemHealth | null>(
     () => (proto ? Promise.resolve(null) : fetchSystemHealth()),
-    [proto],
+    [proto, proto ? '' : section, wake],
   )
 
   // `useResource` 每次渲染都返回一个新对象（`{...res, retry}`），直接放进 deps
@@ -138,16 +171,24 @@ export function SystemHealthProvider({ children }: { children: ReactNode }) {
   const health = res.state === 'ready' ? res.data : null
   const { retry } = res
 
+  // 上一次读到的那份：重读期间顶着用（理由见上）
+  const [known, setKnown] = useState<SystemHealth | null>(null)
+  useEffect(() => {
+    if (health !== null) setKnown(health)
+  }, [health])
+
   const value = useMemo<SystemStatusView>(() => {
-    if (proto) return { alert: protoAlert(state), openFailures: null, retry }
+    const blank = { openFailures: null, newestFailedAt: null, retry }
+    if (proto) return { alert: protoAlert(state), ...blank }
     if (phase === 'error' && error !== null) {
-      return { alert: { kind: 'unreadable', detail: error.message }, openFailures: null, retry }
+      return { alert: { kind: 'unreadable', detail: error.message }, ...blank }
     }
-    // `health === null` 有两种来源：还在 loading，或者原型模式那个 resolve(null)。
-    // 后者在上面已经返回了，所以这里只剩"还没探完"。
-    if (health === null) return { alert: { kind: 'checking' }, openFailures: null, retry }
-    return { alert: liveAlert(health), openFailures: health.openFailures, retry }
-  }, [proto, state, phase, error, health, retry])
+    // `health === null` 有三种来源：首次还在 loading、重读中、原型模式那个 resolve(null)。
+    // 原型在上面已经返回；重读中有 `known` 顶着；剩下的才是真的"还没探完"。
+    const cur = health ?? known
+    if (cur === null) return { alert: { kind: 'checking' }, ...blank }
+    return { alert: liveAlert(cur), openFailures: cur.openFailures, newestFailedAt: cur.newestFailedAt, retry }
+  }, [proto, state, phase, error, health, known, retry])
 
   return <SystemStatusContext.Provider value={value}>{children}</SystemStatusContext.Provider>
 }
@@ -159,7 +200,7 @@ export function SystemHealthProvider({ children }: { children: ReactNode }) {
  * 而那正是 `systemAlert.ts` 存在的理由（见那个文件的头注释）。页面直接
  * `import ... from '@/app/systemAlert'`。
  */
-export { useSystemStatusView, useSystemAlertKind } from './systemAlert'
+export { useSystemStatusView } from './systemAlert'
 export type { SystemAlert, SystemStatusView } from './systemAlert'
 
 /* ══════════════════════════════════════════════════════════════════
@@ -196,7 +237,8 @@ function WarnIcon() {
  * 1. **状态来自真实端点**（`nas.reachable` 与 `fetch_recordings` 的最近运行），
  *    不再是顶栏那个手动下拉——它退回 `?proto=1` 下的演示工具。
  * 2. **「腾讯会议不可达」这句话没有了**。我们没有探测腾讯会议的端点，
- *    有的只是"拉取任务最近几轮都失败了"这个观察。文案照观察写
+ *    有的只是"拉取任务最近几轮都失败了"这个观察。这个观察也不在这条横幅上说
+ *    （见下面 `fetch-stalled` 那一行的注释）；左栏摘要与定时任务页照观察写
  *    （`fetchStreakText()`），不替一个不存在的探测下结论。
  * 3. **「暂停到期清理」不再是一个点了只改本地 state 的按钮**。这个动作有真实
  *    端点（`POST /api/v1/admin/storage/cleanup-pause`），但它归归档存储页
@@ -208,6 +250,17 @@ export default function SystemStatus() {
   const { alert, retry } = useSystemStatusView()
 
   if (alert.kind === 'none' || alert.kind === 'checking') return null
+
+  /* 「拉取连续失败」不进这条全局横幅（spec §7.1）。
+   *
+   * 这条横幅挂在每一页上，留给**此刻有一个动作能阻止损失**的事：NAS 断连给
+   * 「暂停到期清理」，状态读不到给「重试」。拉取连续失败在控制台里没有这样的动作
+   * ——调度器自己会一轮轮再试，失败原因要么要改代码、要么在控制台之外、要么谁也
+   * 做不了什么。一条「现在就动手」的横幅配一件只能等的事，只会把它下面的内容一直
+   * 往下挤。这件事在三处照样可见：左栏底部摘要、左栏「定时任务」旁的红点、定时
+   * 任务页顶上那条能关的横幅——那里才有失败原因，也才说得清多久没修好要人工补拉。
+   * `liveAlert()` 照样产出这个取值：左栏摘要要读它。 */
+  if (alert.kind === 'fetch-stalled') return null
 
   if (alert.kind === 'unreadable') {
     return (
@@ -240,28 +293,6 @@ export default function SystemStatus() {
         <div className={styles.acts}>
           <Link className={styles.btn} to="/jobs">
             查看定时任务
-          </Link>
-        </div>
-      </div>
-    )
-  }
-
-  if (alert.kind === 'fetch-stalled') {
-    return (
-      <div className={styles.bar} data-sev="warn" role="status" data-alert="fetch-stalled">
-        <WarnIcon />
-        <p className={styles.text}>
-          <b>{fetchStreakText(alert.streak)}</b>
-          ——「{alert.label}」这个任务连着没跑成，新的录制多半正在积压。
-          <br />
-          <span className={styles.sub}>
-            这是从任务运行记录推出来的判断，不是对腾讯会议接口的直接探测；
-            已经拉下来的会议、归档与对外采集不受影响。
-          </span>
-        </p>
-        <div className={styles.acts}>
-          <Link className={styles.btn} to="/jobs">
-            查看失败原因
           </Link>
         </div>
       </div>
