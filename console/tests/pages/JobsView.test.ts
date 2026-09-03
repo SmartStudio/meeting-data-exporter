@@ -305,6 +305,42 @@ describe('fetchStall() —— tencent-down 的推断，与系统状态条同一�
     const withSuccess = [run({ id: 99, status: 'succeeded' }), ...failed(n)]
     expect(fetchStall([job({ name: 'fetch_recordings', recentRuns: withSuccess })])).toBeNull()
   })
+
+  /* ── 这一段故障的身份：`latestFailedRunId`（横幅关闭要用，见 dismiss.ts）──
+     真实数据里 `recentRuns[0]` 是最近一次、id 随时间递增，所以最新那条 id 最大。
+     上面的 `failed()` 反过来（id 从 0 递增），会把"取到的是最新那条"和
+     "取到的是第一条/最小的那条"混在一起分不出来，这里另铺一份。 */
+  const failedDesc = (topId: number, n: number): JobRun[] =>
+    Array.from({ length: n }, (_, i) => run({ id: topId - i, status: 'failed' }))
+
+  test('latestFailedRunId 是这一段连续失败里最新那一次 failed 的 id', () => {
+    const runs = failedDesc(903, TENCENT_DOWN_STREAK)
+    expect(fetchStall([job({ name: 'fetch_recordings', recentRuns: runs })])?.latestFailedRunId).toBe(903)
+  })
+
+  test('排队 / 正在跑 / 跳过跨过去之后才算身份——不是 recentRuns[0] 的 id', () => {
+    // 在一台已经拉不通的机器上按一下「立即运行」，最新一行就是 queued。
+    // 拿它当身份，横幅会在每次手动触发之后都换一个身份、重新冒出来。
+    const runs: JobRun[] = [
+      run({ id: 910, status: 'queued' }),
+      run({ id: 909, status: 'running' }),
+      run({ id: 908, status: 'skipped' }),
+      ...failedDesc(907, TENCENT_DOWN_STREAK),
+    ]
+    const stall = fetchStall([job({ name: 'fetch_recordings', recentRuns: runs })])
+    expect(stall?.streak).toBe(TENCENT_DOWN_STREAK)
+    expect(stall?.latestFailedRunId).toBe(907)
+  })
+
+  test('又失败一轮，身份就换一个——关掉的那条不会把新的失败一起藏掉', () => {
+    const before = fetchStall([
+      job({ name: 'fetch_recordings', recentRuns: failedDesc(907, TENCENT_DOWN_STREAK) }),
+    ])
+    const after = fetchStall([
+      job({ name: 'fetch_recordings', recentRuns: failedDesc(908, TENCENT_DOWN_STREAK + 1) }),
+    ])
+    expect(after?.latestFailedRunId).not.toBe(before?.latestFailedRunId)
+  })
 })
 
 describe('keyMetric() —— 链上每一段自己的一个关键数（D-jobs-storage brief）', () => {

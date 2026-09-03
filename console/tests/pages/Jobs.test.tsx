@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { afterEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
@@ -566,6 +566,69 @@ describe('「拉取连续失败」的措辞（计划 G-d）', () => {
       payload({ jobs: [job({ name: 'fetch_recordings', label: '拉取新录制', recentRuns: failedRuns })] }),
     )
     expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
+  })
+})
+
+/**
+ * 关掉这条横幅（`pages/Jobs/dismiss.ts`）。
+ *
+ * 盯的是那条分界：「关掉」只对**眼前这一段故障**生效。关过就永远不再显示，
+ * 与关不掉，是同一个错误的两头——前者会把下一次真故障也一起吞掉。
+ */
+describe('「拉取连续失败」那条横幅关得掉，但只对这一段故障有效', () => {
+  const KEY = 'mde.jobs.fetch-stall.dismissed'
+  const LATEST = 907
+
+  /** 最近一次在第 0 个，id 随时间递增——所以最新那条 failed 的 id 最大 */
+  function stalled(topId = LATEST, n = TENCENT_DOWN_STREAK): Record<string, unknown> {
+    return payload({
+      jobs: [
+        job({
+          name: 'fetch_recordings',
+          label: '拉取新录制',
+          recentRuns: Array.from({ length: n }, (_, i) => run({ id: topId - i, status: 'failed' })),
+        }),
+      ],
+    })
+  }
+
+  // 每条用例前后都清一遍：关闭状态存在 localStorage 里，串到别的用例上就会
+  // 变成"这一条单独跑能过、整个文件跑就挂"
+  beforeEach(() => localStorage.clear())
+  afterEach(() => localStorage.clear())
+
+  test('点「关闭这条提醒」，横幅消失，并记下这一段故障的身份', async () => {
+    await mount(stalled())
+    expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '关闭这条提醒' }))
+    await waitFor(() => expect(screen.queryByTestId('jobs-fetch-stalled')).toBeNull())
+    expect(localStorage.getItem(KEY)).toBe(String(LATEST))
+  })
+
+  test('这一段故障已经关过：首次渲染就没有这条横幅', async () => {
+    localStorage.setItem(KEY, String(LATEST))
+    await mount(stalled())
+    // 等数据真的到了再断言「没有」——加载态下什么都还没渲染，那时的 null 不算数
+    await screen.findAllByTestId('job-card')
+    expect(screen.queryByTestId('jobs-fetch-stalled')).toBeNull()
+  })
+
+  test('关过的是更早那一轮，之后又失败一轮：横幅回来', async () => {
+    localStorage.setItem(KEY, String(LATEST))
+    await mount(stalled(LATEST + 1, TENCENT_DOWN_STREAK + 1))
+    expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
+  })
+
+  test('连续失败结束（最近一轮跑成了）：那个身份被删掉，下一段故障从头提醒', async () => {
+    localStorage.setItem(KEY, String(LATEST))
+    await mount() // 默认四个任务最近两轮都是 succeeded
+    await waitFor(() => expect(localStorage.getItem(KEY)).toBeNull())
+  })
+
+  test('「N 个任务已经落后」那条没有关闭按钮——它是这件事在控制台里唯一的出处', async () => {
+    await mount(payload({ jobs: [job({ health: 'overdue' })] }))
+    const overdue = await screen.findByTestId('jobs-overdue')
+    expect(within(overdue).queryByRole('button')).toBeNull()
   })
 })
 

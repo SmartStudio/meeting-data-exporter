@@ -29,6 +29,10 @@
 }
 
 .bannerText {
+  /* 占满除关闭按钮以外的全部宽度。min-width: 0 是必须的：flex 子项的
+   * min-width 默认是 auto，长 URL / 长任务名会把它撑过容器，把按钮挤出去 */
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   font-size: var(--t-sm);
   line-height: var(--lh-loose);
@@ -38,6 +42,44 @@
 
 .bannerSub {
   color: var(--ink-2);
+}
+
+/* 关闭按钮只有「拉取连续失败」那条横幅有——`jobs-overdue` 那条是「调度器多半
+ * 已经不在跑了」在整个控制台里的唯一出处，关不得。样式对齐 `ui/Sheet.module.css`
+ * 的 .closeBtn：同一个 × 在两处长得不一样会像两颗不同的按钮。
+ * 焦点环不在这里画——base.css 的全局 :focus-visible 已经管着（同 Sheet）。
+ *
+ * 唯一与 Sheet 不同的是静止色：那边是 --ink-3，因为它站在 --surface 上（5.06:1）；
+ * 这里站的是 --warn-soft，同一个 --ink-3 只有 4.45:1，过不了 4.5——18px 的 × 不算
+ * 大字号，够不到 3:1 那一档。所以降一级用 --ink-2（浅 9.03、深 7.89）。 */
+.bannerClose {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ink-2);
+  /* 不参与伸缩：横幅文字再长也不许把这颗按钮压窄，44×44 是触控下限 */
+  flex: 0 0 auto;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--t-xl);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+
+.bannerClose:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.bannerClose:active {
+  transform: translateY(var(--s-px));
+  transition: none;
 }
 
 /* ── 任务链 ────────────────────────────────────────────────── */

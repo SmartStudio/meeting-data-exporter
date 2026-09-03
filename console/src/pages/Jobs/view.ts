@@ -382,6 +382,13 @@ export interface FetchStall {
   label: string
   /** **唯一出处是 `api/admin/health.ts` 的 `fetchStreakText()`**，见下 */
   text: string
+  /**
+   * 这一段连续失败里**最新那一次 failed 运行**的 id ——「这是哪一段故障」的身份。
+   *
+   * 它存在的理由只有一个：横幅可以关（`./dismiss.ts`），而"关掉"必须只对
+   * 眼前这一段故障生效。id 会随着又失败一轮而变大，那时横幅重新出现。
+   */
+  latestFailedRunId: number
 }
 
 /**
@@ -395,13 +402,31 @@ export interface FetchStall {
  * `fetchStreakText()`。这里 import 它，不另写一句；连续失败的数法也直接用
  * `countConsecutiveFailures()`（排队 / 正在跑 / 跳过跨过去，成功与被中断打断计数），
  * 两处口径差一点，界面上就会出现"状态条说连续失败、任务页说正常"。
+ *
+ * ## `latestFailedRunId` 为什么是「第一条 failed」，而不是另走一遍跳过规则
+ *
+ * 跳过规则只能有一份，就在 `countConsecutiveFailures()` 里。这里**不复制**它：
+ * `streak ≥ 1` 已经保证了 `recentRuns` 的开头是"若干条 queued/running/skipped
+ * 再接一条 failed"——在那条 failed 之前不可能出现另一条 failed。所以整个数组里
+ * **第一条 `status === 'failed'`** 与"沿着连续失败往回数够到的最新那一条"是同一条，
+ * 一个 `find` 就够了，不需要第二套跳过规则跟着第一套一起漂。
  */
 export function fetchStall(jobs: readonly JobItem[]): FetchStall | null {
   const job = jobs.find((j) => j.name === FETCH_JOB_NAME)
   if (job === undefined) return null
   const streak = countConsecutiveFailures(job.recentRuns.map((r) => r.status))
   if (streak < TENCENT_DOWN_STREAK) return null
-  return { streak, label: job.label, text: fetchStreakText(streak) }
+  // streak ≥ TENCENT_DOWN_STREAK ≥ 1 ⇒ 这一条一定找得到（理由见上）。
+  // 万一将来阈值被改成 0，这里宁可不报也不编一个 id——身份错了比没有更糟：
+  // 关掉一次就会把一段根本不同的故障也一起藏掉。
+  const latestFailed = job.recentRuns.find((r) => r.status === 'failed')
+  if (latestFailed === undefined) return null
+  return {
+    streak,
+    label: job.label,
+    text: fetchStreakText(streak),
+    latestFailedRunId: latestFailed.id,
+  }
 }
 
 /** spec §4.8 的表把四个任务排成一、二、三、四——它们串起的是一整条链路。 */

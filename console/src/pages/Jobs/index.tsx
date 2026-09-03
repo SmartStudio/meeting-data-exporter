@@ -10,6 +10,7 @@ import { JobCard, type RunState } from './JobCard'
 // `SystemStatus.module.css`，多一条 import 边就会改变全站样式的注入顺序。
 // 这一行曾经写成前者，结果把会议记录页的对比度检查搞红了。
 import { useSystemAlertKind } from '@/app/systemAlert'
+import { useDismissedStall } from './dismiss'
 import { fetchStall, overdueJobs, runQueuedNote } from './view'
 import styles from './Jobs.module.css'
 
@@ -160,6 +161,16 @@ function Ready({
   const globalSaysStalled = useSystemAlertKind() === 'fetch-stalled'
 
   /**
+   * 这条横幅关得掉——但只对**眼前这一段**故障有效。身份、存储与"故障结束就忘掉"
+   * 的理由都写在 `./dismiss.ts` 的文件头。
+   *
+   * 只有这一条给关闭按钮。上面那条 `jobs-overdue`（「调度器多半已经不在跑了」）
+   * 不给：它是这一页独有的出处，顶栏的 `liveAlert()` 根本不报 overdue，关掉它
+   * 就等于把"调度器死了"这件事从整个控制台里抹掉。
+   */
+  const { hidden: stallDismissed, dismiss: dismissStall } = useDismissedStall(stall)
+
+  /**
    * 卡片上那句「影响」是不是**逐字**已经在下面那张表里了。
    *
    * 判据是**文字本身相同**，不是「这个任务有没有失败行」——那只是个代理指标，
@@ -194,7 +205,7 @@ function Ready({
         </div>
       )}
 
-      {stall !== null && !globalSaysStalled && (
+      {stall !== null && !globalSaysStalled && !stallDismissed && (
         <div className={styles.banner} data-sev="warn" data-testid="jobs-fetch-stalled" role="status">
           <p className={styles.bannerText}>
             <b>{stall.text}</b>——「{stall.label}」连着没跑成，新的录制多半正在积压。
@@ -206,6 +217,19 @@ function Ready({
               已经拉下来的会议、归档与对外采集<b>不受影响</b>。
             </span>
           </p>
+          {/* 可访问名不叫「关闭」，叫「关闭这条提醒」：一个光说「关闭」的名字没有
+              说清关掉的是什么——这一页上面还可能站着另一条横幅（`jobs-overdue`）；
+              而「关闭」这个名字在全站已经归 `ui/Sheet.tsx` 头部那个 × 所有，读屏
+              按名字找按钮时两者会撞在一起（同样的取舍见
+              `Consumers/ProgramActions.tsx` 的「关掉这一屏」）。 */}
+          <button
+            type="button"
+            className={styles.bannerClose}
+            aria-label="关闭这条提醒"
+            onClick={dismissStall}
+          >
+            <span aria-hidden="true">×</span>
+          </button>
         </div>
       )}
 
