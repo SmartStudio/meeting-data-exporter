@@ -1,5 +1,8 @@
 import { loadConfig } from './config'
 import { createPool, runMigrations } from './store/db'
+import { resolve } from 'node:path'
+import { stat } from 'node:fs/promises'
+import { createConsoleStatic } from './http/static'
 import { createStsStore } from './store/sts'
 import { createGrantsStore } from './store/grants'
 import { createPolicyStore } from './store/policy'
@@ -219,6 +222,17 @@ async function main(): Promise<void> {
     getMeetings: (keys) => consoleMeetings.getMeetings(keys),
   }
 
+  // 控制台前端（阶段 6 · R6-b）：构建产物目录在则由网关发页面，不在则只当 API 网关。
+  // 不在时**不拒绝启动**——采集程序与 webhook 与页面无关，为一份前端拒绝整个网关是过度反应；
+  // 但要在日志里说一句，否则根路径 404 会被当成路由坏了。
+  const consoleDist = process.env.MDE_CONSOLE_DIST || 'console/dist'
+  const consoleStatic = (await stat(resolve(consoleDist, 'index.html')).catch(() => null))?.isFile()
+    ? createConsoleStatic(consoleDist)
+    : null
+  if (consoleStatic === null) {
+    console.warn(`[startup] 控制台前端未找到（${resolve(consoleDist)}/index.html 不存在）：本进程只提供 API，根路径不发页面`)
+  }
+
   const deps: AppDeps = {
     now,
     jwtSecret: config.jwtSecret,
@@ -288,6 +302,7 @@ async function main(): Promise<void> {
       // 就要人工补拉）。配得不一样时横幅会说错小时数，同样不报任何错。
       fetchLookbackHours: schedulerFetchLookbackHours(process.env),
     },
+    consoleStatic,
   }
 
   const app = createApp(deps)

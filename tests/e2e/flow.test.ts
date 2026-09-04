@@ -230,6 +230,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    consoleStatic: null,
     // 阶段 4 · T7（A3 采集授权）：真实模块，接到同一个 e2e 测试库
     programs: programsStore,
     grantsStore,

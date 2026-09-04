@@ -191,6 +191,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     adminStore,
     // 跟随 src/index.ts 同一条推导规则：gatewayBaseUrl 是 https 即为 true
     cookieSecure: new URL(gatewayBaseUrl).protocol === 'https:',
+    // http 层测试不发页面；静态服务由 tests/http/static.test.ts 单独盯
+    consoleStatic: null,
     // 阶段 4 · T7（A3 采集授权）：与上面几行同样是真实模块接到同一个测试库
     programs: programsStore,
     grantsStore,

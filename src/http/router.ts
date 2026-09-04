@@ -21,6 +21,7 @@ import * as consoleAuthHandlers from './handlers/console/auth'
 import * as consoleStorageHandlers from './handlers/console/storage'
 import type { StorageDeps } from './handlers/console/storage'
 import type { RateLimiter } from './ratelimit'
+import { isConsolePath, type ConsoleStatic } from './static'
 import type { ProgramsStore } from '../store/programs'
 import type { GrantsStore, MeetingKey } from '../store/grants'
 import type { PolicyStore } from '../store/policy'
@@ -83,6 +84,11 @@ export interface AppDeps {
   adminStore: AdminStore
   /** 生产环境必须为 true（cookie 的 Secure 属性依据它）；本地 http 开发环境为 false */
   cookieSecure: boolean
+  /**
+   * 控制台前端的静态文件（阶段 6 · R6-b）。null = 本进程不发页面（构建产物不在、
+   * 或只当纯 API 网关用），根路径照旧 404。见 static.ts 文件头的顺序约束。
+   */
+  consoleStatic: ConsoleStatic | null
 
   // ── 阶段 4 · T7（A3 采集授权 API + 采集清单） ─────────────────────
   /** 采集程序（service_accounts）的控制台读写侧。读侧不含 secret_hash */
@@ -433,6 +439,16 @@ export function createApp(deps: AppDeps): (req: Request) => Promise<Response> {
 
       try {
         return await route.handler(req, { params, deps })
+      } catch (err) {
+        return internalError(err)
+      }
+    }
+
+    // 兜底：控制台页面与静态资产。**必须排在全部 API 路由之后**，且只接管网关
+    // 自己前缀之外的 GET/HEAD——`/api/...` 拼错了要得到 404 JSON，不是一份 HTML
+    if (deps.consoleStatic !== null && (req.method === 'GET' || req.method === 'HEAD') && isConsolePath(url.pathname)) {
+      try {
+        return await deps.consoleStatic.serve(req, url.pathname)
       } catch (err) {
         return internalError(err)
       }
