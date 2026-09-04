@@ -116,6 +116,7 @@ import { createConsoleMeetingsStore } from '../store/console-meetings'
 import { createAuditStore } from '../store/audit'
 import { createStsStore } from '../store/sts'
 import { createMeetingCacheStore } from '../store/meetings'
+import { createMeetingHostIdsStore, createTmUsersStore } from '../store/tm-users'
 import { createStsManager } from '../sts/manager'
 import { createTokenCipher } from '../sts/cipher'
 import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
@@ -127,6 +128,7 @@ import { archivePendingMeetings, type ArchiveDeps, type ArchiveRoundOutcome } fr
 import { executeCleanup, type CleanupExecuted } from './retention'
 import { computeProgramInventory, type ProgramInventory, type VisibilityDeps } from './visibility'
 import { runAutoGrantRound, type AutoGrantDeps, type AutoGrantRound } from './auto-grant'
+import { syncHostNames } from './host-names'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore, type DeadAsset } from './store-mysql'
 import {
@@ -913,6 +915,10 @@ async function main(): Promise<number> {
     const contents = createContentsStore(pool)
     const jobs = createJobsStore(pool)
     const consoleMeetings = createConsoleMeetingsStore(pool, { policy })
+    // 主持人姓名的写侧（`tm_users`）。读侧在 `console-meetings.ts` 里自己建一份，
+    // 那边是网关进程、这边是调度器进程，本来就不共享实例
+    const tmUsers = createTmUsersStore(pool)
+    const meetingHostIds = createMeetingHostIdsStore(pool)
 
     const tencentClient = createTencentClient(config.tencent, {
       fetch,
@@ -1025,17 +1031,42 @@ async function main(): Promise<number> {
         // 第二个 discovery 触发源，而且是**生产上真正每 15 分钟跑的那一个**。
         // 只接一次性 worker 那条，等于 A7 在生产环境里依旧没接上，所以两处一起接，
         // 判定逻辑共用 `./fetch-policy.ts` 一份。
-        fetchRound: (clock) => {
+        fetchRound: async (clock) => {
           // 窗口在**本轮开跑那一刻**定一次就不再动：`clock` 是活时钟（租约要用），
           // 拿它现算 from/to 会让"往回看 24 小时"随下载耗时一起漂。
           const at = clock()
-          return runFetchRound(
+          const round = await runFetchRound(
             fetchDeps,
             // 滚动时间窗。**不带 --code / --meeting-id**：那两种选择器是人工补跑用的
             { kind: 'range', from: at - lookbackSec, to: at } satisfies MeetingSelector,
             [...DEFAULT_ASSET_KEYS],
             clock,
           )
+          // 主持人姓名补一轮，**挂在这个任务后面而不是自成一格**：它要补的正是这一轮
+          // 刚发现的那些会议的主持人，而且共用同一个腾讯客户端与同一条令牌桶。
+          // 单开一个定时任务意味着两个任务在同一分钟里抢同一个接口的配额，
+          // 却没有任何一处看得见另一处已经用掉多少。
+          //
+          // **失败一律不让整轮 fetch 变失败。** 录制文件已经落盘了，那才是这一格的
+          // 职责；因为一次姓名接口限流就把「拉取新录制」标红，等于让 sparkline 上
+          // 最要紧的那一格天天报一件无关的事——告警一旦天天红就没人看了。
+          // 姓名补不上的表现是界面继续显示「未知主持人」，下一轮自然会再试。
+          try {
+            await syncHostNames({
+              client: tencentClient,
+              operatorId: config.tencent.operatorId,
+              store: tmUsers,
+              meetings: meetingHostIds,
+              // 冻结在本轮开跑那一刻：落库的 fetched_at 与判「一天内查过没有」
+              // 用的必须是同一个数，否则一轮跑很久时后半截会算成已经过期
+              now: at,
+            })
+          } catch (err) {
+            console.warn(
+              `主持人姓名同步这一轮没跑成，不影响本轮拉取：${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+          return round
         },
         // 任务一收尾的失败项口。`since` 由任务体传本轮开跑时刻，见 recordDeadAssets
         deadAssets: () => store.deadAssets(),

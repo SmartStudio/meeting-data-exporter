@@ -19,6 +19,7 @@ import { ACTION_EXTEND_RETENTION, auditSubMeetingAssetId } from './audit'
 import type { Pool } from './db'
 import { createGrantsStore, type MeetingKey } from './grants'
 import { createPolicyStore, type PolicyStore } from './policy'
+import { createTmUsersStore, type TmUsersStore } from './tm-users'
 
 /**
  * 控制台会议记录页（spec §4.2）的查询底座（阶段 4 · T1）。
@@ -54,12 +55,18 @@ import { createPolicyStore, type PolicyStore } from './policy'
  * `action = 'issue_download_url'` 的记录里）。会议操作历史仍然只有
  * `AuditQueryStore.listForMeeting` 一份实现。
  *
- * ## 第六张表：`identity_map`，而且**不 JOIN**（阶段 6）
+ * ## 第六、第七张表：`tm_users` 与 `identity_map`，而且**都不 JOIN**（阶段 6）
  *
  * `meetings.host_userid` 是一串机器 id，直接摆上屏幕没人认得出那是谁——而那些行
- * 是带批量勾选框的。`hostName` 把它翻成人看得懂的名字，来源是 `identity_map`。
- * 它**没有跟着 `FROM_SQL` 一起 JOIN**：那张表的 `tm_userid` 上没有唯一约束，
- * 撞上重复行会把会议行复制一份、把分页算错。做法见 `loadHostNames`。
+ * 是带批量勾选框的。`hostName` 把它翻成人看得懂的名字，来源有两个，**顺序固定**：
+ * 先 `tm_users`（腾讯会议成员接口同步下来的真实姓名，见
+ * `src/worker/host-names.ts`），查不到才退回 `identity_map`（那张表没有姓名列，
+ * 只给得出邮箱的本地部分）。
+ *
+ * 两张都**没有跟着 `FROM_SQL` 一起 JOIN**。`identity_map` 是因为它的 `tm_userid`
+ * 上没有唯一约束，撞上重复行会把会议行复制一份、把分页算错；`tm_users` 的
+ * `tm_userid` 是主键、不会复制行，但姓名这件事只该有一处实现，两张表一起在
+ * `loadHostNames` 里收敛才说得清「谁优先」。做法见那个函数。
  *
  * 因此 `fetch` / `archive` 两个阶段状态本模块给的是**库里看得见的那一半**：
  * `'off'`（有人工改写把这一阶段关掉）给得出来，`'blocked'`（规则做的决定）给不出来。
@@ -215,24 +222,27 @@ export interface ConsoleMeetingRow {
   /** 秒。`end_time - start_time`；任一为 NULL 或 `end <= start` 时是 0，见下面的注释 */
   durationSec: number
   /**
-   * **主持人的 userid，不是姓名**（计划 §0 E-b）。取姓名要走企微通讯录，
-   * 而本部署企微未配置。显示一个查不到出处的中文名比显示 userid 更难排查——
-   * 管理员会以为那是真名，拿着它去问人，问出来的会是另一个人。
-   * 字段仍叫 `host`：将来接上通讯录只换来源、不换形状，前端一行不改。
+   * **主持人的 userid，不是姓名**（计划 §0 E-b）。姓名在 `hostName` 那个字段里，
+   * 它现在真的有出处了（`tm_users`，见下），但这一列**照旧原样带着 userid**：
+   * 排查时只有它有用，界面拿它做 `title` 供复制，两行是不是同一个人也靠它区分。
+   * 前端一行不改——当初把两者分成两个字段就是为了让来源换掉时形状不变。
    */
   host: string
   /**
    * 主持人的**显示名**，取不到时 `null`（阶段 6 · 会议记录页信息设计）。
    *
-   * 来源是 `identity_map`：那张表是身份映射表（企微 userid ↔ 腾讯会议 userid ↔
-   * 邮箱），**没有姓名列**，所以这里能给出的最接近姓名的东西是邮箱的本地部分
-   * （`zhangsan@corp.com` → `zhangsan`）。将来接上企微通讯录时换的是这个字段的
-   * 来源，不是它的形状。
+   * 两个来源，顺序固定：
    *
-   * **`null` 是常态，不是异常**：本部署的 `identity_map` 目前一行都没有。所以
-   * 界面上「取不到姓名」那条路径才是真正会跑到的那条，它必须把 `host`
-   * （一串 32 位机器 id）降级成「能区分行、又不假装是姓名」的样子，
-   * 而不是把主键当人名摆上去。
+   * 1. `tm_users.username`——腾讯会议成员接口（`GET /v1/users/{userid}`）同步下来的
+   *    **真实姓名**，写侧是 `src/worker/host-names.ts`。这是正路；
+   * 2. 查不到才退回 `identity_map`。那张表是身份映射表（企微 userid ↔ 腾讯会议
+   *    userid ↔ 邮箱），**没有姓名列**，能给出的最接近姓名的东西是邮箱的本地部分
+   *    （`zhangsan@corp.com` → `zhangsan`）。它现在是兜底，不是主来源。
+   *
+   * **`null` 仍然是一条真会跑到的路径**：`tm_users` 里 `username IS NULL` 的那些
+   * 行说的正是「问过腾讯，没有这个成员」（离职回收的账号、外部成员），
+   * 而 `identity_map` 在本部署一行都没有。所以界面必须把 `host`（一串 32 位机器
+   * id）降级成「能区分行、又不假装是姓名」的样子，而不是把主键当人名摆上去。
    *
    * 为什么不在这里就把降级文案拼好：那是展示，换一次措辞就要动网关。
    * 这里只回答「查到了没有」。
@@ -280,7 +290,12 @@ export interface MeetingQuery {
    * 测试才能钉住边界，同一次请求里各处也才是同一个「现在」。
    */
   now: number
-  /** 模糊搜索：标题 / 会议号 / 主持人。`%` 与 `_` 按字面量处理 */
+  /**
+   * 模糊搜索：标题 / 会议号 / 主持人。`%` 与 `_` 按字面量处理。
+   *
+   * 主持人这一项**同时按 userid 和按姓名**匹配（姓名来自 `tm_users`）：
+   * 界面上显示的是姓名，照着屏幕搜却搜不到的话，管理员会认定搜索坏了。
+   */
   search?: string
   /** 点了分诊条哪一格 */
   triage?: TriageBucket
@@ -963,12 +978,15 @@ function toDomainMeeting(r: MeetingMetaColumns): MeetingMeta {
 
 export function createConsoleMeetingsStore(
   pool: Pool,
-  deps: { policy?: PolicyStore } = {},
+  deps: { policy?: PolicyStore; tmUsers?: TmUsersStore } = {},
 ): ConsoleMeetingsStore {
   const policy = deps.policy ?? createPolicyStore(pool)
   // 改写的批量读法 `grants.ts` 已经有了（`listActiveOverridesForMeetings`），
   // 复用它而不是在这里再写一条同样的 SQL——两份实现对同一张表迟早会分叉。
   const grantsStore = createGrantsStore(pool)
+  // 同理：「username IS NULL 与不在表里同义」这条判据只该有一处实现，
+  // 在这里再抄一条 `WHERE username IS NOT NULL` 就是第二处（见 tm-users.ts）
+  const tmUsers: TmUsersStore = deps.tmUsers ?? createTmUsersStore(pool)
 
   /** 这一页的资产聚合。一次问清整页，不逐会议查 */
   async function loadAssets(keys: readonly MeetingKey[]): Promise<Map<string, AssetAggRow[]>> {
@@ -1057,13 +1075,27 @@ export function createConsoleMeetingsStore(
   /**
    * 这一页主持人的显示名（阶段 6）。
    *
-   * ## 为什么是单独一条查询，不是 `FROM_SQL` 里再加一个 LEFT JOIN
+   * ## 两个来源，顺序固定：先 `tm_users`，查不到才退回 `identity_map`
+   *
+   * `tm_users.username` 是腾讯会议成员接口给的**真实姓名**（写侧
+   * `src/worker/host-names.ts`），`identity_map` 给的是**邮箱的本地部分**——那张
+   * 表没有姓名列，`zhang.san@corp.com` 只能显示成 `zhang.san`。两者都是「这个人
+   * 叫什么」的近似，但前者是姓名本身，后者是账号名，所以顺序不能反。
+   *
+   * `tm_users` 里 `username IS NULL` 的行（问过腾讯、没有这个成员）在
+   * `namesFor` 里就已经不出现了，于是它们会自然地落到 `identity_map` 这一档——
+   * 这是对的：腾讯没有这个成员，不代表本地的身份映射里也没有。
+   *
+   * ## 为什么两条都是单独查询，不是 `FROM_SQL` 里再加 LEFT JOIN
    *
    * `identity_map.tm_userid` **没有唯一约束**（主键是 `wecom_userid`）。同一个
    * 腾讯会议 userid 出现两行是可能的（离职账号回收、身份同步竞态写入），
    * 而 JOIN 一旦撞上重复行就会把那场会议在列表里复制成两行——分页的
    * `total` 与实际行数从此对不上，而且没有任何东西会报错。单独一条查询在
    * 内存里按「最新的映射生效」收敛，行数不受它影响。
+   *
+   * `tm_users.tm_userid` 是主键、复制不了行，它不 JOIN 的理由是另一个：姓名的
+   * 优先级只该有一处实现，两张表在同一个函数里收敛，「谁说了算」才写得清楚。
    *
    * ## 「最新的映射生效」与登录那条路径同一口径
    *
@@ -1073,24 +1105,32 @@ export function createConsoleMeetingsStore(
    *
    * ## 查询数
    *
-   * **一条，与行数无关**；而且这一页一个主持人 userid 都没有（全是 NULL）时
-   * 一条都不发。`identity_map` 上没有 `tm_userid` 索引，所以这是一次小表扫描——
-   * 一张按人建的映射表规模是「公司人数」，不是「会议数」。真需要索引时那是一条
-   * 纯增量的 migration，不改这里任何一行。
+   * **最多两条，与行数无关**，而且都是按需发的：这一页一个主持人 userid 都没有
+   * （全是 NULL）时一条都不发，`tm_users` 把这一页的人全认出来时第二条也不发
+   * ——同步跑起来之后那才是常态。
+   *
+   * `identity_map` 上没有 `tm_userid` 索引，所以那一条是一次小表扫描——一张按人
+   * 建的映射表规模是「公司人数」，不是「会议数」。真需要索引时那是一条纯增量的
+   * migration，不改这里任何一行。
    */
   async function loadHostNames(rows: readonly MeetingSqlRow[]): Promise<Map<string, string>> {
     const ids = [...new Set(rows.map((r) => r.host_userid).filter((v): v is string => v !== null && v !== ''))]
     if (ids.length === 0) return new Map()
 
+    // 第一来源：腾讯会议成员接口同步下来的真实姓名
+    const out = await tmUsers.namesFor(ids)
+    const rest = ids.filter((id) => !out.has(id))
+    if (rest.length === 0) return out
+
+    // 第二来源：身份映射表里的邮箱本地部分。**只问 tm_users 没认出来的那些**
     const [found] = await pool.query<HostIdentityRow[]>(
       `SELECT tm_userid, email
          FROM identity_map
-        WHERE tm_userid IN (${ids.map(() => '?').join(', ')})
+        WHERE tm_userid IN (${rest.map(() => '?').join(', ')})
         ORDER BY updated_at DESC, wecom_userid ASC`,
-      ids,
+      rest,
     )
 
-    const out = new Map<string, string>()
     for (const r of found) {
       // 先到先得 = 最新的那条（上面已按 updated_at 降序排过）
       if (out.has(r.tm_userid)) continue
@@ -1121,9 +1161,10 @@ export function createConsoleMeetingsStore(
 
     // 五条查询并发发出去，且**每条都是整页一次**——这是「N+1 不许有」那条验收
     // 的落点。想知道列一页发了几次查询，数这里就够了：分页 1 + 计数 1 + 这里 3
-    // （资产 / 授权 / 改写），外加两条按需的：这一页真有会议被延长过时的延长次数
-    // （`loadExtendCounts`），以及这一页至少有一个主持人 userid 时的姓名映射
-    // （`loadHostNames`）。**都与行数无关**。
+    // （资产 / 授权 / 改写），外加按需的那几条：这一页真有会议被延长过时的延长
+    // 次数（`loadExtendCounts`），以及主持人姓名（`loadHostNames`，1–2 条：
+    // 这一页一个 userid 都没有时 0 条，`tm_users` 全认出来时 1 条，
+    // 有人要退回 `identity_map` 时 2 条）。**都与行数无关**。
     const [assetsByKey, grantsByKey, overrideRows, extendCounts, hostNames] = await Promise.all([
       loadAssets(keys),
       loadGrants(keys),
@@ -1285,8 +1326,19 @@ export function createConsoleMeetingsStore(
 
     if (q.search !== undefined && q.search !== '') {
       const like = `%${escapeLike(q.search)}%`
-      parts.push('(m.subject LIKE ? OR m.meeting_code LIKE ? OR m.host_userid LIKE ?)')
-      params.push(like, like, like)
+      // 主持人这一项要能按**姓名**搜：界面上显示的就是姓名，而管理员照着屏幕上
+      // 那两个字去搜却搜不到，是最直接的一种「搜索坏了」。userid 那一项**不能删**
+      // ——排查时手里只有 id 的场合照样存在，两条是 OR 关系。
+      //
+      // 姓名这一项写成 `IN (子查询)` 而不是 JOIN `tm_users`：JOIN 进 `FROM_SQL`
+      // 会把姓名这件事从「按需的一条查询」变成「每一条列表查询都带着的一张表」，
+      // 而 `FROM_SQL` 同时被计数查询用着——多一张表就多一处把行数算错的机会。
+      // 子查询只在有搜索词时出现，命中的是 `tm_users` 的主键回表。
+      parts.push(
+        `(m.subject LIKE ? OR m.meeting_code LIKE ? OR m.host_userid LIKE ?
+          OR m.host_userid IN (SELECT tm_userid FROM tm_users WHERE username LIKE ?))`,
+      )
+      params.push(like, like, like, like)
     }
     if (q.hasGrant !== undefined) {
       const exists = `EXISTS (SELECT 1 FROM meeting_grants g

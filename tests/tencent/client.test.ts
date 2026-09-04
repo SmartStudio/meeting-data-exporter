@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { createTencentClient } from '../../src/tencent/client'
+import { USER_DETAIL_QUOTA_KEY, createTencentClient } from '../../src/tencent/client'
 import { TencentApiError } from '../../src/tencent/errors'
 
 const cfg = {
@@ -199,4 +199,45 @@ test('配额闸门跟着 client 实例走：同一实例的后续调用继续受
 
   // 两次之间必须隔满 60000/10 = 6 秒
   expect(clockMs - afterFirstMs).toBeGreaterThanOrEqual(6_000)
+})
+
+/**
+ * 路径里带变量的接口（`/v1/users/{userid}`）：按 path 匹配等于**一次都匹配不上**
+ * ——每个 userid 都是一条新 path。它靠 `RequestOptions.quotaKey` 把同一个接口的
+ * 全部调用归到一条闸门上，闸门本身还是那一个（见 client.ts 的 ENDPOINT_QUOTAS）。
+ */
+test('quotaKey 让路径带变量的接口也受分钟级配额约束', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn, calls } = fakeFetch([{ status: 200, body: { username: '张三' } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 50 }, // 全局 50/s = 3000/min，比这个接口的 60/min 宽 50 倍
+    { fetch: fn, sleep: async (ms: number) => { clockMs += ms }, nowMs: () => clockMs },
+  )
+
+  const startMs = clockMs
+  // 每次都是不同的 path，只有 quotaKey 相同
+  for (let i = 0; i < 3; i++) {
+    await c.get(`/v1/users/u-${i}`, { operator_id: 'admin' }, { quotaKey: USER_DETAIL_QUOTA_KEY })
+  }
+
+  expect(calls).toHaveLength(3)
+  // 60/min = 两次之间至少隔 1 秒，三次至少 2 秒
+  expect(clockMs - startMs).toBeGreaterThanOrEqual(2_000)
+})
+
+test('不传 quotaKey 时按 path 计费——同一个接口的不同 path 因此互不影响', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn, calls } = fakeFetch([{ status: 200, body: { username: '张三' } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 50 },
+    { fetch: fn, sleep: async (ms: number) => { clockMs += ms }, nowMs: () => clockMs },
+  )
+
+  const startMs = clockMs
+  // 这正是**不能**这么调的原因，钉在这里免得有人以为「按 path 也拦得住」：
+  // 三条不同的 path 一条配额都匹配不上，全部当场放行
+  for (let i = 0; i < 3; i++) await c.get(`/v1/users/u-${i}`, { operator_id: 'admin' })
+
+  expect(calls).toHaveLength(3)
+  expect(clockMs - startMs).toBe(0)
 })

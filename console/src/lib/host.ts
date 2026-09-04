@@ -81,7 +81,7 @@ export function hostView(m: HostSource): HostView {
   return {
     text: HOST_UNKNOWN_LABEL,
     tail: shortHostId(m.host),
-    title: `主持人 ID：${m.host}\n姓名查不到——企业通讯录还没有同步过来`,
+    title: `主持人 ID：${m.host}\n姓名查不到——腾讯会议通讯录里没有这个成员，或还没同步`,
     resolved: false,
   }
 }

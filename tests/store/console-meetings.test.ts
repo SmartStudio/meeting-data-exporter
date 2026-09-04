@@ -376,6 +376,137 @@ test('hostName：同一个 tm_userid 撞了两行时取最新的，且会议行�
   }
 })
 
+/** `tm_users` 的一行。这是姓名的**第一来源**，见 migrations/012 的表头 */
+async function seedTmUser(
+  pool: Pool,
+  input: { tmUserId: string; username?: string | null; fetchedAt?: number },
+): Promise<void> {
+  const { tmUserId, username = '张三', fetchedAt = 1000 } = input
+  await pool.execute(
+    `INSERT INTO tm_users (tm_userid, username, fetched_at) VALUES (?, ?, ?)`,
+    [tmUserId, username, fetchedAt],
+  )
+}
+
+test('hostName：tm_users 有真实姓名时用它，不是邮箱本地部分', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', hostUserId: 'tm-1' })
+    await seedTmUser(pool, { tmUserId: 'tm-1', username: '张三' })
+    // 同一个人在身份映射里也有一行。**顺序不能反**：`zhang.san` 是账号名，
+    // 「张三」才是姓名，而界面上那一格的列头写的就是「主持人」
+    await seedIdentity(pool, { wecomUserId: 'zhangsan', tmUserId: 'tm-1', email: 'zhang.san@corp.com' })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    expect(rows[0]!.hostName).toBe('张三')
+    expect(rows[0]!.host).toBe('tm-1')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('hostName：tm_users 里 username 是 NULL（问过腾讯、没有这个成员）时退回 identity_map', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', hostUserId: 'tm-1' })
+    // NULL = 腾讯说没有这个成员（离职回收的账号、外部成员）。**这不代表本地的
+    // 身份映射里也没有**，所以它该落到第二来源，而不是就此判定「查不到」
+    await seedTmUser(pool, { tmUserId: 'tm-1', username: null })
+    await seedIdentity(pool, { wecomUserId: 'zhangsan', tmUserId: 'tm-1', email: 'zhang.san@corp.com' })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    expect(rows[0]!.hostName).toBe('zhang.san')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('hostName：两张表都给不出名字时仍是 null，不回退 userid', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', hostUserId: 'tm-1' })
+    await seedTmUser(pool, { tmUserId: 'tm-1', username: null })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows } = await store.list({ now: NOW })
+    // 这条路径在同步跑起来之后仍然会走到（腾讯确实没有这个成员），界面据此
+    // 显示「未知主持人 · 尾号」。把 userid 塞进 hostName 就等于把主键当人名渲染
+    expect(rows[0]!.hostName).toBeNull()
+    expect(rows[0]!.host).toBe('tm-1')
+  } finally {
+    await cleanup()
+  }
+})
+
+test('hostName：tm_users 全认出来时不再查 identity_map', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    for (let i = 0; i < 5; i++) {
+      await seedMeeting(pool, { meetingId: `m-${i}`, hostUserId: `tm-${i}` })
+      await seedTmUser(pool, { tmUserId: `tm-${i}`, username: `名字${i}` })
+    }
+
+    const counted = countingPool(pool)
+    const store = createConsoleMeetingsStore(counted.pool)
+
+    counted.reset()
+    const { rows } = await store.list({ now: NOW })
+    const withTm = counted.queries()
+    expect(rows.map((r) => r.hostName)).toEqual(['名字0', '名字1', '名字2', '名字3', '名字4'])
+
+    // 对照：把 tm_users 清空，同一页就得多发一条查询去问 identity_map。
+    // 两个数差 1 才说明「查不到才退回」是真的按需，而不是每次都问两张表
+    await pool.query('DELETE FROM tm_users')
+    counted.reset()
+    await store.list({ now: NOW })
+    expect(counted.queries()).toBe(withTm + 1)
+  } finally {
+    await cleanup()
+  }
+})
+
+test('搜索：按主持人姓名搜得到，按 userid 也照样搜得到', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    await seedMeeting(pool, { meetingId: 'm-1', subject: '周会', hostUserId: 'woaJARCQ' })
+    await seedMeeting(pool, { meetingId: 'm-2', subject: '周会', hostUserId: 'woaBBBBB' })
+    await seedTmUser(pool, { tmUserId: 'woaJARCQ', username: '张三' })
+    await seedTmUser(pool, { tmUserId: 'woaBBBBB', username: '李四' })
+
+    const store = createConsoleMeetingsStore(pool)
+    // 界面上显示的是姓名，照着屏幕搜却搜不到，是最直接的一种「搜索坏了」
+    const byName = await store.list({ now: NOW, search: '张三' })
+    expect(byName.rows.map((r) => r.meetingId)).toEqual(['m-1'])
+    expect(byName.total).toBe(1)
+
+    // userid 那一项**没有被姓名顶掉**：排查时手里只有 id 的场合照样存在
+    const byId = await store.list({ now: NOW, search: 'woaBBBBB' })
+    expect(byId.rows.map((r) => r.meetingId)).toEqual(['m-2'])
+  } finally {
+    await cleanup()
+  }
+})
+
+test('搜索：按姓名搜时 total 与行数一致，不因子查询多出行来', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    // 同一个人主持了三场：`IN (子查询)` 不会像 JOIN 那样把行复制出来
+    for (let i = 0; i < 3; i++) {
+      await seedMeeting(pool, { meetingId: `m-${i}`, hostUserId: 'tm-1', startTime: 1000 + i })
+    }
+    await seedTmUser(pool, { tmUserId: 'tm-1', username: '张三' })
+
+    const store = createConsoleMeetingsStore(pool)
+    const { rows, total } = await store.list({ now: NOW, search: '张三' })
+    expect(rows).toHaveLength(3)
+    expect(total).toBe(3)
+  } finally {
+    await cleanup()
+  }
+})
+
 test('不适用的资产类不出现在 assets 里，而不是 {got:0,total:0}', async () => {
   const { pool, cleanup } = await withTestDb()
   try {
@@ -1151,8 +1282,8 @@ test('数延长次数不是 N+1：30 场都延长过时，查询数与 3 场时�
     expect(big.rows).toHaveLength(30)
     expect(big.rows.every((r) => r.keep.extended === 2)).toBe(true)
     expect(bigQueries).toBe(smallQueries)
-    // 比 T1 那条上界只多一次：整页一条审计聚合查询，不是逐行查
-    expect(smallQueries).toBeLessThanOrEqual(7)
+    // 比上面那条 N+1 的上界只多一次：整页一条审计聚合查询，不是逐行查
+    expect(smallQueries).toBeLessThanOrEqual(8)
   } finally {
     await cleanup()
   }
@@ -1295,9 +1426,10 @@ test('N+1 不许有：列 3 行与列 30 行发出去的查询数完全相同', 
     expect(small.rows).toHaveLength(3)
     expect(big.rows).toHaveLength(30)
     expect(bigQueries).toBe(smallQueries)
-    // 顺带钉住量级：分页 1 + 计数 1 + 资产/授权/改写各 1 + 主持人姓名 1，
-    // 再多就是有人偷偷加了逐行查询
-    expect(smallQueries).toBeLessThanOrEqual(6)
+    // 顺带钉住量级：分页 1 + 计数 1 + 资产/授权/改写各 1 + 主持人姓名 1–2
+    // （tm_users 认得出这一页的人就 1 条，有人要退回 identity_map 才 2 条；
+    // 这个用例没播 tm_users，走的是 2 条那一支）。再多就是有人偷偷加了逐行查询
+    expect(smallQueries).toBeLessThanOrEqual(7)
   } finally {
     await cleanup()
   }
