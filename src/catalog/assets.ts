@@ -13,20 +13,27 @@ export interface RawDetail {
   audio_address_file_type?: string
   meeting_summary?: RawFileEntry[]
   ai_meeting_transcripts?: RawFileEntry[]
-  ai_minutes?: RawFileEntry[]
-  ai_topic_minutes?: RawFileEntry[]
-  ai_speaker_minutes?: RawFileEntry[]
-  ai_ds_minutes?: RawFileEntry[]
 }
 
-/** 数组型字段 → 资产类型。从字段名派生，新增纪要引擎时只需加一行 */
+/** 智能接口的探测结果：这个 record_file 有没有纪要 / 章节（catalog/index.ts 调 smartApi 得出） */
+export interface SmartPresence {
+  minutes: boolean
+  chapters: boolean
+}
+
+/** 数组型字段 → 资产类型。纪要与时间轴不在这里——它们来自 /v1/smart/*，见下面 SMART_ASSETS */
 const ARRAY_FIELDS: Array<[keyof RawDetail, AssetType]> = [
   ['meeting_summary', 'meeting_summary'],
   ['ai_meeting_transcripts', 'ai_meeting_transcripts'],
-  ['ai_minutes', 'ai_minutes'],
-  ['ai_topic_minutes', 'ai_topic_minutes'],
-  ['ai_speaker_minutes', 'ai_speaker_minutes'],
-  ['ai_ds_minutes', 'ai_ds_minutes'],
+]
+
+/**
+ * 智能接口产出的两类：文件是网关自己生成的（minutes.md / chapters.json），
+ * 所以 selector 与 file_type 都是固定值，没有「平台数组顺序」的问题。
+ */
+const SMART_ASSETS: Array<[keyof SmartPresence, AssetType, string]> = [
+  ['minutes', 'ai_minutes', 'md'],
+  ['chapters', 'chapters', 'json'],
 ]
 
 /**
@@ -38,7 +45,8 @@ const ARRAY_FIELDS: Array<[keyof RawDetail, AssetType]> = [
  * `POST /assets/{assetId}/download-url` 是两次独立 HTTP 请求，随时可能落到不同实例。
  *
  * **末段 selector 用 file_type，不用数组下标**（M3.5 联调修正）。
- * 六类文本资产同属一个 record_file，必须有第四段才不会在下游唯一约束下被压成一行；
+ * 两类 addresses 文本资产 + 两类智能接口资产同属一个 record_file，必须有第四段
+ * 才不会在下游唯一约束下被压成一行；
  * 原实现用数组下标，而腾讯返回的数组**顺序每次调用都可能不同**——实测同一个
  * assetId 连续请求两次，解析到的文件分别是 .txt 和 .docx。位置引用在顺序不稳定的
  * 数据源上跨请求必然失效，后果是用户拿到的 `transcript.pdf` 里装着 docx 内容，
@@ -53,6 +61,7 @@ export function extractAssets(
   meetingRecordId: string,
   detail: RawDetail,
   allowDownload: boolean,
+  smart: SmartPresence,
 ): Asset[] {
   const fileId = detail.record_file_id
   const out: Asset[] = []
@@ -83,10 +92,15 @@ export function extractAssets(
     if (!Array.isArray(entries)) continue
     entries.forEach((e, i) => {
       if (!e.download_address) return
-      // ai_* 系列在 allow_download=false 时平台返回空，此处显式标记
-      const allowed = assetType.startsWith('ai_') ? allowDownload : true
+      // ai_meeting_transcripts 在 allow_download=false 时平台返回空，此处显式标记
+      const allowed = assetType === 'ai_meeting_transcripts' ? allowDownload : true
       push(assetType, e.file_type ?? `idx${i}`, e.file_type ?? null, allowed)
     })
+  }
+
+  for (const [flag, assetType, ext] of SMART_ASSETS) {
+    // bytesExpected 留 null：正文两次调用之间可能被平台重新生成，不能拿列资产时的长度卡下载
+    if (smart[flag]) push(assetType, ext, ext, true)
   }
 
   return out

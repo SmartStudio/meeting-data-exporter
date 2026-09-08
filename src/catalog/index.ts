@@ -3,29 +3,41 @@ import type { Asset, AssetType, Meeting } from '../domain/types'
 import type { StsManager } from '../sts/manager'
 import { StsTokenUnavailableError } from '../sts/manager'
 import type { AddressesApi, RawAddressFile } from '../tencent/addresses'
-import { extractAssets, type RawDetail, type RawFileEntry } from './assets'
+import { serializeChapters, type SmartApi } from '../tencent/smart'
+import { extractAssets, type RawDetail, type RawFileEntry, type SmartPresence } from './assets'
 
 /** /v1/addresses（批量）链接时效：6 小时 */
 const BATCH_URL_TTL_SEC = 6 * 3600
 /** /v1/addresses/{record_file_id}（详情）链接时效：5 分钟 */
 const DETAIL_URL_TTL_SEC = 5 * 60
+/**
+ * 智能接口两类资产的 `data:` URL 时效。`data:` URL 里正文是内嵌的，没有真实时效；
+ * 给一个与详情链接同量级的数，让引擎的续签逻辑有个明确的到期点。
+ */
+const SMART_URL_TTL_SEC = 5 * 60
 
-const AI_TYPES: ReadonlySet<AssetType> = new Set([
-  'ai_meeting_transcripts',
-  'ai_minutes',
-  'ai_topic_minutes',
-  'ai_speaker_minutes',
-  'ai_ds_minutes',
-])
+/** 走 51180 详情接口（要 STS-Token）的资产类型：只剩优化版逐字稿 */
+const STS_TYPES: ReadonlySet<AssetType> = new Set<AssetType>(['ai_meeting_transcripts'])
 
 export interface CatalogDeps {
   addressesApi: AddressesApi
+  smartApi: SmartApi
   stsManager: StsManager
   now: () => number
 }
 
 export interface Catalog {
   listAssets(meeting: Meeting): Promise<Asset[]>
+  /**
+   * 返回可直接下载的地址。多数类型是平台签发的 https 链接，
+   * **纪要（ai_minutes）与时间轴（chapters）返回的是 `data:` URL**——正文由智能
+   * 接口取回后内嵌在 URL 里（`data:text/markdown;…;base64,` /
+   * `data:application/json;…;base64,`），引擎 downloader 与 CLI 对它做普通
+   * `fetch` 即可（Bun 的 fetch 支持 `data:`）。
+   *
+   * `data:` 不支持 Range：downloader 断点续传时收到 200 会丢弃 `.part` 重下，
+   * 正文只有几 KB，无害。
+   */
   resolveDownloadUrl(asset: Asset): Promise<{ url: string; expiresAt: number }>
 }
 
@@ -61,10 +73,6 @@ interface UrlSource {
   audio_address?: string
   meeting_summary?: RawFileEntry[]
   ai_meeting_transcripts?: RawFileEntry[]
-  ai_minutes?: RawFileEntry[]
-  ai_topic_minutes?: RawFileEntry[]
-  ai_speaker_minutes?: RawFileEntry[]
-  ai_ds_minutes?: RawFileEntry[]
 }
 
 /**
@@ -84,6 +92,12 @@ function pickUrl(source: UrlSource, asset: Asset): string | undefined {
   if (asset.assetType === 'video') return source.download_address
   if (asset.assetType === 'audio') return source.audio_address
 
+  // 纪要与时间轴不走这里：它们的正文由智能接口取回、内嵌成 data: URL，
+  // resolveDownloadUrl 在调用 pickUrl 之前就已返回。
+  if (asset.assetType !== 'meeting_summary' && asset.assetType !== 'ai_meeting_transcripts') {
+    return undefined
+  }
+
   const entries = source[asset.assetType]
   if (!Array.isArray(entries)) return undefined
 
@@ -96,6 +110,18 @@ function pickUrl(source: UrlSource, asset: Asset): string | undefined {
   const idx = Number(selector.startsWith('idx') ? selector.slice(3) : selector)
   if (!Number.isInteger(idx) || idx < 0) return undefined
   return entries[idx]?.download_address
+}
+
+function dataUrl(mime: string, text: string): string {
+  return `data:${mime};charset=utf-8;base64,${Buffer.from(text, 'utf8').toString('base64')}`
+}
+
+/** 每个 record_file 两次调用；allow_download=false 时平台对所有智能内容一律回空，不白打 */
+async function probeSmart(api: SmartApi, recordFileId: string, allowDownload: boolean): Promise<SmartPresence> {
+  if (!allowDownload) return { minutes: false, chapters: false }
+  const minutes = (await api.getMinutes(recordFileId)) !== null
+  const chapters = (await api.getChapters(recordFileId)) !== null
+  return { minutes, chapters }
 }
 
 export function createCatalog(deps: CatalogDeps): Catalog {
@@ -118,10 +144,6 @@ export function createCatalog(deps: CatalogDeps): Catalog {
       audio_address_file_type: file.audio_address_file_type,
       meeting_summary: file.meeting_summary,
       ai_meeting_transcripts: aiDetail?.ai_meeting_transcripts,
-      ai_minutes: aiDetail?.ai_minutes,
-      ai_topic_minutes: aiDetail?.ai_topic_minutes,
-      ai_speaker_minutes: aiDetail?.ai_speaker_minutes,
-      ai_ds_minutes: aiDetail?.ai_ds_minutes,
     }
   }
 
@@ -131,9 +153,9 @@ export function createCatalog(deps: CatalogDeps): Catalog {
       const files = await deps.addressesApi.listByRecordId(meeting.meetingRecordId)
       const out: Asset[] = []
 
-      // STS-Token 不可用时 token 为 null；merge 后 ai_* 字段缺失，extractAssets 按
-      // “字段缺失不产生该资产”的既有约定跳过它们——video/audio/meeting_summary
-      // 不受影响，也不会让 listAssets 整体失败。
+      // STS-Token 不可用时 token 为 null；merge 后 ai_meeting_transcripts 字段缺失，extractAssets 按
+      // “字段缺失不产生该资产”的既有约定跳过它——video/audio/meeting_summary
+      // 与智能接口两类都不受影响，也不会让 listAssets 整体失败。
       const token = await tryGetToken(now)
 
       for (const file of files) {
@@ -141,13 +163,17 @@ export function createCatalog(deps: CatalogDeps): Catalog {
           token !== null ? await deps.addressesApi.detailByFileId(file.record_file_id, token) : null
         const merged = mergeDetail(file, aiDetail)
 
+        const allowDownload = file.allow_download ?? true
+        const smart = await probeSmart(deps.smartApi, file.record_file_id, allowDownload)
+
         out.push(
           ...extractAssets(
             meeting.meetingId,
             meeting.subMeetingId,
             meeting.meetingRecordId,
             merged,
-            file.allow_download ?? true,
+            allowDownload,
+            smart,
           ),
         )
       }
@@ -158,8 +184,23 @@ export function createCatalog(deps: CatalogDeps): Catalog {
     async resolveDownloadUrl(asset) {
       const now = deps.now()
 
-      if (AI_TYPES.has(asset.assetType)) {
-        // AI 纪要只能来自详情接口，STS 不可用时让 StsTokenUnavailableError 原样抛出
+      // 智能接口两类：正文当场取回、内嵌成 data: URL，完全不碰 STS
+      if (asset.assetType === 'ai_minutes') {
+        const md = await deps.smartApi.getMinutes(asset.recordFileId)
+        if (md === null) throw new AssetUrlMissingError(asset.assetId)
+        return { url: dataUrl('text/markdown', md), expiresAt: now + SMART_URL_TTL_SEC }
+      }
+      if (asset.assetType === 'chapters') {
+        const chapters = await deps.smartApi.getChapters(asset.recordFileId)
+        if (chapters === null) throw new AssetUrlMissingError(asset.assetId)
+        return {
+          url: dataUrl('application/json', serializeChapters(asset.recordFileId, chapters)),
+          expiresAt: now + SMART_URL_TTL_SEC,
+        }
+      }
+
+      if (STS_TYPES.has(asset.assetType)) {
+        // 优化版逐字稿只能来自详情接口，STS 不可用时让 StsTokenUnavailableError 原样抛出
         const token = await deps.stsManager.getToken(now)
         const detail = await deps.addressesApi.detailByFileId(asset.recordFileId, token)
         const url = pickUrl(detail, asset)

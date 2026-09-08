@@ -9,8 +9,12 @@ import { StsTokenUnavailableError, type StsManager } from '../../src/sts/manager
 import type { QueryParams } from '../../src/tencent/url'
 import type { RequestOptions, TencentClient } from '../../src/tencent/client'
 import type { Meeting } from '../../src/domain/types'
+import type { SmartApi } from '../../src/tencent/smart'
 
 const NOW = 1_800_000_000
+
+/** 这些用例钉的是 addresses 两个接口的编排，智能接口一律回「没有」 */
+const NO_SMART: SmartApi = { getMinutes: async () => null, getChapters: async () => null }
 
 interface Call {
   path: string
@@ -122,10 +126,6 @@ const listResponse = {
 const detailResponse = {
   record_file_id: 'f1',
   ai_meeting_transcripts: [{ download_address: 'https://cos/t.txt', file_type: 'txt' }],
-  ai_minutes: [{ download_address: 'https://cos/m.txt', file_type: 'txt' }],
-  ai_topic_minutes: [{ download_address: 'https://cos/tm.htm', file_type: 'htm' }],
-  ai_speaker_minutes: [{ download_address: 'https://cos/sm.htm', file_type: 'htm' }],
-  ai_ds_minutes: [{ download_address: 'https://cos/ds.htm', file_type: 'htm' }],
 }
 
 function stsAvailable(token = 'sts-tok'): StsManager {
@@ -159,17 +159,17 @@ function buildCatalogDeps(sts: StsManager): CatalogDeps {
   })
   return {
     addressesApi: createAddressesApi(client, 'admin'),
+    smartApi: NO_SMART,
     stsManager: sts,
     now: () => NOW,
   }
 }
 
-test('STS-Token 可用时 listAssets 合并两接口，返回全部八类', async () => {
+test('STS-Token 可用时 listAssets 合并两接口，返回 addresses 侧的四类', async () => {
   const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
   const assets = await catalog.listAssets(meeting)
   expect(assets.map((a) => a.assetType).sort()).toEqual([
-    'ai_ds_minutes', 'ai_meeting_transcripts', 'ai_minutes', 'ai_speaker_minutes',
-    'ai_topic_minutes', 'audio', 'meeting_summary', 'video',
+    'ai_meeting_transcripts', 'audio', 'meeting_summary', 'video',
   ])
 })
 
@@ -192,12 +192,12 @@ test('resolveDownloadUrl：video 走批量接口，expiresAt = now + 6*3600', as
   expect(expiresAt).toBe(NOW + 6 * 3600)
 })
 
-test('resolveDownloadUrl：ai_minutes 走详情接口，expiresAt = now + 300', async () => {
+test('resolveDownloadUrl：ai_meeting_transcripts 走详情接口，expiresAt = now + 300', async () => {
   const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
   const assets = await catalog.listAssets(meeting)
-  const aiMinutes = assets.find((a) => a.assetType === 'ai_minutes')!
-  const { url, expiresAt } = await catalog.resolveDownloadUrl(aiMinutes)
-  expect(url).toBe('https://cos/m.txt')
+  const aiTranscripts = assets.find((a) => a.assetType === 'ai_meeting_transcripts')!
+  const { url, expiresAt } = await catalog.resolveDownloadUrl(aiTranscripts)
+  expect(url).toBe('https://cos/t.txt')
   expect(expiresAt).toBe(NOW + 300)
 })
 
@@ -205,9 +205,9 @@ test('两个接口的 expiresAt 相差 6*3600 - 300 秒', async () => {
   const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
   const assets = await catalog.listAssets(meeting)
   const video = assets.find((a) => a.assetType === 'video')!
-  const aiMinutes = assets.find((a) => a.assetType === 'ai_minutes')!
+  const aiTranscripts = assets.find((a) => a.assetType === 'ai_meeting_transcripts')!
   const videoResult = await catalog.resolveDownloadUrl(video)
-  const aiResult = await catalog.resolveDownloadUrl(aiMinutes)
+  const aiResult = await catalog.resolveDownloadUrl(aiTranscripts)
   expect(videoResult.expiresAt - aiResult.expiresAt).toBe(6 * 3600 - 300)
 })
 
@@ -249,8 +249,8 @@ test('resolveDownloadUrl：assetId 段数不足（非法格式）时抛出明确
 test('resolveDownloadUrl：ai_* 资产在 STS 不可用时抛出 StsTokenUnavailableError', async () => {
   const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
   const assets = await catalog.listAssets(meeting)
-  const aiMinutes = assets.find((a) => a.assetType === 'ai_minutes')!
+  const aiTranscripts = assets.find((a) => a.assetType === 'ai_meeting_transcripts')!
 
   const degraded = createCatalog(buildCatalogDeps(stsUnavailable()))
-  await expect(degraded.resolveDownloadUrl(aiMinutes)).rejects.toThrow(StsTokenUnavailableError)
+  await expect(degraded.resolveDownloadUrl(aiTranscripts)).rejects.toThrow(StsTokenUnavailableError)
 })
