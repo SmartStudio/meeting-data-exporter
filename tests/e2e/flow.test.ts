@@ -31,6 +31,7 @@ import { createTencentClient } from '../../src/tencent/client'
 import { TencentApiError } from '../../src/tencent/errors'
 import { createRecordsApi } from '../../src/tencent/records'
 import { createAddressesApi } from '../../src/tencent/addresses'
+import { createSmartApi } from '../../src/tencent/smart'
 import { createCatalog } from '../../src/catalog/index'
 import { createStsStore } from '../../src/store/sts'
 import { createStsManager } from '../../src/sts/manager'
@@ -146,6 +147,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const meetingsCache = createMeetingCacheStore(dbPool)
   const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID, meetingsCache)
   const addressesApi = createAddressesApi(tencentClient, OPERATOR_ID)
+  // 智能纪要/章节走 AK/SK 直调，同一个真实 client 打到假服务上（没登记的文件回 500182）
+  const smartApi = createSmartApi(tencentClient, OPERATOR_ID)
 
   const stsStore = createStsStore(dbPool)
   const stsManager = createStsManager({
@@ -161,7 +164,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     decryptCheckStr,
   })
 
-  const catalog = createCatalog({ addressesApi, stsManager, now })
+  const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
 
   const policyStore = createPolicyStore(dbPool)
   // 与 src/index.ts / testApp.ts 同一个实例口径
@@ -459,8 +462,13 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
   ])
   fakeState.addressDetailByFileId.set(fileId, {
     record_file_id: fileId,
-    ai_minutes: [{ download_address: 'https://cos.example/full-ai-minutes.docx', file_type: 'docx' }],
+    // 详情接口（要 STS）下剩的那一类：优化版逐字稿。纪要改走智能接口，见下一行
+    ai_meeting_transcripts: [
+      { download_address: 'https://cos.example/full-ai-transcript.docx', file_type: 'docx' },
+    ],
   })
+  // 纪要走智能接口：正文由网关取回后内嵌成 data: URL，平台不签发链接
+  fakeState.smartMinutesByFileId.set(fileId, '## 会议摘要\n\n正文\n')
   fakeState.stsReqId = reqId
 
   await insertPolicyRule(pool, {
@@ -496,12 +504,15 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
   const assetsBody = (await assetsRes.json()) as {
     assets: Array<{ asset_id: string; asset_type: string }>
   }
-  expect(assetsBody.assets.map((a) => a.asset_type).sort()).toEqual(['ai_minutes', 'audio', 'video'])
+  expect(assetsBody.assets.map((a) => a.asset_type).sort())
+    .toEqual(['ai_meeting_transcripts', 'ai_minutes', 'audio', 'video'])
 
   const videoAsset = assetsBody.assets.find((a) => a.asset_type === 'video')!
-  const aiAsset = assetsBody.assets.find((a) => a.asset_type === 'ai_minutes')!
+  const aiAsset = assetsBody.assets.find((a) => a.asset_type === 'ai_meeting_transcripts')!
+  const minutesAsset = assetsBody.assets.find((a) => a.asset_type === 'ai_minutes')!
 
-  // 4. 换下载地址：video 走批量接口（6 小时时效），ai_minutes 走详情接口（5 分钟时效，需 STS-Token）
+  // 4. 换下载地址：video 走批量接口（6 小时时效），优化版逐字稿走详情接口
+  //    （5 分钟时效，需 STS-Token），纪要走智能接口（data: URL，完全不碰 STS）
   const videoDl = await app(
     new Request(`https://gw/api/v1/assets/${encodeURIComponent(videoAsset.asset_id)}/download-url`, {
       method: 'POST',
@@ -521,8 +532,19 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
   )
   expect(aiDl.status).toBe(200)
   const aiDlBody = (await aiDl.json()) as { url: string; expires_at: number }
-  expect(aiDlBody.url).toBe('https://cos.example/full-ai-minutes.docx')
+  expect(aiDlBody.url).toBe('https://cos.example/full-ai-transcript.docx')
   expect(aiDlBody.expires_at - clock.now()).toBe(5 * 60)
+
+  const minutesDl = await app(
+    new Request(`https://gw/api/v1/assets/${encodeURIComponent(minutesAsset.asset_id)}/download-url`, {
+      method: 'POST',
+      headers,
+    }),
+  )
+  expect(minutesDl.status).toBe(200)
+  const minutesDlBody = (await minutesDl.json()) as { url: string }
+  // 正文内嵌在 URL 里——对它做一次普通 fetch 就该拿回假服务登记的那份 markdown
+  expect(await (await fetch(minutesDlBody.url)).text()).toBe('## 会议摘要\n\n正文\n')
 
   // 假腾讯服务确实被真实、带正确签名地调用过（不是从未走网络的旁路）
   const hitPaths = new Set(requestLog.filter((r) => r.signatureValid).map((r) => r.path))
@@ -530,14 +552,15 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
   expect(hitPaths.has('/v1/corp/records')).toBe(true)
   expect(hitPaths.has('/v1/addresses')).toBe(true)
   expect(hitPaths.has(`/v1/addresses/${fileId}`)).toBe(true)
+  expect(hitPaths.has(`/v1/smart/minutes/${fileId}`)).toBe(true)
   expect(requestLog.every((r) => r.signatureValid)).toBe(true) // 全程签名均正确、无一次被假服务拒绝
 
-  // 审计留痕：两次下载地址签发都记为 allow
+  // 审计留痕：三次下载地址签发都记为 allow
   const [auditRows] = await pool.execute<RowDataPacket[]>(
     "SELECT decision FROM audit_log WHERE action = 'issue_download_url' AND meeting_id = ?",
     [meetingRecordId],
   )
-  expect(auditRows).toHaveLength(2)
+  expect(auditRows).toHaveLength(3)
   expect(auditRows.every((r) => r.decision === 'allow')).toBe(true)
 })
 
@@ -806,7 +829,7 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
   expect(restoredDl.status).toBe(200)
 })
 
-test('STS-Token 未就位时，video 可下载而 ai_minutes 返回 unavailable', async () => {
+test('STS-Token 未就位时，video 可下载而优化版逐字稿返回 unavailable', async () => {
   // sts_token_requests 是本测试文件内跨用例共享的同一张表（withTestDb 每个
   // *文件* 一个隔离库，同一文件内的多个 test 共用同一个库，见 tests/helpers/testdb.ts）。
   // "完整流程" 用例会真的续期出一个 fulfilled token（有效期到 NOW+3600），
@@ -858,9 +881,10 @@ test('STS-Token 未就位时，video 可下载而 ai_minutes 返回 unavailable'
   const assetsRes = await app(new Request(`https://gw/api/v1/meetings/${meetingId}/assets`, { headers }))
   expect(assetsRes.status).toBe(200)
   const assetsBody = (await assetsRes.json()) as { assets: Array<{ asset_id: string; asset_type: string }> }
-  // ai_minutes 因 STS-Token 不可用被 catalog 直接排除，video 不受影响
+  // ai_meeting_transcripts 因 STS-Token 不可用被 catalog 直接排除，video 不受影响；
+  // 纪要与时间轴这次也没有，是因为假服务对没登记的文件回 500182（没开智能录制）
   expect(assetsBody.assets.map((a) => a.asset_type)).toEqual(['video'])
-  // STS 不可用时 tryGetToken 提前短路：详情端点（ai_* 系列的唯一来源）完全不应被真实调用
+  // STS 不可用时 tryGetToken 提前短路：详情端点（优化版逐字稿的唯一来源）完全不应被真实调用
   expect(requestLog.some((r) => r.path === `/v1/addresses/${fileId}`)).toBe(false)
 
   const videoAssetId = assetsBody.assets[0]!.asset_id
@@ -873,7 +897,7 @@ test('STS-Token 未就位时，video 可下载而 ai_minutes 返回 unavailable'
   expect(videoDl.status).toBe(200)
   expect(((await videoDl.json()) as { url: string }).url).toBe('https://cos.example/sts-video.mp4')
 
-  const aiAssetId = `${meetingRecordId}:${fileId}:ai_minutes:0`
+  const aiAssetId = `${meetingRecordId}:${fileId}:ai_meeting_transcripts:docx`
   const aiDl = await app(
     new Request(`https://gw/api/v1/assets/${encodeURIComponent(aiAssetId)}/download-url`, {
       method: 'POST',

@@ -29,6 +29,7 @@ import { createStsManager } from '../../src/sts/manager'
 import { verifySignature, decryptEvent, decryptCheckStr } from '../../src/sts/crypto'
 import { createRecordsApi } from '../../src/tencent/records'
 import { createAddressesApi } from '../../src/tencent/addresses'
+import { createSmartApi } from '../../src/tencent/smart'
 import { createCatalog } from '../../src/catalog/index'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
@@ -102,6 +103,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const meetingsCache = createMeetingCacheStore(pool)
   const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID, meetingsCache)
   const addressesApi = createAddressesApi(tencentClient, OPERATOR_ID)
+  // 与 addressesApi 同一口径：真实构造 + 同一个 stub client。桩里没登记 /v1/smart/*
+  // 的用例会拿到空对象，getMinutes/getChapters 于是返回 null（「这一类不存在」）
+  const smartApi = createSmartApi(tencentClient, OPERATOR_ID)
 
   const stsStore = createStsStore(pool)
   const stsManager = createStsManager({
@@ -117,7 +121,7 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     decryptCheckStr,
   })
 
-  const catalog = createCatalog({ addressesApi, stsManager, now })
+  const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
   // 会议查询 store（T1）。getMeetings 与规则页的影响预览用的是同一个实例，

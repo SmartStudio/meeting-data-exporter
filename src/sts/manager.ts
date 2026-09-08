@@ -9,8 +9,9 @@ const RENEW_THRESHOLD_RATIO = 1 / 3
 export class StsTokenUnavailableError extends Error {
   constructor() {
     super(
-      'no valid STS-Token available; AI minutes are temporarily unavailable. ' +
-        'Recording, audio and transcript are unaffected.',
+      'no valid STS-Token available; the optimised transcript (ai_meeting_transcripts) ' +
+        'is temporarily unavailable. Recording, audio, transcript, minutes and chapters ' +
+        'are unaffected.',
     )
     this.name = 'StsTokenUnavailableError'
   }

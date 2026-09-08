@@ -471,7 +471,7 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
   expect(body.assets.map((a) => a.asset_type)).toEqual(['video'])
   // remote_id 必须是 recordFileId（腾讯会议 record_file_id），而非整个自包含的 asset_id
   expect(body.assets.map((a) => a.remote_id)).toEqual(['file-g-1'])
-  // STS 不可用时 tryGetToken 提前短路，详情接口（AI 纪要来源）完全不应被调用
+  // STS 不可用时 tryGetToken 提前短路，详情接口（优化版逐字稿的唯一来源）完全不应被调用
   expect(detailCalls).toBe(0)
 
   const assetId = 'rec-g-1:file-g-1:video:0'
@@ -484,7 +484,7 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
   expect(dlBody.expires_at).toBeGreaterThan(NOW)
 })
 
-test('STS-Token 不可用时请求 ai_* 资产的 download-url 返回 503（而非崩溃或误签发）', async () => {
+test('STS-Token 不可用时请求优化版逐字稿的 download-url 返回 503（而非崩溃或误签发）', async () => {
   const ivan: ActorIdentity = {
     kind: 'service_account', wecomUserId: null, tmUserId: 'tm-ivan-1', programId: 'prog-ivan-1',
   }
@@ -505,7 +505,9 @@ test('STS-Token 不可用时请求 ai_* 资产的 download-url 返回 503（而�
   // 先让 meeting 进入缓存（不依赖 /assets 列表，直接用 /meetings 即可）
   await app(new Request('https://gw/api/v1/meetings', { headers }))
 
-  const assetId = 'rec-i-1:file-i-1:ai_minutes:0'
+  // 详情接口那一类（要 STS）现在只剩优化版逐字稿；纪要与时间轴走智能接口，
+  // 不依赖 STS，拿它们来测这条会测不出东西
+  const assetId = 'rec-i-1:file-i-1:ai_meeting_transcripts:docx'
   const dlRes = await app(
     new Request(`https://gw/api/v1/assets/${assetId}/download-url`, { method: 'POST', headers }),
   )

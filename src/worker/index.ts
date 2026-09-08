@@ -27,6 +27,7 @@ import { createStsManager } from '../sts/manager'
 import { createTokenCipher } from '../sts/cipher'
 import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
 import { createAddressesApi } from '../tencent/addresses'
+import { createSmartApi } from '../tencent/smart'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
 import { createArchivesStore, type ArchivesStore } from '../store/archives'
@@ -628,12 +629,14 @@ async function main(): Promise<number> {
     const meetingsCache = createMeetingCacheStore(pool)
     const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
     const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
+    const smartApi = createSmartApi(tencentClient, config.tencent.operatorId)
 
     // STS-Token 的**续期是网关的活**：平台异步回调，落点是网关的 webhook 路由。
     // worker 只读同一张表里当前有效的那一枚（getToken 内部解密），不调 ensureFresh
     // ——它发出的申请只有网关能收到回调，worker 自己等不到。因此 worker 依赖
-    // 网关进程在跑；表里没有有效 token 时 AI 纪要类下载会以
-    // StsTokenUnavailableError 显式失败，而不是静默跳过。
+    // 网关进程在跑；表里没有有效 token 时下载会以 StsTokenUnavailableError 显式
+    // 失败，而不是静默跳过——但**只影响优化版逐字稿（ai_meeting_transcripts）**：
+    // 纪要与时间轴走智能接口（AK/SK 直调），不依赖 STS。
     const tokenCipher = createTokenCipher(config.stsEncKey)
     const stsManager = createStsManager({
       store: createStsStore(pool),
@@ -647,7 +650,7 @@ async function main(): Promise<number> {
       decryptEvent,
       decryptCheckStr,
     })
-    const catalog = createCatalog({ addressesApi, stsManager, now })
+    const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
 
     const source = createInProcSource({ recordsApi, catalog, now })
     const storage = createLocalStorage(archiveRoot)

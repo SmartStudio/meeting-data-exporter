@@ -80,6 +80,24 @@ const TRANSCRIPT_ASSET: Asset = {
   bytesExpected: TRANSCRIPT_BODY.length,
   allowDownload: true,
 }
+/**
+ * 纪要（智能接口）。与转写共用同一个 record_file（真实形状就是这样：同一个
+ * record_file 下既有转写又有纪要），但**下载地址不是平台签发的链接**——正文由
+ * catalog 从智能接口取回后内嵌成 `data:` URL（见 catalog/index.ts）。这条用例
+ * 存在的理由就是它：引擎的 downloader 此前只见过 https，`data:` 是新的那一种。
+ * `bytesExpected` 为 null，与网关签发时一致（data: 没有可信的长度）。
+ */
+const MINUTES_BODY = '## 会议摘要\n\n正文\n'
+const MINUTES_ASSET: Asset = {
+  assetId: 'rec-1:f-sum-1:ai_minutes:md',
+  meetingId: MEETING.meetingId,
+  subMeetingId: '',
+  assetType: 'ai_minutes',
+  recordFileId: 'f-sum-1',
+  fileType: 'md',
+  bytesExpected: null,
+  allowDownload: true,
+}
 const VIDEO_ASSET: Asset = {
   assetId: 'rec-1:f-video-1:video:0',
   meetingId: MEETING.meetingId,
@@ -182,6 +200,13 @@ function stubCatalog(
     listAssets: async () => assets,
     resolveDownloadUrl: async (a) => {
       await hooks.onResolve?.()
+      // 纪要/时间轴不经过文件服务：正文内嵌在 data: URL 里，与真实 catalog 一致
+      if (a.assetType === 'ai_minutes') {
+        return {
+          url: `data:text/markdown;charset=utf-8;base64,${Buffer.from(MINUTES_BODY, 'utf8').toString('base64')}`,
+          expiresAt: 1 << 30,
+        }
+      }
       // 用 recordFileId 拼 URL：它是 source-inproc 从 assetId 里解析出来的，
       // 拼错了就会 404，等于顺带校验 assetId 在装配链路上没有走样
       return { url: `${server.origin}/file/${a.recordFileId}`, expiresAt: 1 << 30 }
@@ -425,6 +450,43 @@ describe('runWorkerOnce', () => {
       expect(typeof nasVid.nasHash).toBe('string')
       expect(nasVid.nasHash.length).toBe(64)
       expect(nasManifest.missing).toEqual([])
+    })
+  }, 30_000)
+
+  /**
+   * 纪要走的是智能接口那条新路：`resolveDownloadUrl` 给的是 `data:` URL，正文
+   * 内嵌其中，不经过任何 HTTP 文件服务。引擎的 downloader 此前只见过 https，
+   * 所以这条用例钉的是**「data: 也能一路落成盘上的 minutes.md」**——文件名
+   * （minutes.md）与 assetKey（ai_minutes）都是引擎那张表定的，不是这里现编的。
+   *
+   * 顺带钉住第二件事：这一轮文件服务**只被取了两次**（转写与录像）——纪要的正文
+   * 来自 URL 本身，一次网络往返都不该有。
+   */
+  test('纪要（data: URL）落成 minutes.md，并进 _manifest.json', async () => {
+    await withRig(FILES, async ({ pool, root, nasRoot, server }) => {
+      const now = () => START + 100
+      const assets = [TRANSCRIPT_ASSET, VIDEO_ASSET, MINUTES_ASSET]
+      const deps = makeDeps(pool, root, nasRoot, server, assets, now)
+
+      const res = await runWorkerOnce(deps, RANGE_SEL, [...KEYS, 'ai_minutes'], now)
+      expect(res.completed).toBe(3)
+      expect(res.failed).toBe(0)
+
+      expect(await readFile(join(root, DIR, 'minutes.md'), 'utf8')).toBe(MINUTES_BODY)
+      expect(server.requests.map((r) => r.path).sort()).toEqual(['/file/f-sum-1', '/file/f-video-1'])
+
+      const manifest = JSON.parse(await readFile(join(root, DIR, '_manifest.json'), 'utf8'))
+      const minutes = manifest.assets.find((a: { assetType: string }) => a.assetType === 'ai_minutes')
+      expect(minutes).toMatchObject({
+        assetType: 'ai_minutes',
+        assetKey: 'ai_minutes',
+        remoteId: 'f-sum-1',
+        fileType: 'md',
+        fileName: 'minutes.md',
+      })
+      // bytesExpected 为 null（data: 没有可信长度），清单退而取真正写进盘的字节数
+      expect(minutes.bytes).toBe(Buffer.byteLength(MINUTES_BODY, 'utf8'))
+      expect(manifest.missing).toEqual([])
     })
   }, 30_000)
 

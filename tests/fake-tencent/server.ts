@@ -36,6 +36,10 @@ export interface FakeTencentState {
   records: FakeRecordMeeting[]
   addressesByRecordId: Map<string, RawAddressFile[]>
   addressDetailByFileId: Map<string, RawDetail>
+  /** GET /v1/smart/minutes/:id 的 markdown；没登记的文件回 500182 */
+  smartMinutesByFileId: Map<string, string>
+  /** GET /v1/smart/chapters?record_file_id= 的原始章节；没登记的文件回 500182 */
+  smartChaptersByFileId: Map<string, Array<{ chapter_id: string; chapter_name: string; start_time: string; pic_url?: string }>>
   /** POST /v1/app/sts-token 的固定返回值——真实平台是异步下发，这里的 req_id 由用例自行选定 */
   stsReqId: string
 }
@@ -45,6 +49,8 @@ export function createFakeTencentState(): FakeTencentState {
     records: [],
     addressesByRecordId: new Map(),
     addressDetailByFileId: new Map(),
+    smartMinutesByFileId: new Map(),
+    smartChaptersByFileId: new Map(),
     stsReqId: 'req-fake-default',
   }
 }
@@ -189,6 +195,23 @@ export function startFakeTencentServer(
         const fileId = decodeURIComponent(url.pathname.slice('/v1/addresses/'.length))
         const detail: RawDetail = state.addressDetailByFileId.get(fileId) ?? { record_file_id: fileId }
         return Response.json(detail)
+      }
+
+      // 智能录制管理两个接口。**没登记的文件一律 500182**，与真平台一致：
+      // 「该文件未打开智能录制开关」是常态，不是故障——catalog 把它当成
+      // 「这一类不存在」，而不是让整轮 listAssets 失败。
+      if (req.method === 'GET' && url.pathname.startsWith('/v1/smart/minutes/')) {
+        const fileId = decodeURIComponent(url.pathname.slice('/v1/smart/minutes/'.length))
+        const md = state.smartMinutesByFileId.get(fileId)
+        if (md === undefined) return Response.json(errorEnvelope(500182, '该文件未打开智能录制开关，请联系文件所有者'), { status: 400 })
+        return Response.json({ meeting_minute: { minute: md, todo: '' } })
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/smart/chapters') {
+        const fileId = url.searchParams.get('record_file_id') ?? ''
+        const list = state.smartChaptersByFileId.get(fileId)
+        if (list === undefined) return Response.json(errorEnvelope(500182, '该文件未打开智能录制开关，请联系文件所有者'), { status: 400 })
+        return Response.json({ chapter_list: list })
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/app/sts-token') {

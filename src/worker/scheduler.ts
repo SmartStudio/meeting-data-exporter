@@ -123,6 +123,7 @@ import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
 import { createAddressesApi } from '../tencent/addresses'
+import { createSmartApi } from '../tencent/smart'
 import { createCatalog } from '../catalog/index'
 import { archivePendingMeetings, type ArchiveDeps, type ArchiveRoundOutcome } from './archive'
 import { executeCleanup, type CleanupExecuted } from './retention'
@@ -932,9 +933,12 @@ async function main(): Promise<number> {
     const meetingsCache = createMeetingCacheStore(pool)
     const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
     const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
+    const smartApi = createSmartApi(tencentClient, config.tencent.operatorId)
     const tokenCipher = createTokenCipher(config.stsEncKey)
     // STS-Token 的**续期是网关的活**（平台异步回调，落点是网关的 webhook 路由）。
-    // 这里只读同一张表里当前有效的那一枚，与一次性 worker 完全一致。
+    // 这里只读同一张表里当前有效的那一枚，与一次性 worker 完全一致。表里没有有效
+    // token 时，**只影响优化版逐字稿（ai_meeting_transcripts）**：纪要与时间轴走
+    // 智能接口（AK/SK 直调），不依赖 STS。
     const stsManager = createStsManager({
       store: createStsStore(pool),
       client: tencentClient,
@@ -947,7 +951,7 @@ async function main(): Promise<number> {
       decryptEvent,
       decryptCheckStr,
     })
-    const catalog = createCatalog({ addressesApi, stsManager, now })
+    const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
     const source = createInProcSource({ recordsApi, catalog, now })
 
     const archiveDeps: ArchiveDeps = {

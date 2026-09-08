@@ -14,6 +14,7 @@ import { createMeetingCacheStore } from './store/meetings'
 import { createTencentClient } from './tencent/client'
 import { createRecordsApi } from './tencent/records'
 import { createAddressesApi } from './tencent/addresses'
+import { createSmartApi } from './tencent/smart'
 import { createCatalog } from './catalog/index'
 import { createStsManager } from './sts/manager'
 import { createTokenCipher } from './sts/cipher'
@@ -64,6 +65,8 @@ async function main(): Promise<void> {
   const meetingsCache = createMeetingCacheStore(pool)
   const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
   const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
+  // 智能纪要与智能章节：AK/SK 直调，**不走 STS**（见 tencent/smart.ts 的文件头）
+  const smartApi = createSmartApi(tencentClient, config.tencent.operatorId)
 
   const stsStore = createStsStore(pool)
   const tokenCipher = createTokenCipher(config.stsEncKey)
@@ -80,7 +83,7 @@ async function main(): Promise<void> {
     decryptCheckStr,
   })
 
-  const catalog = createCatalog({ addressesApi, stsManager, now })
+  const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
 
   const policyStore = createPolicyStore(pool)
   // 网关这边只读授权与改写，不写。写侧在控制台的管理端点里（阶段 4）

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createCatalog } from '../../src/catalog/index'
 import type { Asset, Meeting } from '../../src/domain/types'
+import type { SmartApi } from '../../src/tencent/smart'
 import { createInProcSource } from '../../src/worker/source-inproc'
 
 const GW_MEETING: Meeting = {
@@ -167,18 +168,45 @@ describe('createInProcSource', () => {
  * 否则用户会拿到文件名与内容不符的下载结果（例如 transcript.pdf 里装着 docx）。
  */
 describe('createInProcSource + 真实 catalog：多格式资产按 file_type 定位', () => {
+  /** 智能接口默认「这一类不存在」——多格式定位那两条用例不该被它影响 */
+  const NO_SMART: SmartApi = { getMinutes: async () => null, getChapters: async () => null }
+
   function buildRealSource() {
     const catalog = createCatalog({
       addressesApi: {
         listByRecordId: async () => [],
         detailByFileId: async () => ({
           record_file_id: 'f1',
-          ai_minutes: [
+          // 详情接口（要 STS）下唯一还是多格式数组的那一类：优化版逐字稿。
+          // 纪要与时间轴已改走智能接口，不再从这里来。
+          ai_meeting_transcripts: [
             { download_address: 'https://cos/m.docx', file_type: 'docx' },
             { download_address: 'https://cos/m.pdf', file_type: 'pdf' },
           ],
         }),
       } as any,
+      smartApi: NO_SMART,
+      stsManager: { getToken: async () => 'sts-token' } as any,
+      now: () => 1_700_000_000,
+    })
+    return createInProcSource({
+      recordsApi: { listMeetings: async () => [GW_MEETING] },
+      catalog,
+      now: () => 1_700_000_000,
+    })
+  }
+
+  /**
+   * `buildRealSource` 的变体：addressesApi 这次**真的返回一个文件**（f1，
+   * allow_download），这样 listAssets 才会去探智能接口；smart 由用例给。
+   */
+  function makeWithSmart(smart: SmartApi) {
+    const catalog = createCatalog({
+      addressesApi: {
+        listByRecordId: async () => [{ record_file_id: 'f1', allow_download: true }],
+        detailByFileId: async () => ({ record_file_id: 'f1' }),
+      } as any,
+      smartApi: smart,
       stsManager: { getToken: async () => 'sts-token' } as any,
       now: () => 1_700_000_000,
     })
@@ -191,10 +219,22 @@ describe('createInProcSource + 真实 catalog：多格式资产按 file_type 定
 
   test('同一 recordFileId 下不同 file_type 的 assetId 解析到各自正确的下载地址', async () => {
     const src = buildRealSource()
-    const docx = await src.getDownloadUrl('rec1:f1:ai_minutes:docx')
-    const pdf = await src.getDownloadUrl('rec1:f1:ai_minutes:pdf')
+    const docx = await src.getDownloadUrl('rec1:f1:ai_meeting_transcripts:docx')
+    const pdf = await src.getDownloadUrl('rec1:f1:ai_meeting_transcripts:pdf')
     expect(docx.url).toBe('https://cos/m.docx')
     expect(pdf.url).toBe('https://cos/m.pdf')
+  })
+
+  test('纪要走 smart 接口：listAssets 列出 ai_minutes，getDownloadUrl 给 data: URL', async () => {
+    const source = makeWithSmart({
+      getMinutes: async () => '# 纪要\n',
+      getChapters: async () => null,
+    })
+    const assets = await source.listAssets('m1')
+    const minutes = assets.find((a) => a.assetType === 'ai_minutes')!
+    expect(minutes.assetId.endsWith(':ai_minutes:md')).toBe(true)
+    const link = await source.getDownloadUrl(minutes.assetId)
+    expect(await (await fetch(link.url)).text()).toBe('# 纪要\n')
   })
 
   test('assetId 里 meetingRecordId 错误时，真实 catalog 找不到文件而抛错（不是静默返回错误文件）', async () => {
