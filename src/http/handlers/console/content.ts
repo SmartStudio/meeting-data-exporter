@@ -1249,13 +1249,20 @@ function parseChapterSegments(segs: readonly ContentSegmentRow[]): ChapterItem[]
   const out: ChapterItem[] = []
   for (const s of segs) {
     if (s.status !== 'parsed' || s.content === null) continue
-    let doc: { chapters?: Array<{ chapterId?: string; name?: string; startMs?: number }> }
+    let doc: { chapters?: unknown } | null
     try {
       doc = JSON.parse(s.content) as typeof doc
     } catch {
       continue
     }
-    for (const c of doc?.chapters ?? []) {
+    // 合法 JSON ≠ 合法 chapters.json：`{"chapters": 42}` 上 for...of 抛「不可迭代」,
+    // `[null]` 上取属性抛 TypeError——两者都躲得过上面的 try/catch，一路冒到 router
+    // 的兜底 catch 变成 500。形状要一层层确认，不能只信 JSON.parse 没抛
+    const list: unknown = typeof doc === 'object' && doc !== null ? doc.chapters : undefined
+    if (!Array.isArray(list)) continue
+    for (const item of list) {
+      if (typeof item !== 'object' || item === null) continue
+      const c = item as { chapterId?: unknown; name?: unknown; startMs?: unknown }
       if (typeof c.chapterId !== 'string' || typeof c.startMs !== 'number') continue
       out.push({ id: c.chapterId, name: typeof c.name === 'string' ? c.name : '', at: Math.floor(c.startMs / 1000) })
     }

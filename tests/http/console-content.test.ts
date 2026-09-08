@@ -716,6 +716,39 @@ test('章节：没解析的行与缺 chapterId / startMs 的条目一律跳过�
   expect(b.source).toBe('tencent')
 })
 
+/**
+ * 合法 JSON ≠ 合法 chapters.json。`{"chapters": 42}` 上 for...of、`[null]` 上取属性,
+ * 都是**语法正确的 JSON** 里抛出来的运行时异常——它们绕过 JSON.parse 的 try/catch,
+ * 一路冒到 router 的兜底 catch 变成 500。一份坏文件不该把整个时间轴端点打死。
+ */
+test('章节：chapters 字段不是数组、或数组里混着 null 时照样 200，坏的跳过、好的照给', async () => {
+  const h = harness({
+    segments: [
+      chaptersRow({ remoteId: 'rf-0', content: JSON.stringify({ schemaVersion: 1, chapters: 42 }) }),
+      chaptersRow({ remoteId: 'rf-2', content: JSON.stringify({ schemaVersion: 1, chapters: {} }) }),
+      chaptersRow({
+        content: chaptersJson([null, '不是对象', { chapterId: 'C1', name: '开场', startMs: 7837 }]),
+      }),
+    ],
+  })
+  const res = await getChapters(req(), h.ctx)
+  expect(res.status).toBe(200)
+  const b = await body(res)
+  expect(b.chapters).toEqual([{ id: 'C1', name: '开场', at: 7 }])
+  expect(b.source).toBe('tencent')
+})
+
+test('章节：正文是 JSON 字面量 null / 数字 / 数组时不抛，按没有章节算', async () => {
+  for (const content of ['null', '42', '[]', '"一句话"']) {
+    const h = harness({ segments: [chaptersRow({ content })] })
+    const res = await getChapters(req(), h.ctx)
+    expect(res.status, `正文是 ${content} 时应当 200`).toBe(200)
+    const b = await body(res)
+    expect(b.chapters).toEqual([])
+    expect(b.source).toBe('none')
+  }
+})
+
 test('章节：转写正文里的时间戳被解析成 cues，供「点一下跳转」用（明确标为转写分段，不是章节）', async () => {
   const transcript = [
     '00:00:05 张三：今天讨论三件事',
