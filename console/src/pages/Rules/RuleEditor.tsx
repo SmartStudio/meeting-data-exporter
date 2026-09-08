@@ -120,7 +120,7 @@ interface Draft {
  * 是一段自由填写的目录模板（schema 的 `freeform` 说明了这件事），没有可取的
  * 闭集，所以这里给一段能改的起点。改它不会和后端打架。
  */
-const ARCHIVE_DIR_TEMPLATE = 'meetings/{年}/{月}/{会议号}-{标题}/'
+const ARCHIVE_DIR_TEMPLATE = 'meetings/{年}/{月}'
 
 /**
  * 新建时预选哪个动作。**闭集的栈取 schema 列出来的第一个**（fetch 是「拉取」、

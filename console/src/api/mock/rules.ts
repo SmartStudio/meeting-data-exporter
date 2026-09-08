@@ -155,7 +155,7 @@ export function buildRules(nowSec: number): ProtoRule[] {
       subjectType: null,
       subjectValue: null,
       assetTypes: ['*'],
-      effect: 'meetings/{年}/{月}/{会议号}-{标题}/',
+      effect: 'meetings/{年}/{月}',
       note: '兜底：全部归档到按月份分的主目录',
       createdBy: '陈运维',
       createdAt: made(120),
@@ -489,7 +489,7 @@ interface Decision {
 
 const DEFAULT_EFFECT: Record<string, string> = {
   fetch: 'all',
-  archive: 'meetings/{年}/{月}/{会议号}-{标题}/',
+  archive: 'meetings/{年}/{月}',
   allow: 'deny',
 }
 
