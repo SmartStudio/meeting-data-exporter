@@ -211,43 +211,11 @@
   flex-wrap: wrap;
 }
 
-.toolLabel {
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-}
-
+/* `.toolLabel` / `.pick` / `.pickBtn` 跟着纪要 tab 的模板与格式两组单选一起删了
+   （2026-09-08：纪要只有一份，那条工具条整块不存在了）。工具条本身还在——
+   转写文字 tab 的搜索框用着 `.toolbar` 与 `.spacer`。 */
 .spacer {
   flex: 1;
-}
-
-.pick {
-  display: inline-flex;
-  gap: var(--s-0);
-  padding: var(--s-0);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-}
-
-.pickBtn {
-  font: inherit;
-  font-size: var(--t-xs);
-  color: var(--ink-3);
-  background: none;
-  border: 0;
-  border-radius: var(--r-xs);
-  padding: var(--s-1) var(--s-3);
-  cursor: pointer;
-}
-
-.pickBtn:hover {
-  color: var(--ink);
-}
-
-.pickBtn[aria-checked='true'] {
-  background: var(--surface);
-  color: var(--ink);
-  font-weight: 600;
 }
 
 .search {
@@ -259,11 +227,9 @@
   color: var(--ink-2);
 }
 
-/* 纪要 tab 上那段散文（「四个模板各对应一个真实的资产类型……」）已经删掉——
-   它说的事情在每一段的状态标签上已经写了。**但这条规则本身留着**：
-   TimelineTab（分段来源、样例行的引子）与 TranscriptTab（点一段跳转、原文
-   为什么整份摆着）还有四处在用它，删了规则那四处就变成 `class="undefined"`。
-   那两个文件不在本次改动的范围里。 */
+/* 这条规则的使用者是 TimelineTab（分段来源、样例行的引子）与 TranscriptTab
+   （点一段跳转、原文为什么整份摆着）——纪要 tab 上那段散文早已删掉，
+   删规则会让那四处变成 `class="undefined"`。 */
 .hint {
   margin: 0;
   font-size: var(--t-xs);
@@ -427,6 +393,15 @@
 
 /* ── 分段列表（时间轴 / 转写共用形状）────────────────────────────── */
 
+/* 时间轴上「章节」与「转写分段」两组的小标题。两组共用一套列表形状，
+   靠这一行区分——少了它，章节和分段会连成一长条看不出边界。 */
+.sectionTitle {
+  margin: var(--s-4) 0 var(--s-2);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
 .cueList,
 .turns {
   margin: 0;
@@ -586,20 +561,5 @@
 
   .handle {
     display: none;
-  }
-
-  /* 「纪要模板」「文件格式」这两组单选是只读入口——换的是看哪一份，不写任何
-     东西——落在 spec §10「移动端保证能看」的那一侧，所以补到触控下限。
-     这里**不能**用 MeetingRow 标题那套「透明内距 + 负外边距」：工具条在 390
-     下换行成两排，两排之间净距只有 14.4px（实测），把 26.6px 的按钮上下各撑
-     8.7px 就会撞在一起。**热区互相重叠比热区偏小更糟**——点下去命中谁取决于
-     绘制顺序，没人说得清。横向同理：「txt」只有 29.3px 宽，而分段之间只隔
-     2px，横向撑热区必然吃掉邻段。
-     所以这一处改的是真实尺寸，不是假热区。代价说清楚：工具条自己长高 17px。
-     它承担得起——分段控件不在表格里，长高不牵动任何一行的密度，而密度正是
-     别处坚持「不改视觉高度」的全部理由。 */
-  .pickBtn {
-    min-width: var(--tap-min);
-    min-height: var(--tap-min);
   }
 }

@@ -213,9 +213,12 @@ describe('冻高度的那个槽真的套在正文外面', () => {
     expect(slot![0]).toMatch(/<SelectedBody/)
   })
 
-  test('工具条不在槽里 —— 它高度恒定，冻它只会多出一段说不清的空白', () => {
-    const slot = /<div ref=\{floor\.ref\}[\s\S]*?\n      <\/div>/.exec(src)
-    expect(slot![0]).not.toMatch(/RadioRow/)
+  /**
+   * 2026-09-08：纪要只有一份，工具条整块删了（原来是模板与文件格式两组单选）。
+   * 这条从「工具条不在槽里」改成「根本没有工具条」——冻高度的槽因此就是整个 tab。
+   */
+  test('纪要 tab 上没有工具条 —— 只有一类纪要，没有可切的东西', () => {
+    expect(src).not.toMatch(/RadioRow|styles\.toolbar/)
   })
 
   /**

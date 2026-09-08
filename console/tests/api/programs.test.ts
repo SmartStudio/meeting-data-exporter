@@ -68,10 +68,11 @@ function program(over: Partial<ServiceProgram> = {}): ServiceProgram {
 }
 
 describe('资产类型的中文名', () => {
-  test('八类各有名字，与网关那份逐字一致', () => {
-    expect(assetLabel('ai_minutes')).toBe('AI 纪要')
-    expect(assetLabel('transcript')).toBe('完整转写')
-    expect(assetLabel('ai_ds_minutes')).toBe('会议摘要')
+  test('六类各有名字，与网关那份逐字一致', () => {
+    expect(assetLabel('ai_minutes')).toBe('纪要')
+    expect(assetLabel('transcript')).toBe('逐字稿')
+    expect(assetLabel('ai_transcript')).toBe('逐字稿（智能优化版）')
+    expect(assetLabel('chapters')).toBe('时间轴')
   })
 
   test('后端加了新的资产类型时原样显示，不折成"其他"也不丢掉', () => {
@@ -79,7 +80,7 @@ describe('资产类型的中文名', () => {
   })
 
   test('连起来就是 spec §4.5 那句话里的资产串', () => {
-    expect(assetTypesText(['ai_minutes', 'transcript'])).toBe('AI 纪要 + 完整转写')
+    expect(assetTypesText(['ai_minutes', 'transcript'])).toBe('纪要 + 逐字稿')
   })
 
   test('空数组给空串——调用方要能把"没有资产类型"与"有一类"分开处理', () => {
@@ -98,7 +99,7 @@ describe('卡片正中间那句话（求交之后的实际结果）', () => {
     expect(line).toEqual({
       kind: 'reachable',
       count: 4,
-      assetsText: 'AI 纪要 + 完整转写',
+      assetsText: '纪要 + 逐字稿',
       expiringSoon: 0,
       expiringSoonDays: 7,
     })

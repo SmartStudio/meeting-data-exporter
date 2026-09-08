@@ -17,9 +17,7 @@ export type AssetKey =
   | 'transcript'
   | 'ai_transcript'
   | 'ai_minutes'
-  | 'ai_topic_minutes'
-  | 'ai_speaker_minutes'
-  | 'ai_ds_minutes'
+  | 'chapters'
 
 /**
  * 拉取阶段的状态。

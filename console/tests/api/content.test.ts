@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import { ApiError } from '../../src/api/client'
 import { ApiShapeError } from '../../src/api/validate'
 import {
+  ASSET_LABEL,
   AVAILABILITY_LABEL,
-  MINUTES_TEMPLATES,
   assetLabel,
   availabilityLabel,
   fetchChapters,
@@ -128,16 +128,19 @@ const SELECTED = {
     assetKey: 'ai_minutes',
     state: 'ok',
     segments: [{ ...ASSET, ordinal: 1, content: '……正文……' }],
-    text: 'AI 纪要共 1 段，其中 1 段有正文。',
+    text: '纪要共 1 段，其中 1 段有正文。',
   },
 }
 
 const CHAPTERS = {
   meeting: MEETING,
   access: ACCESS_ALLOW,
-  chapters: [],
-  source: 'none',
-  text: '腾讯会议那张页面上的「章节 + 摘要」在本系统里没有来源……',
+  chapters: [
+    { id: 'C1', name: '开场', at: 7 },
+    { id: 'C2', name: '需求评审', at: 120 },
+  ],
+  source: 'tencent',
+  text: '上面是腾讯智能录制生成的章节，下面是从逐字稿的时间戳切出来的转写分段。',
   cues: [
     { at: 65, endAt: null, speaker: '张三', text: '大家好' },
     { at: 130, endAt: 190, speaker: null, text: '先过一下进度' },
@@ -228,14 +231,14 @@ describe('fetchContentSelection —— 选一类正文', () => {
     install(200, {
       ...INDEX,
       selected: {
-        type: 'ai_topic_minutes',
-        assetKey: 'ai_topic_minutes',
+        type: 'ai_minutes',
+        assetKey: 'ai_minutes',
         state: 'absent',
         segments: [],
-        text: '这场会议在库里没有任何一段话题纪要的记录',
+        text: '这场会议在库里没有任何一段纪要的记录',
       },
     })
-    const got = await fetchContentSelection('m-1', { type: 'ai_topic_minutes' })
+    const got = await fetchContentSelection('m-1', { type: 'ai_minutes' })
     expect(got.selected!.state).toBe('absent')
     expect(got.selected!.segments).toEqual([])
     expect(got.selected!.text).toContain('没有任何一段')
@@ -270,14 +273,17 @@ describe('fetchContentSelection —— 选一类正文', () => {
   })
 })
 
-describe('fetchChapters —— 时间轴（章节恒空，真正有内容的是转写分段）', () => {
-  test('chapters 恒空 + source none 原样透出，不折成"没有数据"', async () => {
+describe('fetchChapters —— 时间轴（章节 + 转写分段，两样各有各的来源）', () => {
+  test('章节按 id/name/at 逐条读出来，source 原样透出', async () => {
     install(200, CHAPTERS)
     const got = await fetchChapters('m-1')
     expect(calls[0]!.url).toBe('/api/v1/admin/meetings/m-1/content/chapters')
-    expect(got.chapters).toEqual([])
-    expect(got.source).toBe('none')
-    expect(got.text).toContain('没有来源')
+    expect(got.chapters).toEqual([
+      { id: 'C1', name: '开场', at: 7 },
+      { id: 'C2', name: '需求评审', at: 120 },
+    ])
+    expect(got.source).toBe('tencent')
+    expect(got.text).toContain('章节')
     expect(got.cues).toHaveLength(2)
     expect(got.cues[0]).toEqual({ at: 65, endAt: null, speaker: '张三', text: '大家好' })
     expect(got.cuesFrom!.format).toBe('bracket')
@@ -335,18 +341,20 @@ describe('fetchMeetingGrantIds —— 「已授权给谁」的窄读', () => {
 })
 
 describe('标签表', () => {
-  test('四个纪要模板都对着真实的 asset_type，没有"待办清单"这种没有来源的一项', () => {
-    expect(MINUTES_TEMPLATES.map((t) => t.key)).toEqual([
-      'ai_minutes',
-      'ai_speaker_minutes',
-      'ai_topic_minutes',
-      'ai_ds_minutes',
-    ])
+  test('六个资产键与后端 src/domain/asset-labels.ts 逐字一致', () => {
+    expect(ASSET_LABEL).toEqual({
+      video: '录像',
+      audio: '音频',
+      transcript: '逐字稿',
+      ai_transcript: '逐字稿（智能优化版）',
+      ai_minutes: '纪要',
+      chapters: '时间轴',
+    })
   })
 
   test('资产名跟着后端的叫法，认不出的类型原样显示而不是折成"其他"', () => {
-    expect(assetLabel('ai_minutes', 'ai_minutes')).toBe('AI 纪要')
-    expect(assetLabel('transcript', 'meeting_summary')).toBe('完整转写')
+    expect(assetLabel('ai_minutes', 'ai_minutes')).toBe('纪要')
+    expect(assetLabel('transcript', 'meeting_summary')).toBe('逐字稿')
     expect(assetLabel(null, 'brand_new_engine')).toBe('brand_new_engine')
   })
 

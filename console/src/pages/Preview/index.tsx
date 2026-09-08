@@ -299,7 +299,6 @@ function Body({ index, chapters, grants }: BodyProps) {
             {tab === 'minutes' && (
               <MinutesTab
                 meetingId={meeting.id}
-                assets={index.assets}
                 archivedAt={index.local.archivedAt}
                 heightMemo={minutesH}
               />

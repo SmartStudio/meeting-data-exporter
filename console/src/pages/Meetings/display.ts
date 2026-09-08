@@ -346,7 +346,7 @@ export function programName(programs: readonly ServiceProgram[], id: string): st
   return programs.find((p) => p.id === id)?.name ?? id
 }
 
-/** 八类资产的「已拿到 / 应有」合计。某个键不出现＝该类不适用，不参与计数。 */
+/** 六类资产的「已拿到 / 应有」合计。某个键不出现＝该类不适用，不参与计数。 */
 export function assetTotals(m: AdminMeeting): { got: number; total: number } {
   let got = 0
   let total = 0

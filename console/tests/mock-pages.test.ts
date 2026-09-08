@@ -483,10 +483,13 @@ describe('内容预览', () => {
     expect(txt.selected!.segments.every((s) => s.fileType === 'txt')).toBe(true)
   })
 
-  test('章节恒为空、来源恒为 none —— 真正有内容的是转写分段', async () => {
+  test('章节与转写分段各自成列 —— 两样东西，不是同一份数据的两个名字', async () => {
     const ch = await fetchChapters('m1', { limit: 5000 })
-    expect(ch.chapters).toEqual([])
-    expect(ch.source).toBe('none')
+    expect(ch.source).toBe('tencent')
+    expect(ch.chapters.length).toBeGreaterThan(0)
+    expect(ch.chapters.every((c) => c.id !== '' && c.name !== '')).toBe(true)
+    // 章节按起点升序
+    expect(ch.chapters.map((c) => c.at)).toEqual([...ch.chapters.map((c) => c.at)].sort((a, b) => a - b))
     expect(ch.text).not.toBe('')
     expect(ch.cues.length).toBeGreaterThan(0)
     expect(ch.cuesFrom).not.toBeNull()

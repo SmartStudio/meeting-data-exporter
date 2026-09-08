@@ -11,14 +11,14 @@
  * 记录。而留痕的价值恰恰在于完整——尤其是那些被规则禁掉的会议，管理员看了就该
  * 有一条。`tests/api/content.test.ts` 有一条「调两次就要发两次」的测试盯着这件事。
  *
- * ## 章节没有来源，所以这里没有 `Chapter` 类型
+ * ## 章节 2026-09-08 起有真来源
  *
- * 阶段 4 · T16 的裁定：`GET .../content/chapters` 的 `chapters` **恒为空数组**、
- * `source: 'none'`——本系统一次都没拉取过腾讯的「章节」数据，不编一份假的。
- * 真正有内容的是 `cues`（**转写分段**，时间戳来自转写正文本身）。
- * 所以这里把 `chapters` 保留成 `unknown[]` 原样透出（它现在恒空，将来真有来源时
- * 是另一件事），把 `TranscriptCue` 明确命名成「转写分段」——**界面上不许拿 cues
- * 冒充章节**，那是在给一个我们没有的数据源伪造一次输出。
+ * `GET .../content/chapters` 的 `chapters` 从这天起是**真数据**：腾讯智能录制的
+ * 章节，按起点升序，`source: 'tencent'`；没开智能录制的会议仍是空数组、
+ * `source: 'none'`，`text` 说清是哪一种。所以 `chapters` 有了自己的类型
+ * （`ChapterItem`），不再是 `unknown[]`。
+ * 转写分段（`cues`）是另一件东西——时间戳来自转写正文本身的解析，
+ * **界面上仍然不许拿 cues 冒充章节**。
  *
  * ## 收窄的字段一律留 string（同 `grants.ts` 的口径）
  *
@@ -188,12 +188,19 @@ export interface CuesFrom {
   truncated: boolean
 }
 
+/** 一条章节。`at` 是相对会议开始的秒数。 */
+export interface ChapterItem {
+  id: string
+  name: string
+  at: number
+}
+
 export interface ChaptersView {
   meeting: ContentMeeting
   access: ContentAccess
-  /** **恒为空数组**（本系统从未拉取过章节数据）。留着原样透出，不当成"没数据" */
-  chapters: unknown[]
-  /** 恒为 `'none'` */
+  /** 腾讯智能录制的章节，按起点升序；没开智能录制的会议为空数组，`text` 说明原因 */
+  chapters: ChapterItem[]
+  /** `'tencent'` 有章节 / `'none'` 没有 */
   source: string
   /** 后端写好的「为什么没有章节」，界面上要显示它 */
   text: string
@@ -213,12 +220,10 @@ export interface ChaptersView {
 export const ASSET_LABEL: Record<AssetKey, string> = {
   video: '录像',
   audio: '音频',
-  transcript: '完整转写',
-  ai_transcript: 'AI 转写',
-  ai_minutes: 'AI 纪要',
-  ai_topic_minutes: '话题纪要',
-  ai_speaker_minutes: '发言人纪要',
-  ai_ds_minutes: '会议摘要',
+  transcript: '逐字稿',
+  ai_transcript: '逐字稿（智能优化版）',
+  ai_minutes: '纪要',
+  chapters: '时间轴',
 }
 
 /**
@@ -249,27 +254,8 @@ export function availabilityLabel(availability: string): string {
   return AVAILABILITY_LABEL[availability] ?? availability
 }
 
-/**
- * 纪要 tab 的模板切换（spec §4.4「这不是装饰性下拉——腾讯确实按不同模板生成
- * 多份纪要」）。
- *
- * **四项都对着真实的 `asset_type`**。原型里的第四项叫「待办清单」，而系统里
- * 没有任何一个资产类型装它（`ALL_ASSET_KEYS` 八项里的纪要类只有这四个），
- * 所以这里给的是 `ai_ds_minutes`（后端叫「会议摘要」）而不是原型那个名字——
- * 与「章节没有来源就不编章节」是同一条裁定：不提供一个我们没有来源的模板。
- */
-export const MINUTES_TEMPLATES: ReadonlyArray<{ key: AssetKey; label: string }> = [
-  { key: 'ai_minutes', label: ASSET_LABEL.ai_minutes },
-  { key: 'ai_speaker_minutes', label: ASSET_LABEL.ai_speaker_minutes },
-  { key: 'ai_topic_minutes', label: ASSET_LABEL.ai_topic_minutes },
-  { key: 'ai_ds_minutes', label: ASSET_LABEL.ai_ds_minutes },
-]
-
 /** 转写文字 tab 取的那一类。`transcript` 在网关侧叫 `meeting_summary`，两套写法后端都认。 */
 export const TRANSCRIPT_ASSET_KEY: AssetKey = 'transcript'
-
-/** `?format=` 的三个取值。只有 txt 会被解析成正文（T4 裁定），另两个会如实报未解析。 */
-export const FILE_TYPES: readonly string[] = ['txt', 'docx', 'pdf']
 
 /** 时间轴一次要多少段。后端上限 5000，**超限是 400 不是静默钳制**，所以照着上限要。 */
 export const CUES_LIMIT = 5000
@@ -431,7 +417,7 @@ function readIndex(endpoint: string, raw: unknown): ContentIndex {
 /**
  * `GET /api/v1/admin/meetings/:meetingId/content`（不带 `type`）。
  *
- * 只要索引：八类资产的格式/体积/可得性、采集判定、本地与 NAS 去向、录像的去向。
+ * 只要索引：六类资产的格式/体积/可得性、采集判定、本地与 NAS 去向、录像的去向。
  * `selected` 恒为 null——**不要顺手带上一个 `type` 去"顺便"把正文也取回来**，
  * 那会让每次进页面都多读一份可能有几 MB 的正文。
  */
@@ -461,9 +447,10 @@ export async function fetchContentSelection(
 /**
  * `GET /api/v1/admin/meetings/:meetingId/content/chapters`。
  *
- * 名字叫 chapters，给的却是 `cues`——见文件头第二条。`limit` 超出 1..5000 时后端
- * 回 400（**不静默钳制**：客户端以为要到了 20000 段、实际只拿到 5000 段，后半截
- * 转写会在时间轴上凭空消失，而界面上一切正常）。
+ * 一条端点给两样东西：`chapters`（腾讯智能录制的章节，没开就是空数组）与
+ * `cues`（按逐字稿时间戳切出的转写分段）。`limit` 只管 `cues`，超出 1..5000 时
+ * 后端回 400（**不静默钳制**：客户端以为要到了 20000 段、实际只拿到 5000 段，
+ * 后半截转写会在时间轴上凭空消失，而界面上一切正常）。
  */
 export async function fetchChapters(
   id: string,
@@ -478,7 +465,11 @@ export async function fetchChapters(
   return {
     meeting: readMeeting(r, o.meeting, 'meeting'),
     access: readAccess(r, o.access, 'access'),
-    chapters: r.array(o.chapters, 'chapters'),
+    chapters: r.objList(o, 'chapters', '').map((c, i) => ({
+      id: r.str(c, 'id', `chapters[${i}]`),
+      name: r.str(c, 'name', `chapters[${i}]`),
+      at: r.num(c, 'at', `chapters[${i}]`),
+    })),
     source: r.str(o, 'source', ''),
     text: r.str(o, 'text', ''),
     cues: r.objList(o, 'cues', '').map((c, i) => ({

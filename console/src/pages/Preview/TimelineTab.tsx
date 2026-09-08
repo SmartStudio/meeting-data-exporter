@@ -7,25 +7,10 @@ import { Emphasis, currentCueIndex, useFollowCurrent } from './text'
 import styles from './Preview.module.css'
 
 /**
- * 时间轴 tab。
- *
- * ## 这一页最容易做错的一件事就在这里
- *
- * spec §4.4 写的是「章节 + 摘要，点击跳转」。而阶段 4 · T16 的裁定是：
- * `GET .../content/chapters` 的 `chapters` **恒为空数组**、`source: 'none'`——
- * 本系统一次都没拉取过腾讯的章节数据，`src/tencent/records.ts` 里没有任何一个
- * 取章节的调用点，库里也没有任何一列装它。
- *
- * 响应里真正有内容的是 `cues`：**转写分段**，时间戳来自转写正文本身的解析。
- * 拿它当章节渲染（给每段编个号、配上"摘要"）就是**给一个我们没有的数据源伪造
- * 一次输出**——用户会以为这场会议真的有章节结构，而那是解析出来的分句。
- *
- * 所以这里：
- * - 列表的名字叫「转写分段」，不叫章节；
- * - 顶部说清本系统没有章节来源，并把后端那段解释原样摆出来；
- * - 交代分段是从哪一份转写、认出的哪种格式解析来的；
- * - **被 limit 截断时明说**——后半截在时间轴上凭空消失、界面上一切正常，
- *   是这一页最糟的一种静默。
+ * 时间轴 tab：上半是腾讯智能录制的**章节**（`data.chapters`，2026-09-08 起有真来源：
+ * chapters.json），下半是按逐字稿时间戳切出的**转写分段**（`data.cues`）。
+ * 两者都能点击跳转。没开智能录制的会议章节为空，`data.text` 说明原因，
+ * 转写分段照常显示——不拿分段冒充章节。
  */
 
 export interface TimelineTabProps {
@@ -85,14 +70,25 @@ export function TimelineTab({ data, loading, error, position, onSeek, onRetry }:
 
   return (
     <div className={styles.tabBody}>
-      <p className={styles.notice}>
-        本系统<b>没有「章节」这一类数据</b>：一次都没有从腾讯会议拉取过它，库里也没有
-        任何一列装它。所以下面这一列是<b>按转写时间戳切分</b>的转写分段，不是章节——
-        它们的时间是真的，点一下就能把位置对过去。
-      </p>
       <p className={styles.backendText}>
         <Emphasis text={data.text} />
       </p>
+
+      {data.chapters.length > 0 && (
+        <section aria-label="章节">
+          <h3 className={styles.sectionTitle}>章节</h3>
+          <ul className={styles.cueList}>
+            {data.chapters.map((c) => (
+              <li key={c.id}>
+                <button type="button" className={styles.cue} onClick={() => onSeek(c.at)}>
+                  <time className={styles.cueTime}>{fmtClock(c.at)}</time>
+                  <span className={styles.cueText}>{c.name === '' ? '（未命名章节）' : c.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {from !== null && (
         <p className={styles.hint}>
@@ -132,22 +128,25 @@ export function TimelineTab({ data, loading, error, position, onSeek, onRetry }:
       )}
 
       {data.cues.length > 0 && (
-        <ul ref={listRef} className={styles.cueList} aria-label="转写分段（按转写时间戳切分，不是章节）">
-          {data.cues.map((c, i) => (
-            <li key={`${c.at}/${i}`}>
-              <button
-                type="button"
-                className={styles.cue}
-                aria-current={i === cur ? 'true' : undefined}
-                onClick={() => onSeek(c.at)}
-              >
-                <time className={styles.cueTime}>{fmtClock(c.at)}</time>
-                <span className={styles.cueWho}>{c.speaker ?? '未认出发言人'}</span>
-                <span className={styles.cueText}>{c.text}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        <>
+          <h3 className={styles.sectionTitle}>转写分段</h3>
+          <ul ref={listRef} className={styles.cueList} aria-label="转写分段（按逐字稿时间戳切分）">
+            {data.cues.map((c, i) => (
+              <li key={`${c.at}/${i}`}>
+                <button
+                  type="button"
+                  className={styles.cue}
+                  aria-current={i === cur ? 'true' : undefined}
+                  onClick={() => onSeek(c.at)}
+                >
+                  <time className={styles.cueTime}>{fmtClock(c.at)}</time>
+                  <span className={styles.cueWho}>{c.speaker ?? '未认出发言人'}</span>
+                  <span className={styles.cueText}>{c.text}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </div>
   )

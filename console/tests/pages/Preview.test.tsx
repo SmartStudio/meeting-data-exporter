@@ -12,9 +12,9 @@ import PreviewPage from '../../src/pages/Preview'
  *
  * 这一页最容易做错的三件事，每一件都有对应的测试盯着：
  *
- * 1. **拿 cues 冒充章节**。后端的 `chapters` 恒空、`source: 'none'`——本系统一次
- *    都没拉过腾讯的章节数据。时间轴 tab 的形态因此是「按转写时间戳切分」，
- *    而且界面上要说清这一点。
+ * 1. **拿 cues 冒充章节**。章节（`chapters`）与转写分段（`cues`）是两样东西：
+ *    前者来自腾讯智能录制，后者是按逐字稿时间戳切出来的。时间轴 tab 两组分开列,
+ *    没开智能录制的会议章节为空，分段照常显示。
  * 2. **为了省一次请求把内容缓存起来复用**。每调一次那两条端点后端就写一行审计,
  *    省下的请求等于少一条留痕，而留痕是「被禁采集的会议管理员仍然能看」的对价。
  * 3. **把右下角做成 AI 问答框**。那是一条新的出境路径（spec §1.4），刻意不实现。
@@ -141,8 +141,8 @@ const INDEX = {
       nasPath: '/nas/2026/08/m-1/transcript.txt',
     }),
     asset({
-      assetType: 'ai_topic_minutes',
-      assetKey: 'ai_topic_minutes',
+      assetType: 'ai_transcript',
+      assetKey: 'ai_transcript',
       remoteId: 'r-3',
       fileType: 'docx',
       availability: 'unsupported_format',
@@ -164,7 +164,7 @@ function selection(over: Record<string, unknown> = {}): Record<string, unknown> 
       assetKey: 'ai_minutes',
       state: 'ok',
       segments: [{ ...asset(), ordinal: 1, content: '一、会议结论\nM3.5 联调通过。' }],
-      text: 'AI 纪要共 1 段，其中 1 段有正文。',
+      text: '纪要共 1 段，其中 1 段有正文。',
       ...over,
     },
   }
@@ -178,12 +178,18 @@ const CUES = [
   { at: MIDPOINT + 30, endAt: null, speaker: '王总', text: '那这周先把文档回写补上。' },
 ]
 
+/** 腾讯智能录制的章节。与 `CUES` 各有各的来源，不是同一份数据的两个名字 */
+const CHAPTER_ITEMS = [
+  { id: 'C1', name: '开场', at: 7 },
+  { id: 'C2', name: '需求评审', at: 120 },
+]
+
 const CHAPTERS = {
   meeting: MEETING,
   access: ACCESS_ALLOW,
-  chapters: [],
-  source: 'none',
-  text: '腾讯会议那张页面上的「章节 + 摘要」在本系统里没有来源：一次都没被拉取过，库里也没有任何一列装它。',
+  chapters: CHAPTER_ITEMS,
+  source: 'tencent',
+  text: '上面是腾讯智能录制生成的章节，下面是从逐字稿的时间戳切出来的转写分段。',
   cues: CUES,
   cuesFrom: {
     assetType: 'meeting_summary',
@@ -211,7 +217,7 @@ const TRANSCRIPT = {
         content: '[00:00] 邹研发：今天主要过一下联调结果。\n[25:00] 王总：先说结论行不行。',
       },
     ],
-    text: '完整转写共 1 段，其中 1 段有正文。',
+    text: '逐字稿共 1 段，其中 1 段有正文。',
   },
 }
 
@@ -351,21 +357,50 @@ describe('抬头的主持人：不许把 userid 当人名摆出去', () => {
   })
 })
 
-/* ── 时间轴：不是章节 ─────────────────────────────────────────────── */
+/* ── 时间轴：章节 + 转写分段，两组分开 ────────────────────────────── */
 
-describe('时间轴 tab —— 按转写时间戳切分，不是章节', () => {
-  test('界面上说清「本系统没有章节来源」，并把后端的原话摆出来', async () => {
+describe('时间轴 tab —— 上面是章节，下面是转写分段', () => {
+  test('章节来自腾讯智能录制，逐条列出来，后端那段话原样摆着', async () => {
     const user = userEvent.setup()
     renderPreview()
     await ready()
     await user.click(screen.getByRole('tab', { name: /时间轴/ }))
 
     const panel = screen.getByRole('tabpanel')
-    expect(within(panel).getByText(/没有来源/)).toBeInTheDocument()
-    expect(within(panel).getByText(/按转写时间戳切分/)).toBeInTheDocument()
+    expect(within(panel).getByText(/腾讯智能录制生成的章节/)).toBeInTheDocument()
+    const section = within(panel).getByRole('region', { name: '章节' })
+    expect(within(section).getAllByRole('listitem')).toHaveLength(CHAPTER_ITEMS.length)
+    expect(within(section).getByText('需求评审')).toBeInTheDocument()
   })
 
-  test('列表标题写的是「转写分段」，不是「章节」——不给一个我们没有的数据源伪造输出', async () => {
+  test('点一条章节就把播放位置跳过去', async () => {
+    const user = userEvent.setup()
+    renderPreview()
+    await ready()
+    await user.click(screen.getByRole('tab', { name: /时间轴/ }))
+    const section = screen.getByRole('region', { name: '章节' })
+    await user.click(within(section).getByRole('button', { name: /需求评审/ }))
+    expect(screen.getByRole('slider', { name: '播放位置' })).toHaveAttribute('aria-valuenow', '120')
+  })
+
+  test('没开智能录制的会议：章节那一组不出现，转写分段照常显示', async () => {
+    stubHappyPath()
+    answer(/\/content\/chapters/, {
+      ...CHAPTERS,
+      chapters: [],
+      source: 'none',
+      text: '这场会议没有开智能录制，所以没有章节；下面是从逐字稿的时间戳切出来的转写分段。',
+    })
+
+    const user = userEvent.setup()
+    renderPreview()
+    await ready()
+    await user.click(screen.getByRole('tab', { name: /时间轴/ }))
+    expect(screen.queryByRole('region', { name: '章节' })).toBeNull()
+    expect(screen.getByRole('list', { name: /转写分段/ })).toBeInTheDocument()
+  })
+
+  test('转写分段是另一组：名字叫「转写分段」，不拿它冒充章节', async () => {
     const user = userEvent.setup()
     renderPreview()
     await ready()
@@ -373,8 +408,8 @@ describe('时间轴 tab —— 按转写时间戳切分，不是章节', () => {
 
     const list = screen.getByRole('list', { name: /转写分段/ })
     expect(within(list).getAllByRole('listitem')).toHaveLength(CUES.length)
-    // 分段来自哪一份转写、认出的是什么格式，都要交代
-    expect(within(screen.getByRole('tabpanel')).getByText(/完整转写/)).toBeInTheDocument()
+    // 分段来自哪一份逐字稿、认出的是什么格式，都要交代
+    expect(within(screen.getByRole('tabpanel')).getByText(/行首时间戳/)).toBeInTheDocument()
   })
 
   test('被 limit 截断时说出来——后半截凭空消失是最糟的静默', async () => {
@@ -646,48 +681,34 @@ describe('键盘可达（spec §9 是硬要求）', () => {
 /* ── 纪要 tab ─────────────────────────────────────────────────────── */
 
 describe('纪要 tab', () => {
-  test('模板切换是四个真实的资产类型，没有一个我们取不到的模板', async () => {
-    renderPreview()
-    await ready()
-    const group = screen.getByRole('radiogroup', { name: '纪要模板' })
-    const names = within(group)
-      .getAllByRole('radio')
-      .map((b) => b.textContent)
-    expect(names).toEqual(['AI 纪要', '发言人纪要', '话题纪要', '会议摘要'])
-  })
-
-  test('换模板就重取一次——不缓存复用，留痕才完整', async () => {
-    const user = userEvent.setup()
+  test('纪要只有一份：没有模板切换，只发一条 type=ai_minutes 的请求', async () => {
     renderPreview()
     await ready()
     await waitFor(() => expect(screen.getByText(/M3.5 联调通过/)).toBeInTheDocument())
 
-    const before = urls.filter((u) => u.includes('type=')).length
-    await user.click(screen.getByRole('radio', { name: '话题纪要' }))
-    await waitFor(() =>
-      expect(urls.filter((u) => u.includes('type=ai_topic_minutes'))).not.toHaveLength(0),
-    )
-    // 再切回来，照样重取，不吃上一次的结果
-    await user.click(screen.getByRole('radio', { name: 'AI 纪要' }))
-    await waitFor(() => expect(urls.filter((u) => u.includes('type=')).length).toBeGreaterThan(before + 1))
+    expect(screen.queryByRole('radiogroup', { name: '纪要模板' })).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: '文件格式' })).toBeNull()
+
+    const typed = urls.filter((u) => u.includes('type='))
+    expect(typed).not.toHaveLength(0)
+    expect(typed.every((u) => u.includes('type=ai_minutes'))).toBe(true)
+    // 不带 format：`?format=` 是一次真实取值，不是"不筛选"
+    expect(typed.every((u) => !u.includes('format='))).toBe(true)
   })
 
-  test('「这场会议没有这类纪要」与「取失败了」在界面上分得开', async () => {
+  test('「这场会议没有纪要」与「取失败了」在界面上分得开', async () => {
     stubHappyPath()
     answer(
-      /\/content\?type=ai_speaker_minutes/,
-      selection({ state: 'absent', segments: [], text: '这场会议在库里没有任何一段发言人纪要的记录。' }),
+      /\/content\?type=ai_minutes/,
+      selection({ state: 'absent', segments: [], text: '这场会议在库里没有任何一段纪要的记录。' }),
     )
-
-    const user = userEvent.setup()
     renderPreview()
     await ready()
+    expect(await screen.findByText(/没有任何一段纪要的记录/)).toBeInTheDocument()
 
-    await user.click(screen.getByRole('radio', { name: '发言人纪要' }))
-    expect(await screen.findByText(/没有任何一段发言人纪要的记录/)).toBeInTheDocument()
-
-    routes.unshift({ match: /\/content\?type=ai_topic_minutes/, status: 500, body: { error: 'boom' } })
-    await user.click(screen.getByRole('radio', { name: '话题纪要' }))
+    stubHappyPath()
+    routes.unshift({ match: /\/content\?type=ai_minutes/, status: 500, body: { error: 'boom' } })
+    renderPreview()
     expect(await screen.findByText(/取失败/)).toBeInTheDocument()
     expect(screen.getByText(/boom/)).toBeInTheDocument()
   })
@@ -709,7 +730,7 @@ describe('纪要 tab', () => {
             content: null,
           },
         ],
-        text: 'AI 纪要在库里有 1 段记录，但一段正文都解析不出来。',
+        text: '纪要在库里有 1 段记录，但一段正文都解析不出来。',
       }),
     )
     renderPreview()
@@ -775,12 +796,12 @@ describe('右下角是「这场会议的资产与去向」', () => {
     expect(within(panel).getByText('/nas/2026/08/m-1')).toBeVisible()
 
     // 类名与格式在收起的那一行上就读得到
-    expect(within(panel).getByText('AI 纪要')).toBeVisible()
+    expect(within(panel).getByText('纪要')).toBeVisible()
     expect(within(panel).getAllByText('txt').length).toBeGreaterThan(0)
 
     // 体积是明细：收起时**必须看不见**（这一条钉的是合并本身有效），展开后才在
     expect(within(panel).getByText('4.00 KB')).not.toBeVisible()
-    await openAssetGroup(user, panel, /AI 纪要/)
+    await openAssetGroup(user, panel, /^纪要$/)
     expect(within(panel).getByText('4.00 KB')).toBeVisible()
   })
 
@@ -793,8 +814,8 @@ describe('右下角是「这场会议的资产与去向」', () => {
     // 不许把一个可修复的缺口藏到点开之后
     expect(within(panel).getAllByText(/未解析（格式不支持）/)[0]).toBeVisible()
     // 后端逐条写的理由是明细，展开后一字不改地在
-    // 这条理由属于 ai_topic_minutes 那一组（夹具 :142）
-    await openAssetGroup(user, panel, /话题纪要/)
+    // 这条理由属于 ai_transcript 那一组
+    await openAssetGroup(user, panel, /^逐字稿（智能优化版）$/)
     expect(within(panel).getByText(/文件在 NAS 上/)).toBeVisible()
   })
 
@@ -889,7 +910,7 @@ describe('屏幕上不出现规格引用 / 机器名 / 反引号代码', () => {
 
     // 展开资产明细，后端逐条写的理由同样受这条约束
     const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
-    await openAssetGroup(user, panel, /完整转写/)
+    await openAssetGroup(user, panel, /^逐字稿$/)
     expect(/spec\s*§|`/.test(seen())).toBe(false)
   })
 
@@ -927,7 +948,7 @@ describe('后端下发的 **强调** 一律渲染成粗体，屏幕上不出现�
 
     // 展开一组资产，明细里的后端理由同样不许漏星号
     const panel = screen.getByRole('region', { name: '这场会议的资产与去向' })
-    await openAssetGroup(user, panel, /完整转写/)
+    await openAssetGroup(user, panel, /^逐字稿$/)
     expect(document.body.textContent).not.toContain('**')
   })
 })

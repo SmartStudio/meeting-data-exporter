@@ -26,7 +26,7 @@ interface EffectChoice {
 const CHOICES: Record<OverrideKind, EffectChoice[]> = {
   fetch: [
     { effect: 'skip', label: '不拉取这场会议', hint: '已经拉下来的资产不会被删，只是此后不再拉' },
-    { effect: 'all', label: '拉取全部八类资产', hint: '即使拉取规则判定跳过，这一场也照拉' },
+    { effect: 'all', label: '拉取全部六类资产', hint: '即使拉取规则判定跳过，这一场也照拉' },
   ],
   archive: [
     { effect: 'skip', label: '不归档这场会议', hint: '已经写进 NAS 的副本不会被删' },

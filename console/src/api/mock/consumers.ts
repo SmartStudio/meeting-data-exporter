@@ -88,7 +88,7 @@ export function readAutoGrantPatch(body: Record<string, unknown>): PatchRead<{
   if (raw === undefined || raw === null) {
     return { ok: true, value: { autoGrant: body.autoGrant, autoGrantAssetTypes: null } }
   }
-  const hint = '省略或 null = 不限制；给数组就必须非空，且每一项都是八类资产键之一。'
+  const hint = '省略或 null = 不限制；给数组就必须非空，且每一项都是六类资产键之一。'
   if (!Array.isArray(raw)) {
     return { ok: false, body: { error: 'invalid_auto_grant_asset_types', hint } }
   }
@@ -115,12 +115,12 @@ export function readAutoGrantPatch(body: Record<string, unknown>): PatchRead<{
  *
  * `assetTypes` 是**三个「与」求交之后的结果**（授权范围 ∩ 规则允许 ∩ 实际存在），
  * 不是某一处的配置值。spec §4.5 那句话的全部价值在这里，所以这份种子里它逐个
- * 程序不同，且窄于"八类全给"。
+ * 程序不同，且窄于"六类全给"。
  */
 const REACH: Record<string, AssetKey[]> = {
   'kb-indexer': ['ai_minutes', 'transcript'],
-  'daily-digest': ['ai_minutes', 'ai_topic_minutes', 'transcript'],
-  'dw-sync': ['ai_ds_minutes'],
+  'daily-digest': ['ai_minutes', 'chapters', 'transcript'],
+  'dw-sync': ['ai_transcript'],
 }
 
 /** 「快到期」的口径，与后端同一个数。 */

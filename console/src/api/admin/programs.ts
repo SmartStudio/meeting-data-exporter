@@ -30,7 +30,7 @@ import type { AssetKey } from '../types'
 import { ApiError } from '../client'
 import type { CreateProgramInput, InventoryItem, ProgramInventory, ServiceProgram } from './grants'
 
-/* ── 八类资产的中文名 ─────────────────────────────────────────── */
+/* ── 六类资产的中文名 ─────────────────────────────────────────── */
 
 /**
  * 与网关那份（`src/http/handlers/console/meetings.ts` 的 `ASSET_LABEL`）逐字一致。
@@ -40,16 +40,14 @@ import type { CreateProgramInput, InventoryItem, ProgramInventory, ServiceProgra
 export const ASSET_LABEL: Record<AssetKey, string> = {
   video: '录像',
   audio: '音频',
-  transcript: '完整转写',
-  ai_transcript: 'AI 转写',
-  ai_minutes: 'AI 纪要',
-  ai_topic_minutes: '话题纪要',
-  ai_speaker_minutes: '发言人纪要',
-  ai_ds_minutes: '会议摘要',
+  transcript: '逐字稿',
+  ai_transcript: '逐字稿（智能优化版）',
+  ai_minutes: '纪要',
+  chapters: '时间轴',
 }
 
 /**
- * 后端加了第九类资产时**原样显示那个键**，不折成"其他"、更不丢掉——
+ * 后端加了第七类资产时**原样显示那个键**，不折成"其他"、更不丢掉——
  * 这一页回答的问题是"这个程序实际能取到什么"，少列一类就是答错。
  */
 export function assetLabel(key: string): string {
@@ -57,13 +55,13 @@ export function assetLabel(key: string): string {
 }
 
 /**
- * 八个资产键，顺序即上面那张表的顺序。**从 `ASSET_LABEL` 派生**，不另抄一份
+ * 六个资产键，顺序即上面那张表的顺序。**从 `ASSET_LABEL` 派生**，不另抄一份
  * 数组：同一批资产在这个项目里已经有过三套叫法，第二份清单迟早与第一份分叉。
  * 自动授权的资产范围勾选框（`ProgramActions.tsx`）与原型模式的假后端都用它。
  */
 export const ASSET_KEYS = Object.keys(ASSET_LABEL) as AssetKey[]
 
-/** `['ai_minutes','transcript']` → `'AI 纪要 + 完整转写'`。空数组给空串（调用方要能分辨）。 */
+/** `['ai_minutes','transcript']` → `'纪要 + 逐字稿'`。空数组给空串（调用方要能分辨）。 */
 export function assetTypesText(keys: readonly string[]): string {
   return keys.map(assetLabel).join(' + ')
 }

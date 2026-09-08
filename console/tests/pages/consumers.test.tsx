@@ -154,7 +154,7 @@ describe('程序列表', () => {
     // 四个程序都渲染出来，且各自的「现在能取」还是各自程序 id 下的那一份
     expect(await screen.findByRole('heading', { name: '归档机器人', level: 2 })).toBeInTheDocument()
     for (const id of ['kb-indexer', 'daily-digest', 'dw-sync', 'archive-bot']) {
-      expect(await screen.findByTestId(`reach-${id}`)).toHaveTextContent('现在可取走 1 场会议的 AI 纪要')
+      expect(await screen.findByTestId(`reach-${id}`)).toHaveTextContent('现在可取走 1 场会议的 纪要')
     }
     // 仍然只有一张表、六列表头——不会像卡片网格那样因为奇数个卡片留出空洞
     const table = screen.getByRole('table')
@@ -221,19 +221,19 @@ describe('「现在可取走 N 场会议的 X」', () => {
     renderPage()
 
     const reach = await screen.findByTestId('reach-kb-indexer')
-    expect(reach).toHaveTextContent('现在可取走 4 场会议的 AI 纪要 + 完整转写')
+    expect(reach).toHaveTextContent('现在可取走 4 场会议的 纪要 + 逐字稿')
     expect(calls.some((c) => c.url.endsWith('/api/v1/admin/programs/kb-indexer/inventory'))).toBe(true)
   })
 
   test('列表响应里就算混进一个 scope 配置串，也一个字都不会出现在界面上', async () => {
     // 真实的 GET /programs 不下发 scope。这条测试盯的是"哪怕它下发了，
     // 这一页也不会拿一个配置值冒充求交结果"。
-    respond(/GET .*\/admin\/programs$/, () => [200, [{ ...KB, scope: '全部八类资产' }]])
+    respond(/GET .*\/admin\/programs$/, () => [200, [{ ...KB, scope: '全部六类资产' }]])
     respond(/GET .*\/inventory$/, () => [200, inventory({ fetchableCount: 4, assetTypes: ['ai_minutes'] })])
     renderPage()
 
-    expect(await screen.findByTestId('reach-kb-indexer')).toHaveTextContent('AI 纪要')
-    expect(screen.queryByText(/全部八类资产/)).toBeNull()
+    expect(await screen.findByTestId('reach-kb-indexer')).toHaveTextContent('纪要')
+    expect(screen.queryByText(/全部六类资产/)).toBeNull()
   })
 
   test('快到期的那几场用琥珀单独标出，阈值跟着响应走', async () => {
@@ -309,7 +309,7 @@ describe('「现在可取走 N 场会议的 X」', () => {
 
     const note = await screen.findByTestId('reach-kb-indexer-ifenabled')
     // 数与资产串照说，但整句话必须带着「恢复启用后」这个前提——它不是「现在」
-    expect(note).toHaveTextContent('4 场会议的 AI 纪要')
+    expect(note).toHaveTextContent('4 场会议的 纪要')
     expect(note.textContent ?? '').toMatch(/^恢复启用后/)
     expect(screen.getByTestId('reach-kb-indexer')).not.toHaveTextContent('现在可取走')
   })
@@ -444,7 +444,7 @@ describe('清单拉不到的时候', () => {
     renderPage()
 
     expect(await screen.findByTestId('reach-kb-indexer')).toHaveTextContent('清单暂不可得')
-    expect(await screen.findByTestId('reach-daily-digest')).toHaveTextContent('现在可取走 2 场会议的 AI 纪要')
+    expect(await screen.findByTestId('reach-daily-digest')).toHaveTextContent('现在可取走 2 场会议的 纪要')
   })
 
   test('重试只重拉这一个程序的清单', async () => {
@@ -893,7 +893,7 @@ describe('自动授权开关', () => {
     respond(/PATCH .*\/admin\/programs\/kb-indexer$/, () => [200, KB_AUTO])
     await userEvent.click(screen.getByRole('button', { name: '开启自动授权' }))
     await userEvent.click(await screen.findByLabelText('只授权这几类'))
-    for (const name of ['录像', 'AI 纪要', '完整转写']) {
+    for (const name of ['录像', '纪要', '逐字稿']) {
       await userEvent.click(screen.getByLabelText(name))
     }
     await userEvent.click(screen.getByRole('button', { name: '确认开启' }))
@@ -917,7 +917,7 @@ describe('自动授权开关', () => {
     expect(screen.getByTestId('auto-grant-scope-empty')).toHaveTextContent('至少勾一类，或改回不限制')
 
     // 勾上一类就点得动了
-    await userEvent.click(screen.getByLabelText('AI 纪要'))
+    await userEvent.click(screen.getByLabelText('纪要'))
     expect(screen.getByRole('button', { name: '确认开启' })).toBeEnabled()
   })
 

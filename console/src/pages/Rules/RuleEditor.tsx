@@ -61,7 +61,7 @@ import styles from './RuleEditor.module.css'
  *
  * ## 表单里的每一份取值域都来自 `GET /rules/schema`
  *
- * 条件字段、运算符、值的形态与单位、三栈的动作可选项、八类资产的键名——
+ * 条件字段、运算符、值的形态与单位、三栈的动作可选项、六类资产的键名——
  * 一份都不在这个文件里。F9 之前它们是 `fields.ts` 的镜像加本文件的
  * `EFFECT_OPTIONS` / `isPositiveEffect`，后端加一个运算符，这里的下拉框
  * 不会自己知道，而界面上一个字都不会提。
@@ -835,7 +835,7 @@ function AssetPicker({
           onChange={() => update({ assetTypes: all ? [] : [schema.assetAll] })}
         />
         <span>
-          {/* 数目也从清单里数，不写死「八类」——后端加第九类时这句话要跟着变 */}
+          {/* 数目也从清单里数，不写死「六类」——后端加第七类时这句话要跟着变 */}
           全部 {schema.assetTypes.length} 类<small>{schema.assetAll}</small>
         </span>
       </label>

@@ -1,8 +1,7 @@
 import type { CSSProperties, ReactNode, RefObject } from 'react'
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { WhyKind } from '@/api/types'
-import type { ContentAsset, TranscriptCue } from '@/api/admin/content'
-import { MINUTES_TEMPLATES } from '@/api/admin/content'
+import type { TranscriptCue } from '@/api/admin/content'
 
 /**
  * 内容预览页的小工具：文本呈现、当前分段的定位、几条写死的初始规则。
@@ -85,20 +84,6 @@ export const WHY_LABEL: Record<WhyKind, string> = {
  */
 export function initialPosition(_durationSec: number): number {
   return 0
-}
-
-/**
- * 默认选中的纪要模板：**索引里第一个真的有正文的那一类**。
- *
- * 打开就停在一个"这场会议没有这类纪要"的空面板，人会以为整页坏了。
- * 一类正文都没有时退回第一个模板——那时面板上显示的是后端给的、说得出
- * 为什么的空态文案，仍然不是一片空白。
- */
-export function pickDefaultTemplate(assets: readonly ContentAsset[]): string {
-  const parsed = MINUTES_TEMPLATES.find((t) =>
-    assets.some((a) => a.assetKey === t.key && a.availability === 'parsed'),
-  )
-  return (parsed ?? MINUTES_TEMPLATES[0]!).key
 }
 
 /* ── 当前分段 ────────────────────────────────────────────────────── */

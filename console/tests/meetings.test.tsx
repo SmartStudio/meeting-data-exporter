@@ -819,11 +819,11 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
     expect(screen.getByTestId('section-allow')).toHaveTextContent('权限规则 #100 准许采集')
   })
 
-  test('拉取段列出八类资产各自的格式数，部分失败的那一类标出来', async () => {
+  test('拉取段列出六类资产各自的格式数，部分失败的那一类标出来', async () => {
     await openDrawer()
     const table = screen.getByTestId('asset-table')
     expect(within(table).getByText('录像')).toBeInTheDocument()
-    expect(within(table).getByText('AI 纪要')).toBeInTheDocument()
+    expect(within(table).getByText('纪要')).toBeInTheDocument()
     expect(within(table).getByText('2/3')).toHaveAttribute('data-partial', 'true')
     expect(within(table).getByText('1/1')).toHaveAttribute('data-partial', 'false')
   })
@@ -878,7 +878,7 @@ describe('详情抽屉 · 四段 + 操作历史', () => {
     const head = within(table).getByRole('columnheader', { name: '已拿到 / 应有' })
     // 「不适用的类不出现在这张表里」搬进了 title，不是被删掉
     expect(head).toHaveAttribute('title', expect.stringContaining('不适用的类不出现在这张表里'))
-    expect(head).toHaveAttribute('title', expect.stringContaining('八类资产'))
+    expect(head).toHaveAttribute('title', expect.stringContaining('六类资产'))
     // 正文里不再有那句脚注
     expect(table.textContent).not.toMatch(/不适用的类不出现在这张表里/)
   })

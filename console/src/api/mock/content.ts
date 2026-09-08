@@ -3,7 +3,7 @@ import type { AssetKey, Meeting } from '../types'
 /**
  * 内容预览页的两条端点（`.../content` 与 `.../content/chapters`）。
  *
- * ## 一份内容索引不是"八行都正常"
+ * ## 一份内容索引不是"每一行都正常"
  *
  * `availability` 的六个取值**每一个都对应一件不同的事实**，只有 `missing` 才是
  * 「这场会议确实缺这一类」，其余五种都是可修复的缺口。种子里因此让同一场会议
@@ -11,11 +11,10 @@ import type { AssetKey, Meeting } from '../types'
  * 还有一类归档了但正文没入库。屏幕上这几行的颜色与说明各不相同，
  * 门槛只扫到"正文在库"那一种等于没扫。
  *
- * ## 章节没有来源，所以这里不编章节
+ * ## 章节与转写分段是两样东西
  *
- * 阶段 4 · T16 的裁定：`chapters` **恒为空数组**、`source` 恒为 `'none'`——
- * 本系统一次都没拉取过腾讯的「章节」数据。真正有内容的是 `cues`（转写分段，
- * 时间戳来自转写正文本身）。这里照办：一条假章节都不给。
+ * `chapters` 是腾讯智能录制的章节（2026-09-08 起有真来源），`cues` 是按逐字稿
+ * 时间戳切出的转写分段。种子里两样都给，但**不拿分段冒充章节**。
  *
  * ## 内容跟着会议世界走
  *
@@ -24,15 +23,8 @@ import type { AssetKey, Meeting } from '../types'
  * 是从 `api/mock/meetings.ts` 那一份世界推出来的。
  */
 
-/** 八类里做文本的六类。录像与音频只给去向，不给内容，走 `media`。 */
-const TEXT_TYPES: AssetKey[] = [
-  'transcript',
-  'ai_transcript',
-  'ai_minutes',
-  'ai_topic_minutes',
-  'ai_speaker_minutes',
-  'ai_ds_minutes',
-]
+/** 六类里做文本的三类。录像与音频只给去向不给内容（走 `media`），时间轴走 chapters 端点。 */
+const TEXT_TYPES: AssetKey[] = ['transcript', 'ai_transcript', 'ai_minutes']
 
 interface FilePlan {
   fileType: string
@@ -56,9 +48,6 @@ const PLAN: Record<string, FilePlan[]> = {
     { fileType: 'txt', availability: 'parsed', body: (m) => minutesBody(m) },
     { fileType: 'docx', availability: 'unsupported_format' },
   ],
-  ai_topic_minutes: [{ fileType: 'docx', availability: 'unsupported_format' }],
-  ai_speaker_minutes: [{ fileType: 'txt', availability: 'too_large' }],
-  ai_ds_minutes: [{ fileType: 'txt', availability: 'parsed', body: (m) => summaryBody(m) }],
 }
 
 /** 每一种不可得都要说得出原因。空着等于让人以为"就是没有"。 */
@@ -72,7 +61,7 @@ const REASON: Record<string, string> = {
 
 function minutesBody(m: Meeting): string {
   return [
-    `# ${m.title} · AI 纪要`,
+    `# ${m.title} · 纪要`,
     '',
     `主持人：${m.host}　会议号：${m.code}`,
     '',
@@ -94,10 +83,6 @@ function transcriptBody(m: Meeting): string {
     '[07:58] 王总：那就先按限流的口径重排一下这周的计划。',
     '[12:20] 邹研发：好，我今天把对照表发出来。',
   ].join('\n')
-}
-
-function summaryBody(m: Meeting): string {
-  return `${m.title}：三件事，两件当场定了下一步，一件卡在上游接口的排期上。`
 }
 
 /* ── 资产索引 ─────────────────────────────────────────────────── */
@@ -304,13 +289,23 @@ const SPEAKERS = ['王总', '邹研发', '李销售', '周HR']
 
 export function buildChapters(m: Meeting, shiftSec: number): Record<string, unknown> {
   const hasTranscript = (m.assets.transcript?.got ?? 0) > 0 && m.keep.archivedAt !== null
+  // 章节跟着这场会议有没有取到「时间轴」那一类资产走——没开智能录制的会议
+  // 拿不到，那时章节是空的、`text` 说清是哪一种。**不是**从 cues 编出来的：
+  // 章节与转写分段各有各的来源。
+  const hasChapters = (m.assets.chapters?.got ?? 0) > 0
   const common = {
     meeting: meetingBlock(m, shiftSec),
     access: accessBlock(m),
-    // 恒为空数组：本系统从未拉取过章节数据，不编一份假的
-    chapters: [],
-    source: 'none',
-    text: '本系统没有「章节」这一类数据（腾讯会议侧从来没有拉过），下面是从转写正文的时间戳切出来的分段。',
+    chapters: hasChapters
+      ? [
+          { id: 'C1', name: '开场', at: 7 },
+          { id: 'C2', name: '需求评审', at: 120 },
+        ]
+      : [],
+    source: hasChapters ? 'tencent' : 'none',
+    text: hasChapters
+      ? '上面是腾讯智能录制生成的章节，下面是从逐字稿的时间戳切出来的转写分段。'
+      : '这场会议没有开智能录制，所以没有章节；下面是从逐字稿的时间戳切出来的转写分段。',
   }
 
   if (!hasTranscript) {
