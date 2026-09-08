@@ -1,12 +1,12 @@
 export type AssetKey =
   | 'video' | 'audio' | 'transcript' | 'ai_transcript'
-  | 'ai_minutes' | 'ai_topic_minutes' | 'ai_speaker_minutes' | 'ai_ds_minutes'
+  | 'ai_minutes' | 'chapters'
 
 export const ALL_ASSET_KEYS: AssetKey[] = [
-  'video', 'audio', 'transcript', 'ai_transcript',
-  'ai_minutes', 'ai_topic_minutes', 'ai_speaker_minutes', 'ai_ds_minutes',
+  'video', 'audio', 'transcript', 'ai_transcript', 'ai_minutes', 'chapters',
 ]
-export const DEFAULT_ASSET_KEYS: AssetKey[] = ['video', 'audio', 'transcript', 'ai_transcript']
+/** 纪要与时间轴不再依赖 STS（走 /v1/smart/*，见 src/tencent/smart.ts），默认全要 */
+export const DEFAULT_ASSET_KEYS: AssetKey[] = [...ALL_ASSET_KEYS]
 
 /**
  * 客户端资产键 → **网关 `asset_type` 字段的取值**。
@@ -21,10 +21,14 @@ export const DEFAULT_ASSET_KEYS: AssetKey[] = ['video', 'audio', 'transcript', '
  *   audio_address    →  audio
  *   meeting_summary  →  meeting_summary   ← 恰好同名
  *   ai_*             →  ai_*              ← 恰好同名
+ *   （智能接口）      →  chapters
  *
  * **只有 video / audio 两项不同**，而这种部分重合让故障伪装成了「视频资产没
  * 产出」：转写照常下载、视频音频永远匹配不上，最后按 deadline 静默放弃。
  * 名字误导了推断，所以连名字一起改。
+ *
+ * `ai_minutes` 与 `chapters` 来自腾讯智能接口（`src/tencent/smart.ts`），不
+ * 经 STS 下载，落盘文件是网关生成的 `minutes.md` / `chapters.json`。
  *
  * 「字段驱动、不硬编码封闭联合」的原始意图仍然成立：网关将来新增纪要引擎时
  * 会 emit 新的 asset_type，`asset_type` 列照存不误。
@@ -32,8 +36,7 @@ export const DEFAULT_ASSET_KEYS: AssetKey[] = ['video', 'audio', 'transcript', '
 export const ASSET_KEY_TO_GATEWAY_TYPE: Record<AssetKey, string> = {
   video: 'video', audio: 'audio', transcript: 'meeting_summary',
   ai_transcript: 'ai_meeting_transcripts', ai_minutes: 'ai_minutes',
-  ai_topic_minutes: 'ai_topic_minutes', ai_speaker_minutes: 'ai_speaker_minutes',
-  ai_ds_minutes: 'ai_ds_minutes',
+  chapters: 'chapters',
 }
 export const GATEWAY_TYPE_TO_ASSET_KEY: Record<string, AssetKey> = Object.fromEntries(
   (Object.entries(ASSET_KEY_TO_GATEWAY_TYPE) as [AssetKey, string][]).map(([k, t]) => [t, k]),
@@ -57,8 +60,7 @@ const H6 = 6 * 3600
 const H48 = 48 * 3600
 export const ASSET_WAIT_CAP_SEC: Record<AssetKey, number> = {
   video: H6, audio: H6, transcript: H6,
-  ai_transcript: H48, ai_minutes: H48, ai_topic_minutes: H48,
-  ai_speaker_minutes: H48, ai_ds_minutes: H48,
+  ai_transcript: H48, ai_minutes: H48, chapters: H48,
 }
 
 export class UnknownAssetKeyError extends Error {
@@ -84,14 +86,12 @@ export function parseAssetKeys(csv: string): AssetKey[] {
 const FILENAME_BASE: Record<AssetKey, (remoteId: string) => string> = {
   video: (r) => `recording_${r}`, audio: (r) => `recording_${r}`,
   transcript: () => 'transcript', ai_transcript: () => 'ai_transcript',
-  ai_minutes: () => 'ai_minutes', ai_topic_minutes: () => 'ai_topic_minutes',
-  ai_speaker_minutes: () => 'ai_speaker_minutes', ai_ds_minutes: () => 'ai_ds_minutes',
+  ai_minutes: () => 'minutes', chapters: () => 'chapters',
 }
 /** 文件名是否已含 remoteId：含则同类多段天然不碰撞，无需序号消歧 */
 const FILENAME_HAS_REMOTE_ID: Record<AssetKey, boolean> = {
   video: true, audio: true,
-  transcript: false, ai_transcript: false, ai_minutes: false,
-  ai_topic_minutes: false, ai_speaker_minutes: false, ai_ds_minutes: false,
+  transcript: false, ai_transcript: false, ai_minutes: false, chapters: false,
 }
 /**
  * 资产文件名。`ordinal` 是该资产在同 (meeting, sub_meeting, asset_type) 兄弟中的

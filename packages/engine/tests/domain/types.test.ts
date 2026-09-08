@@ -5,7 +5,7 @@ import {
 } from '../../src/domain/types'
 
 test('默认集为四类', () => {
-  expect(DEFAULT_ASSET_KEYS).toEqual(['video', 'audio', 'transcript', 'ai_transcript'])
+  expect(DEFAULT_ASSET_KEYS).toEqual(['video', 'audio', 'transcript', 'ai_transcript', 'ai_minutes', 'chapters'])
 })
 test('键↔字段双向映射一致', () => {
   for (const k of ALL_ASSET_KEYS) expect(GATEWAY_TYPE_TO_ASSET_KEY[ASSET_KEY_TO_GATEWAY_TYPE[k]]).toBe(k)
@@ -29,7 +29,7 @@ test('assetKeyToFilename：文本类多段加序号，单段与视频音频不�
   expect(assetKeyToFilename('transcript', 'rf1', 'pdf')).toBe('transcript.pdf')        // 单段保持干净
   expect(assetKeyToFilename('transcript', 'rf1', 'pdf', 1)).toBe('transcript.pdf')
   expect(assetKeyToFilename('transcript', 'rf2', 'pdf', 2)).toBe('transcript_2.pdf')   // 第二段消歧
-  expect(assetKeyToFilename('ai_minutes', 'rf3', 'md', 3)).toBe('ai_minutes_3.md')
+  expect(assetKeyToFilename('ai_minutes', 'rf3', 'md', 3)).toBe('minutes_3.md')
   expect(assetKeyToFilename('video', 'rf1', 'mp4', 2)).toBe('recording_rf1.mp4')       // 已含 remoteId，不加序号
 })
 
@@ -38,7 +38,7 @@ test('assetKeyToFilename：文本类多段加序号，单段与视频音频不�
  *
  * 网关 `src/domain/types.ts` 的 ASSET_TYPES 是：
  *   video / audio / meeting_summary / ai_meeting_transcripts /
- *   ai_minutes / ai_topic_minutes / ai_speaker_minutes / ai_ds_minutes
+ *   ai_minutes / chapters
  *
  * 客户端原先按 spec §17 的推断，把这里映射成腾讯的**平台字段名**
  * （download_address / audio_address …）。只有 video 与 audio 两项不同，
@@ -50,7 +50,7 @@ test('assetKeyToFilename：文本类多段加序号，单段与视频音频不�
 test('映射值必须逐字等于网关 ASSET_TYPES 的取值', () => {
   const GATEWAY_ASSET_TYPES = [
     'video', 'audio', 'meeting_summary', 'ai_meeting_transcripts',
-    'ai_minutes', 'ai_topic_minutes', 'ai_speaker_minutes', 'ai_ds_minutes',
+    'ai_minutes', 'chapters',
   ]
   const mapped = ALL_ASSET_KEYS.map((k) => ASSET_KEY_TO_GATEWAY_TYPE[k])
   expect([...mapped].sort()).toEqual([...GATEWAY_ASSET_TYPES].sort())
@@ -68,7 +68,7 @@ test('isTextAssetType：视频音频不整读，文本与 AI 纪要整读', () =
   expect(isTextAssetType('audio')).toBe(false)
   expect(isTextAssetType('meeting_summary')).toBe(true)
   expect(isTextAssetType('ai_meeting_transcripts')).toBe(true)
-  expect(isTextAssetType('ai_ds_minutes')).toBe(true)
+  expect(isTextAssetType('chapters')).toBe(true)
 })
 
 test('isTextAssetType：未知类型按二进制处理（不把未知大文件整读进内存）', () => {
@@ -97,6 +97,7 @@ test('normalizeExtension：空串与 null 都回落 bin，不生成带尾点的�
 })
 
 test('assetKeyToFilename 应用归一化', () => {
-  expect(assetKeyToFilename('ai_topic_minutes', 'rf1', 'docs')).toBe('ai_topic_minutes.docx')
+  expect(assetKeyToFilename('ai_minutes', 'rf1', 'md')).toBe('minutes.md')
+  expect(assetKeyToFilename('chapters', 'rf1', 'json')).toBe('chapters.json')
   expect(assetKeyToFilename('video', 'rf1', 'mp4')).toBe('recording_rf1.mp4')
 })
