@@ -3,7 +3,7 @@
  *
  * ```
  * GET /api/v1/admin/meetings/:meetingId/content            纪要 / 转写正文（按 asset_type）
- * GET /api/v1/admin/meetings/:meetingId/content/chapters   时间轴
+ * GET /api/v1/admin/meetings/:meetingId/content/chapters   时间轴（章节 + 转写分段）
  * ```
  *
  * 写侧是 T4（`src/store/contents.ts` + `migrations/007_asset_contents.sql`），本文件
@@ -68,13 +68,16 @@
  * 网关多实例、录像几个 GB，代理一份就是把网关变成 CDN。响应里的 `media` 块只给
  * **去向**：NAS 路径、本地路径、以及签直链的那个既有端点。
  *
- * ## 五、时间轴章节没有来源，所以不编（同 E-c 那条口径）
+ * ## 五、章节来自 `chapters` 类正文，没有时说清为什么（同 E-c 那条口径）
  *
- * 腾讯会议那张页面上的「章节 + 摘要」在本系统里**一次都没被拉取过**：
- * `src/tencent/records.ts` 里没有任何一个取章节的调用点，库里也没有任何一列装它。
- * 所以 `chapters` 恒为空数组、`source` 报 `'none'`，并说清为什么——这与 A2 对
- * `why.fetch` 的处理（计划 §0 E-c）是同一条裁定：**不宣称一次没发生过的判定/没拉过
- * 的数据**。
+ * `chapters` 来自 `chapters` 类正文（智能接口拉到、归档成 `chapters.json`、由
+ * `src/tencent/smart.ts` 的 `serializeChapters` 写出、再入 `asset_contents`）。
+ * 库里没有这一类正文时 `chapters` 是空数组、`source` 报 `'none'`，并说清为什么
+ * ——这与 A2 对 `why.fetch` 的处理（计划 §0 E-c）是同一条裁定：**不宣称一次没
+ * 发生过的判定/没拉过的数据**，而不是编一份看起来像模像样的章节。
+ *
+ * 解析不了的那一份（坏 JSON、缺字段）按「没有」算，不把整个时间轴端点打成 500：
+ * 正文原样留在库里，`?type=chapters` 仍然看得到它。
  *
  * 时间轴仍然有东西可渲染：转写正文里的时间戳。它们是真实数据，所以照样解析出来,
  * 但字段叫 `cues`（转写分段）而不是 `chapters`，并在 `text` 里写明两者的区别。
@@ -1180,7 +1183,7 @@ async function buildSelected(
       segments,
       text:
         `${label}在库里有 ${segments.length} 段记录，但一段正文都解析不出来，逐段的理由见 reason。` +
-        `「未解析」与「这场会议缺这一类纪要」是两件事：文件在 NAS 上，只是本版本只解析 txt` +
+        `「未解析」与「这场会议缺这一类纪要」是两件事：文件在 NAS 上，只是本版本只解析 txt / md / json` +
         `（docx / pdf 要单独的解析器，不在控制台阶段 4 的范围内）。`,
     }
   }
@@ -1220,12 +1223,45 @@ async function buildSelected(
 /** 时间轴优先读完整转写，其次 AI 转写。两者都是 `isTextAssetType`，都在库里 */
 const TRANSCRIPT_PREFERENCE: readonly AssetKey[] = ['transcript', 'ai_transcript']
 
-const CHAPTERS_TEXT =
-  '腾讯会议那张页面上的「章节 + 摘要」在本系统里没有来源：src/tencent/records.ts 里没有任何一个' +
-  '取章节的调用点，库里也没有任何一列装它。所以这里的 chapters 恒为空数组，不编一份' +
-  '看起来像模像样的章节——与 A2 对 why.fetch 的处理（计划 §0 E-c）是同一条裁定。' +
-  '下面的 cues 是**转写分段**，不是章节：它们的时间戳来自转写正文本身，是真实数据，' +
-  '足够支撑 spec §4.4 的「点一下跳转」。'
+export interface ChapterItem {
+  /** 腾讯的章节 id，原样带出 */
+  id: string
+  name: string
+  /** 起点，unix 秒偏移（相对录制开头） */
+  at: number
+}
+
+const CHAPTERS_TEXT_NONE =
+  '这场会议没有章节：腾讯会议只对开了智能录制的录制文件生成章节，这一场的录制文件没有开，' +
+  '或者时间轴还没拉取归档。下面的分段是按逐字稿的时间戳切出来的，不是章节，但时间是真的，点一下就能跳转。'
+const CHAPTERS_TEXT_HAVE =
+  '章节来自腾讯会议的智能录制，已随时间轴归档。下面的分段是按逐字稿的时间戳切出来的，两者可以互相对照。'
+
+/**
+ * chapters.json（`src/tencent/smart.ts` 的 `serializeChapters` 写的）→ 章节列表，
+ * 按起点升序。
+ *
+ * 解析不了一律回空数组：一份坏文件不该把整个时间轴端点打成 500；正文原样在库里，
+ * `?type=chapters` 能看到它。缺 id 或缺起点的条目同样跳过——一条点不动的章节比
+ * 没有这一条更糟。
+ */
+function parseChapterSegments(segs: readonly ContentSegmentRow[]): ChapterItem[] {
+  const out: ChapterItem[] = []
+  for (const s of segs) {
+    if (s.status !== 'parsed' || s.content === null) continue
+    let doc: { chapters?: Array<{ chapterId?: string; name?: string; startMs?: number }> }
+    try {
+      doc = JSON.parse(s.content) as typeof doc
+    } catch {
+      continue
+    }
+    for (const c of doc?.chapters ?? []) {
+      if (typeof c.chapterId !== 'string' || typeof c.startMs !== 'number') continue
+      out.push({ id: c.chapterId, name: typeof c.name === 'string' ? c.name : '', at: Math.floor(c.startMs / 1000) })
+    }
+  }
+  return out.sort((a, b) => a.at - b.at)
+}
 
 export async function getChapters(req: Request, ctx: RouteCtx): Promise<Response> {
   const url = new URL(req.url)
@@ -1245,6 +1281,15 @@ export async function getChapters(req: Request, ctx: RouteCtx): Promise<Response
   })
   if (!p.ok) return p.response
   const { key, row, access, adminId } = p.prepared
+
+  // 章节走自己的一类正文（chapters.json），与下面的转写分段互不依赖：
+  // 没有章节时时间轴照样有转写分段可渲染，有章节时两者可以互相对照
+  const chapterSegs = await ctx.deps.contents.listSegments(
+    key.meetingId,
+    key.subMeetingId,
+    ASSET_KEY_TO_GATEWAY_TYPE.chapters,
+  )
+  const chapters = parseChapterSegments(chapterSegs)
 
   // 逐个候选类型找第一段有正文的转写。最多两次查询（transcript / ai_transcript）,
   // 不是把整场会议的正文都读出来
@@ -1276,9 +1321,9 @@ export async function getChapters(req: Request, ctx: RouteCtx): Promise<Response
   return json(200, {
     meeting: meetingBlock(row),
     access: accessBlock(access, action),
-    chapters: [],
-    source: 'none',
-    text: CHAPTERS_TEXT,
+    chapters,
+    source: chapters.length > 0 ? 'tencent' : 'none',
+    text: chapters.length > 0 ? CHAPTERS_TEXT_HAVE : CHAPTERS_TEXT_NONE,
     cues,
     cuesFrom:
       picked === null

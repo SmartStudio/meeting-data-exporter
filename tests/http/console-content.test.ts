@@ -484,6 +484,17 @@ test('上屏的三段文案里没有规格引用 / 机器名 / 端点模板 / �
 
   const fresh = await body(await getContent(req(), harness({ archive: null }).ctx))
   check('local.text（未归档）', fresh.local.text)
+
+  // 时间轴那段话按「有没有章节」分两条，同样上屏，同样受这条规则管
+  const noChapters = await body(await getChapters(req(), harness().ctx))
+  check('chapters.text（没有章节）', noChapters.text)
+  const hasChapters = await body(
+    await getChapters(
+      req(),
+      harness({ segments: [chaptersRow({ content: chaptersJson([{ chapterId: 'C1', name: '开场', startMs: 0 }]) })] }).ctx,
+    ),
+  )
+  check('chapters.text（有章节）', hasChapters.text)
 })
 
 test('留痕失败时不返回正文：审计写不进去就没有「豁免的对价」，整个请求失败', async () => {
@@ -639,12 +650,70 @@ test('认不出的 type 一律 400，不悄悄退回索引', async () => {
 
 // ── 章节 ──────────────────────────────────────────────────────────────────
 
-test('章节：chapters 恒为空、source 报 none——腾讯的「章节 + 摘要」在本系统里没有来源，不编', async () => {
+/** `src/tencent/smart.ts` 的 serializeChapters 写进 chapters.json 的形状 */
+function chaptersJson(chapters: unknown[]): string {
+  return JSON.stringify({ schemaVersion: 1, recordFileId: 'rf-1', chapters }, null, 2) + '\n'
+}
+
+function chaptersRow(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return contentRow({ assetType: 'chapters', remoteId: 'rf-1', fileType: 'json', ...over })
+}
+
+test('章节：库里没有 chapters 类正文时 chapters 为空、source 报 none，并说清为什么', async () => {
   const h = harness()
   const b = await body(await getChapters(req(), h.ctx))
   expect(b.chapters).toEqual([])
   expect(b.source).toBe('none')
   expect(b.text.length).toBeGreaterThan(0)
+})
+
+test('章节：库里有 chapters 类正文时解析成章节，source=tencent，按起点升序', async () => {
+  const h = harness({
+    segments: [
+      chaptersRow({
+        content: chaptersJson([
+          { chapterId: 'C2', name: '第二段', startMs: 120500 },
+          { chapterId: 'C1', name: '开场', startMs: 7837 },
+        ]),
+      }),
+    ],
+  })
+  const b = await body(await getChapters(req(), h.ctx))
+  expect(b.source).toBe('tencent')
+  // at 是秒、向下取整：120500ms 落在第 120 秒，7837ms 落在第 7 秒
+  expect(b.chapters).toEqual([
+    { id: 'C1', name: '开场', at: 7 },
+    { id: 'C2', name: '第二段', at: 120 },
+  ])
+})
+
+test('章节：正文不是合法 JSON 时 chapters 为空、source=none，不抛也不 500', async () => {
+  const h = harness({ segments: [chaptersRow({ content: '{not json' })] })
+  const res = await getChapters(req(), h.ctx)
+  expect(res.status).toBe(200)
+  const b = await body(res)
+  expect(b.chapters).toEqual([])
+  expect(b.source).toBe('none')
+})
+
+test('章节：没解析的行与缺 chapterId / startMs 的条目一律跳过，不上屏半条章节', async () => {
+  const h = harness({
+    segments: [
+      // status 不是 parsed 的行没有正文可读，跳过
+      chaptersRow({ remoteId: 'rf-0', status: 'unsupported_format', content: null, reason: '不是合法 UTF-8' }),
+      chaptersRow({
+        content: chaptersJson([
+          { name: '没有 id', startMs: 1000 },
+          { chapterId: 'C9', name: '没有起点' },
+          { chapterId: 'C3', startMs: 3000 },
+        ]),
+      }),
+    ],
+  })
+  const b = await body(await getChapters(req(), h.ctx))
+  // 只剩下 id 与 startMs 都齐的那一条；name 缺失退成空串，不是丢掉整条
+  expect(b.chapters).toEqual([{ id: 'C3', name: '', at: 3 }])
+  expect(b.source).toBe('tencent')
 })
 
 test('章节：转写正文里的时间戳被解析成 cues，供「点一下跳转」用（明确标为转写分段，不是章节）', async () => {
