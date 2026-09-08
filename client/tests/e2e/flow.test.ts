@@ -29,12 +29,13 @@ function isoDate(epochSec: number): string {
 function makeContent(n: number): Uint8Array<ArrayBuffer> {
   return new Uint8Array(Array.from({ length: n }, (_, i) => i % 256))
 }
-/** 复刻 src/executor/index.ts 的 buildRelPath，用于测试独立算出预期相对路径以便预置 .part / 断言落地文件 */
+/** 复刻 src/executor/index.ts 的 buildRelPath，用于测试独立算出预期相对路径以便预置 .part / 断言落地文件
+ *  目录名不含主题（2026-09-08 起，见 packages/engine/src/domain/filename.ts） */
 function expectedRelPath(meeting: RawMeeting, key: AssetKey, remoteId: string, ext: string): string {
   const d = new Date((meeting.start_time ?? 0) * 1000)
   const yyyy = String(d.getUTCFullYear()), mm = String(d.getUTCMonth() + 1).padStart(2, '0'), dd = String(d.getUTCDate()).padStart(2, '0')
   const hhmm = String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0')
-  const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, meeting.subject ?? '', meeting.meeting_code ?? meeting.meeting_id)
+  const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, meeting.meeting_code ?? meeting.meeting_id)
   const fname = assetKeyToFilename(key, remoteId, ext)
   return `${yyyy}/${mm}/${dir}/${fname}`
 }

@@ -60,8 +60,8 @@ const MEETING: Meeting = {
   state: 'completed',
 }
 
-/** `<year>/<month>/<cleanDirName>/` —— 手算：2026 / 08 / 2026-08-20_0930_<清洗主题>_<code> */
-const DIR = '2026/08/2026-08-20_0930_周会 - Q3 复盘_881-123-40'
+/** `<year>/<month>/<cleanDirName>/` —— 手算：2026 / 08 / 2026-08-20_0930_<会议号> */
+const DIR = '2026/08/2026-08-20_0930_881-123-40'
 const TRANSCRIPT_REL = `${DIR}/transcript.txt`
 const VIDEO_REL = `${DIR}/recording_f-video-1.mp4`
 

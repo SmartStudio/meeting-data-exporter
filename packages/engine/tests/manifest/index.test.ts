@@ -19,8 +19,8 @@ const MEETING = {
   meetingId: 'm1', subMeetingId: '', meetingCode: '881-123-40',
   subject: '周会 / Q3 复盘', hostUserId: 'u-host', startTime: START, endTime: START + 3600,
 }
-/** 手算：2026 / 08 / 2026-08-20_0930_<主题里的 `/` 清成 `-`>_<会议号> */
-const DIR = '2026/08/2026-08-20_0930_周会 - Q3 复盘_881-123-40'
+/** 手算：2026 / 08 / 2026-08-20_0930_<会议号> */
+const DIR = '2026/08/2026-08-20_0930_881-123-40'
 /** sha256("test")，只要是个像样的定值即可——本文件不验证哈希算法本身 */
 const TEXT_SHA = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
 
