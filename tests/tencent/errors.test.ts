@@ -83,3 +83,10 @@ test('500063 构造出的错误不要求退避（不该拖慢限流器）', () =
   expect(err.classification).toBe('fatal')
   expect(err.requiresBackoff).toBe(false)
 })
+
+test('500182「未打开智能录制开关」是资产级永久错误：跳过该资产、不重试', () => {
+  expect(classify(500182)).toBe('asset_permanent')
+  expect(
+    new TencentApiError(500182, 400, '该文件未打开智能录制开关，请联系文件所有者').classification,
+  ).toBe('asset_permanent')
+})

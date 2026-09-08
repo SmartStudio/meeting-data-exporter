@@ -1,13 +1,12 @@
-/** 八类资产，取值来自腾讯会议 API 响应字段名 */
+/** 六类资产。前四类取值来自腾讯 /v1/addresses 响应字段名；后两类是网关自己的名字，
+ *  来自 /v1/smart/minutes 与 /v1/smart/chapters（src/tencent/smart.ts） */
 export const ASSET_TYPES = [
   'video',
   'audio',
   'meeting_summary',
   'ai_meeting_transcripts',
   'ai_minutes',
-  'ai_topic_minutes',
-  'ai_speaker_minutes',
-  'ai_ds_minutes',
+  'chapters',
 ] as const
 
 export type AssetType = (typeof ASSET_TYPES)[number]

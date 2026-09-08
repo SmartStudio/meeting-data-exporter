@@ -118,7 +118,7 @@ test('countArchiveProgress 三个数各数各的：completed / archived / 还在
     await seedAsset(pool, { meetingId: 'm-4', assetType: 'transcript', remoteId: 'r-5', status: 'failed' })
     // 两个终态**不算**在路上：这场会议不会再多出新东西可搬
     await seedAsset(pool, { meetingId: 'm-4', assetType: 'ai_minutes', remoteId: 'r-6', status: 'skipped' })
-    await seedAsset(pool, { meetingId: 'm-4', assetType: 'ai_ds_minutes', remoteId: 'r-7', status: 'dead' })
+    await seedAsset(pool, { meetingId: 'm-4', assetType: 'chapters', remoteId: 'r-7', status: 'dead' })
     await seedAsset(pool, { meetingId: 'm-other', assetType: 'video', remoteId: 'r-4', status: 'completed' })
 
     const store = createArchivesStore(pool)
@@ -390,7 +390,7 @@ test('listMissingAssets 返回 skipped / dead / failed，pending 与 running 不
     // 有原因可写，清单里如实记下来。pending / running 连"试过一次"都还没有，写进清单
     // 等于对着一个什么都还没发生的状态下结论。分类与 packages/engine/src/manifest/ 逐字一致。
     await seedAsset(pool, { meetingId: 'm-x', assetType: 'ai_minutes', remoteId: 'r-skip', fileType: '', status: 'skipped', targetPath: null, lastError: 'download_not_allowed' })
-    await seedAsset(pool, { meetingId: 'm-x', assetType: 'ai_ds_minutes', remoteId: 'r-dead', fileType: '', status: 'dead', targetPath: null, lastError: 'upstream_timeout' })
+    await seedAsset(pool, { meetingId: 'm-x', assetType: 'chapters', remoteId: 'r-dead', fileType: '', status: 'dead', targetPath: null, lastError: 'upstream_timeout' })
     await seedAsset(pool, { meetingId: 'm-x', assetType: 'audio', remoteId: 'r-pending', status: 'pending', targetPath: null })
     await seedAsset(pool, { meetingId: 'm-x', assetType: 'transcript', remoteId: 'r-failed', status: 'failed', targetPath: null, lastError: 'ECONNRESET' })
     await seedAsset(pool, { meetingId: 'm-x', assetType: 'video', remoteId: 'r-done', status: 'completed' })
@@ -401,7 +401,7 @@ test('listMissingAssets 返回 skipped / dead / failed，pending 与 running 不
     // 按 id 升序 = 入库顺序，与清单里的顺序同一种排序
     expect(await store.listMissingAssets('m-x', '')).toEqual([
       { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'r-skip', fileType: '', status: 'skipped', lastError: 'download_not_allowed' },
-      { meetingId: 'm-x', subMeetingId: '', assetType: 'ai_ds_minutes', remoteId: 'r-dead', fileType: '', status: 'dead', lastError: 'upstream_timeout' },
+      { meetingId: 'm-x', subMeetingId: '', assetType: 'chapters', remoteId: 'r-dead', fileType: '', status: 'dead', lastError: 'upstream_timeout' },
       { meetingId: 'm-x', subMeetingId: '', assetType: 'transcript', remoteId: 'r-failed', fileType: 'mp4', status: 'failed', lastError: 'ECONNRESET' },
     ])
   } finally {

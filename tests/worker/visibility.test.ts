@@ -220,9 +220,7 @@ test('三个条件齐备时会议进清单，assetTypes 是求交后的实际结
     'transcript',
     'ai_transcript',
     'ai_minutes',
-    'ai_topic_minutes',
-    'ai_speaker_minutes',
-    'ai_ds_minutes',
+    'chapters',
   ])
 })
 

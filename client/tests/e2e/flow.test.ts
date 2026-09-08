@@ -46,23 +46,26 @@ function dbPathOf(root: string): string { return join(root, '.mde/queue.sqlite')
 // ---------------------------------------------------------------------------
 // 1 + 2. 默认资产集 / 幂等
 // ---------------------------------------------------------------------------
-test('01+02 默认资产集：无 --assets 时下载 4 类默认资产；二次 execute 零重复下载（幂等）', async () => {
+test('01+02 默认资产集：无 --assets 时下载全六类默认资产；二次 execute 零重复下载（幂等）', async () => {
   const root = await tmp()
   const backend = startFakeBackend()
   try {
     const meeting: RawMeeting = { meeting_id: 'm-default', meeting_code: '10001', subject: '默认资产集会议', start_time: epoch(2026, 7, 15), end_time: epoch(2026, 7, 15) + 3600 }
     backend.setMeetings([meeting])
 
-    const video = makeContent(4000), audio = makeContent(3000), transcript = makeContent(500), aiTranscript = makeContent(600)
+    // 纪要与时间轴不再依赖 STS（走 /v1/smart/*），默认全要——六类都在默认清单内
+    const video = makeContent(4000), audio = makeContent(3000), transcript = makeContent(500)
+    const aiTranscript = makeContent(600), aiMinutes = makeContent(200), chapters = makeContent(150)
     backend.setContent('a-video', video); backend.setContent('a-audio', audio)
     backend.setContent('a-transcript', transcript); backend.setContent('a-ai-transcript', aiTranscript)
+    backend.setContent('a-minutes', aiMinutes); backend.setContent('a-chapters', chapters)
     backend.setAssets(meeting.meeting_id, [
       { asset_id: 'a-video', asset_type: 'video', remote_id: 'rf-video', allow_download: true, file_type: 'mp4', bytes_expected: video.length },
       { asset_id: 'a-audio', asset_type: 'audio', remote_id: 'rf-audio', allow_download: true, file_type: 'm4a', bytes_expected: audio.length },
       { asset_id: 'a-transcript', asset_type: 'meeting_summary', remote_id: 'rf-transcript', allow_download: true, file_type: 'txt', bytes_expected: transcript.length },
       { asset_id: 'a-ai-transcript', asset_type: 'ai_meeting_transcripts', remote_id: 'rf-ai', allow_download: true, file_type: 'txt', bytes_expected: aiTranscript.length },
-      // 不在默认清单内的资产类型：证明未被请求下载
-      { asset_id: 'a-minutes', asset_type: 'ai_minutes', remote_id: 'rf-minutes', allow_download: true, file_type: 'txt', bytes_expected: 10 },
+      { asset_id: 'a-minutes', asset_type: 'ai_minutes', remote_id: 'rf-minutes', allow_download: true, file_type: 'txt', bytes_expected: aiMinutes.length },
+      { asset_id: 'a-chapters', asset_type: 'chapters', remote_id: 'rf-chapters', allow_download: true, file_type: 'json', bytes_expected: chapters.length },
     ] as RawAsset[])
 
     const e = env(backend.gatewayBase)
@@ -70,14 +73,15 @@ test('01+02 默认资产集：无 --assets 时下载 4 类默认资产；二次 
     expect(code).toBe(0)
 
     const db = openDb(dbPathOf(root)); const store = createStore(db)
-    expect((await store.counts()).completed).toBe(4)
-    expect(Object.values(await store.counts()).reduce((a, b) => a + b, 0)).toBe(4)   // 恰好 4 个任务，ai_minutes 未建行
+    expect((await store.counts()).completed).toBe(6)
+    expect(Object.values(await store.counts()).reduce((a, b) => a + b, 0)).toBe(6)   // 恰好 6 个任务，六类全建行
 
     for (const [key, remoteId, expected] of [
       ['video', 'rf-video', video] as const, ['audio', 'rf-audio', audio] as const,
       ['transcript', 'rf-transcript', transcript] as const, ['ai_transcript', 'rf-ai', aiTranscript] as const,
+      ['ai_minutes', 'rf-minutes', aiMinutes] as const, ['chapters', 'rf-chapters', chapters] as const,
     ]) {
-      const ext = key === 'video' ? 'mp4' : key === 'audio' ? 'm4a' : 'txt'
+      const ext = key === 'video' ? 'mp4' : key === 'audio' ? 'm4a' : key === 'chapters' ? 'json' : 'txt'
       const rel = expectedRelPath(meeting, key, remoteId, ext)
       const f = Bun.file(join(root, rel))
       expect(await f.exists()).toBe(true)
@@ -89,7 +93,7 @@ test('01+02 默认资产集：无 --assets 时下载 4 类默认资产；二次 
     const code2 = await cmdExecute(parseArgs(['execute', '--out', root]), e)
     expect(code2).toBe(0)
     expect(backend.calls.byteHits.get('a-video') ?? 0).toBe(before)
-    expect((await store.counts()).completed).toBe(4)
+    expect((await store.counts()).completed).toBe(6)
   } finally { backend.stop(); await rm(root, { recursive: true, force: true }) }
 })
 

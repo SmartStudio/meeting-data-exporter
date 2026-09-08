@@ -266,11 +266,11 @@ test('条件里的坏字段不会让规则静默命中', () => {
 
 // ── §3.4 D-c 资产类型 ────────────────────────────────────────
 
-test('allow 栈的 assetTypes：星号展开成全部八类', () => {
+test('allow 栈的 assetTypes：星号展开成全部六类', () => {
   const d = evaluateAllowStack([rule({ id: 1, kind: 'allow', effect: 'allow', assetTypes: ['*'] })], allowIn)
   expect(d.assetTypes).toEqual(ALL_ASSET_KEYS)
   expect(decisionAllowsAsset(d, 'video').allowed).toBe(true)
-  expect(decisionAllowsAsset(d, 'ai_ds_minutes').allowed).toBe(true)
+  expect(decisionAllowsAsset(d, 'ai_minutes').allowed).toBe(true)
 })
 
 test('allow 栈的 assetTypes：只放行列出的那几类，其余按拒绝', () => {

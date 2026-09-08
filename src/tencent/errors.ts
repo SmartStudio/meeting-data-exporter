@@ -9,8 +9,12 @@ export type ErrorClass = 'fatal' | 'transient' | 'asset_permanent'
  */
 const FATAL = new Set([9042, 500014, 190004, 200001, 202004, 500063])
 
-/** 资产本身不存在，跳过该资产但不影响其他 */
-const ASSET_PERMANENT = new Set([4051, 4049])
+/**
+ * 资产本身不存在，跳过该资产但不影响其他。
+ * 500182「该文件未打开智能录制开关」：/v1/smart/minutes、/v1/smart/chapters 对没开
+ * 智能录制的录制文件返回它（2026-09-08 实调）。原先落入 transient，一次探测白重试 5 次。
+ */
+const ASSET_PERMANENT = new Set([4051, 4049, 500182])
 
 /**
  * 分类依据是响应体的 error_code，不是 HTTP status——
