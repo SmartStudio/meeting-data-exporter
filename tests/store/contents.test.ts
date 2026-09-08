@@ -371,6 +371,27 @@ test('buildAssetContent：pdf 同样是一行 unsupported_format，不是失败'
   })
 })
 
+test('buildAssetContent：md 与 json 都是纯文本，按 parsed 入库', async () => {
+  await withFiles(async (dir) => {
+    for (const [ext, body] of [['md', '## 会议摘要\n\n正文\n'], ['json', '{"schemaVersion":1,"chapters":[]}\n']] as const) {
+      const path = join(dir, `x.${ext}`)
+      await writeFile(path, body, 'utf8')
+      const hash = sha256(body)
+      const out = await buildAssetContent({
+        key: { ...KEY, assetType: ext === 'md' ? 'ai_minutes' : 'chapters', fileType: ext },
+        nasPath: path,
+        nasHash: hash,
+        now: 1000,
+      })
+      expect(out.kind).toBe('record')
+      if (out.kind === 'record') {
+        expect(out.record.status).toBe('parsed')
+        expect(out.record.content).toBe(body)
+      }
+    }
+  })
+})
+
 test('buildAssetContent：装不下就明确拒绝（too_large），绝不截断', async () => {
   await withFiles(async (dir) => {
     const text = 'x'.repeat(4096)

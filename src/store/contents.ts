@@ -34,7 +34,7 @@ export const MEDIUMTEXT_MAX_BYTES = 16 * 1024 * 1024 - 1
 const NAS_READ_TIMEOUT_MS = 60_000
 
 /**
- * 会入库的 `asset_type` 取值——六类纪要 + 转写。
+ * 会入库的 `asset_type` 取值——四类纪要 + 转写。
  *
  * **从引擎的 `ALL_ASSET_KEYS` 派生，不在这里抄一份短名**：资产键的权威定义在
  * `packages/engine/src/domain/types.ts`，抄一份的下场是新增纪要引擎时两处不同步,
@@ -48,8 +48,8 @@ export const TEXT_GATEWAY_ASSET_TYPES: readonly string[] = ALL_ASSET_KEYS
   .map((k) => ASSET_KEY_TO_GATEWAY_TYPE[k])
   .filter((t) => isTextAssetType(t))
 
-/** 唯一能被解析的格式。docx / pdf 不是纯文本，装解析器是另一件事（计划 §3 T4 的「坑」） */
-const PARSABLE_EXTENSION = 'txt'
+/** 能被当纯文本入库的扩展名。docx / pdf 不是纯文本，装解析器是另一件事（计划 §3 T4 的「坑」） */
+const PARSABLE_EXTENSIONS: ReadonlySet<string> = new Set(['txt', 'md', 'json'])
 
 export type AssetContentStatus = 'parsed' | 'unsupported_format' | 'too_large'
 
@@ -297,11 +297,11 @@ export async function buildAssetContent(
   // ③ 格式判断排在大小之前：一个 20MB 的 docx，真正的原因是「不解析 docx」而不是
   //    「太大」。报后者会让人以为换台大内存的机器就能解决。
   const ext = normalizeExtension(key.fileType)
-  if (ext !== PARSABLE_EXTENSION) {
+  if (!PARSABLE_EXTENSIONS.has(ext)) {
     return record({
       status: 'unsupported_format',
       bytes: size,
-      reason: `file_type=${key.fileType || '(空)'} 不是纯文本，本版本只解析 ${PARSABLE_EXTENSION}——docx / pdf 需要单独的解析器，不在控制台阶段 4 的范围内`,
+      reason: `file_type=${key.fileType || '(空)'} 不是纯文本，本版本只解析 ${[...PARSABLE_EXTENSIONS].join(' / ')}——docx / pdf 需要单独的解析器，不在控制台阶段 4 的范围内`,
     })
   }
 
