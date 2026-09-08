@@ -674,3 +674,168 @@ test('本地已清理、只剩 archived_assets 的会议照样被找出来（含
     })
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 归档半途中断：有 archived_assets 行、没有 meeting_archives 行
+// （assets 拷完了、upsertMeetingArchive 之前断掉）。NAS 基准目录只能从 nas_path 反推。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('没有 meeting_archives 行时，路径驱动那一遍从 nas_path 反推 NAS 基准目录', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      // meetings 行只描述最新那一场（09-04），断在半路的是 09-02 那一场
+      await insertMeetingAt(pool, 'm1', '42677674068', '硬件早会', RECUR_START)
+      const oldRel = '2026/09/2026-09-02_0127_硬件早会_42677674068'
+      const newRel = '2026/09/2026-09-02_0127_42677674068'
+
+      // 上一轮跑本脚本时 nas 为 null，本地已经改成新格式、NAS 那边原地没动
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'r1',
+        `${newRel}/transcript.txt`,
+        join(nasDir, oldRel, 'transcript.txt'),
+      )
+      await mkdir(join(localRoot, newRel), { recursive: true })
+      await writeFile(join(localRoot, newRel, 'transcript.txt'), 'hello')
+      await mkdir(join(nasDir, oldRel), { recursive: true })
+      await writeFile(join(nasDir, oldRel, 'transcript.txt'), 'hello')
+      await writeManifest(nasDir, 'm1', [join(nasDir, oldRel, 'transcript.txt')])
+
+      const plan = await planRenames(pool, localRoot)
+      const item = plan.find((i) => i.oldRel === oldRel)!
+      expect(item.source).toBe('path')
+      expect(item.nas).not.toBeNull()
+      expect(item.nas!.dir).toBe(nasDir) // 从 nas_path 反推，不是从 meeting_archives 来的
+      expect(item.nas!.exists).toBe(true)
+      expect(item.local.exists).toBe(false)
+
+      expect(await applyOne(pool, item)).toBe('renamed')
+      await stat(join(nasDir, newRel, 'transcript.txt'))
+      await expect(stat(join(nasDir, oldRel))).rejects.toThrow()
+      expect(await nasPathOf(pool, 'm1', 'r1')).toBe(join(nasDir, newRel, 'transcript.txt'))
+      const manifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
+      expect(manifest.assets[0].nasPath).toBe(join(nasDir, newRel, 'transcript.txt'))
+
+      // 自消耗：库里已经是新前缀，再跑一遍这一条不再出现
+      const again = await planRenames(pool, localRoot)
+      expect(again.find((i) => i.oldRel === oldRel)).toBeUndefined()
+    })
+  })
+})
+
+test('没有 meeting_archives 行时，会议驱动那一遍也用反推出来的基准目录：本地与 NAS 一条搞定', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      const oldRel = legacyRel('硬件早会', '42677674068')
+      const newRel = modernRel('42677674068')
+
+      await insertMeeting(pool, 'm1', '42677674068', '硬件早会')
+      await insertAsset(pool, 'm1', 'r1', `${oldRel}/transcript.txt`)
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'r1',
+        `${oldRel}/transcript.txt`,
+        join(nasDir, oldRel, 'transcript.txt'),
+      )
+      // 注意：故意不插 meeting_archives 行
+      await mkdir(join(localRoot, oldRel), { recursive: true })
+      await writeFile(join(localRoot, oldRel, 'transcript.txt'), 'hello')
+      await mkdir(join(nasDir, oldRel), { recursive: true })
+      await writeFile(join(nasDir, oldRel, 'transcript.txt'), 'hello')
+      await writeManifest(nasDir, 'm1', [join(nasDir, oldRel, 'transcript.txt')])
+
+      const plan = await planRenames(pool, localRoot)
+      expect(plan).toHaveLength(1)
+      expect(plan[0]!.source).toBe('meeting')
+      expect(plan[0]!.nas!.dir).toBe(nasDir)
+      expect(plan[0]!.local.exists).toBe(true)
+      expect(plan[0]!.nas!.exists).toBe(true)
+
+      expect(await applyOne(pool, plan[0]!)).toBe('renamed')
+      await stat(join(localRoot, newRel, 'transcript.txt'))
+      await stat(join(nasDir, newRel, 'transcript.txt'))
+      expect(await targetPath(pool, 'm1', 'r1')).toBe(`${newRel}/transcript.txt`)
+      expect(await localPathOf(pool, 'm1', 'r1')).toBe(`${newRel}/transcript.txt`)
+      expect(await nasPathOf(pool, 'm1', 'r1')).toBe(join(nasDir, newRel, 'transcript.txt'))
+      const manifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
+      expect(manifest.assets[0].nasPath).toBe(join(nasDir, newRel, 'transcript.txt'))
+
+      const again = await planRenames(pool, localRoot)
+      expect(again).toHaveLength(1)
+      expect(await applyOne(pool, again[0]!)).toBe('already_done')
+    })
+  })
+})
+
+test('反推出的基准目录与 meeting_archives.nas_dir 不一致 → conflict，一个字都不动', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      const strayDir = join(nasRoot, 'other')
+      await insertMeetingAt(pool, 'm1', '42677674068', '硬件早会', RECUR_START)
+      await insertArchive(pool, 'm1', nasDir)
+
+      const oldRel = '2026/09/2026-09-02_0127_硬件早会_42677674068'
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'r1',
+        `${oldRel}/transcript.txt`,
+        join(strayDir, oldRel, 'transcript.txt'),
+      )
+      await mkdir(join(localRoot, oldRel), { recursive: true })
+      await writeFile(join(localRoot, oldRel, 'transcript.txt'), 'hello')
+      await mkdir(join(strayDir, oldRel), { recursive: true })
+      await writeFile(join(strayDir, oldRel, 'transcript.txt'), 'hello')
+
+      const plan = await planRenames(pool, localRoot)
+      const item = plan.find((i) => i.oldRel === oldRel)!
+      expect(item.conflictReason).not.toBeNull()
+      expect(await applyOne(pool, item)).toBe('conflict')
+
+      await stat(join(localRoot, oldRel, 'transcript.txt'))
+      await stat(join(strayDir, oldRel, 'transcript.txt'))
+      await expect(stat(join(localRoot, '2026/09/2026-09-02_0127_42677674068'))).rejects.toThrow()
+      expect(await localPathOf(pool, 'm1', 'r1')).toBe(`${oldRel}/transcript.txt`)
+      expect(await nasPathOf(pool, 'm1', 'r1')).toBe(join(strayDir, oldRel, 'transcript.txt'))
+    })
+  })
+})
+
+test('同一场会议的 archived_assets 行反推出两个不同的基准目录 → conflict', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const oldRel = legacyRel('硬件早会', '42677674068')
+      await insertMeeting(pool, 'm1', '42677674068', '硬件早会')
+      await insertAsset(pool, 'm1', 'r1', `${oldRel}/transcript.txt`)
+      // 没有 meeting_archives 行，两行 nas_path 分别落在两个基准目录下
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'r1',
+        `${oldRel}/transcript.txt`,
+        join(nasRoot, 'all', oldRel, 'transcript.txt'),
+      )
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'r2',
+        `${oldRel}/notes.txt`,
+        join(nasRoot, 'other', oldRel, 'notes.txt'),
+      )
+      await mkdir(join(localRoot, oldRel), { recursive: true })
+      await writeFile(join(localRoot, oldRel, 'transcript.txt'), 'hello')
+
+      const plan = await planRenames(pool, localRoot)
+      expect(plan).toHaveLength(1)
+      expect(plan[0]!.conflictReason).not.toBeNull()
+      expect(await applyOne(pool, plan[0]!)).toBe('conflict')
+      await stat(join(localRoot, oldRel, 'transcript.txt'))
+      expect(await targetPath(pool, 'm1', 'r1')).toBe(`${oldRel}/transcript.txt`)
+    })
+  })
+})

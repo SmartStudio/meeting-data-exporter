@@ -26,13 +26,24 @@
  *
  * 对计划里的每一条（一个目录，不一定等于一场会议）：
  *   1. 本地归档区：<localRoot>/<旧> → <localRoot>/<新>
- *   2. NAS：<meeting_archives.nas_dir>/<旧> → <nas_dir>/<新>（没归档过的会议没有这一步）
+ *   2. NAS：<基准目录>/<旧> → <基准目录>/<新>（没归档过、NAS 上什么都没有的会议没有这一步）
  *   3. 同一事务改 meeting_assets.target_path、archived_assets.local_path / nas_path 的前缀
  *   4. 重写 `_manifest.json` 里 assets[].nasPath 的前缀
  * 目录改名先于写库；写库失败把目录改回去。目标目录已存在一律 conflict、什么都不动。
  *
  * `meeting_archives.nas_dir` 是**每场会议的 NAS 基准目录**（归档规则模板渲染出来的），
  * 会议目录是它下面那一层，所以 nas_dir 这一列本身不动。
+ *
+ * 但**不能只认这一列**：真实数据上有会议只有 `archived_assets` 行、没有 `meeting_archives`
+ * 行——归档那一轮把文件都拷过去了，`upsertMeetingArchive` 之前断掉（进程被杀、NAS 掉线）。
+ * 光看归档行的话这种会议 `nas` 是 null，于是本地改名、库里的 local/target 也改了，
+ * **NAS 目录却原地不动、nas_path 也跟着留在旧名下**：看起来一切正常（库与磁盘仍然一致），
+ * 只是这几场永远改不过来。所以基准目录还从 `nas_path` 自己身上反推：每条 nas_path 都是
+ * `<基准目录>/<yyyy>/<mm>/<会议目录>/<文件名>`（`archiveOneAsset` 就是
+ * `join(nasDir, targetPath)` 拼的），砍掉末尾四段剩下的就是基准目录。
+ * 两个来源都在时以 `meeting_archives.nas_dir` 为准；**两者不一致、或同一场会议的行之间
+ * 反推出不同的基准目录**，一律 conflict 不动手——行说一个地方、归档行说另一个地方，
+ * 该由人去看这场会议到底归到哪儿了。
  *
  * ⚠️ **`_manifest.json` 不在会议目录里，在 `nas_dir` 根上**（`writeNasSidecars`，
  * src/worker/archive.ts）。多场会议渲染到同一个 nas_dir 时它们共用同一份 manifest，
@@ -94,7 +105,10 @@ export interface RenameItem {
   oldRel: string
   newRel: string
   local: { from: string; to: string; exists: boolean }
-  /** `dir` 是 meeting_archives.nas_dir 本身（manifest 就在它根上），from/to 是它下面那一层会议目录 */
+  /**
+   * `dir` 是这场会议的 NAS 基准目录（manifest 就在它根上），from/to 是它下面那一层会议目录。
+   * 来源优先 `meeting_archives.nas_dir`，没有那一行时从 `archived_assets.nas_path` 反推。
+   */
   nas: { dir: string; from: string; to: string; exists: boolean } | null
   /**
    * 另有会议算出了同一个 `oldRel`（subject / start_time / meeting_code 三者全同）。
@@ -102,6 +116,13 @@ export interface RenameItem {
    * 一律不动、报 conflict，交给人去看这几场到底是什么关系。
    */
   duplicate: boolean
+  /**
+   * 非 null = 这一条不动手（applyOne 直接返回 conflict），字符串是给人看的理由。
+   * 目前只有一种：NAS 基准目录说不清楚——`meeting_archives.nas_dir` 与 `nas_path` 反推出来的
+   * 对不上，或者同一场会议的 `archived_assets` 行反推出了不止一个基准目录。这时候「改哪个
+   * 目录」本身就是错的问题，猜一个改下去只会把两处都弄乱。
+   */
+  conflictReason: string | null
   /**
    * 这一条是哪一遍排出来的：`meeting` = `meetings` 行算出来的，`path` = 从三列路径里
    * 捞出来的旧格式目录前缀。dry-run 把它打出来，操作员一眼能看出「这场会议的行里没有
@@ -159,6 +180,8 @@ interface PrefixRow extends RowDataPacket {
   meeting_id: string
   sub_meeting_id: string
   rel: string
+  /** 只有 nas_path 那一条来源有值：从这条 nas_path 反推出来的 NAS 基准目录 */
+  base: string | null
 }
 
 interface ArchiveRow extends RowDataPacket {
@@ -167,31 +190,96 @@ interface ArchiveRow extends RowDataPacket {
   nas_dir: string
 }
 
+interface BaseRow extends RowDataPacket {
+  meeting_id: string
+  sub_meeting_id: string
+  base: string | null
+}
+
+/**
+ * 从一条绝对 `nas_path` 里切出「基准目录」与「相对的三段式目录前缀」的 SQL 片段。
+ *
+ * nas_path 长成 `<基准目录>/<yyyy>/<mm>/<会议目录>/<文件名>`——资产文件**直接躺在会议目录里**
+ * （`archiveOneAsset` 是 `join(nasDir, asset.targetPath)`，而 targetPath 就是
+ * `<yyyy>/<mm>/<会议目录>/<文件名>`），所以末尾恰好四段，倒着数就能把两截分开：
+ *   相对前缀 = 末四段里的前三段
+ *   基准目录 = 整串砍掉「末四段 + 那个 `/`」
+ * 长度一律用 MySQL 的 CHAR_LENGTH，理由同 PREFIX_SWAP 那一段（主题里可能有 emoji）。
+ *
+ * 这么切就**不必 join `meeting_archives`**：归档半途中断的会议根本没有那一行，
+ * join 会把它整场漏掉（见文件头 nas_dir 那一段）。
+ */
+const NAS_REL = `SUBSTRING_INDEX(SUBSTRING_INDEX(nas_path, '/', -4), '/', 3)`
+const NAS_BASE = `LEFT(nas_path, CHAR_LENGTH(nas_path) - CHAR_LENGTH(SUBSTRING_INDEX(nas_path, '/', -4)) - 1)`
+
 /**
  * 三列路径里的**目录前缀**（前三段）各来一条 DISTINCT。
  *
  * `target_path` / `local_path` 是相对路径，前三段就是 `<yyyy>/<mm>/<会议目录>`，
- * 直接 `SUBSTRING_INDEX(列, '/', 3)`。
+ * 直接 `SUBSTRING_INDEX(列, '/', 3)`；它们身上没有基准目录，`base` 一律 NULL。
  *
- * `nas_path` 是**绝对**路径（`nas_dir` + `/` + 相对路径），得先按这场会议的 nas_dir
- * 切掉前缀再取三段——所以要 join `meeting_archives`。`+ 2` 是「nas_dir 的长度再加那个
- * 分隔用的 `/`，然后 SUBSTRING 从 1 开始数」；`LEFT(...) = CONCAT(nas_dir, '/')` 把
- * nas_dir 变过、旧行还指向别处的那些排除掉（切出来的东西不是相对路径，前三段没意义）。
- * 长度一律用 MySQL 的 CHAR_LENGTH，理由同 PREFIX_SWAP 那一段（主题里可能有 emoji）。
+ * `nas_path` 是**绝对**路径，按上面 NAS_REL / NAS_BASE 一刀切成两截：前缀进 `rel`、
+ * 基准目录进 `base`，谁说了算由 resolveNasBase 定。
  */
 const PREFIX_SOURCES: readonly string[] = [
-  `SELECT DISTINCT meeting_id, sub_meeting_id, SUBSTRING_INDEX(target_path, '/', 3) AS rel
+  `SELECT DISTINCT meeting_id, sub_meeting_id, SUBSTRING_INDEX(target_path, '/', 3) AS rel, NULL AS base
      FROM meeting_assets
     WHERE target_path IS NOT NULL`,
-  `SELECT DISTINCT meeting_id, sub_meeting_id, SUBSTRING_INDEX(local_path, '/', 3) AS rel
+  `SELECT DISTINCT meeting_id, sub_meeting_id, SUBSTRING_INDEX(local_path, '/', 3) AS rel, NULL AS base
      FROM archived_assets`,
-  `SELECT DISTINCT aa.meeting_id, aa.sub_meeting_id,
-          SUBSTRING_INDEX(SUBSTRING(aa.nas_path, CHAR_LENGTH(ar.nas_dir) + 2), '/', 3) AS rel
-     FROM archived_assets aa
-     JOIN meeting_archives ar
-       ON ar.meeting_id = aa.meeting_id AND ar.sub_meeting_id = aa.sub_meeting_id
-    WHERE LEFT(aa.nas_path, CHAR_LENGTH(ar.nas_dir) + 1) = CONCAT(ar.nas_dir, '/')`,
+  `SELECT DISTINCT meeting_id, sub_meeting_id, ${NAS_REL} AS rel, ${NAS_BASE} AS base
+     FROM archived_assets`,
 ]
+
+/** 每场会议的 archived_assets 行反推出来的 NAS 基准目录（正常只有一个，多于一个就是 conflict） */
+const NAS_BASE_BY_MEETING = `SELECT DISTINCT meeting_id, sub_meeting_id, ${NAS_BASE} AS base
+     FROM archived_assets`
+
+/** 空串（nas_path 不够四段、切完什么都不剩）当没反推出来处理 */
+const cleanBase = (b: string | null | undefined): string | null =>
+  b === null || b === undefined || b === '' ? null : b
+
+/** 一场会议（或一条路径）反推出来的基准目录：`conflict` = 反推出了不止一个 */
+interface DerivedBase {
+  base: string | null
+  conflict: boolean
+}
+
+/**
+ * 归档行的 nas_dir 与反推出来的基准目录合成一个：有归档行以它为准，没有就用反推的；
+ * 两者都有且不一样、或反推本身就自相矛盾 → 这场会议的 NAS 位置讲不清楚，交给人看。
+ */
+function resolveNasBase(
+  archiveDir: string | null,
+  derived: DerivedBase | undefined,
+): { dir: string | null; reason: string | null } {
+  const d = derived?.base ?? null
+  if (derived?.conflict === true) {
+    return {
+      dir: archiveDir ?? d,
+      reason: 'archived_assets.nas_path 反推出了不止一个 NAS 基准目录，说不清这场会议归到哪儿',
+    }
+  }
+  if (archiveDir !== null && d !== null && archiveDir !== d) {
+    return {
+      dir: archiveDir,
+      reason: `meeting_archives.nas_dir 是 ${archiveDir}，archived_assets.nas_path 却指向 ${d}`,
+    }
+  }
+  return { dir: archiveDir ?? d, reason: null }
+}
+
+/** 把一条反推结果并进 map：先到的留着，后到的不一样就标 conflict */
+function mergeBase(map: Map<string, DerivedBase>, key: string, base: string | null): void {
+  const prev = map.get(key)
+  if (prev === undefined) {
+    map.set(key, { base, conflict: false })
+    return
+  }
+  if (base === null) return
+  if (prev.base === null) prev.base = base
+  else if (prev.base !== base) prev.conflict = true
+}
 
 const keyOf = (meetingId: string, subMeetingId: string): string => `${meetingId}\u0000${subMeetingId}`
 
@@ -202,6 +290,14 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
        LEFT JOIN meeting_archives a ON a.meeting_id = m.meeting_id AND a.sub_meeting_id = m.sub_meeting_id
       ORDER BY m.meeting_id, m.sub_meeting_id`,
   )
+  // 每场会议从 archived_assets.nas_path 反推出来的 NAS 基准目录。归档半途中断的会议
+  // （assets 拷完了、meeting_archives 那一行还没写）只能靠它，否则 NAS 那边一辈子改不了名。
+  const [baseRows] = await pool.execute<BaseRow[]>(NAS_BASE_BY_MEETING)
+  const derivedBaseOf = new Map<string, DerivedBase>()
+  for (const b of baseRows) {
+    mergeBase(derivedBaseOf, keyOf(b.meeting_id, b.sub_meeting_id), cleanBase(b.base))
+  }
+
   const out: RenameItem[] = []
   for (const r of rows) {
     const m: DirMeeting = { subject: r.subject, startTime: r.start_time, meetingCode: r.meeting_code }
@@ -209,14 +305,18 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
     const newRel = meetingDirPath(m, r.meeting_id)
     const localFrom = join(localRoot, oldRel)
     const localTo = join(localRoot, newRel)
+    const { dir: nasDir, reason } = resolveNasBase(
+      r.nas_dir,
+      derivedBaseOf.get(keyOf(r.meeting_id, r.sub_meeting_id)),
+    )
     const nas =
-      r.nas_dir === null
+      nasDir === null
         ? null
         : {
-            dir: r.nas_dir,
-            from: join(r.nas_dir, oldRel),
-            to: join(r.nas_dir, newRel),
-            exists: await exists(join(r.nas_dir, oldRel)),
+            dir: nasDir,
+            from: join(nasDir, oldRel),
+            to: join(nasDir, newRel),
+            exists: await exists(join(nasDir, oldRel)),
           }
     out.push({
       meetingId: r.meeting_id,
@@ -226,6 +326,7 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
       local: { from: localFrom, to: localTo, exists: await exists(localFrom) },
       nas,
       duplicate: false,
+      conflictReason: reason,
       source: 'meeting',
     })
   }
@@ -242,13 +343,19 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
   // 第一遍已经排到的旧目录不再排第二条：同一个目录出现两条会被 duplicate 判成 conflict，
   // 而它们本来就是同一件事
   const planned = new Set(out.map((i) => i.oldRel))
+  // 每条前缀自己的基准目录：nas_path 那一条来源直接反推出来，另外两条只有 rel、base 是 null。
+  // 同一个 (会议, 前缀) 在多条来源里都出现时按 mergeBase 并——两条 nas_path 反推出不同基准目录
+  // 就地标 conflict。
+  const foundBase = new Map<string, DerivedBase>()
   const found = new Map<string, { meetingId: string; subMeetingId: string; oldRel: string }>()
   for (const sql of PREFIX_SOURCES) {
     const [rows] = await pool.execute<PrefixRow[]>(sql)
     for (const r of rows) {
       if (r.rel === null || planned.has(r.rel)) continue
       if (newRelFromLegacyRel(r.rel) === null) continue
-      found.set(`${keyOf(r.meeting_id, r.sub_meeting_id)}\u0000${r.rel}`, {
+      const k = `${keyOf(r.meeting_id, r.sub_meeting_id)}\u0000${r.rel}`
+      mergeBase(foundBase, k, cleanBase(r.base))
+      found.set(k, {
         meetingId: r.meeting_id,
         subMeetingId: r.sub_meeting_id,
         oldRel: r.rel,
@@ -258,7 +365,11 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
   for (const k of [...found.keys()].sort()) {
     const { meetingId, subMeetingId, oldRel } = found.get(k)!
     const newRel = newRelFromLegacyRel(oldRel)!
-    const nasDir = nasDirOf.get(keyOf(meetingId, subMeetingId)) ?? null
+    // 归档行没有时用这条路径自己反推出来的基准目录——半途中断的那几场全靠它
+    const { dir: nasDir, reason } = resolveNasBase(
+      nasDirOf.get(keyOf(meetingId, subMeetingId)) ?? null,
+      foundBase.get(k),
+    )
     out.push({
       meetingId,
       subMeetingId,
@@ -279,6 +390,7 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
               exists: await exists(join(nasDir, oldRel)),
             },
       duplicate: false,
+      conflictReason: reason,
       source: 'path',
     })
   }
@@ -370,8 +482,8 @@ export async function applyOne(pool: Pool, item: RenameItem): Promise<ApplyOutco
   const doLocal = item.local.exists
   const doNas = item.nas !== null && item.nas.exists
 
-  // 重复目录：先判，判在任何 stat / rename 之前
-  if (item.duplicate) return 'conflict'
+  // 重复目录、以及 NAS 基准目录说不清楚：先判，判在任何 stat / rename 之前
+  if (item.duplicate || item.conflictReason !== null) return 'conflict'
 
   if (!doLocal && !doNas) {
     const doneLocal = await exists(item.local.to)
@@ -488,6 +600,15 @@ async function main(): Promise<number> {
     for (const item of plan) {
       const who = `${item.meetingId}/${item.subMeetingId || '-'}`
       const todo = item.local.exists || (item.nas?.exists ?? false)
+      // 基准目录说不清楚的先判，判在 already_done / not_found 之前：这一条的 nas.exists
+      // 本来就问错了目录，让它掉进 already_done 等于把「没人动过 NAS」说成「上次跑成功了」
+      if (item.conflictReason !== null) {
+        conflict++
+        console.error(
+          `⚠ ${who} ${item.oldRel} conflict：${item.conflictReason}——这一条不动，请人工确认 NAS 基准目录`,
+        )
+        continue
+      }
       if (!todo) {
         // 目录一个都不在：分清「上次跑成功了」与「压根没找到」
         const done =
