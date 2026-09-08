@@ -83,3 +83,10 @@ test('serializeChapters：稳定字段、两空格缩进、末尾换行、不含
   expect(s).toBe(JSON.stringify({ schemaVersion: 1, recordFileId: 'rf-1', chapters: [{ chapterId: 'C1', name: '开场', startMs: 7837 }] }, null, 2) + '\n')
   expect(s).not.toContain('pic_url')
 })
+
+test('getMinutes / getChapters：500051 生成中视为「现在还没有」（null），交给引擎按探测退避重来', async () => {
+  const generating = stubClient(() => { throw new TencentApiError(500051, 500, '智能化数据生成中') })
+  const api = createSmartApi(generating.client, 'op-1')
+  expect(await api.getMinutes('rf-1')).toBeNull()
+  expect(await api.getChapters('rf-1')).toBeNull()
+})

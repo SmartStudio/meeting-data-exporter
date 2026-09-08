@@ -12,9 +12,9 @@ import { TencentApiError } from './errors'
  * 纪要固定用平台默认模板（不传 llm / minute_type）：腾讯录制页的「纪要文本」下载
  * 就是当前模板那一份，这里与它对齐；不提供模板选择（spec 2.3）。
  *
- * 没开智能录制的文件平台回 500182，errors.ts 归为 asset_permanent；这里把
- * asset_permanent 一律翻成 null（「这一类不存在」），其余错误原样抛——client 已经
- * 对 transient 重试过 5 次，再吞就是静默丢数据。
+ * 没开智能录制的文件平台回 500182（asset_permanent），刚结束的会议回 500051
+ * 「智能化数据生成中」（asset_pending）；这两类在这里一律翻成 null（「这一类现在没有」），
+ * 其余错误原样抛——client 已经对 transient 重试过 5 次，再吞就是静默丢数据。
  */
 
 /** 路径带变量，必须给稳定配额键，否则按 path 匹配一次都对不上（见 client.ts） */
@@ -40,8 +40,11 @@ interface RawChapters {
   chapter_list?: Array<{ chapter_id?: string; chapter_name?: string; pic_url?: string; start_time?: string }>
 }
 
+/** 永久没有（500182 没开智能录制）与暂时没有（500051 生成中）在这一层都是 null：
+ *  列资产时不列、引擎按「不在清单」处理——前者到 48h 上限判 skip_timeout，后者下轮探测再问。 */
 function isUnavailable(err: unknown): boolean {
-  return err instanceof TencentApiError && err.classification === 'asset_permanent'
+  return err instanceof TencentApiError
+    && (err.classification === 'asset_permanent' || err.classification === 'asset_pending')
 }
 
 function decodeName(b64: string | undefined): string {

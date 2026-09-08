@@ -60,7 +60,7 @@ export function internalError(err: unknown): Response {
  * - fatal：网关侧配置/权限问题（SecretKey 错、operator 离职），非调用方过错。
  *   502 + 透出腾讯 error_code 供运维排障，但不透出内部 message（避免细节泄露）。
  * - asset_permanent：该资产在平台侧不存在，语义上等价 404。
- * - transient：可重试，503 让客户端知道稍后再试。
+ * - transient / asset_pending：可重试，503 让客户端知道稍后再试。
  */
 export function upstreamError(err: TencentApiError): Response {
   switch (err.classification) {
@@ -70,6 +70,7 @@ export function upstreamError(err: TencentApiError): Response {
     case 'asset_permanent':
       return json(404, { error: 'asset_not_found', tencent_code: err.errorCode })
     case 'transient':
+    case 'asset_pending': // 还在生成，稍后再试——对调用方与瞬时错误同一语义
       return json(503, { error: 'upstream_unavailable', tencent_code: err.errorCode })
   }
 }

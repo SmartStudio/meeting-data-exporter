@@ -284,3 +284,12 @@ test('不传 quotaKey 时按 path 计费——同一个接口的不同 path 因�
   expect(calls).toHaveLength(3)
   expect(clockMs - startMs).toBe(0)
 })
+
+test('资产级暂缺（500051 生成中）不重试——重试只会白占配额', async () => {
+  const { fn, calls } = fakeFetch([
+    { status: 500, body: { error_info: { error_code: 500051, message: '智能化数据生成中' } } },
+  ])
+  const c = createTencentClient(cfg, deps(fn))
+  await expect(c.get('/v1/smart/minutes/1', {})).rejects.toMatchObject({ classification: 'asset_pending' })
+  expect(calls).toHaveLength(1)
+})

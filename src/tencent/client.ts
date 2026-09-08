@@ -172,7 +172,7 @@ export function createTencentClient(
       const err = parseErrorResponse(res.status, parsed)
       lastError = err
 
-      if (err.classification === 'fatal' || err.classification === 'asset_permanent') throw err
+      if (err.classification !== 'transient') throw err
       if (err.requiresBackoff) bucket.converge()
       if (attempt < MAX_ATTEMPTS) await deps.sleep(2 ** attempt * 100)
     }

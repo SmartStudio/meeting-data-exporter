@@ -1,4 +1,4 @@
-export type ErrorClass = 'fatal' | 'transient' | 'asset_permanent'
+export type ErrorClass = 'fatal' | 'transient' | 'asset_permanent' | 'asset_pending'
 
 /**
  * 配置或权限问题，重试无意义，应立即失败并明确告知。
@@ -17,12 +17,22 @@ const FATAL = new Set([9042, 500014, 190004, 200001, 202004, 500063])
 const ASSET_PERMANENT = new Set([4051, 4049, 500182])
 
 /**
+ * 资产还没生成好，现在拿不到、以后能拿到：跳过该资产、不重试、不中断整体。
+ * 500051「智能化数据生成中」：/v1/smart/minutes、/v1/smart/chapters 对刚结束的会议返回它
+ * （2026-09-09 本机回填实测）。原先落入 transient——client 重试 5 次仍失败后从
+ * discover 抛出，整轮拉取中止，连录像都没下。归为 asset_pending 后 smart.ts 翻成
+ * 「这一类现在没有」，引擎按探测退避（48h 上限）下轮再问。
+ */
+const ASSET_PENDING = new Set([500051])
+
+/**
  * 分类依据是响应体的 error_code，不是 HTTP status——
  * 后者只有 400 与 500 两种取值，承载不了这个区分。
  */
 export function classify(errorCode: number): ErrorClass {
   if (FATAL.has(errorCode)) return 'fatal'
   if (ASSET_PERMANENT.has(errorCode)) return 'asset_permanent'
+  if (ASSET_PENDING.has(errorCode)) return 'asset_pending'
   return 'transient'
 }
 

@@ -90,3 +90,7 @@ test('500182「未打开智能录制开关」是资产级永久错误：跳过�
     new TencentApiError(500182, 400, '该文件未打开智能录制开关，请联系文件所有者').classification,
   ).toBe('asset_permanent')
 })
+
+test('500051 智能化数据生成中：资产级暂缺，不重试、不中断整体', () => {
+  expect(classify(500051)).toBe('asset_pending')
+})
