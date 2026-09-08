@@ -7,6 +7,7 @@ import { withTestDb } from '../helpers/testdb'
 import {
   applyOne,
   legacyMeetingDirPath,
+  newRelFromLegacyRel,
   parseArgs,
   planRenames,
 } from '../../scripts/rename-archive-dirs'
@@ -358,6 +359,318 @@ test('从没归档过的会议只改本地与 meeting_assets；本地与 NAS 上
       expect(await targetPath(pool, 'm1', 'r1')).toBe(`${modernRel('42677674068')}/transcript.txt`)
 
       expect(await applyOne(pool, gone!)).toBe('not_found')
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 路径驱动的第二遍：周期性会议的旧实例目录不在 meetings 行里
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RECUR_START = Date.UTC(2026, 8, 4, 1, 27) / 1000 // 2026-09-04 01:27 UTC
+
+async function insertMeetingAt(
+  pool: Pool,
+  meetingId: string,
+  code: string,
+  subject: string,
+  startTime: number,
+): Promise<void> {
+  await pool.execute(
+    `INSERT INTO meetings (meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time, created_at, updated_at)
+     VALUES (?, '', ?, ?, 'u', ?, ?, 1, 1)`,
+    [meetingId, code, subject, startTime, startTime + 1800],
+  )
+}
+
+async function insertArchive(pool: Pool, meetingId: string, nasDir: string): Promise<void> {
+  await pool.execute(
+    `INSERT INTO meeting_archives (meeting_id, sub_meeting_id, nas_dir, archived_at, retention_days, created_at, updated_at)
+     VALUES (?, '', ?, 1, 30, 1, 1)`,
+    [meetingId, nasDir],
+  )
+}
+
+async function insertArchivedAsset(
+  pool: Pool,
+  meetingId: string,
+  remoteId: string,
+  localPath: string,
+  nasPath: string,
+): Promise<void> {
+  await pool.execute(
+    `INSERT INTO archived_assets (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, local_path, nas_path, nas_hash, archived_at)
+     VALUES (?, '', 'meeting_summary', ?, 'txt', ?, ?, ?, 1)`,
+    [meetingId, remoteId, localPath, nasPath, 'a'.repeat(64)],
+  )
+}
+
+async function writeManifest(
+  nasDir: string,
+  meetingId: string,
+  nasPaths: string[],
+): Promise<void> {
+  await writeFile(
+    join(nasDir, '_manifest.json'),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        meetingId,
+        subMeetingId: '',
+        assets: nasPaths.map((p) => ({
+          assetType: 'meeting_summary',
+          fileName: 'transcript.txt',
+          nasPath: p,
+          nasHash: 'a'.repeat(64),
+        })),
+        archive: { archivedAt: 1, retentionDays: 30, nasDir },
+      },
+      null,
+      2,
+    ),
+  )
+}
+
+async function localPathOf(pool: Pool, meetingId: string, remoteId: string): Promise<string> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT local_path FROM archived_assets WHERE meeting_id = ? AND remote_id = ?`,
+    [meetingId, remoteId],
+  )
+  return rows[0]!.local_path
+}
+
+async function nasPathOf(pool: Pool, meetingId: string, remoteId: string): Promise<string> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT nas_path FROM archived_assets WHERE meeting_id = ? AND remote_id = ?`,
+    [meetingId, remoteId],
+  )
+  return rows[0]!.nas_path
+}
+
+test('newRelFromLegacyRel：主题段可以带下划线，新格式不匹配', () => {
+  expect(newRelFromLegacyRel('2026/09/2026-09-02_0127_硬件早会_42677674068')).toBe(
+    '2026/09/2026-09-02_0127_42677674068',
+  )
+  // 主题里带 `_`：贪婪匹配把最后一段留给会议号
+  expect(newRelFromLegacyRel('2026/09/2026-09-05_0900_转写_即服务项目开发日会_42677674070')).toBe(
+    '2026/09/2026-09-05_0900_42677674070',
+  )
+  // 已经是新格式：只有一段尾巴，不该被再改一次
+  expect(newRelFromLegacyRel('2026/09/2026-09-02_0127_42677674068')).toBeNull()
+  expect(newRelFromLegacyRel('2026/09/2026-09-02_0127_m1')).toBeNull()
+  // 不是三段式目录前缀
+  expect(newRelFromLegacyRel('2026/09')).toBeNull()
+  expect(newRelFromLegacyRel('2026/09/别的东西_x_y')).toBeNull()
+})
+
+test('周期性会议：meetings 行只剩最新一场，旧实例目录靠路径列找出来并逐个改名', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      const insts = [
+        {
+          rid: 'r0902',
+          old: '2026/09/2026-09-02_0127_硬件早会_42677674068',
+          neu: '2026/09/2026-09-02_0127_42677674068',
+        },
+        {
+          rid: 'r0903',
+          old: '2026/09/2026-09-03_0126_硬件早会_42677674068',
+          neu: '2026/09/2026-09-03_0126_42677674068',
+        },
+        {
+          rid: 'r0904',
+          old: '2026/09/2026-09-04_0127_硬件早会_42677674068',
+          neu: '2026/09/2026-09-04_0127_42677674068',
+        },
+      ]
+      // meetings 行被 upsertMeeting 反复覆盖，只描述最新那一场（09-04）
+      await insertMeetingAt(pool, 'm1', '42677674068', '硬件早会', RECUR_START)
+      await insertArchive(pool, 'm1', nasDir)
+      for (const i of insts) {
+        await insertAsset(pool, 'm1', i.rid, `${i.old}/transcript.txt`)
+        await insertArchivedAsset(
+          pool,
+          'm1',
+          i.rid,
+          `${i.old}/transcript.txt`,
+          join(nasDir, i.old, 'transcript.txt'),
+        )
+        await mkdir(join(localRoot, i.old), { recursive: true })
+        await writeFile(join(localRoot, i.old, 'transcript.txt'), 'hello')
+        await mkdir(join(nasDir, i.old), { recursive: true })
+        await writeFile(join(nasDir, i.old, 'transcript.txt'), 'hello')
+      }
+      const otherNasPath = join(nasDir, '2026/09/2026-09-02_0900_别的会_99999999999/x.txt')
+      await writeManifest(nasDir, 'm1', [
+        ...insts.map((i) => join(nasDir, i.old, 'transcript.txt')),
+        otherNasPath,
+      ])
+
+      const plan = await planRenames(pool, localRoot)
+      expect(plan).toHaveLength(3)
+      expect(plan.map((i) => i.oldRel).sort()).toEqual(insts.map((i) => i.old).sort())
+      // meetings 行只覆盖了 09-04，另外两场是路径驱动那一遍找出来的
+      const bySource = new Map(plan.map((i) => [i.oldRel, i.source]))
+      expect(bySource.get(insts[2]!.old)).toBe('meeting')
+      expect(bySource.get(insts[0]!.old)).toBe('path')
+      expect(bySource.get(insts[1]!.old)).toBe('path')
+      expect(plan.every((i) => i.duplicate)).toBe(false)
+      for (const i of plan) expect(i.nas!.dir).toBe(nasDir)
+
+      // 三场会议 key 完全相同，前缀替换必须按前缀各改各的：先只改第一场
+      const first = plan.find((i) => i.oldRel === insts[0]!.old)!
+      expect(await applyOne(pool, first)).toBe('renamed')
+      expect(await targetPath(pool, 'm1', 'r0902')).toBe(`${insts[0]!.neu}/transcript.txt`)
+      expect(await targetPath(pool, 'm1', 'r0903')).toBe(`${insts[1]!.old}/transcript.txt`)
+      expect(await targetPath(pool, 'm1', 'r0904')).toBe(`${insts[2]!.old}/transcript.txt`)
+      expect(await nasPathOf(pool, 'm1', 'r0903')).toBe(join(nasDir, insts[1]!.old, 'transcript.txt'))
+
+      for (const item of plan) {
+        if (item === first) continue
+        expect(await applyOne(pool, item)).toBe('renamed')
+      }
+
+      for (const i of insts) {
+        await stat(join(localRoot, i.neu, 'transcript.txt'))
+        await stat(join(nasDir, i.neu, 'transcript.txt'))
+        await expect(stat(join(localRoot, i.old))).rejects.toThrow()
+        await expect(stat(join(nasDir, i.old))).rejects.toThrow()
+        expect(await targetPath(pool, 'm1', i.rid)).toBe(`${i.neu}/transcript.txt`)
+        expect(await localPathOf(pool, 'm1', i.rid)).toBe(`${i.neu}/transcript.txt`)
+        expect(await nasPathOf(pool, 'm1', i.rid)).toBe(join(nasDir, i.neu, 'transcript.txt'))
+      }
+
+      const manifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
+      expect(manifest.assets.map((a: { nasPath: string }) => a.nasPath)).toEqual([
+        ...insts.map((i) => join(nasDir, i.neu, 'transcript.txt')),
+        otherNasPath, // 别的会议那一条一个字没动
+      ])
+
+      // 再跑一遍：库里已经全是新前缀，路径驱动那一遍再也找不到东西，
+      // 只剩 meetings 行那一场，判 already_done
+      const again = await planRenames(pool, localRoot)
+      expect(again).toHaveLength(1)
+      expect(again[0]!.source).toBe('meeting')
+      expect(again[0]!.oldRel).toBe(insts[2]!.old)
+      expect(await applyOne(pool, again[0]!)).toBe('already_done')
+    })
+  })
+})
+
+test('路径驱动那一遍：主题段带下划线时新目录名只留会议号', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      const subject = '转写_即服务项目开发日会'
+      const code = '42677674070'
+      const rowStart = Date.UTC(2026, 8, 5, 9, 0) / 1000
+      await insertMeetingAt(pool, 'm1', code, subject, rowStart)
+      const rowOld = `2026/09/2026-09-05_0900_${subject}_${code}`
+      const orphanOld = `2026/09/2026-09-06_0900_${subject}_${code}`
+      for (const [rid, rel] of [
+        ['r1', rowOld],
+        ['r2', orphanOld],
+      ] as const) {
+        await insertAsset(pool, 'm1', rid, `${rel}/transcript.txt`)
+        await mkdir(join(localRoot, rel), { recursive: true })
+        await writeFile(join(localRoot, rel, 'transcript.txt'), 'hello')
+      }
+
+      const plan = await planRenames(pool, localRoot)
+      expect(plan).toHaveLength(2)
+      const orphan = plan.find((i) => i.oldRel === orphanOld)!
+      expect(orphan.source).toBe('path')
+      expect(orphan.newRel).toBe(`2026/09/2026-09-06_0900_${code}`)
+      expect(orphan.nas).toBeNull() // 没有 meeting_archives 行
+
+      for (const item of plan) expect(await applyOne(pool, item)).toBe('renamed')
+      expect(await targetPath(pool, 'm1', 'r1')).toBe(`2026/09/2026-09-05_0900_${code}/transcript.txt`)
+      expect(await targetPath(pool, 'm1', 'r2')).toBe(`2026/09/2026-09-06_0900_${code}/transcript.txt`)
+      await stat(join(localRoot, `2026/09/2026-09-06_0900_${code}`, 'transcript.txt'))
+    })
+  })
+})
+
+test('已经是新格式的路径不会被路径驱动那一遍再排一次', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      const newRel = modernRel('42677674068')
+      await insertMeeting(pool, 'm1', '42677674068', '硬件早会')
+      await insertArchive(pool, 'm1', nasDir)
+      await insertAsset(pool, 'm1', 'r1', `${newRel}/transcript.txt`)
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'r1',
+        `${newRel}/transcript.txt`,
+        join(nasDir, newRel, 'transcript.txt'),
+      )
+
+      const plan = await planRenames(pool, localRoot)
+      expect(plan).toHaveLength(1) // 只有 meetings 行那一场
+      expect(plan[0]!.source).toBe('meeting')
+      expect(plan[0]!.oldRel).toBe(legacyRel('硬件早会', '42677674068'))
+    })
+  })
+})
+
+test('本地已清理、只剩 archived_assets 的会议照样被找出来（含只有 nas_path 还是旧前缀的情形）', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      await insertMeetingAt(pool, 'm1', '42677674068', '硬件早会', START)
+      await insertArchive(pool, 'm1', nasDir)
+
+      // (a) 本地文件被到期清理掉了：meeting_assets.target_path 为 NULL，
+      //     archived_assets 两列都还在旧前缀上，本地目录不在、NAS 目录还在
+      const purgedOld = '2026/09/2026-09-01_0127_硬件早会_42677674068'
+      const purgedNew = '2026/09/2026-09-01_0127_42677674068'
+      await pool.execute(
+        `INSERT INTO meeting_assets (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, created_at, updated_at)
+         VALUES (?, '', 'meeting_summary', 'rp', 'txt', 'completed', NULL, 1, 1)`,
+        ['m1'],
+      )
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'rp',
+        `${purgedOld}/transcript.txt`,
+        join(nasDir, purgedOld, 'transcript.txt'),
+      )
+      await mkdir(join(nasDir, purgedOld), { recursive: true })
+      await writeFile(join(nasDir, purgedOld, 'transcript.txt'), 'hello')
+
+      // (b) local_path 被人工改过、只剩 nas_path 还是旧前缀：NAS 那一列是独立的一列，
+      //     漏掉它的话 NAS 上的目录就没人改了
+      const nasOnlyOld = '2026/08/2026-08-31_0800_硬件早会_42677674068'
+      const nasOnlyNew = '2026/08/2026-08-31_0800_42677674068'
+      await insertArchivedAsset(
+        pool,
+        'm1',
+        'rn',
+        `${nasOnlyNew}/transcript.txt`,
+        join(nasDir, nasOnlyOld, 'transcript.txt'),
+      )
+      await mkdir(join(nasDir, nasOnlyOld), { recursive: true })
+      await writeFile(join(nasDir, nasOnlyOld, 'transcript.txt'), 'hello')
+
+      const plan = await planRenames(pool, localRoot)
+      const purged = plan.find((i) => i.oldRel === purgedOld)!
+      expect(purged.source).toBe('path')
+      expect(purged.local.exists).toBe(false)
+      expect(purged.nas!.exists).toBe(true)
+      expect(await applyOne(pool, purged)).toBe('renamed')
+      await stat(join(nasDir, purgedNew, 'transcript.txt'))
+      expect(await localPathOf(pool, 'm1', 'rp')).toBe(`${purgedNew}/transcript.txt`)
+      expect(await nasPathOf(pool, 'm1', 'rp')).toBe(join(nasDir, purgedNew, 'transcript.txt'))
+
+      const nasOnly = plan.find((i) => i.oldRel === nasOnlyOld)!
+      expect(nasOnly.source).toBe('path')
+      expect(await applyOne(pool, nasOnly)).toBe('renamed')
+      await stat(join(nasDir, nasOnlyNew, 'transcript.txt'))
+      expect(await nasPathOf(pool, 'm1', 'rn')).toBe(join(nasDir, nasOnlyNew, 'transcript.txt'))
+      expect(await localPathOf(pool, 'm1', 'rn')).toBe(`${nasOnlyNew}/transcript.txt`)
     })
   })
 })

@@ -10,6 +10,9 @@
 ## 2. 改名
     DATABASE_URL=... MDE_ARCHIVE_ROOT=... bun scripts/rename-archive-dirs.ts          # 看清单
     DATABASE_URL=... MDE_ARCHIVE_ROOT=... bun scripts/rename-archive-dirs.ts --apply 2>&1 | tee rename-$(date +%s).log
+脚本的计划同时来自 `meetings` 表和三列路径（`meeting_assets.target_path`、`archived_assets.local_path` /
+`nas_path`）里长得像旧格式的目录前缀，所以周期性会议那些「行里只剩最新一场、磁盘上还有好几天」的旧实例目录
+也在覆盖范围里；反过来，`meetings` 行算出来的那一场若从没落过盘，汇总里它报 `not_found` 是预期的。
 若任何一场会议的 `meeting_archives.nas_dir` 够不着（NAS 没挂上/挂错路径），`--apply` 直接以退出码 2 中止、
 一场都不改——先修好挂载点再重跑。跑完看最后一行 `renamed=… already_done=… not_found=… conflict=… failed=…`：
 有 conflict 或 failed，脚本退出码非零。`not_found`（旧目录、新目录本地和 NAS 上都找不到）不算失败，但**必须

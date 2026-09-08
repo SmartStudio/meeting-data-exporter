@@ -9,7 +9,22 @@
  *   DATABASE_URL=... MDE_ARCHIVE_ROOT=... bun scripts/rename-archive-dirs.ts            # dry-run，只打印
  *   DATABASE_URL=... MDE_ARCHIVE_ROOT=... bun scripts/rename-archive-dirs.ts --apply    # 真改
  *
- * 对每场会议（`meetings` 表一行）：
+ * 计划分两遍出（见 `planRenames`）：
+ *   A. **会议驱动**：`meetings` 每一行按它自己的 subject / start_time / meeting_code 算旧目录。
+ *   B. **路径驱动**：从 `meeting_assets.target_path`、`archived_assets.local_path` / `nas_path`
+ *      里把长得像旧格式的三段式目录前缀捞出来，去掉 A 已经排到的，剩下的每个前缀也排一条。
+ *
+ * 为什么必须有 B：**周期性会议**（同一个 meeting_id、sub_meeting_id 为空串）每轮拉取都被
+ * `upsertMeeting` 把 start_time 覆盖成最新那一场，所以 `meetings` 那一行**只描述最新实例**。
+ * 「硬件早会」这种日会在磁盘上有 09-02、09-03、09-04 三个目录，而行里只剩 09-04——
+ * 光靠 A，前两个目录一辈子进不了计划，它们的 target_path / local_path / nas_path 就永远
+ * 停在旧前缀上（真实数据上是 16 个目录 ×（本地 + NAS）、92 行 meeting_assets、100 行
+ * archived_assets）。日会正是生产数据的大头，所以 B 不是补丁是主路径。
+ *
+ * 反过来，A 里那一场的目录**可能从来没下载过**（行是拉会议列表建的，资产没落过盘），
+ * 这时它报 `not_found` 是对的，不是错误。
+ *
+ * 对计划里的每一条（一个目录，不一定等于一场会议）：
  *   1. 本地归档区：<localRoot>/<旧> → <localRoot>/<新>
  *   2. NAS：<meeting_archives.nas_dir>/<旧> → <nas_dir>/<新>（没归档过的会议没有这一步）
  *   3. 同一事务改 meeting_assets.target_path、archived_assets.local_path / nas_path 的前缀
@@ -24,7 +39,8 @@
  * 所以这里只按「这场会议的旧 NAS 目录前缀」逐条替换 `assets[].nasPath`，
  * 不整份重写、也不碰别的会议那几条。
  *
- * 可重复跑：旧目录不存在的会议按新目录在不在分成 already_done / not_found。
+ * 可重复跑：旧目录不存在的按新目录在不在分成 already_done / not_found。B 那一遍是**自消耗**的
+ * ——库里的前缀改成新格式之后它就再也匹配不上，第二次跑只剩 A 的那些条目。
  *
  * 跑之前**停掉定时任务与网关**：改名与归档流水线并发，会让一半文件写到旧目录。
  * 建议 `2>&1 | tee rename-$(date +%s).log`：出事时要查的第一现场就是这份输出。
@@ -69,6 +85,9 @@ export function legacyMeetingDirPath(m: DirMeeting, fallbackCode: string): strin
  */
 export type ApplyOutcome = 'renamed' | 'already_done' | 'not_found' | 'conflict'
 
+/** 这一条 RenameItem 是哪一遍排出来的，见文件头 A / B */
+export type RenameSource = 'meeting' | 'path'
+
 export interface RenameItem {
   meetingId: string
   subMeetingId: string
@@ -83,6 +102,12 @@ export interface RenameItem {
    * 一律不动、报 conflict，交给人去看这几场到底是什么关系。
    */
   duplicate: boolean
+  /**
+   * 这一条是哪一遍排出来的：`meeting` = `meetings` 行算出来的，`path` = 从三列路径里
+   * 捞出来的旧格式目录前缀。dry-run 把它打出来，操作员一眼能看出「这场会议的行里没有
+   * 的那些目录」是从哪儿冒出来的——周期性会议的旧实例全部落在 `path` 这一类。
+   */
+  source: RenameSource
 }
 
 interface MeetingRow extends RowDataPacket {
@@ -112,6 +137,63 @@ async function exists(p: string): Promise<boolean> {
     throw err
   }
 }
+
+/**
+ * 旧格式的三段式目录前缀：`<yyyy>/<mm>/<日期>_<时分>_<主题>_<会议号>`。
+ *
+ * `$2`（主题段）用**贪婪**的 `.+`，`$3`（会议号）是最后一段且不含 `_`：主题本身允许带
+ * 下划线（`转写_即服务项目开发日会`），贪婪匹配保证切在**最后**一个下划线上，会议号完整。
+ *
+ * 新格式 `<日期>_<时分>_<会议号>` 在 `$1` 之后只剩一段，凑不出 `_(.+)_(...)` 两段，
+ * 所以匹配不上——这正是要的：跑第二次时库里已经是新前缀，不能再被切一刀。
+ */
+const LEGACY_REL = /^(\d{4}\/\d{2}\/\d{4}-\d{2}-\d{2}_\d{4})_(.+)_([^_/]+)$/
+
+/** 旧格式目录前缀 → 新格式；不是旧格式（含已经是新格式的）返回 null */
+export function newRelFromLegacyRel(rel: string): string | null {
+  const m = LEGACY_REL.exec(rel)
+  return m === null ? null : `${m[1]}_${m[3]}`
+}
+
+interface PrefixRow extends RowDataPacket {
+  meeting_id: string
+  sub_meeting_id: string
+  rel: string
+}
+
+interface ArchiveRow extends RowDataPacket {
+  meeting_id: string
+  sub_meeting_id: string
+  nas_dir: string
+}
+
+/**
+ * 三列路径里的**目录前缀**（前三段）各来一条 DISTINCT。
+ *
+ * `target_path` / `local_path` 是相对路径，前三段就是 `<yyyy>/<mm>/<会议目录>`，
+ * 直接 `SUBSTRING_INDEX(列, '/', 3)`。
+ *
+ * `nas_path` 是**绝对**路径（`nas_dir` + `/` + 相对路径），得先按这场会议的 nas_dir
+ * 切掉前缀再取三段——所以要 join `meeting_archives`。`+ 2` 是「nas_dir 的长度再加那个
+ * 分隔用的 `/`，然后 SUBSTRING 从 1 开始数」；`LEFT(...) = CONCAT(nas_dir, '/')` 把
+ * nas_dir 变过、旧行还指向别处的那些排除掉（切出来的东西不是相对路径，前三段没意义）。
+ * 长度一律用 MySQL 的 CHAR_LENGTH，理由同 PREFIX_SWAP 那一段（主题里可能有 emoji）。
+ */
+const PREFIX_SOURCES: readonly string[] = [
+  `SELECT DISTINCT meeting_id, sub_meeting_id, SUBSTRING_INDEX(target_path, '/', 3) AS rel
+     FROM meeting_assets
+    WHERE target_path IS NOT NULL`,
+  `SELECT DISTINCT meeting_id, sub_meeting_id, SUBSTRING_INDEX(local_path, '/', 3) AS rel
+     FROM archived_assets`,
+  `SELECT DISTINCT aa.meeting_id, aa.sub_meeting_id,
+          SUBSTRING_INDEX(SUBSTRING(aa.nas_path, CHAR_LENGTH(ar.nas_dir) + 2), '/', 3) AS rel
+     FROM archived_assets aa
+     JOIN meeting_archives ar
+       ON ar.meeting_id = aa.meeting_id AND ar.sub_meeting_id = aa.sub_meeting_id
+    WHERE LEFT(aa.nas_path, CHAR_LENGTH(ar.nas_dir) + 1) = CONCAT(ar.nas_dir, '/')`,
+]
+
+const keyOf = (meetingId: string, subMeetingId: string): string => `${meetingId}\u0000${subMeetingId}`
 
 export async function planRenames(pool: Pool, localRoot: string): Promise<RenameItem[]> {
   const [rows] = await pool.execute<MeetingRow[]>(
@@ -144,10 +226,64 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
       local: { from: localFrom, to: localTo, exists: await exists(localFrom) },
       nas,
       duplicate: false,
+      source: 'meeting',
     })
   }
 
-  // 同一个旧目录被多场会议算出来 → 全体标记。第一场改完之后其余几场的旧目录就不见了，
+  // ——— 第二遍：路径驱动 ———
+  // meetings 行只描述周期性会议的最新一场（upsertMeeting 每轮覆盖 start_time），
+  // 旧实例的目录只在这三列路径里留下过痕迹。这一遍就是把它们捞回来。
+  const [archiveRows] = await pool.execute<ArchiveRow[]>(
+    `SELECT meeting_id, sub_meeting_id, nas_dir FROM meeting_archives`,
+  )
+  const nasDirOf = new Map<string, string>()
+  for (const a of archiveRows) nasDirOf.set(keyOf(a.meeting_id, a.sub_meeting_id), a.nas_dir)
+
+  // 第一遍已经排到的旧目录不再排第二条：同一个目录出现两条会被 duplicate 判成 conflict，
+  // 而它们本来就是同一件事
+  const planned = new Set(out.map((i) => i.oldRel))
+  const found = new Map<string, { meetingId: string; subMeetingId: string; oldRel: string }>()
+  for (const sql of PREFIX_SOURCES) {
+    const [rows] = await pool.execute<PrefixRow[]>(sql)
+    for (const r of rows) {
+      if (r.rel === null || planned.has(r.rel)) continue
+      if (newRelFromLegacyRel(r.rel) === null) continue
+      found.set(`${keyOf(r.meeting_id, r.sub_meeting_id)}\u0000${r.rel}`, {
+        meetingId: r.meeting_id,
+        subMeetingId: r.sub_meeting_id,
+        oldRel: r.rel,
+      })
+    }
+  }
+  for (const k of [...found.keys()].sort()) {
+    const { meetingId, subMeetingId, oldRel } = found.get(k)!
+    const newRel = newRelFromLegacyRel(oldRel)!
+    const nasDir = nasDirOf.get(keyOf(meetingId, subMeetingId)) ?? null
+    out.push({
+      meetingId,
+      subMeetingId,
+      oldRel,
+      newRel,
+      local: {
+        from: join(localRoot, oldRel),
+        to: join(localRoot, newRel),
+        exists: await exists(join(localRoot, oldRel)),
+      },
+      nas:
+        nasDir === null
+          ? null
+          : {
+              dir: nasDir,
+              from: join(nasDir, oldRel),
+              to: join(nasDir, newRel),
+              exists: await exists(join(nasDir, oldRel)),
+            },
+      duplicate: false,
+      source: 'path',
+    })
+  }
+
+  // 同一个旧目录被多场会议算出来 → 全体标记（两遍合起来一起判）。第一场改完之后其余几场的旧目录就不见了，
   // 它们的库行会安静地留在旧路径上，而目录已经不在那儿——这一步就是不让那件事发生。
   const seen = new Map<string, number>()
   for (const it of out) seen.set(it.oldRel, (seen.get(it.oldRel) ?? 0) + 1)
@@ -359,12 +495,17 @@ async function main(): Promise<number> {
         if (done) alreadyDone++
         else {
           notFound++
-          console.error(`⚠ ${who} ${item.oldRel} 旧目录与新目录都不在，本地/NAS 上找不到这场会议`)
+          console.error(
+            `⚠ ${who} ${item.oldRel}（来自${item.source === 'meeting' ? ' meetings 行' : '路径列'}）` +
+              '旧目录与新目录都不在，本地/NAS 上找不到这个目录' +
+              (item.source === 'meeting' ? '——meetings 行描述的那一场从没落过盘时这是正常的' : ''),
+          )
         }
         continue
       }
       console.log(
-        `${who}\n  ${item.oldRel}\n  → ${item.newRel}\n  local=${item.local.exists} nas=${item.nas?.exists ?? 'n/a'}`,
+        `${who}\n  ${item.oldRel}\n  → ${item.newRel}\n` +
+          `  local=${item.local.exists} nas=${item.nas?.exists ?? 'n/a'} 来自=${item.source === 'meeting' ? 'meetings 行' : '路径列'}`,
       )
       if (item.duplicate) {
         conflict++
@@ -415,7 +556,8 @@ async function main(): Promise<number> {
     console.log(
       args.apply
         ? `renamed=${renamed} already_done=${alreadyDone} not_found=${notFound} conflict=${conflict} failed=${failed}`
-        : `dry-run：${plan.length} 场会议，其中 ${plan.length - alreadyDone - notFound} 场需要改名（加 --apply 执行）`,
+        : `dry-run：${plan.length} 个目录（meetings 行 ${plan.filter((i) => i.source === 'meeting').length} + 路径列 ${plan.filter((i) => i.source === 'path').length}），` +
+          `其中 ${plan.length - alreadyDone - notFound} 个需要改名（加 --apply 执行）`,
     )
     return conflict > 0 || failed > 0 ? 1 : 0
   } finally {
