@@ -237,6 +237,9 @@ test('plan + apply：本地与 NAS 目录改名，三张表的路径同步，nas
       const manifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
       expect(manifest.assets[0].nasPath).toBe(join(nasDir, newRel, 'transcript.txt'))
       expect(manifest.assets[1].nasPath).toBe(otherNasPath)
+      // 写的是 .tmp 再 rename 盖过去（写到一半断掉不会留下一份被截断的 JSON——
+      // 这一份是几百场会议共用的）。跑完 .tmp 必须不在了，别在 NAS 根上留垃圾
+      await expect(stat(join(nasDir, '_manifest.json.tmp'))).rejects.toThrow()
 
       const again = await planRenames(pool, localRoot)
       expect(again[0]!.local.exists).toBe(false)

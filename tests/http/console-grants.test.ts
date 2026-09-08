@@ -713,9 +713,10 @@ test('grantMeeting 的资产范围完整落进 detail，不会被截断', async 
     r.ctx,
   )
   const detail = r.audits[0]!.detail ?? ''
-  // 全六类连起来也有 56 字符——「授权了什么范围」正是这一行审计要回答的问题，
-  // 不该被任何长度上限悄悄切掉最后一类
-  expect(detail.length).toBeGreaterThan(40)
+  // 六个键**原样连在一起**的那一串必须整个出现在 detail 里——「授权了什么范围」
+  // 正是这一行审计要回答的问题，不该被任何长度上限悄悄切掉最后一类。
+  // 钉全串而不是钉长度：长度过得去而顺序或分隔符变了，一样是另一件事
+  expect(detail).toContain(all.join(','))
   for (const t of all) expect(detail).toContain(t)
   expect(detail).not.toContain('...')
 })

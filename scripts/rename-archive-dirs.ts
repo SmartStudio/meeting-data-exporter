@@ -156,7 +156,15 @@ export async function planRenames(pool: Pool, localRoot: string): Promise<Rename
   return out
 }
 
-/** 只按前缀改 assets[].nasPath；manifest 可能被多场会议共用，别的条目一个不碰 */
+/**
+ * 只按前缀改 assets[].nasPath；manifest 可能被多场会议共用，别的条目一个不碰。
+ *
+ * **先写 .tmp 再 rename 盖过去**，不原地 writeFile：这一份 `_manifest.json` 是
+ * `nas_dir` 根上那一份，同一条归档规则渲染出的**所有**会议共用它。原地写到一半
+ * 断掉（NAS 掉线是这个脚本最常见的故障），留下的是一份被截断的 JSON——不是这一场
+ * 会议的条目没改成，是整份 manifest 连同其余几百场一起读不出来了。rename 在同一个
+ * 目录里是原子的，读的人要么看到旧的完整版、要么看到新的完整版。
+ */
 async function rewriteManifest(dir: string, oldPrefix: string, newPrefix: string): Promise<void> {
   const p = join(dir, '_manifest.json')
   if (!(await exists(p))) return
@@ -166,7 +174,11 @@ async function rewriteManifest(dir: string, oldPrefix: string, newPrefix: string
       a.nasPath = newPrefix + a.nasPath.slice(oldPrefix.length)
     }
   }
-  await writeFile(p, JSON.stringify(doc, null, 2))
+  // .tmp 与目标同目录：跨设备的 rename 会 EXDEV，而 NAS 挂载点与本地临时目录
+  // 恰好就是两个设备
+  const tmp = `${p}.tmp`
+  await writeFile(tmp, JSON.stringify(doc, null, 2))
+  await rename(tmp, p)
 }
 
 /**
@@ -198,6 +210,23 @@ async function undoRename(from: string, to: string, what: string): Promise<void>
       `‼ ${what} 回滚失败：${from} 改不回 ${to}（${err}）。` +
         '目录停在新名字上、库里还是旧路径，两边对不上了，请手工把目录改回去再重跑本脚本',
     )
+  }
+}
+
+/**
+ * 「目录与库都已经改完了，只有 manifest 没写成」。
+ *
+ * 这一场会被计成 failed，而 failed 的默认读法是「这一场原地没动，重跑一次就好」——
+ * 在这里那是错的：重跑会把它判成 already_done，manifest 再也没人回来改。所以这个
+ * 错误单开一类，让 main 把「已经做完了什么」原样说出来。
+ */
+class ManifestOnlyError extends Error {
+  constructor(
+    readonly item: RenameItem,
+    readonly cause: unknown,
+  ) {
+    super(`manifest 重写失败：${cause}`)
+    this.name = 'ManifestOnlyError'
   }
 }
 
@@ -276,8 +305,16 @@ export async function applyOne(pool: Pool, item: RenameItem): Promise<ApplyOutco
 
   // manifest 放在事务之后：它是 NAS 上那份副本的自描述，重写失败不该把已经一致的
   // 目录与库再翻回去。真失败了重跑一次也修不了它（那时旧目录已经不在，会被判
-  // already_done），所以这一步的异常照旧往上抛，让人看见。
-  if (doNas) await rewriteManifest(item.nas!.dir, `${item.nas!.from}/`, `${item.nas!.to}/`)
+  // already_done），所以这一步的异常照旧往上抛，让人看见——但要**说清楚已经做完了
+  // 什么**，否则操作员看到 failed 只会以为这一场整个没动。这就是 ManifestOnlyError
+  // 的用途，main 认得它，打出来的那一行会写明只剩 manifest 要人工收尾。
+  if (doNas) {
+    try {
+      await rewriteManifest(item.nas!.dir, `${item.nas!.from}/`, `${item.nas!.to}/`)
+    } catch (err) {
+      throw new ManifestOnlyError(item, err)
+    }
+  }
   return 'renamed'
 }
 
@@ -337,7 +374,12 @@ async function main(): Promise<number> {
       if (!args.apply) {
         // dry-run 也把「目标目录已存在」说出来。不说的话操作员看到的是一份
         // 全绿的计划，`--apply` 跑完才知道有几场原地没动——dry-run 存在的意义
-        // 就是别让人带着这种意外去执行。退出码仍只由 --apply 那一路决定。
+        // 就是别让人带着这种意外去执行。
+        //
+        // 这一条只打印、不计 conflict，所以退出码不受它影响；而上面**重复目录**
+        // 那一条计了 conflict，dry-run 因此会以退出码 1 结束——这是有意的：重复目录
+        // 是计划本身有问题，不该让 CI 或 `&&` 串起来的下一条命令当成「计划没问题」
+        // 接着往下走。
         const taken =
           (item.local.exists && (await exists(item.local.to))) ||
           (item.nas !== null && item.nas.exists && (await exists(item.nas.to)))
@@ -357,7 +399,17 @@ async function main(): Promise<number> {
         else notFound++
       } catch (err) {
         failed++
-        console.error(`  failed：${err}`)
+        if (err instanceof ManifestOnlyError) {
+          // 改名与三张表都已经提交，重跑会判 already_done——说清楚，别让人白跑一趟
+          console.error(
+            `  failed：${err.cause}\n` +
+              `    目录改名与三张表已经改完并提交了，只差 ${join(item.nas!.dir, '_manifest.json')} 这一份没写成。\n` +
+              `    重跑本脚本修不了它（旧目录已经不在，这一场会被判 already_done）：\n` +
+              `    手工把这份 manifest 里前缀为 ${item.nas!.from}/ 的 nasPath 改成 ${item.nas!.to}/ 即可。`,
+          )
+        } else {
+          console.error(`  failed：${err}`)
+        }
       }
     }
     console.log(

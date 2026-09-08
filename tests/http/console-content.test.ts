@@ -720,12 +720,27 @@ test('章节：没解析的行与缺 chapterId / startMs 的条目一律跳过�
  * 合法 JSON ≠ 合法 chapters.json。`{"chapters": 42}` 上 for...of、`[null]` 上取属性,
  * 都是**语法正确的 JSON** 里抛出来的运行时异常——它们绕过 JSON.parse 的 try/catch,
  * 一路冒到 router 的兜底 catch 变成 500。一份坏文件不该把整个时间轴端点打死。
+ *
+ * 每种坏形状**各自单独一段**：章节只从一段里取，坏的那一段不会被别的段「救回来」,
+ * 所以三种形状放在同一场会议里测等于只测到了被挑中的那一种。
  */
-test('章节：chapters 字段不是数组、或数组里混着 null 时照样 200，坏的跳过、好的照给', async () => {
+test('章节：chapters 字段不是数组时照样 200，章节为空', async () => {
+  for (const content of [
+    JSON.stringify({ schemaVersion: 1, chapters: 42 }),
+    JSON.stringify({ schemaVersion: 1, chapters: {} }),
+  ]) {
+    const h = harness({ segments: [chaptersRow({ content })] })
+    const res = await getChapters(req(), h.ctx)
+    expect(res.status, `正文是 ${content} 时应当 200`).toBe(200)
+    const b = await body(res)
+    expect(b.chapters).toEqual([])
+    expect(b.source).toBe('none')
+  }
+})
+
+test('章节：数组里混着 null / 字符串时照样 200，坏的跳过、好的照给', async () => {
   const h = harness({
     segments: [
-      chaptersRow({ remoteId: 'rf-0', content: JSON.stringify({ schemaVersion: 1, chapters: 42 }) }),
-      chaptersRow({ remoteId: 'rf-2', content: JSON.stringify({ schemaVersion: 1, chapters: {} }) }),
       chaptersRow({
         content: chaptersJson([null, '不是对象', { chapterId: 'C1', name: '开场', startMs: 7837 }]),
       }),
@@ -736,6 +751,36 @@ test('章节：chapters 字段不是数组、或数组里混着 null 时照样 2
   const b = await body(res)
   expect(b.chapters).toEqual([{ id: 'C1', name: '开场', at: 7 }])
   expect(b.source).toBe('tencent')
+})
+
+/**
+ * 多段录制的会议：`startMs` 是**这一个录制文件里**的偏移，第二段的章节又从 0 开始。
+ * 两段的章节并成一张列表，时间戳与旁边那份逐字稿（cues 只来自一段）就对不上了,
+ * 点一下跳到别处去，而界面上一切正常——所以章节只取与转写同源的那一段。
+ */
+test('章节：多段录制只取与转写同一个 remote_id 的那一段，不跨段合并', async () => {
+  const h = harness({
+    segments: [
+      contentRow({ remoteId: 'rf-1', content: '00:00:05 张三：第一段录制' }),
+      chaptersRow({ remoteId: 'rf-1', content: chaptersJson([{ chapterId: 'C1', name: '第一段的开场', startMs: 5000 }]) }),
+      chaptersRow({ remoteId: 'rf-2', content: chaptersJson([{ chapterId: 'C2', name: '第二段的开场', startMs: 0 }]) }),
+    ],
+  })
+  const b = await body(await getChapters(req(), h.ctx))
+  expect(b.cuesFrom.remoteId).toBe('rf-1')
+  expect(b.chapters).toEqual([{ id: 'C1', name: '第一段的开场', at: 5 }])
+})
+
+test('章节：转写那一段没有章节时，退回按自然顺序取第一段解析得出来的', async () => {
+  const h = harness({
+    segments: [
+      contentRow({ remoteId: 'rf-9', content: '00:00:05 张三：这一段没有章节' }),
+      chaptersRow({ remoteId: 'rf-1', content: chaptersJson([{ chapterId: 'C1', name: '开场', startMs: 1000 }]) }),
+      chaptersRow({ remoteId: 'rf-2', content: chaptersJson([{ chapterId: 'C2', name: '第二段', startMs: 2000 }]) }),
+    ],
+  })
+  const b = await body(await getChapters(req(), h.ctx))
+  expect(b.chapters).toEqual([{ id: 'C1', name: '开场', at: 1 }])
 })
 
 test('章节：正文是 JSON 字面量 null / 数字 / 数组时不抛，按没有章节算', async () => {

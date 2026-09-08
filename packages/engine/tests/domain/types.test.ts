@@ -4,7 +4,7 @@ import {
   parseAssetKeys, UnknownAssetKeyError, assetKeyToFilename,
 } from '../../src/domain/types'
 
-test('默认集为四类', () => {
+test('默认集为全部六类', () => {
   expect(DEFAULT_ASSET_KEYS).toEqual(['video', 'audio', 'transcript', 'ai_transcript', 'ai_minutes', 'chapters'])
 })
 test('键↔字段双向映射一致', () => {

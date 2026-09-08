@@ -2,6 +2,9 @@ import { buildAuthHeaders } from './signer'
 import { buildUrl, type QueryParams } from './url'
 import { parseErrorResponse, TencentApiError } from './errors'
 import { createEndpointQuota, type EndpointQuota, createTokenBucket } from './ratelimit'
+// 值导入，但**不成环**：smart.ts 对 client 只有 `import type`，编译后整句消失，
+// 运行时 smart.ts 只依赖 ./errors
+import { SMART_MINUTES_QUOTA_KEY } from './smart'
 
 /**
  * `GET /v1/users/{userid}`（成员详情）的配额键。
@@ -42,6 +45,18 @@ const ENDPOINT_QUOTAS_PER_MINUTE: Readonly<Record<string, number>> = {
   //      收敛拖慢整个网关。两边的代价不对称，所以往紧了取
   // 哪天腾讯公布了真实数字，改这一行即可，别在调用点上另加节流。
   [USER_DETAIL_QUOTA_KEY]: 60,
+  // 智能录制的两个接口（纪要 / 章节）同样是 **60/min 的保守估计，不是文档值**：
+  // 腾讯没为它们公布单接口配额，只有全局的 190310「调用超限」兜着。理由与上面那条
+  // 同构，数量级不同：
+  //   1. 它们跑在**回填**上，不在任何用户等待的路径上——慢一点没有人受影响
+  //   2. 回填每个 record_file 每轮约 4 次调用（minutes + chapters，各含探测与取回）,
+  //      按 60/min 算，约 130 个 record_file 的一轮回填要 10 分钟出头，可以接受
+  //   3. 反过来超掉 190310 的代价是**全局的**：它会让令牌桶 converge，同一个网关里
+  //      正在跑的下载与归档一起被拖慢。两边的代价不对称，所以往紧了取
+  // 路径带变量，键必须用 smart.ts 那个常量，见 SMART_MINUTES_QUOTA_KEY 的注释。
+  [SMART_MINUTES_QUOTA_KEY]: 60,
+  // 章节的 path 里不带变量（record_file_id 走 query），按 path 计费就对得上
+  '/v1/smart/chapters': 60,
 }
 
 export interface TencentClientConfig {

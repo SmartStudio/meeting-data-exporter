@@ -1238,34 +1238,59 @@ const CHAPTERS_TEXT_HAVE =
   '章节来自腾讯会议的智能录制，已随时间轴归档。下面的分段是按逐字稿的时间戳切出来的，两者可以互相对照。'
 
 /**
+ * 章节**只取一段录制文件**的那一份，不跨段合并。
+ *
+ * `startMs` 是章节在**它自己那个录制文件**里的偏移：一场会议录成两段时，第二段的
+ * 章节又从 0 开始。把两段并成一张列表，时间戳与旁边那份逐字稿（cues 只来自一段）
+ * 对不上，`onSeek` 会跳到别的地方去，而界面上看不出任何异常。
+ *
+ * 挑哪一段：优先挑与转写同一个 `remote_id` 的那一段——两边同源，时间轴才对得上；
+ * 挑不到（没有转写、或转写那段没有章节）就按库里的自然顺序取第一段解析得出来的。
+ */
+function pickChaptersRow(
+  segs: readonly ContentSegmentRow[],
+  preferRemoteId: string | null,
+): ContentSegmentRow | null {
+  const usable = segs.filter((s) => s.status === 'parsed' && s.content !== null)
+  if (preferRemoteId !== null) {
+    const same = usable.find((s) => s.remoteId === preferRemoteId)
+    if (same !== undefined) return same
+  }
+  return usable[0] ?? null
+}
+
+/**
  * chapters.json（`src/tencent/smart.ts` 的 `serializeChapters` 写的）→ 章节列表，
- * 按起点升序。
+ * 按起点升序。**一段进、一段出**，挑哪一段见 `pickChaptersRow`。
  *
  * 解析不了一律回空数组：一份坏文件不该把整个时间轴端点打成 500；正文原样在库里，
  * `?type=chapters` 能看到它。缺 id 或缺起点的条目同样跳过——一条点不动的章节比
  * 没有这一条更糟。
  */
-function parseChapterSegments(segs: readonly ContentSegmentRow[]): ChapterItem[] {
+function parseChapterSegment(seg: ContentSegmentRow | null): ChapterItem[] {
+  if (seg === null || seg.status !== 'parsed' || seg.content === null) return []
+  let doc: { chapters?: unknown } | null
+  try {
+    doc = JSON.parse(seg.content) as typeof doc
+  } catch {
+    return []
+  }
+  // 合法 JSON ≠ 合法 chapters.json：`{"chapters": 42}` 上 for...of 抛「不可迭代」,
+  // `[null]` 上取属性抛 TypeError——两者都躲得过上面的 try/catch，一路冒到 router
+  // 的兜底 catch 变成 500。形状要一层层确认，不能只信 JSON.parse 没抛
+  const list: unknown = typeof doc === 'object' && doc !== null ? doc.chapters : undefined
+  if (!Array.isArray(list)) return []
   const out: ChapterItem[] = []
-  for (const s of segs) {
-    if (s.status !== 'parsed' || s.content === null) continue
-    let doc: { chapters?: unknown } | null
-    try {
-      doc = JSON.parse(s.content) as typeof doc
-    } catch {
-      continue
-    }
-    // 合法 JSON ≠ 合法 chapters.json：`{"chapters": 42}` 上 for...of 抛「不可迭代」,
-    // `[null]` 上取属性抛 TypeError——两者都躲得过上面的 try/catch，一路冒到 router
-    // 的兜底 catch 变成 500。形状要一层层确认，不能只信 JSON.parse 没抛
-    const list: unknown = typeof doc === 'object' && doc !== null ? doc.chapters : undefined
-    if (!Array.isArray(list)) continue
-    for (const item of list) {
-      if (typeof item !== 'object' || item === null) continue
-      const c = item as { chapterId?: unknown; name?: unknown; startMs?: unknown }
-      if (typeof c.chapterId !== 'string' || typeof c.startMs !== 'number') continue
-      out.push({ id: c.chapterId, name: typeof c.name === 'string' ? c.name : '', at: Math.floor(c.startMs / 1000) })
-    }
+  // 同一份文件里 id 撞车理论上不该有，撞了也只留第一条：两条同 id 的章节在前端
+  // 是同一个 key，React 会各种诡异，而这里去重的代价是零
+  const seen = new Set<string>()
+  for (const item of list) {
+    if (typeof item !== 'object' || item === null) continue
+    const c = item as { chapterId?: unknown; name?: unknown; startMs?: unknown }
+    if (typeof c.chapterId !== 'string' || typeof c.startMs !== 'number') continue
+    if (seen.has(c.chapterId)) continue
+    seen.add(c.chapterId)
+    out.push({ id: c.chapterId, name: typeof c.name === 'string' ? c.name : '', at: Math.floor(c.startMs / 1000) })
   }
   return out.sort((a, b) => a.at - b.at)
 }
@@ -1289,17 +1314,9 @@ export async function getChapters(req: Request, ctx: RouteCtx): Promise<Response
   if (!p.ok) return p.response
   const { key, row, access, adminId } = p.prepared
 
-  // 章节走自己的一类正文（chapters.json），与下面的转写分段互不依赖：
-  // 没有章节时时间轴照样有转写分段可渲染，有章节时两者可以互相对照
-  const chapterSegs = await ctx.deps.contents.listSegments(
-    key.meetingId,
-    key.subMeetingId,
-    ASSET_KEY_TO_GATEWAY_TYPE.chapters,
-  )
-  const chapters = parseChapterSegments(chapterSegs)
-
   // 逐个候选类型找第一段有正文的转写。最多两次查询（transcript / ai_transcript）,
-  // 不是把整场会议的正文都读出来
+  // 不是把整场会议的正文都读出来。先找转写再找章节：章节要挑同一个
+  // record_file 的那一段，需要先知道转写落在哪一段上
   let picked: { row: ContentSegmentRow; assetKey: AssetKey } | null = null
   for (const assetKey of TRANSCRIPT_PREFERENCE) {
     const segs = await ctx.deps.contents.listSegments(
@@ -1313,6 +1330,16 @@ export async function getChapters(req: Request, ctx: RouteCtx): Promise<Response
       break
     }
   }
+
+  // 章节走自己的一类正文（chapters.json），与下面的转写分段互不依赖：
+  // 没有章节时时间轴照样有转写分段可渲染，有章节时两者可以互相对照。
+  // 但只取**一段**：跨段合并会把另一个录制文件的偏移混进来，见 pickChaptersRow
+  const chapterSegs = await ctx.deps.contents.listSegments(
+    key.meetingId,
+    key.subMeetingId,
+    ASSET_KEY_TO_GATEWAY_TYPE.chapters,
+  )
+  const chapters = parseChapterSegment(pickChaptersRow(chapterSegs, picked?.row.remoteId ?? null))
 
   const parsed = picked === null ? { format: 'none' as TranscriptFormat, cues: [] } : parseTranscriptCues(picked.row.content ?? '')
   const cues = parsed.cues.slice(0, limit)

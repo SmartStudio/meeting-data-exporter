@@ -34,7 +34,7 @@ export const MEDIUMTEXT_MAX_BYTES = 16 * 1024 * 1024 - 1
 const NAS_READ_TIMEOUT_MS = 60_000
 
 /**
- * 会入库的 `asset_type` 取值——四类纪要 + 转写。
+ * 会入库的 `asset_type` 取值——四类正文（逐字稿两种 + 纪要 + 时间轴）。
  *
  * **从引擎的 `ALL_ASSET_KEYS` 派生，不在这里抄一份短名**：资产键的权威定义在
  * `packages/engine/src/domain/types.ts`，抄一份的下场是新增纪要引擎时两处不同步,

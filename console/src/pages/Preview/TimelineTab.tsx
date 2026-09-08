@@ -68,6 +68,22 @@ export function TimelineTab({ data, loading, error, position, onSeek, onRetry }:
   const cur = currentCueIndex(data.cues, position)
   const from = data.cuesFrom
 
+  /**
+   * 「分段来自 …」这一句说的是**转写分段**从哪份正文切出来的。
+   *
+   * 它以前挂在章节列表下面，于是被读成章节的出处——章节来自腾讯的智能录制，与这份
+   * 转写不是一回事，两者连录制文件都未必是同一段。所以它现在只出现在两个地方，
+   * 两处互斥：切得出分段时紧贴「转写分段」这个标题，切不出时在那个空态框里。
+   */
+  const provenance =
+    from === null ? null : (
+      <p className={styles.hint}>
+        分段来自 {assetLabel(from.assetKey, from.assetType)} · {from.fileType} ·
+        {from.format === 'none' ? ' 认不出时间戳格式' : ` ${formatLabel(from.format)}`} ·
+        共 {from.total} 段
+      </p>
+    )
+
   return (
     <div className={styles.tabBody}>
       <p className={styles.backendText}>
@@ -90,21 +106,6 @@ export function TimelineTab({ data, loading, error, position, onSeek, onRetry }:
         </section>
       )}
 
-      {from !== null && (
-        <p className={styles.hint}>
-          分段来自 {assetLabel(from.assetKey, from.assetType)} · {from.fileType} ·
-          {from.format === 'none' ? ' 认不出时间戳格式' : ` ${formatLabel(from.format)}`} ·
-          共 {from.total} 段
-        </p>
-      )}
-
-      {from !== null && from.truncated && (
-        <p className={styles.warnLine}>
-          这一份转写共 {from.total} 段，本次只显示了前 {from.returned} 段（受一次
-          下发上限限制）。后半截不是没有，是这一次没取回来。
-        </p>
-      )}
-
       {data.cues.length === 0 && (
         <div className={styles.emptyBox}>
           <p className={styles.emptyTitle}>
@@ -112,6 +113,7 @@ export function TimelineTab({ data, loading, error, position, onSeek, onRetry }:
               ? '这场会议没有可解析的转写正文，所以一段都切不出来。'
               : '认不出这份转写的时间戳格式，所以切不出分段。'}
           </p>
+          {provenance}
           {data.sample !== null && data.sample.length > 0 && (
             <>
               <p className={styles.hint}>后端把正文的前几行原样带回来了，好当场看出是什么格式：</p>
@@ -130,6 +132,16 @@ export function TimelineTab({ data, loading, error, position, onSeek, onRetry }:
       {data.cues.length > 0 && (
         <>
           <h3 className={styles.sectionTitle}>转写分段</h3>
+
+          {provenance}
+
+          {from !== null && from.truncated && (
+            <p className={styles.warnLine}>
+              这一份转写共 {from.total} 段，本次只显示了前 {from.returned} 段（受一次
+              下发上限限制）。后半截不是没有，是这一次没取回来。
+            </p>
+          )}
+
           <ul ref={listRef} className={styles.cueList} aria-label="转写分段（按逐字稿时间戳切分）">
             {data.cues.map((c, i) => (
               <li key={`${c.at}/${i}`}>

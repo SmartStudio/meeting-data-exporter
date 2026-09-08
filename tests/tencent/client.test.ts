@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { USER_DETAIL_QUOTA_KEY, createTencentClient } from '../../src/tencent/client'
+import { SMART_MINUTES_QUOTA_KEY } from '../../src/tencent/smart'
 import { TencentApiError } from '../../src/tencent/errors'
 
 const cfg = {
@@ -223,6 +224,48 @@ test('quotaKey 让路径带变量的接口也受分钟级配额约束', async ()
   expect(calls).toHaveLength(3)
   // 60/min = 两次之间至少隔 1 秒，三次至少 2 秒
   expect(clockMs - startMs).toBeGreaterThanOrEqual(2_000)
+})
+
+/**
+ * 智能录制的两个接口同样受分钟级配额约束（60/min）。
+ *
+ * 钉的是「常量登记在册」这件事：`SMART_MINUTES_QUOTA_KEY` 只是个字符串，调用点把它
+ * 传进 `quotaKey` 而配额表里没有这个键的话，表现是**静默不限流**（Map 里查不到就
+ * 直接放行），没有任何报错——回填一开跑就可能撞上 190310，而 190310 会让全局令牌桶
+ * 收敛，把同一个网关里的下载与归档一起拖慢。
+ */
+test('智能纪要：quotaKey 指到 SMART_MINUTES_QUOTA_KEY 上，第 61 次调用要等到下一分钟', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn, calls } = fakeFetch([{ status: 200, body: { meeting_minute: { minute: 'x' } } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 50 }, // 全局 50/s = 3000/min，比这个接口的 60/min 宽 50 倍
+    { fetch: fn, sleep: async (ms: number) => { clockMs += ms }, nowMs: () => clockMs },
+  )
+
+  const startMs = clockMs
+  // 每次都是不同的 path（record_file_id 在 path 里），只有 quotaKey 相同
+  for (let i = 0; i < 61; i++) {
+    await c.get(`/v1/smart/minutes/rf-${i}`, {}, { quotaKey: SMART_MINUTES_QUOTA_KEY })
+  }
+
+  expect(calls).toHaveLength(61)
+  // 第 61 次必须落在第一次之后的 60 秒之外，否则某个 60 秒窗口里就有 61 次
+  expect(clockMs - startMs).toBeGreaterThanOrEqual(60_000)
+})
+
+test('智能章节：path 里不带变量，按 path 就受同一道 60/min 的约束', async () => {
+  let clockMs = 1_700_000_000_000
+  const { fn, calls } = fakeFetch([{ status: 200, body: { chapter_list: [] } }])
+  const c = createTencentClient(
+    { ...cfg, qps: 50 },
+    { fetch: fn, sleep: async (ms: number) => { clockMs += ms }, nowMs: () => clockMs },
+  )
+
+  const startMs = clockMs
+  for (let i = 0; i < 61; i++) await c.get('/v1/smart/chapters', { record_file_id: `rf-${i}` })
+
+  expect(calls).toHaveLength(61)
+  expect(clockMs - startMs).toBeGreaterThanOrEqual(60_000)
 })
 
 test('不传 quotaKey 时按 path 计费——同一个接口的不同 path 因此互不影响', async () => {
