@@ -132,6 +132,7 @@ import { runAutoGrantRound, type AutoGrantDeps, type AutoGrantRound } from './au
 import { syncHostNames } from './host-names'
 import { createInProcSource } from './source-inproc'
 import { createMysqlStore, type DeadAsset } from './store-mysql'
+import { deadAssetsDetail, deadAssetsReason } from './failure-text'
 import {
   DEFAULT_LEASE_SEC,
   assertArchiveRootUsable,
@@ -170,6 +171,8 @@ export interface JobFailInput {
    */
   subMeetingId?: string
   reason: string
+  /** 原始技术信息。不给 = 这条失败项只有一句人话（归档那种本来就是） */
+  detail?: string | null
   /** 绝对计数，不给就累加。只有镜像着别处真实计数器的失败项才该给，见 RecordFailureInput.attempts */
   attempts?: number
 }
@@ -263,7 +266,8 @@ function errText(err: unknown): string {
  * 没了、只剩纪要，而且已经失败 2 次」——两个错都不对。所以先合并成一句话。
  *
  * 「一行一个对象」正是那张表的设计：这里的"对象"是会议，不是资产。资产级的细节
- * （哪一类、最后一次错在哪）进 reason 那一句，够运维判断该去查什么。
+ * 分两处：哪一类、为什么没成，进 reason 那一句人话；原始报错整份进 detail
+ * （见 ./failure-text.ts）。够运维判断该去查什么，又不把归并键打散。
  *
  * ## 为什么每轮记**全部** dead，而不是只记"本轮新转 dead 的"
  *
@@ -301,12 +305,11 @@ async function recordDeadAssets(ctx: JobRunContext, dead: readonly DeadAsset[]):
       target,
       meetingId: first.meetingId,
       subMeetingId: first.subMeetingId,
-      // 资产类型与最后一次的错各自带着：只写「3 个资产失败了」的话，运维还得自己
-      // 去数据库里翻 last_error 才知道是磁盘满了还是上游 403——那正是这条失败项
-      // 想替他省掉的那一步。
-      reason:
-        '下载重试用尽，已放弃：' +
-        assets.map((a) => `${a.assetType}（${a.lastError ?? '无错误信息'}）`).join('；'),
+      // 一句人话进 reason（它是归并键的一段：23 场同样 404 的会议必须归成一组），
+      // 原始报错整份进 detail。翻译口径在 ./failure-text.ts，那里写着为什么不能
+      // 把 `ENOENT: … '/Users/…/transcript_3.txt.part'` 直接当 reason 用。
+      reason: deadAssetsReason(assets),
+      detail: deadAssetsDetail(assets),
       // 绝对值，照抄资产行：dead 行上 attempts 就是下载队列的上限，与 spec.maxAttempts
       // 相等，界面因此直接显示「已到上限 · 需要人工介入」。**不能走累加**——这个函数
       // 每轮都跑（见上方「为什么每轮记全部 dead」），累加会把它变成轮次计数器。
@@ -621,6 +624,7 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
           meetingId: input.meetingId ?? null,
           subMeetingId: input.subMeetingId ?? '',
           reason: input.reason,
+          detail: input.detail ?? null,
           attempts: input.attempts,
           impact: spec.impact,
           maxAttempts: spec.maxAttempts,

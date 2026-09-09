@@ -821,9 +821,9 @@ test('任务二把归档轮的六个数字原样写进摘要', async () => {
  * 的 reason——所以先合并成一句。
  */
 test('任务一：dead 资产的失败项是资产状态的镜像——一直开着、attempts 是真的、资产不再 dead 才关', async () => {
-  const video = { meetingId: 'm-1', subMeetingId: '', assetType: 'video', lastError: 'HTTP 404', attempts: 5 }
-  const summary = { meetingId: 'm-1', subMeetingId: '', assetType: 'meeting_summary', lastError: 'connect ETIMEDOUT', attempts: 5 }
-  const other = { meetingId: 'm-2', subMeetingId: 's-1', assetType: 'video', lastError: '磁盘满', attempts: 5 }
+  const video = { meetingId: 'm-1', subMeetingId: '', assetType: 'video', remoteId: 'rv', fileType: 'mp4', lastError: 'http 404', attempts: 5 }
+  const summary = { meetingId: 'm-1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'rs', fileType: 'txt', lastError: 'ENOENT: open /x/y.part', attempts: 5 }
+  const other = { meetingId: 'm-2', subMeetingId: 's-1', assetType: 'video', remoteId: 'ro', fileType: 'mp4', lastError: 'ENOSPC: no space left on device', attempts: 5 }
   let dead = [video, summary, other]
   const deps = bodyDeps({ deadAssets: async () => dead })
   await withScheduler({ fetch_recordings: createJobRunners(deps).fetch_recordings }, T0, async (h) => {
@@ -840,9 +840,13 @@ test('任务一：dead 资产的失败项是资产状态的镜像——一直开
     const m1 = fs.find((f) => f.target === 'm-1|')!
     expect(m1.meetingId).toBe('m-1')
     expect(m1.subMeetingId).toBe('')
-    // 资产类型与最后一次的错都在，运维不必再去翻库才知道该查什么
-    expect(m1.reason).toContain('video（HTTP 404）')
-    expect(m1.reason).toContain('meeting_summary（connect ETIMEDOUT）')
+    // reason 是人话，且**不含原始报错**——原文在 detail 里，那是为了让归并键
+    // （任务 + 原因 + 影响）对 23 场同一件事的会议真的相同
+    expect(m1.reason).toBe('录像：腾讯那边没有这个文件；逐字稿：本地写入失败')
+    expect(m1.reason).not.toContain('ENOENT')
+    // 原文一个字没丢，只是挪了个位置
+    expect(m1.detail).toContain('video/rv/mp4: http 404')
+    expect(m1.detail).toContain('meeting_summary/rs/txt: ENOENT: open /x/y.part')
     // attempts 是资产行的真实计数，不是"这是第几次记"：dead 就是 5，
     // 与 maxAttempts 相等，界面上因此直接是「已到上限 · 需要人工介入」
     expect(m1.attempts).toBe(5)
@@ -886,7 +890,7 @@ test('任务一：dead 资产的失败项是资产状态的镜像——一直开
     const again = (await h.jobs.listFailures({ jobName: 'fetch_recordings' })).find((f) => f.target === 'm-1|')!
     expect(again.resolvedAt).toBeNull()
     expect(again.attempts).toBe(5) // 绝对值：不是上一次的 5 再 +1
-    expect(again.reason).not.toContain('meeting_summary') // reason 是这一次的，纪要已经下下来了
+    expect(again.reason).not.toContain('逐字稿') // reason 是这一次的，逐字稿已经下下来了
   })
 })
 

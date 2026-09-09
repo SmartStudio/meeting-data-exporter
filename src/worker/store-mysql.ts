@@ -7,7 +7,7 @@ import type { Pool } from '../store/db'
 /**
  * 一条**此刻仍处于放弃状态**的资产（`deadAssets` 的返回形状）。
  *
- * 只带调度器落失败项要用的五列，不给整行：这个方法的调用方是
+ * 只带调度器落失败项要用的那几列，不给整行：这个方法的调用方是
  * `scheduler.ts` 的任务一，它要拼的是一句人读的话（哪场会议、哪类资产、
  * 最后一次错在哪）加一个真实的计数，拿整行只会让人以为自己可以顺手改点什么。
  */
@@ -15,6 +15,9 @@ export interface DeadAsset {
   meetingId: string
   subMeetingId: string
   assetType: string
+  /** 平台侧的记录 id 与文件格式。失败项的技术明细靠这两个才能回库里定位到具体那一行 */
+  remoteId: string
+  fileType: string | null
   lastError: string | null
   /** 下载队列的真实尝试次数。dead 行上它就是上限——失败项的 attempts 照抄它，不累加 */
   attempts: number
@@ -272,18 +275,22 @@ export function createMysqlStore(pool: Pool): MysqlStore {
       )
       return rows as unknown as AssetRow[]
     },
-    // 时间窗 + 只取四列，理由见 MysqlStore.deadAssets。ORDER BY id 是为了让
+    // 时间窗 + 只取这几列，理由见 MysqlStore.deadAssets。ORDER BY id 是为了让
     // 同一场会议的多条资产在拼那句失败原因时次序稳定（不然两轮跑出来的话不一样，
     // 界面上看起来像是又出了新问题）。
     async deadAssets() {
       const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT meeting_id, sub_meeting_id, asset_type, last_error, attempts
+        `SELECT meeting_id, sub_meeting_id, asset_type, remote_id, file_type, last_error, attempts
            FROM meeting_assets WHERE status='dead' ORDER BY id`,
       )
       return rows.map((r) => ({
         meetingId: r.meeting_id as string,
         subMeetingId: r.sub_meeting_id as string,
         assetType: r.asset_type as string,
+        remoteId: r.remote_id as string,
+        // 列是 NOT NULL DEFAULT ''，但读侧照样按可空处理：空串与 NULL 在
+        // 「这条资产是什么格式」上是同一个答案（不知道），拼明细时都落成空
+        fileType: (r.file_type ?? null) as string | null,
         lastError: (r.last_error ?? null) as string | null,
         attempts: Number(r.attempts),
       }))

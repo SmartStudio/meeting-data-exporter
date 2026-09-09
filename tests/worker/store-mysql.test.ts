@@ -403,13 +403,26 @@ describe('createMysqlStore', () => {
       // 不带时间窗：失败项是「资产此刻是否 dead」的镜像，上一轮放弃的只要还 dead 就要在
       const got = await s.deadAssets()
       expect(got).toEqual([
-        { meetingId: 'm1', subMeetingId: '', assetType: 'video', lastError: '上一轮就放弃了', attempts: 1 },
-        { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', lastError: 'HTTP 404', attempts: 1 },
+        { meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4', lastError: '上一轮就放弃了', attempts: 1 },
+        { meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: 'b', fileType: 'mp4', lastError: 'HTTP 404', attempts: 1 },
       ])
 
       // 被人打回队列（resetFailed）之后它不再是 dead，也就不再出现——失败项由此关掉
       await s.resetFailed(2000)
       expect(await s.deadAssets()).toEqual([])
+    })
+  })
+
+  test('deadAssets 带回 remote_id 与 file_type——失败项的技术明细要靠它们定位到行', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r-9', fileType: 'mp4' }, 100)
+      const row = (await s.claimNext(200, 60))!
+      await s.markDead(row.id, 'http 404', 300)
+      expect(await s.deadAssets()).toEqual([
+        { meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r-9', fileType: 'mp4', lastError: 'http 404', attempts: 1 },
+      ])
     })
   })
 
