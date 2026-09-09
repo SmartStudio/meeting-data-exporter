@@ -91,3 +91,18 @@ test('续传完成时带回的是文件总长，不是本轮追加的那一段',
   if (r.status === 'completed') expect(r.bytesWritten).toBe(BODY.length)   // 1000，不是本轮追加的 600
   s.server.stop(); await rm(root, { recursive: true, force: true })
 })
+
+// 2026-09-09 本机回填实测：腾讯对「转写_」录制的逐字稿 txt 回 HTTP 200、content-length 0。
+// 空正文一个 chunk 都不来，.part 从未建出来，文本类接着去读 .part 算 hash 就是
+// ENOENT——每次重试同样结果，5 次后 dead。空文件是平台给的事实，落一个 0 字节文件。
+test('空正文（200、0 字节）：落 0 字节文件并 completed，不因 .part 不存在而失败', async () => {
+  const root = await tmp(); const storage = createLocalStorage(root)
+  const server = Bun.serve({ port: 0, fetch() { return new Response(new Uint8Array(0), { status: 200 }) } })
+  const gw = { getDownloadUrl: async () => ({ url: `http://localhost:${server.port}/t`, expiresAt: 9e9, fileType: 'txt', bytesExpected: null }) } as any
+  const r = await downloadAsset({ storage, gw }, { assetId: 'a', relPath: 'd/t.txt', bytesExpected: null, isText: true }, () => 1)
+  expect(r.status).toBe('completed')
+  if (r.status === 'completed') { expect(r.bytesWritten).toBe(0); expect(r.contentHash).toMatch(/^[0-9a-f]{64}$/) }
+  expect((await Bun.file(join(root, 'd/t.txt')).arrayBuffer()).byteLength).toBe(0)
+  expect(await storage.writtenSize('d/t.txt')).toBe(0)
+  server.stop(); await rm(root, { recursive: true, force: true })
+})

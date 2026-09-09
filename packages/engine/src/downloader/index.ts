@@ -40,6 +40,10 @@ export async function downloadAsset(deps: DownloadDeps, task: DownloadTask, _now
         written += value.byteLength; sinceProgress += value.byteLength
         if (sinceProgress >= PROGRESS_INTERVAL) { deps.onProgress?.(written); sinceProgress = 0 }
       }
+      // 空正文（200、content-length 0）一个 chunk 都不来，.part 从未建出来；下面的
+      // hashFile / finalize 都以它存在为前提，会以 ENOENT 失败、重试 5 次后 dead。
+      // 平台就是给了个空文件（2026-09-09 实测「转写_」录制的逐字稿 txt），落 0 字节。
+      if (written === 0) await deps.storage.appendChunk(task.relPath, 0, new Uint8Array(0))
       // 完成校验
       if (task.bytesExpected != null && written !== task.bytesExpected) return { status: 'failed', error: `size mismatch: ${written} != ${task.bytesExpected}` }
       const hash = task.isText ? await hashFile(deps.storage, task.relPath) : null
