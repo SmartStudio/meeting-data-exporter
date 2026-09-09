@@ -94,7 +94,7 @@ async function seedLocalOnly(
 /**
  * 完整的一场已归档会议：本地目录 + NAS 目录 + 三张表 + nas_dir 根上的 `_manifest.json`。
  *
- * manifest **不在会议目录里**，在 nas_dir 根上（src/worker/archive.ts 的
+ * manifest **不在会议目录里**，在 nas_dir 根上（src/worker/nas-sidecars.ts 的
  * writeNasSidecars），而且多场会议渲染到同一个 nas_dir 时共用同一份——
  * `otherNasPath` 就是塞进去的「别的会议那一条」，用来钉住「只按前缀改自己那几条」。
  */

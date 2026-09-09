@@ -46,7 +46,7 @@
  * 该由人去看这场会议到底归到哪儿了。
  *
  * ⚠️ **`_manifest.json` 不在会议目录里，在 `nas_dir` 根上**（`writeNasSidecars`，
- * src/worker/archive.ts）。多场会议渲染到同一个 nas_dir 时它们共用同一份 manifest，
+ * src/worker/nas-sidecars.ts）。多场会议渲染到同一个 nas_dir 时它们共用同一份 manifest，
  * 所以这里只按「这场会议的旧 NAS 目录前缀」逐条替换 `assets[].nasPath`，
  * 不整份重写、也不碰别的会议那几条。
  *

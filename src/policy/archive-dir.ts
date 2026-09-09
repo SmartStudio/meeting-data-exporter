@@ -18,7 +18,8 @@
  * `MDE_NAS_ROOT` 是部署给的挂载点，模板只描述它下面的层级。绝对模板会让
  * `MDE_NAS_ROOT` 变成一个没有作用的配置——挂载点换了地方，归档还往老路径写，
  * 而这件事没有任何地方会报出来。这条约束也已经**结构性地**被写在归档链路里了：
- * `writeNasSidecars` 用 `relative(nasRoot, nasDir)` 算 sidecar 的落点，nasDir 一旦
+ * `writeNasSidecars`（`src/worker/nas-sidecars.ts`）用 `relative(nasRoot, nasDir)`
+ * 算 sidecar 的落点，nasDir 一旦
  * 跑到 nasRoot 之外，那两个 JSON 会被写到 NAS 根之外去。所以这里不是新加一条洁癖
  * 规矩，是把既有的隐式前提变成一次显式的、报得出理由的检查。
  *

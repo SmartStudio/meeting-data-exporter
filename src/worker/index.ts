@@ -223,7 +223,8 @@ export async function runFetchRound(
   // 建键，周期会议的每个场次各写各的 sidecar。
   //
   // 这一段写的是**本地归档区**那一份（deps.storage 指向 MDE_ARCHIVE_ROOT）。
-  // NAS 上那一份由归档链路**独立生成**（archiveMeeting → writeNasSidecars），
+  // NAS 上那一份由归档链路**独立生成**（archiveMeeting → `src/worker/nas-sidecars.ts`
+  // 的 writeNasSidecars，拆场次脚本也调同一份），
   // 不是把这两个文件搬过去——NAS 那份要多带归档特有的信息（nasPath / nasHash /
   // archivedAt / retentionDays / nasDir），而且本地这份 30 天后会被到期清理删掉，
   // 长期活下来的是 NAS 那一份。两份共用 packages/engine/src/domain/manifest.ts

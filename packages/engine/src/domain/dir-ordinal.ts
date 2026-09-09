@@ -3,7 +3,9 @@ import { meetingPathKey } from './types'
 
 /**
  * 给一批录制记录算出各自的**目录序号**：同一 `meeting_id` 下、`meetingDirPath`
- * 算出同名目录的多条记录，按 `sub_meeting_id` 字符串升序编号（1、2、3…）。
+ * 算出同名目录的多条记录，按 `(created_at, sub_meeting_id)` 升序编号（1、2、3…）
+ * ——`created_at`（首次发现时间）是主序，`sub_meeting_id` 只在同批发现时定次序。
+ * 为什么不是单按 `sub_meeting_id`，见下面「不变量是『序号钉住不动』」。
  *
  * ## 为什么需要它
  *
