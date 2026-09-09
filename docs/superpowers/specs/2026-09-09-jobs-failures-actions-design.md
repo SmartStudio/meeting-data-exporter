@@ -41,7 +41,7 @@
 
 ### 2.4 原因用人话，原始报错折叠（网关 + 控制台）
 
-- 迁移 `013_job_failures_detail.sql`：`ALTER TABLE job_failures ADD COLUMN detail TEXT NULL` —— 原始技术信息，`reason` 从此只放人话。
+- 迁移 `014_job_failures_detail.sql`（013 归周期会议那份规格）：`ALTER TABLE job_failures ADD COLUMN detail TEXT NULL` —— 原始技术信息，`reason` 从此只放人话。
 - `src/worker/failure-text.ts`（新）：
   - `describeDownloadError(lastError: string | null): string`，按前缀匹配：`http 404` → `腾讯那边没有这个文件`；`http 5` 开头或 `too many link renewals` → `腾讯下载服务出错`；含 `ENOENT` / `EACCES` / `ENOSPC` → `本地写入失败`；`size mismatch` 开头 → `下载不完整`；null / 其他 → `下载失败`。
   - `deadAssetsReason(assets)`：`<中文资产名>：<人话>`，按资产类型去重后用 `；` 连接，例：`录像：腾讯那边没有这个文件；逐字稿：本地写入失败`。中文资产名来自 `src/domain/asset-labels.ts`。
