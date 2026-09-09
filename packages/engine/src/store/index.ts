@@ -18,6 +18,9 @@ export interface ProbeUpsert { meetingId: string; subMeetingId: string; assetTyp
 export interface ProbeRow { meeting_id: string; sub_meeting_id: string; asset_type: string; state: ProbeState; attempts: number; deadline_at: number }
 export interface ProbeKey { meetingId: string; subMeetingId: string; assetType: string }
 
+/** 一场会议（精确到场次）。失败项动作作用在这个粒度上，不是单条资产 */
+export interface MeetingAssetsKey { meetingId: string; subMeetingId: string }
+
 /** `meetingsForPaths()` 的值：拼目录名要的三列，加上两段主键原文与目录序号 */
 export interface MeetingPathRow {
   meetingId: string
@@ -122,6 +125,36 @@ export interface Store {
    * 「重试了几次」这个数字还要不要能对外解释。
    */
   resetFailed(now: number): Promise<number>
+  /**
+   * 把**一场会议**的 failed / dead 打回队列，返回改了几行（规格 2026-09-09 §2.3）。
+   *
+   * 与 `resetFailed` 的分工要分清，两者不能互相替代：
+   *
+   *   - `resetFailed`：**整库**、给 CLI 的 `mde retry`，且刻意**不清** attempts
+   *   - 这一个：**一场会议**、由控制台失败项表上的「重试」驱动，**清零** attempts
+   *
+   * 清零是这条路径的必要条件，不是顺手：一条 attempts 已经到 5 的 dead 行不清零
+   * 就打回队列，`claimNext` 领它时 attempts 变 6、越过 MAX_ATTEMPTS，第一次失败
+   * 就直接又是 dead。界面上表现为「点了重试，过一会儿它又出现了」——而运维没有
+   * 任何办法看出这是设计如此。清零之后它拿到的是完整的五次。
+   *
+   * 按**精确的 (meeting_id, sub_meeting_id)** 筛：周期性会议各场次共用 meeting_id，
+   * 只按前一段筛会把别的场次一起打回队列。
+   */
+  retryMeetingAssets(k: MeetingAssetsKey, now: number): Promise<number>
+  /**
+   * 把**一场会议**的 dead 判成「不用管了」（`skipped` + `last_error='ignored_by_admin'`），
+   * 返回改了几行。
+   *
+   * 只动 `dead`，不动 `failed`：failed 还在自动退避重试中（`markFailed` 写的
+   * lease_expires_at 就是下次可领时间），把它一并按掉等于替队列做了一个它没做的
+   * 决定。而 dead 是终态，队列从此不再碰它——「忽略」在那上面才是一个真实的动作。
+   *
+   * 转 `skipped` 而不是删行：`_manifest.json` 要答得出「哪些资产是确认取不到的、
+   * 为什么」，`ignored_by_admin` 就是那个为什么。删掉等于把这场会议的缺口说成
+   * 「不知有无」。资产不再是 dead，下一轮 `recordDeadAssets` 也不会再登记它。
+   */
+  ignoreDeadAssets(k: MeetingAssetsKey, now: number): Promise<number>
   /**
    * 拼落盘路径要用的会议元数据，键为 `meetingPathKey(meeting_id, sub_meeting_id)`。
    *
@@ -239,6 +272,16 @@ export function createStore(db: Database): Store {
     // pending 之后那个时间没有任何含义，留着只会让人对着一条 pending 行猜它是不是
     // 还在等什么。三种状态各自的读法见 Store.markFailed。
     async resetFailed(now) { return db.query(`UPDATE assets SET status='pending', last_error=NULL, lease_expires_at=NULL, updated_at=?  WHERE status IN ('failed','dead')`).run(now).changes },
+    async retryMeetingAssets(k, now) {
+      return db.query(`UPDATE assets SET status='pending', attempts=0, last_error=NULL, lease_expires_at=NULL, updated_at=?
+                        WHERE meeting_id=? AND sub_meeting_id=? AND status IN ('failed','dead')`)
+        .run(now, k.meetingId, k.subMeetingId).changes
+    },
+    async ignoreDeadAssets(k, now) {
+      return db.query(`UPDATE assets SET status='skipped', last_error='ignored_by_admin', lease_expires_at=NULL, updated_at=?
+                        WHERE meeting_id=? AND sub_meeting_id=? AND status='dead'`)
+        .run(now, k.meetingId, k.subMeetingId).changes
+    },
     async meetingsForPaths() {
       const rows = db.query<{ meeting_id: string; sub_meeting_id: string; subject: string | null;
                               meeting_code: string | null; start_time: number | null; end_time: number | null;

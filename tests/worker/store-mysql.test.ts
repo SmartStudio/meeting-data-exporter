@@ -679,4 +679,51 @@ describe('createMysqlStore', () => {
       expect(await s.assetsForMeeting('m1', 's1')).toHaveLength(1)
     })
   })
+  // ── 失败项动作要用的两个写法（规格 2026-09-09 §2.3）────────────────
+  // 语义（尤其是「为什么 retry 清零 attempts、ignore 只动 dead」）见引擎侧
+  // `Store.retryMeetingAssets` / `Store.ignoreDeadAssets` 的注释。两个宿主的 SQL
+  // 是两份，MySQL 侧必须自己测。
+
+  test('retryMeetingAssets：只动这一场的 failed/dead，attempts 清零，别的会议不动', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertMeeting({ ...M, meetingId: 'm2' }, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 100)
+      await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r3' }, 100)
+      const a = (await s.claimNext(200, 60))!
+      const b = (await s.claimNext(200, 60))!
+      await s.markDead(a.id, 'http 404', 300)
+      await s.markDead(b.id, 'http 404', 300)
+
+      expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: '' }, 400)).toBe(1)
+      const back = (await s.assetsForMeeting('m1', ''))[0]!
+      expect(back.status).toBe('pending')
+      expect(back.attempts).toBe(0)
+      expect(back.last_error).toBeNull()
+      expect(back.lease_expires_at).toBeNull()
+      expect((await s.assetsForMeeting('m2', ''))[0]!.status).toBe('dead')
+      // 清零之后是完整的五次机会，不是「回队列再失败一次就又 dead」
+      expect((await s.claimNext(500, 60))!.attempts).toBe(1)
+    })
+  })
+
+  test('ignoreDeadAssets：dead → skipped(ignored_by_admin)，failed 不动', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 100)
+      const a = (await s.claimNext(200, 60))!
+      const b = (await s.claimNext(200, 60))!
+      await s.markDead(a.id, 'http 404', 300)
+      await s.markFailed(b.id, 'boom', 300, 9_999_999)
+
+      expect(await s.ignoreDeadAssets({ meetingId: 'm1', subMeetingId: '' }, 400)).toBe(1)
+      const rows = await s.assetsForMeeting('m1', '')
+      expect(rows.find((r) => r.id === a.id)!.status).toBe('skipped')
+      expect(rows.find((r) => r.id === a.id)!.last_error).toBe('ignored_by_admin')
+      expect(rows.find((r) => r.id === b.id)!.status).toBe('failed')
+    })
+  })
 })

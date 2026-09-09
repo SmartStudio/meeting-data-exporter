@@ -307,6 +307,27 @@ export function createMysqlStore(pool: Pool): MysqlStore {
       return res.affectedRows
     },
 
+    // 与 SQLite 版逐字同义（表名不同）。**两处必须一起改**：只改一边的话
+    // CLI 与服务器对同一个动作给出不同结果，而两边都不报错。
+    // 语义（尤其是「为什么 retry 清零 attempts、ignore 只动 dead」）见引擎侧
+    // `Store.retryMeetingAssets` / `Store.ignoreDeadAssets` 的注释。
+    async retryMeetingAssets(k, now) {
+      const [res] = await pool.query<ResultSetHeader>(
+        `UPDATE meeting_assets SET status='pending', attempts=0, last_error=NULL, lease_expires_at=NULL, updated_at=?
+          WHERE meeting_id=? AND sub_meeting_id=? AND status IN ('failed','dead')`,
+        [now, k.meetingId, k.subMeetingId],
+      )
+      return res.affectedRows
+    },
+    async ignoreDeadAssets(k, now) {
+      const [res] = await pool.query<ResultSetHeader>(
+        `UPDATE meeting_assets SET status='skipped', last_error='ignored_by_admin', lease_expires_at=NULL, updated_at=?
+          WHERE meeting_id=? AND sub_meeting_id=? AND status='dead'`,
+        [now, k.meetingId, k.subMeetingId],
+      )
+      return res.affectedRows
+    },
+
     /**
      * 键是 `meetingPathKey(meeting_id, sub_meeting_id)`，与 SQLite 宿主逐字同构。
      *

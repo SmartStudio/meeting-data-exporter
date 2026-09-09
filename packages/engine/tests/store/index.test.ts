@@ -310,3 +310,81 @@ test('resetFailed 把 failed/dead 打回 pending，并清掉那个"最早可再�
   expect(back.lease_expires_at).toBeNull()
   expect((await s.claimNext(130, 300))!.id).toBe(row.id)      // 逃生口的意义：立刻能再领
 })
+
+// ── 失败项动作要用的两个写法（规格 2026-09-09 §2.3）──────────────────
+//
+// 与 `resetFailed` 的分工要分清：那个是**整库**的人工逃生口（CLI 的 mde retry），
+// 而且刻意不清 attempts。这两个是**一场会议**的，由控制台上的一次点击驱动，
+// 所以 retry 必须清 attempts——不清的话一条 attempts 已经到 5 的行被打回来
+// 之后只剩一次机会，第一次失败就又是 dead，界面上表现为「点了重试没有用」。
+
+test('retryMeetingAssets 只动这一场的 failed/dead，清零 attempts 与那个"最早可再领取时间"', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertMeeting({ ...M, meetingId: 'm2' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 1)
+  await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r3' }, 1)
+  const a1 = (await s.claimNext(100, 300))!      // m1/video
+  const a2 = (await s.claimNext(100, 300))!      // m1/audio
+  const b1 = (await s.claimNext(100, 300))!      // m2/video
+  await s.markDead(a1.id, 'http 404', 110)
+  await s.markFailed(a2.id, 'boom', 110, 9_999_999)
+  await s.markDead(b1.id, 'http 404', 110)
+
+  expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: '' }, 200)).toBe(2)
+
+  const m1rows = await s.assetsForMeeting('m1', '')
+  for (const r of m1rows) {
+    expect(r.status).toBe('pending')
+    expect(r.attempts).toBe(0)                   // 清零：不清的话回队列只剩一次机会
+    expect(r.last_error).toBeNull()
+    expect(r.lease_expires_at).toBeNull()
+  }
+  // 别的会议一个字都没动
+  expect((await s.assetsForMeeting('m2', ''))[0]!.status).toBe('dead')
+})
+
+test('retryMeetingAssets 不碰 completed / skipped / running', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 1)
+  const a1 = (await s.claimNext(100, 300))!
+  const a2 = (await s.claimNext(100, 300))!
+  await s.markCompleted(a1.id, null, 10, 110)
+  await s.markSkipped(a2.id, 'upstream_missing', 110)
+  expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: '' }, 200)).toBe(0)
+  expect((await s.assetsForMeeting('m1', '')).map((r) => r.status).sort()).toEqual(['completed', 'skipped'])
+})
+
+test('ignoreDeadAssets 只把 dead 转 skipped(ignored_by_admin)，failed 不动', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 1)
+  const a1 = (await s.claimNext(100, 300))!
+  const a2 = (await s.claimNext(100, 300))!
+  await s.markDead(a1.id, 'http 404', 110)
+  await s.markFailed(a2.id, 'boom', 110, 9_999_999)   // 还在自动重试中，不该被"忽略"顺手关掉
+
+  expect(await s.ignoreDeadAssets({ meetingId: 'm1', subMeetingId: '' }, 200)).toBe(1)
+  const rows = await s.assetsForMeeting('m1', '')
+  const dead = rows.find((r) => r.id === a1.id)!
+  expect(dead.status).toBe('skipped')
+  expect(dead.last_error).toBe('ignored_by_admin')
+  expect(dead.lease_expires_at).toBeNull()
+  expect(rows.find((r) => r.id === a2.id)!.status).toBe('failed')
+})
+
+// 周期性会议的场次不许串：两场共用 meeting_id，只按前一段筛会把另一场也打回队列
+test('两个写法都按精确的 (meeting_id, sub_meeting_id) 筛，不串场次', async () => {
+  const s = fresh()
+  await s.upsertMeeting({ ...M, subMeetingId: 's1' }, 1)
+  await s.upsertMeeting({ ...M, subMeetingId: 's2' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: 's1', assetType: 'video', remoteId: 'r1' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: 's2', assetType: 'video', remoteId: 'r2' }, 1)
+  const x = (await s.claimNext(100, 300))!
+  const y = (await s.claimNext(100, 300))!
+  await s.markDead(x.id, 'e', 110)
+  await s.markDead(y.id, 'e', 110)
+  expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: 's1' }, 200)).toBe(1)
+  expect((await s.assetsForMeeting('m1', 's2'))[0]!.status).toBe('dead')
+})
