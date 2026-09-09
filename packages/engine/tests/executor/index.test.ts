@@ -65,6 +65,35 @@ test('两个场次各落各的目录：buildRelPath 按 (meeting_id, sub_meeting
   ])
 })
 
+/**
+ * 同一分钟的两条录制记录（腾讯的「转写_」孪生记录：media_start_time 与正常录制
+ * 完全相同）。主题不进目录名，会议号也一样，所以两场会议会算出同名目录——
+ * 各自的 transcript.txt 互相覆盖。第二条的目录名带序号后缀才分得开。
+ */
+test('同一分钟的两条录制记录：第二条落进带 _2 后缀的目录，互不覆盖', async () => {
+  const s = createStore(openDb(':memory:'))
+  const base = { meetingId: 'm1', meetingCode: '881', subject: 's', hostUserId: 'h', endTime: 0 }
+  await s.upsertMeeting({ ...base, subMeetingId: 'rec-1', startTime: 0 }, 1)
+  await s.upsertMeeting({ ...base, subMeetingId: 'rec-2', subject: '转写_s', startTime: 30 }, 1)   // 同一分钟
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'rec-1', assetType: 'meeting_summary', remoteId: 'r1', fileType: 'txt' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'rec-2', assetType: 'meeting_summary', remoteId: 'r2', fileType: 'txt' }, 1)
+
+  const paths: string[] = []
+  const deps: any = {
+    store: s,
+    download: async (t: any) => { paths.push(t.relPath); return { status: 'completed', contentHash: null, bytesWritten: 1 } },
+    gw: {},
+    storage: { ensureFreeSpace: async () => true },
+    meetingsByPathKey: await s.meetingsForPaths(),
+  }
+  await runExecutor(deps, { concurrency: 1, leaseSec: 60 }, () => 1)
+
+  expect(paths.sort()).toEqual([
+    '1970/01/1970-01-01_0000_881/transcript.txt',
+    '1970/01/1970-01-01_0000_881_2/transcript.txt',
+  ])
+})
+
 // ---------------------------------------------------------------------------
 // 回归：touchProgress 写库失败不该吞错——Task 3 code review 发现的问题
 // （见 packages/engine/src/executor/index.ts 的 onProgress 回调注释）：

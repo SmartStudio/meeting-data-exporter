@@ -511,11 +511,11 @@ describe('createMysqlStore', () => {
       expect(map.size).toBe(2)
       expect(map.get(meetingPathKey('m1', ''))).toEqual({
         meetingId: 'm1', subMeetingId: '', subject: '周会',
-        startTime: 1000, meetingCode: '881', endTime: 2000,
+        startTime: 1000, meetingCode: '881', endTime: 2000, dirOrdinal: 1,
       })
       expect(map.get(meetingPathKey('m2', 's1'))).toEqual({
         meetingId: 'm2', subMeetingId: 's1', subject: null,
-        startTime: null, meetingCode: null, endTime: null,
+        startTime: null, meetingCode: null, endTime: null, dirOrdinal: 1,
       })
     })
   })
@@ -538,6 +538,49 @@ describe('createMysqlStore', () => {
       expect(map.get(meetingPathKey('m1', 'rec-1'))!.startTime).toBe(1000)
       expect(map.get(meetingPathKey('m1', 'rec-2'))!.subject).toBe('第二场')
       expect(map.get(meetingPathKey('m1', 'rec-2'))!.startTime).toBe(2000)
+    })
+  })
+
+  /**
+   * 同一分钟的第二条录制记录：目录名要加序号，否则两场会议争同一个目录（腾讯的
+   * 「转写_」孪生记录 media_start_time 与正常录制完全相同）。序号由共用的
+   * `assignDirOrdinals` 算，两个宿主各钉一份用例逐条对齐——一处漏算，同一场会议
+   * 在两个宿主上会落进不同的目录。
+   */
+  test('meetingsForPaths 同 meeting 同一分钟的两个场次：dirOrdinal 按 sub 升序给 1 与 2', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      // 逆序插入：序号只能由 sub_meeting_id 决定，不能由插入顺序（或 SQL 的 ORDER BY）决定
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-2', subject: '转写_第一场', startTime: 1010 }, 100)
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-1', subject: '第一场', startTime: 1000 }, 100)
+
+      const map = await s.meetingsForPaths()
+      expect(map.get(meetingPathKey('m1', 'rec-1'))!.dirOrdinal).toBe(1)
+      expect(map.get(meetingPathKey('m1', 'rec-2'))!.dirOrdinal).toBe(2)
+    })
+  })
+
+  test('meetingsForPaths 起始分钟不同的两个场次：目录本就不同名，dirOrdinal 都是 1', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-1', startTime: 1000 }, 100)
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-2', startTime: 1000 + 3600 }, 100)
+
+      const map = await s.meetingsForPaths()
+      expect(map.get(meetingPathKey('m1', 'rec-1'))!.dirOrdinal).toBe(1)
+      expect(map.get(meetingPathKey('m1', 'rec-2'))!.dirOrdinal).toBe(1)
+    })
+  })
+
+  test('meetingsForPaths 存量空串行排最前：dirOrdinal=1，目录名保持原样', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)                                   // subMeetingId ''
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-9' }, 100)     // 同 startTime
+
+      const map = await s.meetingsForPaths()
+      expect(map.get(meetingPathKey('m1', ''))!.dirOrdinal).toBe(1)
+      expect(map.get(meetingPathKey('m1', 'rec-9'))!.dirOrdinal).toBe(2)
     })
   })
 

@@ -79,7 +79,7 @@ test('一场会议下完资产后写出 meeting.json 与 _manifest.json，落在
   await downloadAll(store)
   const storage = fakeStorage()
 
-  const r = await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  const r = await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   expect(r).toBe('written')
   expect([...storage.writes.keys()].sort()).toEqual([`${DIR}/_manifest.json`, `${DIR}/meeting.json`])
@@ -120,7 +120,7 @@ test('视频/音频的 sha256 如实写 null（不做整文件哈希），文本
   await downloadAll(store)
   const storage = fakeStorage()
 
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   const byType = new Map(manifest.assets.map((a) => [a.assetType, a]))
@@ -133,7 +133,7 @@ test('一个 completed 资产都没有 → skipped，不写空清单', async () 
   const store = await seeded()                       // 只 upsert，不跑 executor：全是 pending
   const storage = fakeStorage()
 
-  const r = await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  const r = await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   expect(r).toBe('skipped')
   expect(storage.writes.size).toBe(0)
@@ -142,7 +142,7 @@ test('一个 completed 资产都没有 → skipped，不写空清单', async () 
 test('会议在库里不存在 → skipped，不写文件', async () => {
   const store = createStore(openDb(':memory:'))
   const storage = fakeStorage()
-  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'nope', '', 5000)).toBe('skipped')
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'nope', subMeetingId: '', dirOrdinal: 1 }, 5000)).toBe('skipped')
   expect(storage.writes.size).toBe(0)
 })
 
@@ -164,7 +164,7 @@ test('没取到的资产进 missing 并带原因——skipped / dead 是终态�
   await store.markFailed(ai3.id, 'ECONNRESET', 2000, 2300)
   const storage = fakeStorage()
 
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   expect(manifest.assets.map((a) => a.assetType).sort()).toEqual(['meeting_summary', 'video'])
@@ -185,7 +185,7 @@ test('pending / running 不进 missing——它们连"试过一次"都还没有�
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'f-ai-1', fileType: 'docx' }, 1)
   const storage = fakeStorage()
 
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   expect(manifest.missing).toEqual([])
@@ -196,8 +196,8 @@ test('重复调用幂等：除 generatedAt 外内容逐字节一致', async () =
   await downloadAll(store)
   const a = fakeStorage(); const b = fakeStorage()
 
-  await writeMeetingManifest({ store, storage: a, generatedBy: 'mde-engine' }, 'm1', '', 5000)
-  await writeMeetingManifest({ store, storage: b, generatedBy: 'mde-engine' }, 'm1', '', 9999)
+  await writeMeetingManifest({ store, storage: a, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
+  await writeMeetingManifest({ store, storage: b, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 9999)
 
   for (const name of ['meeting.json', '_manifest.json']) {
     const strip = (d: unknown) => JSON.stringify({ ...(d as object), generatedAt: 0 })
@@ -241,7 +241,7 @@ test('sidecar 的目录与 runExecutor 算出的资产目录逐字节一致', as
   const relPaths = await downloadAll(store)
   const storage = fakeStorage()
 
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   const dirOf = (p: string) => p.slice(0, p.lastIndexOf('/'))
   const assetDirs = new Set(relPaths.map(dirOf))
@@ -271,7 +271,7 @@ test('平台不给 bytes_expected 时，bytes 回落到 completed 资产落盘�
   await downloadAll(store)
   const storage = fakeStorage()
 
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   const byType = new Map(manifest.assets.map((a) => [a.assetType, a]))
@@ -284,7 +284,7 @@ test('平台给了 bytes_expected 就仍然用它——它是被 downloader 校�
   await downloadAll(store)              // 而"落盘真实大小"是 205818547 / 4096
   const storage = fakeStorage()
 
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   const byType = new Map(manifest.assets.map((a) => [a.assetType, a]))
@@ -297,7 +297,7 @@ test('completed 但 bytes_written 是 0（本次改动之前完成的旧行）�
   await downloadAll(store, () => 0)     // 旧行的形态：进度检查点一次都没触发过，列里留着默认值 0
   const storage = fakeStorage()
 
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
   const manifest = storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile
   expect(manifest.assets.map((a) => a.bytes)).toEqual([null, null])
@@ -314,10 +314,10 @@ test('第二轮内容一个字没变 → unchanged，一次都不写（generated
   await downloadAll(store)
   const storage = fakeStorage()
 
-  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)).toBe('written')
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)).toBe('written')
   const afterFirst = storage.writeCount()
 
-  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 9999)).toBe('unchanged')
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 9999)).toBe('unchanged')
 
   expect(storage.writeCount()).toBe(afterFirst)                 // 一次新的写都没发生
   // 盘上留着的仍是第一轮那份：generatedAt 还是 5000，文件哈希因此不变
@@ -329,14 +329,14 @@ test('内容真的变了就写，且只写变了的那个文件', async () => {
   const store = await seeded()
   await downloadAll(store)
   const storage = fakeStorage()
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
   const afterFirst = storage.writeCount()
 
   // 新下完一个资产：_manifest.json 的 assets 多一条，meeting.json 一个字没变
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'f-audio-1', fileType: 'm4a' }, 1)
   await downloadAll(store)
 
-  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 9999)).toBe('written')
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 9999)).toBe('written')
 
   expect(storage.writeCount()).toBe(afterFirst + 1)             // 只多了一次写
   expect((storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile).generatedAt).toBe(9999)
@@ -348,9 +348,9 @@ test('生成方换了（mde-engine → mde-worker）算内容变了，要重写'
   const store = await seeded()
   await downloadAll(store)
   const storage = fakeStorage()
-  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+  await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
-  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-worker' }, 'm1', '', 9999)).toBe('written')
+  expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-worker' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 9999)).toBe('written')
   expect((storage.writes.get(`${DIR}/meeting.json`) as MeetingMetaFile).generatedBy).toBe('mde-worker')
 })
 
@@ -362,7 +362,7 @@ test('读不回已有文件（存储抛错）→ 落到"要写"这一侧，并�
     const base = fakeStorage()
     const storage = { ...base, readMeta: async () => { throw new Error('EACCES: permission denied') } }
 
-    const r = await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)
+    const r = await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)
 
     expect(r).toBe('written')                                   // 判断不了 → 写，不是跳过
     expect(base.writeCount()).toBe(2)
@@ -380,7 +380,7 @@ test('文件还不存在（首写）不是异常：照写，且不 warn', async 
   const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
   try {
     const storage = fakeStorage()
-    expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, 'm1', '', 5000)).toBe('written')
+    expect(await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)).toBe('written')
     expect(warnSpy).not.toHaveBeenCalled()
   } finally {
     warnSpy.mockRestore()
@@ -399,6 +399,33 @@ test('一轮收尾：unchanged 单独计数，不混进 written', async () => {
 
   expect(first).toEqual({ written: 1, unchanged: 0, skipped: 1, failed: 0 })
   expect(second).toEqual({ written: 0, unchanged: 1, skipped: 1, failed: 0 })
+})
+
+/**
+ * 同一分钟的两条录制记录：目录名靠序号后缀分开，两份 sidecar 因此各在各的目录里。
+ * 不加序号时它们会争同一个 `meeting.json` / `_manifest.json`，而且每一轮写入都在
+ * 两份内容之间来回翻转（第二场覆盖第一场，下一轮又反过来）。
+ */
+test('同一分钟的两场 sidecar 落进各自的目录，第二场带 _2 后缀', async () => {
+  const store = await seeded()                       // m1 / sub ''，START 那一分钟
+  await store.upsertMeeting({ ...MEETING, subMeetingId: 'rec-2', subject: '转写_周会', startTime: START + 30 }, 1)
+  await store.upsertAsset({ meetingId: MEETING.meetingId, subMeetingId: 'rec-2', assetType: 'meeting_summary', remoteId: 'r-2', fileType: 'txt' }, 1)
+  const relPaths = await downloadAll(store)
+  const storage = fakeStorage()
+
+  const r = await writeMeetingManifests(
+    { store, storage, generatedBy: 'mde-worker' }, await store.meetingsForPaths(), () => 5000,
+  )
+
+  expect(r.written).toBe(2)
+  expect([...storage.writes.keys()].sort()).toEqual([
+    `${DIR}/_manifest.json`, `${DIR}/meeting.json`,
+    `${DIR}_2/_manifest.json`, `${DIR}_2/meeting.json`,
+  ].sort())
+  // 两份清单各写各的场次，且资产确实落在各自的目录里（不是「写了两份一样的」）
+  expect((storage.writes.get(`${DIR}_2/_manifest.json`) as ManifestFile).subMeetingId).toBe('rec-2')
+  expect((storage.writes.get(`${DIR}/_manifest.json`) as ManifestFile).subMeetingId).toBe('')
+  expect(relPaths).toContain(`${DIR}_2/transcript.txt`)
 })
 
 test('一轮收尾按场次各写一份 sidecar：同 meeting_id 的两场各有自己的目录', async () => {

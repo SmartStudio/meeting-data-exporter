@@ -1,6 +1,6 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2'
 import type { PoolConnection } from 'mysql2/promise'
-import { meetingPathKey } from '@yaowu/mde-engine'
+import { assignDirOrdinals, meetingPathKey } from '@yaowu/mde-engine'
 import type { AssetRow, AssetStatus, ProbeRow, Store } from '@yaowu/mde-engine'
 import type { Pool } from '../store/db'
 
@@ -314,17 +314,22 @@ export function createMysqlStore(pool: Pool): MysqlStore {
         `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time
            FROM meetings ORDER BY meeting_id, sub_meeting_id`,
       )
-      return new Map(rows.map((r) => [
-        meetingPathKey(r.meeting_id as string, r.sub_meeting_id as string),
-        {
-          meetingId: r.meeting_id as string,
-          subMeetingId: r.sub_meeting_id as string,
-          subject: (r.subject ?? null) as string | null,
-          startTime: r.start_time === null ? null : Number(r.start_time),
-          meetingCode: (r.meeting_code ?? null) as string | null,
-          endTime: r.end_time === null ? null : Number(r.end_time),
-        },
-      ]))
+      const meetings = rows.map((r) => ({
+        meetingId: r.meeting_id as string,
+        subMeetingId: r.sub_meeting_id as string,
+        subject: (r.subject ?? null) as string | null,
+        startTime: r.start_time === null ? null : Number(r.start_time),
+        meetingCode: (r.meeting_code ?? null) as string | null,
+        endTime: r.end_time === null ? null : Number(r.end_time),
+      }))
+      // 目录序号与 SQLite 宿主同一个函数、同一个位置算（见引擎侧 meetingsForPaths）。
+      // 不靠上面那句 ORDER BY：排序归排序，序号的定义写在 assignDirOrdinals 里，
+      // 两个宿主对同一批数据必须给出同一个答案。
+      const ordinals = assignDirOrdinals(meetings)
+      return new Map(meetings.map((m) => {
+        const key = meetingPathKey(m.meetingId, m.subMeetingId)
+        return [key, { ...m, dirOrdinal: ordinals.get(key) ?? 1 }]
+      }))
     },
 
     // meetingsForPaths 之外**另开**一个按精确 (meeting_id, sub_meeting_id) 取的读法：

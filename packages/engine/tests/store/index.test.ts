@@ -129,9 +129,45 @@ test('meetingsForPaths 按 (meeting_id, sub_meeting_id) 建键：周期会议每
   expect(map.size).toBe(2)                       // 不再塌成一条
   expect(map.get(meetingPathKey('m1', 'rec-1'))).toEqual({
     meetingId: 'm1', subMeetingId: 'rec-1', subject: '第一场',
-    startTime: 1000, meetingCode: '88', endTime: 200,
+    startTime: 1000, meetingCode: '88', endTime: 200, dirOrdinal: 1,
   })
   expect(map.get(meetingPathKey('m1', 'rec-2'))!.startTime).toBe(2000)
+})
+
+/**
+ * 同一分钟的第二条录制记录：目录名要加序号，否则两场会议争同一个目录。
+ * 序号本身由 `assignDirOrdinals` 算（domain/dir-ordinal.ts 有完整理由与实测数据），
+ * 这里钉的是「meetingsForPaths 确实把它算上了」——两个宿主各钉一份，逐条对齐。
+ */
+test('meetingsForPaths 同 meeting 同一分钟的两个场次：dirOrdinal 按 sub 升序给 1 与 2', async () => {
+  const s = fresh()
+  // 逆序插入：序号只能由 sub_meeting_id 决定，不能由插入顺序决定
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-2', subject: '转写_第一场', startTime: 1010 }, 1)   // 与 1000 同一分钟
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-1', subject: '第一场', startTime: 1000 }, 1)
+
+  const map = await s.meetingsForPaths()
+  expect(map.get(meetingPathKey('m1', 'rec-1'))!.dirOrdinal).toBe(1)
+  expect(map.get(meetingPathKey('m1', 'rec-2'))!.dirOrdinal).toBe(2)
+})
+
+test('meetingsForPaths 起始分钟不同的两个场次：目录本就不同名，dirOrdinal 都是 1', async () => {
+  const s = fresh()
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-1', startTime: 1000 }, 1)
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-2', startTime: 1000 + 3600 }, 1)
+
+  const map = await s.meetingsForPaths()
+  expect(map.get(meetingPathKey('m1', 'rec-1'))!.dirOrdinal).toBe(1)
+  expect(map.get(meetingPathKey('m1', 'rec-2'))!.dirOrdinal).toBe(1)
+})
+
+test('meetingsForPaths 存量空串行排最前：dirOrdinal=1，目录名保持原样', async () => {
+  const s = fresh()
+  await s.upsertMeeting(M, 1)                                       // subMeetingId ''
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-9', startTime: 100 }, 1)
+
+  const map = await s.meetingsForPaths()
+  expect(map.get(meetingPathKey('m1', ''))!.dirOrdinal).toBe(1)
+  expect(map.get(meetingPathKey('m1', 'rec-9'))!.dirOrdinal).toBe(2)
 })
 
 test('meetingsForPaths 仍认得空 sub_meeting_id 的旧行（旧 SQLite 库的兼容口径）', async () => {

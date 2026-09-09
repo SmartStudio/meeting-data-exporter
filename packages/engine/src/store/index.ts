@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import { meetingPathKey, type Meeting, type AssetStatus, type ProbeState } from '../domain/types'
+import { assignDirOrdinals } from '../domain/dir-ordinal'
 
 export interface AssetUpsert {
   meetingId: string; subMeetingId: string; assetType: string; remoteId: string
@@ -17,7 +18,7 @@ export interface ProbeUpsert { meetingId: string; subMeetingId: string; assetTyp
 export interface ProbeRow { meeting_id: string; sub_meeting_id: string; asset_type: string; state: ProbeState; attempts: number; deadline_at: number }
 export interface ProbeKey { meetingId: string; subMeetingId: string; assetType: string }
 
-/** `meetingsForPaths()` 的值：拼目录名要的三列，加上两段主键原文 */
+/** `meetingsForPaths()` 的值：拼目录名要的三列，加上两段主键原文与目录序号 */
 export interface MeetingPathRow {
   meetingId: string
   subMeetingId: string
@@ -25,6 +26,15 @@ export interface MeetingPathRow {
   startTime: number | null
   meetingCode: string | null
   endTime: number | null
+  /**
+   * 这条录制记录在**算出同名目录的兄弟记录**中的 1-based 序号，传给
+   * `meetingDirPath` 的第三个参数（1 不加后缀，2 起追加 `_<n>`）。
+   *
+   * 由 `assignDirOrdinals` 在 `meetingsForPaths()` 里**算一次**、随值带走：
+   * 序号是一批行之间的关系，单看一行算不出来，而 executor 与 manifest 各自只
+   * 拿得到一行。两处若各自去查一遍兄弟，就是同一份规则的第二份实现。
+   */
+  dirOrdinal: number
 }
 
 export interface Store {
@@ -228,11 +238,19 @@ export function createStore(db: Database): Store {
                               meeting_code: string | null; start_time: number | null; end_time: number | null }, []>(
         `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time FROM meetings`,
       ).all()
-      return new Map(rows.map((r) => [meetingPathKey(r.meeting_id, r.sub_meeting_id), {
+      const meetings = rows.map((r) => ({
         meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id,
         subject: r.subject, startTime: r.start_time, meetingCode: r.meeting_code,
         endTime: r.end_time,
-      }]))
+      }))
+      // 目录序号要看到**全部**行才算得出来（同名目录的兄弟是谁），所以在这里算一次、
+      // 随值带走。两个宿主共用 assignDirOrdinals，不许各写一份。
+      const ordinals = assignDirOrdinals(meetings)
+      return new Map(meetings.map((m) => {
+        const key = meetingPathKey(m.meetingId, m.subMeetingId)
+        // assignDirOrdinals 对每一行都给了值，`?? 1` 只是让类型不带 undefined
+        return [key, { ...m, dirOrdinal: ordinals.get(key) ?? 1 }]
+      }))
     },
     async getMeeting(meetingId, subMeetingId) {
       const r = db.query<{ meeting_id: string; sub_meeting_id: string; meeting_code: string | null;

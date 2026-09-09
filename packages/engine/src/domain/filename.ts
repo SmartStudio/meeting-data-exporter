@@ -47,11 +47,19 @@ export interface MeetingDirInfo {
  *
  * 时间一律按 **UTC** 拆解，与 `buildRelPath` 原有行为逐字保持一致。
  * `fallbackCode` 在会议号缺失时顶到目录名末尾，调用方传 meeting_id。
+ *
+ * `dirOrdinal` 是这条录制记录在**算出同名目录的兄弟记录**中的 1-based 序号
+ * （由 `domain/dir-ordinal.ts` 的 `assignDirOrdinals` 统一算出，这里只负责拼）。
+ * 目录名本来假定「各场次 start_time 不同，天然分开」，实测不成立：腾讯常给同一场
+ * 会议两条记录——正常录制 + 主题带「转写_」前缀的转写记录，两者 media_start_time
+ * 相同，而主题自 2026-09-08 起不进目录名，于是两场会议争同一个目录。
+ * 序号 1 **不加后缀**，所以存量目录一个字都不变；第 2 条起才追加 `_<n>`。
  */
-export function meetingDirPath(m: MeetingDirInfo, fallbackCode: string): string {
+export function meetingDirPath(m: MeetingDirInfo, fallbackCode: string, dirOrdinal = 1): string {
   const d = new Date((m.startTime ?? 0) * 1000)
   const yyyy = String(d.getUTCFullYear()), mm = String(d.getUTCMonth() + 1).padStart(2, '0'), dd = String(d.getUTCDate()).padStart(2, '0')
   const hhmm = String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0')
   const dir = cleanDirName(`${yyyy}-${mm}-${dd}`, hhmm, m.meetingCode ?? fallbackCode)
-  return `${yyyy}/${mm}/${dir}`
+  const suffix = dirOrdinal > 1 ? `_${dirOrdinal}` : ''
+  return `${yyyy}/${mm}/${dir}${suffix}`
 }

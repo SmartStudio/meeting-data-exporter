@@ -71,7 +71,10 @@ async function buildRelPath(deps: ExecutorDeps, row: AssetRow): Promise<string |
   const key = GATEWAY_TYPE_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
   const { ordinal } = await deps.store.siblingRank(row)
   const fname = assetKeyToFilename(key, row.remote_id, row.file_type, ordinal)  // 归一化与空值回落都在 assetKeyToFilename 里
-  return `${meetingDirPath(m, row.meeting_id)}/${fname}`
+  // 第三个参数是目录序号：同一分钟的第二条录制记录目录名带 _2，否则两场会议的
+  // transcript.txt 互相覆盖（见 domain/dir-ordinal.ts）。序号在 meetingsForPaths
+  // 里算好随行带来，这里不重算。
+  return `${meetingDirPath(m, row.meeting_id, m.dirOrdinal)}/${fname}`
 }
 function assetId(row: AssetRow): string { return `${row.meeting_id}:${row.remote_id}:${row.asset_type}:0` }
 

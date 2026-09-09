@@ -59,28 +59,37 @@ export interface ManifestDeps {
  */
 export async function writeMeetingManifest(
   deps: ManifestDeps,
-  meetingId: string,
-  subMeetingId: string,
+  /**
+   * 要写哪一场，以及它的目录序号。收一整行而不是两个 id：序号是**一批行之间的
+   * 关系**（同名目录的兄弟是谁），单看一场会议算不出来，只能由 `meetingsForPaths`
+   * 那一头算好传下来——那也正是 executor 拿到它的同一条路径。
+   */
+  row: { meetingId: string; subMeetingId: string; dirOrdinal: number },
   now: number,
 ): Promise<'written' | 'unchanged' | 'skipped'> {
+  const { meetingId, subMeetingId } = row
   const meeting = await deps.store.getMeeting(meetingId, subMeetingId)
   if (meeting === null) return 'skipped'   // 会议元数据都没有就算不出目录，与 executor 的 meeting_meta_missing 同一处境
 
   // 目录必须与资产落盘的目录**完全一致**，所以走的是 executor 拼 target_path 时
-  // 用的同一个 meetingDirPath（fallbackCode 同样传 meeting_id）。
-  const dir = meetingDirPath(meeting, meetingId)
+  // 用的同一个 meetingDirPath（fallbackCode 同样传 meeting_id，序号同样来自
+  // meetingsForPaths）。序号这一段漏传的话，同一分钟的第二场 sidecar 会落进
+  // 第一场的目录，把它的两个文件覆盖掉。
+  const dir = meetingDirPath(meeting, meetingId, row.dirOrdinal)
   const rows = await deps.store.assetsForMeeting(meetingId, subMeetingId)
 
   const assets: ManifestAssetEntry[] = []
   let elsewhere = 0
-  for (const row of rows) {
-    if (row.status !== 'completed') continue
+  // 循环变量不叫 row：那是本函数的入参（要写哪一场）的名字，遮住它只会让下面这几行
+  // 读起来像在拿会议行的字段
+  for (const asset of rows) {
+    if (asset.status !== 'completed') continue
     // 清单声称的是「这个目录里有什么」，所以只列**确实落在这个目录里**的文件。
     // 正常情况下这个判断永远为真（两边同一个 meetingDirPath）；不为真只有一种来路：
     // 会议主题/开始时间在两轮之间被上游改过，早先的资产留在了旧目录里。那些文件属于
     // 旧目录的清单，不属于这一份——但也不能一声不吭地丢掉，所以下面 warn 一次。
-    if (row.target_path === null || dirOf(row.target_path) !== dir) { elsewhere++; continue }
-    assets.push(toAssetEntry(row, row.target_path))
+    if (asset.target_path === null || dirOf(asset.target_path) !== dir) { elsewhere++; continue }
+    assets.push(toAssetEntry(asset, asset.target_path))
   }
   if (elsewhere > 0) {
     console.warn(
@@ -193,8 +202,8 @@ export interface ManifestRoundOutcome {
  * 建键，所以周期会议的每个场次各拿到自己的 sidecar（2026-09-09 之前只有胜出的
  * 那个场次有，那是与 executor 一起的同一个洞，已经补掉）。
  *
- * 遍历的是 **values**，两段主键从值里取：键是 `meetingPathKey` 拼出来的，拆键还原
- * 等于把编码规则又实现一遍。
+ * 遍历的是 **values**，两段主键与目录序号都从值里取：键是 `meetingPathKey` 拼出来的，
+ * 拆键还原等于把编码规则又实现一遍，而序号压根不在键里。
  *
  * 写 sidecar 失败**不能让整轮挂掉**：资产已经落盘了，一份没写出来的清单不该把一轮
  * 成功的下载变成失败。但也**不许静默吞掉**——照 executor 里进度回写失败的先例，
@@ -202,13 +211,15 @@ export interface ManifestRoundOutcome {
  */
 export async function writeMeetingManifests(
   deps: ManifestDeps,
-  meetings: ReadonlyMap<string, { meetingId: string; subMeetingId: string }>,
+  meetings: ReadonlyMap<string, { meetingId: string; subMeetingId: string; dirOrdinal: number }>,
   now: () => number,
 ): Promise<ManifestRoundOutcome> {
   const out: ManifestRoundOutcome = { written: 0, unchanged: 0, skipped: 0, failed: 0 }
   for (const m of meetings.values()) {
     try {
-      const r = await writeMeetingManifest(deps, m.meetingId, m.subMeetingId, now())
+      // 整行传下去（含 dirOrdinal），不是拆成两个 id：目录序号也来自这张 Map，
+      // 与 executor 拼资产路径用的是同一个值
+      const r = await writeMeetingManifest(deps, m, now())
       out[r]++
     } catch (err) {
       out.failed++

@@ -38,3 +38,20 @@ test('cleanSubjectSegment：空主题（含全空白）兜底为 untitled', () =
   // 全是非法字符不是「空」：它们被替换成 -，结果是一个能用的目录名，不该兜底
   expect(cleanSubjectSegment('///')).toBe('---')
 })
+
+// ── dirOrdinal：同一分钟的第二条录制记录 ────────────────────────────────────
+//
+// 序号由 assignDirOrdinals 算（domain/dir-ordinal.ts），这里只钉「拿到序号之后
+// 目录名长什么样」。上面那条 meetingDirPath 用例一字未改，就是「省略参数时行为
+// 逐字不变」的证据——存量目录不会因为这次改动改名。
+
+test('meetingDirPath：dirOrdinal>1 时最后一段追加 _<n>，年月两段不动', () => {
+  const m = { subject: null, startTime: Date.UTC(2026, 6, 15, 14, 30) / 1000, meetingCode: '881-123-40' }
+  expect(meetingDirPath(m, 'mid-1', 2)).toBe('2026/07/2026-07-15_1430_881-123-40_2')
+  expect(meetingDirPath(m, 'mid-1', 3)).toBe('2026/07/2026-07-15_1430_881-123-40_3')
+})
+test('meetingDirPath：dirOrdinal=1 与省略参数逐字相同', () => {
+  const m = { subject: null, startTime: Date.UTC(2026, 6, 15, 14, 30) / 1000, meetingCode: null }
+  expect(meetingDirPath(m, 'mid-1', 1)).toBe(meetingDirPath(m, 'mid-1'))
+  expect(meetingDirPath(m, 'mid-1', 1)).toBe('2026/07/2026-07-15_1430_mid-1')
+})
