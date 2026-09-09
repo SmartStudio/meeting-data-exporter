@@ -162,6 +162,7 @@ function failure(over: Partial<JobFailureRecord> = {}): JobFailureRecord {
     subMeetingId: KEY.subMeetingId,
     reason: 'NAS 写入超时：/nas/meetings 挂载点只读（EROFS）',
     impact: '未归档，到期会永久丢失',
+    detail: null,
     attempts: 3,
     maxAttempts: 5,
     firstFailedAt: START + 7200,

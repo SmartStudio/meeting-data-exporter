@@ -106,6 +106,8 @@ export interface JobFailure {
   reason: string
   /** 影响。spec §4.8 写死要显示这一列 */
   impact: string
+  /** 原始技术信息（错误原文 / 资产 id / 格式）。**没有明细就是 null**，界面据此不画折叠 */
+  detail: string | null
   attempts: number
   maxAttempts: number
   /**
@@ -190,6 +192,7 @@ function readFailure(r: FieldReader, o: Record<string, unknown>, where: string):
     subMeetingId: r.str(o, 'subMeetingId', where),
     reason: r.str(o, 'reason', where),
     impact: r.str(o, 'impact', where),
+    detail: r.strOrNull(o, 'detail', where),
     attempts: r.num(o, 'attempts', where),
     maxAttempts: r.num(o, 'maxAttempts', where),
     escalated: r.bool(o, 'escalated', where),

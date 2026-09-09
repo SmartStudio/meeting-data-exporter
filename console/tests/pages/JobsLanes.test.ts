@@ -46,6 +46,7 @@ function failure(over: Partial<JobFailure> = {}): JobFailure {
     subMeetingId: '',
     reason: 'r',
     impact: 'i',
+    detail: null,
     attempts: 1,
     maxAttempts: 5,
     escalated: false,

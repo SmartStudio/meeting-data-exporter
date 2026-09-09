@@ -96,6 +96,7 @@ function failure(
     meetingId: string | null
     reason: string
     impact: string
+    detail?: string | null
     attempts: number
     maxAttempts: number
     firstAgoSec: number
@@ -111,6 +112,7 @@ function failure(
     subMeetingId: MOCK_SUB_MEETING_ID,
     reason: o.reason,
     impact: o.impact,
+    detail: o.detail ?? null,
     attempts: o.attempts,
     maxAttempts: o.maxAttempts,
     // "该找人了"，不是"系统放弃了"：每个任务的重试都由各自的枚举源结构性驱动
@@ -243,6 +245,7 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
         targetLabel: m.title,
         meetingId: m.id,
         reason: 'NAS 写入失败：目标目录不可写（errno 30, EROFS）。',
+        detail: `nas write /nas/meetings/${m.id}: EROFS: read-only file system`,
         impact: '未归档。本地保留期一到，这场会议就永久没有了。',
         attempts: i === 0 ? 5 : 2,
         maxAttempts: 5,

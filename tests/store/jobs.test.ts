@@ -511,3 +511,40 @@ test('schedulerFetchLookbackHours：读 MDE_SCHEDULER_FETCH_LOOKBACK_HOURS，"36
 test('schedulerFetchLookbackHours：非法值抛错——配错这个环境变量不该让控制台悄悄显示错的小时数', () => {
   expect(() => schedulerFetchLookbackHours({ MDE_SCHEDULER_FETCH_LOOKBACK_HOURS: 'abc' })).toThrow()
 })
+
+// ── 五、失败项的 detail 列（规格 §2.4） ──────────────────────────
+
+// `reason` 从此只放人话，原始技术信息进 `detail`（规格 §2.4）。两列分开的理由：
+// 归并键是「任务 + 原因 + 影响」，原始报错里带着路径和 remote_id，塞进 reason
+// 会让 23 场同一件事的会议变成 23 个不同的组。
+test('detail 与 reason 分开往返；不给 detail 时是 null，不是空串', async () => {
+  await withStore(async (store) => {
+    await store.recordFailure({
+      jobName: 'fetch_recordings', target: 'm-1|', targetLabel: '', meetingId: 'm-1', subMeetingId: '',
+      reason: '录像：腾讯那边没有这个文件', detail: 'video/r-1/mp4: http 404',
+      impact: '影响', maxAttempts: 5, attempts: 5, now: 1000,
+    })
+    await store.recordFailure({
+      jobName: 'archive_nas', target: 'm-2|', targetLabel: '', meetingId: 'm-2', subMeetingId: '',
+      reason: 'NAS 写入超时', impact: '影响', maxAttempts: 5, now: 1000,
+    })
+    const fs = await store.listFailures()
+    expect(fs.find((f) => f.target === 'm-1|')!.detail).toBe('video/r-1/mp4: http 404')
+    // 「这条失败项没有技术明细」用 null 表达，空串读起来像一次组装失败
+    expect(fs.find((f) => f.target === 'm-2|')!.detail).toBeNull()
+  })
+})
+
+test('同一个 target 再失败一次：detail 被后一次覆盖（它说的是"最近这一次"）', async () => {
+  await withStore(async (store) => {
+    const base = {
+      jobName: 'fetch_recordings', target: 'm-1|', targetLabel: '', meetingId: 'm-1', subMeetingId: '',
+      reason: '录像：下载失败', impact: '影响', maxAttempts: 5, attempts: 5,
+    }
+    await store.recordFailure({ ...base, detail: 'video/r-1/mp4: http 500', now: 1000 })
+    await store.recordFailure({ ...base, detail: 'video/r-1/mp4: http 404', now: 2000 })
+    const fs = await store.listFailures()
+    expect(fs).toHaveLength(1)
+    expect(fs[0]!.detail).toBe('video/r-1/mp4: http 404')
+  })
+})

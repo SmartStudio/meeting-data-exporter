@@ -158,6 +158,12 @@ function failureView(f: JobFailureRecord): Record<string, unknown> {
     subMeetingId: f.subMeetingId,
     reason: f.reason,
     impact: f.impact,
+    /**
+     * 原始技术信息。`reason` 是人话、这一列是原文，控制台里它是一个默认收起的
+     * 「技术详情」折叠——归并键（任务 + 原因 + 影响）不含它，所以 23 场同样
+     * 404 的会议仍然归成一组，而每一场自己的 remote_id 一个都没丢。
+     */
+    detail: f.detail,
     attempts: f.attempts,
     maxAttempts: f.maxAttempts,
     /**

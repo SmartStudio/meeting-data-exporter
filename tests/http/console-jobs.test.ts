@@ -73,6 +73,7 @@ function failure(o: Partial<JobFailureRecord> = {}): JobFailureRecord {
     maxAttempts: 5,
     firstFailedAt: NOW - 7200,
     lastFailedAt: NOW - 600,
+    detail: null,
     resolvedAt: null,
     ...o,
   }
@@ -177,6 +178,7 @@ interface JobsBody {
     maxAttempts: number
     impact: string
     reason: string
+    detail: string | null
     escalated: boolean
   }>
 }
@@ -336,6 +338,18 @@ test('失败项表带 attempts / maxAttempts 与那句「影响」（spec §4.8 
   expect(f.escalated).toBe(false)
   // 重试次数超过阈值 = 该找人了。它**不表示系统放弃重试**，归档会一直重试下去
   expect(body.failures[1]?.escalated).toBe(true)
+})
+
+test('失败项带 detail 下发（没有明细就是 null，不是空串）', async () => {
+  const { ctx } = fakeCtx({
+    failures: [
+      failure({ id: 1, detail: 'video/r-1/mp4: http 404' }),
+      failure({ id: 2, detail: null }),
+    ],
+  })
+  const body = (await (await listJobs(req('/api/v1/admin/jobs'), ctx)).json()) as JobsBody
+  expect(body.failures[0]!.detail).toBe('video/r-1/mp4: http 404')
+  expect(body.failures[1]!.detail).toBeNull()
 })
 
 // ── 手动触发（验收判据 4）───────────────────────────────────

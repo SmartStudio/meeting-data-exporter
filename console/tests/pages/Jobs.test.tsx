@@ -75,6 +75,7 @@ function failure(over: Record<string, unknown> = {}): Record<string, unknown> {
     subMeetingId: '',
     reason: 'NAS 写入超时（30 秒）',
     impact: '未归档，到期会永久丢失',
+    detail: null,
     attempts: 2,
     maxAttempts: 5,
     escalated: false,

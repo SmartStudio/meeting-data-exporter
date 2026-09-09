@@ -376,6 +376,11 @@ export interface JobFailureRecord {
   subMeetingId: string
   reason: string
   impact: string
+  /**
+   * 原始技术信息（错误原文、资产 id、文件格式）。**没有明细就是 null**——
+   * 归档那种失败项本来只有一句人话。`reason` 从此只放人话，理由见 migrations/014。
+   */
+  detail: string | null
   attempts: number
   maxAttempts: number
   firstFailedAt: number
@@ -393,6 +398,8 @@ export interface RecordFailureInput {
   subMeetingId: string
   reason: string
   impact: string
+  /** 原始技术信息。不给 = 这条失败项没有明细（写进库里是 NULL，不是空串） */
+  detail?: string | null
   maxAttempts: number
   /**
    * 这次失败的**绝对**计数。不给就走累加（同一个 target 再失败一次 +1）。
@@ -568,6 +575,7 @@ interface FailureSqlRow extends RowDataPacket {
   sub_meeting_id: string
   reason: string
   impact: string
+  detail: string | null
   attempts: number
   max_attempts: number
   first_failed_at: number
@@ -589,7 +597,7 @@ const RUN_COLS = `id, job_name, trigger_kind, requested_by, status, started_at,
                   finished_at, summary, error, created_at`
 
 const FAILURE_COLS = `id, job_name, target, target_label, meeting_id, sub_meeting_id,
-                      reason, impact, attempts, max_attempts, first_failed_at,
+                      reason, impact, detail, attempts, max_attempts, first_failed_at,
                       last_failed_at, resolved_at`
 
 /**
@@ -656,6 +664,7 @@ function mapFailure(r: FailureSqlRow): JobFailureRecord {
     subMeetingId: r.sub_meeting_id,
     reason: r.reason,
     impact: r.impact,
+    detail: r.detail,
     attempts: num(r.attempts),
     maxAttempts: num(r.max_attempts),
     firstFailedAt: num(r.first_failed_at),
@@ -789,15 +798,16 @@ export function createJobsStore(pool: Pool): JobsStore {
       // 「已恢复的行再次失败要重新计数」这条就永远进不了 else 分支。
       await pool.query(
         `INSERT INTO job_failures
-           (job_name, target, target_label, meeting_id, sub_meeting_id, reason, impact,
+           (job_name, target, target_label, meeting_id, sub_meeting_id, reason, impact, detail,
             attempts, max_attempts, first_failed_at, last_failed_at, resolved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1), ?, ?, ?, NULL) AS new
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1), ?, ?, ?, NULL) AS new
          ON DUPLICATE KEY UPDATE
            target_label = new.target_label,
            meeting_id = new.meeting_id,
            sub_meeting_id = new.sub_meeting_id,
            reason = new.reason,
            impact = new.impact,
+           detail = new.detail,
            max_attempts = new.max_attempts,
            attempts = COALESCE(?, IF(job_failures.resolved_at IS NULL, job_failures.attempts + 1, 1)),
            first_failed_at =
@@ -812,6 +822,8 @@ export function createJobsStore(pool: Pool): JobsStore {
           i.subMeetingId,
           i.reason,
           i.impact,
+          // undefined 会让 mysql2 的占位符直接抛，而「不给明细」是合法调用
+          i.detail ?? null,
           i.attempts ?? null,
           i.maxAttempts,
           i.now,

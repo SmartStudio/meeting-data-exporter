@@ -184,6 +184,7 @@ function failureRow(lastFailedAt: number): Record<string, unknown> {
     subMeetingId: '',
     reason: '腾讯会议返回 404',
     impact: '这一场拉不到',
+    detail: null,
     attempts: 1,
     maxAttempts: 5,
     escalated: false,

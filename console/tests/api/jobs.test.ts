@@ -58,6 +58,7 @@ function failure(over: Record<string, unknown> = {}): Record<string, unknown> {
     escalated: false,
     firstFailedAt: 1699900000,
     lastFailedAt: 1699999000,
+    detail: null,
     ...over,
   }
 }
@@ -192,6 +193,26 @@ describe('fetchJobs()', () => {
   test('失败项数组里第几条坏了，报得出下标', async () => {
     stubFetch(payload({ failures: [failure(), failure({ id: 2, attempts: '2' })] }))
     await expect(fetchJobs()).rejects.toThrow(/failures\[1\]\.attempts/)
+  })
+
+  test('失败项的 detail 读出来；没有明细读成 null，不是空串', async () => {
+    stubFetch(payload({
+      failuresTotal: 2,
+      failures: [
+        failure({ id: 1, detail: 'video/r-1/mp4: http 404' }),
+        failure({ id: 2 }),
+      ],
+    }))
+    const o = await fetchJobs()
+    expect(o.failures[0]!.detail).toBe('video/r-1/mp4: http 404')
+    expect(o.failures[1]!.detail).toBeNull()
+  })
+
+  test('detail 这个键整个缺失时报形状错——它是契约里的必有字段，不静默补 null', async () => {
+    const f = failure()
+    delete (f as Record<string, unknown>).detail
+    stubFetch(payload({ failures: [f] }))
+    await expect(fetchJobs()).rejects.toBeInstanceOf(ApiShapeError)
   })
 
   test('`failuresTotal` 缺失也是坏响应——它是"被截断了没有"的唯一判据', async () => {
