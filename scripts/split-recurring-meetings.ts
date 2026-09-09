@@ -345,6 +345,18 @@ function planOne(m: MeetingRow, input: PlanInput): SplitItem {
 
   if (input.nas.reason !== null) return bail(input.nas.reason)
 
+  // 有归档行、却讲不出 NAS 基准目录（没有 meeting_archives 行，nas_path 又短到
+  // 反推不出来）。这时每个资产的 `nas` 都是 null，于是 archived_assets 那几行的
+  // sub_meeting_id 一列都不会改——而 meetings 的 '' 行同一个事务里就删掉了，
+  // 它们从此挂在一个不存在的会议上，谁也扫不出来。宁可整场不动
+  if (input.archived.size > 0 && input.nas.dir === null) {
+    return bail(
+      `这场会议有 ${input.archived.size} 行 archived_assets，却反推不出 NAS 基准目录` +
+        '（没有 meeting_archives 行，nas_path 也短到砍不出前四段）——' +
+        '拆了会把这些归档行留在空 sub_meeting_id 上，成为无主行',
+    )
+  }
+
   // ① 每个资产属于哪个场次
   for (const a of input.assets) {
     if (a.record_id === null || a.record_id === '') {
@@ -552,6 +564,21 @@ export async function applyOne(
     if (p.state === 'gone') console.warn(`⚠ ${item.meetingId} not_found：${p.from} 新旧位置都不在`)
   }
 
+  // 暂存路径已经被占着：上一次跑在两阶段之间被杀掉，文件停在 .tmp 上。
+  // 直接搬会**静默覆盖**那个文件（rename(2) 不问目标在不在），而它是上一轮唯一的副本。
+  // 这一场整场不动，让人先把 .tmp 收拾了
+  for (const p of planned) {
+    if (p.state !== 'move') continue
+    if (await exists(p.from + TMP_SUFFIX)) {
+      console.error(
+        `⚠ ${item.meetingId} conflict：${p.from + TMP_SUFFIX} 已经存在——` +
+          '上一次跑多半在两阶段搬运之间被杀掉了，文件还停在这个暂存名上。' +
+          '先手工去掉 .mde-split-tmp 后缀把它改回去，再重跑本脚本',
+      )
+      return { outcome: 'conflict', leftOver: [] }
+    }
+  }
+
   // ── 搬文件：两阶段 ──────────────────────────────────────────────────
   // ① 全部源文件先改名到同目录下的 .tmp，② 再从 .tmp 各就各位。
   // 一阶段直接 from→to 不行：拆场次天然有「A 的目标就是 B 的源」这种交换，
@@ -560,10 +587,26 @@ export async function applyOne(
   // 那时按输出里的路径找 `*.mde-split-tmp` 手工改回去即可。
   const staged: PlannedMove[] = []
   const moved = new Set<PlannedMove>()
+  /**
+   * 回滚搬运。**必须与搬运一样分两阶段**：先把已经就位的文件退回**各自源路径的 .tmp**，
+   * 全退完了再从 .tmp 落回源路径。
+   *
+   * 单阶段（逐条直接 `to → from`）是错的，而且是**真的会少文件**：`rename(2)` 静默覆盖
+   * 目标，而两阶段搬完之后「旧路径」上往往正躺着另一个场次的文件——A→B、B→A 这种交换，
+   * 或 A→B、B→C 这种链，是拆场次的常态（第二场的 `transcript_2.txt` 改名顶上第一场
+   * `transcript.txt` 的位置）。逐条往回搬会把它盖掉，于是一次「只是想回滚」的失败真的
+   * 抹掉了一个文件，而操作员看到的是「文件已搬回原位」。
+   *
+   * 反过来走两阶段就没有这个问题：第一阶段的目标全是 `<源路径>.mde-split-tmp`，
+   * 那些路径此刻一定是空的（搬运的第二阶段刚把它们腾空）；第二阶段的目标全是源路径，
+   * 而源路径此刻也一定是空的（每个源路径只有它自己那一条 .tmp 会落回来）。
+   */
   const undoAll = async (): Promise<void> => {
     for (const p of [...staged].reverse()) {
-      if (moved.has(p)) await undoRename(p.to, p.from, '拆场次搬运')
-      else await undoRename(p.from + TMP_SUFFIX, p.from, '拆场次暂存')
+      if (moved.has(p)) await undoRename(p.to, p.from + TMP_SUFFIX, '拆场次搬运')
+    }
+    for (const p of [...staged].reverse()) {
+      await undoRename(p.from + TMP_SUFFIX, p.from, '拆场次暂存')
     }
   }
   try {
@@ -656,59 +699,46 @@ async function splitRows(conn: PoolConnection, item: SplitItem, now: number): Pr
     }
   }
 
+  // ③④ 这三张表整行复制，一律走 `INSERT … SELECT`，**不把行读进 JS 再插回去**。
+  //     `meeting_grants.asset_types` / `meeting_overrides.asset_types` 是 JSON 列，
+  //     mysql2 通常已经替我们解析成数组，但驱动版本差异下也可能返回**字符串**
+  //     （`src/store/grants.ts` 的 parseAssetTypes 就明确在处理这一种）。读回来的值
+  //     再 `JSON.stringify` 一遍，那一档就成了二次编码：库里存的是 JSON 字符串
+  //     `"[\"video\"]"` 而不是数组，而 `''` 那些行同一个事务里就删掉了，
+  //     谁也回不去。SQL 里整列搬则一个字节都不经过驱动的类型转换。
+  //
   // ③ meeting_archives：复制给**有 archived_assets 行的**场次。没归档过的场次不该
   //    凭空拿到一个归档记录——那会让它的保留窗口从别人的 archived_at 开始计时
-  const [archRows] = await conn.execute<RowDataPacket[]>(
-    `SELECT nas_dir, archived_at, retention_days, extended_days, local_purged_at, created_at
-       FROM meeting_archives WHERE meeting_id = ? AND sub_meeting_id = ''`,
-    [mid],
-  )
   for (const s of item.sessions) {
     if (!s.archived) continue
-    for (const r of archRows) {
-      await conn.execute(
-        `INSERT INTO meeting_archives (meeting_id, sub_meeting_id, nas_dir, archived_at, retention_days, extended_days, local_purged_at, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
-        [mid, s.recordId, r.nas_dir, r.archived_at, r.retention_days, r.extended_days,
-         r.local_purged_at, r.created_at, now],
-      )
-    }
+    await conn.execute(
+      `INSERT INTO meeting_archives (meeting_id, sub_meeting_id, nas_dir, archived_at, retention_days, extended_days, local_purged_at, created_at, updated_at)
+       SELECT meeting_id, ?, nas_dir, archived_at, retention_days, extended_days, local_purged_at, created_at, ?
+         FROM meeting_archives WHERE meeting_id = ? AND sub_meeting_id = ''`,
+      [s.recordId, now, mid],
+    )
   }
   await conn.execute(`DELETE FROM meeting_archives WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid])
 
   // ④ meeting_grants / meeting_overrides：复制给**每一个**场次（含已撤销的行，
   //    revoked_at 原样）——一场会议上的授权与改写，对它的每个场次都成立
-  const [grantRows] = await conn.execute<RowDataPacket[]>(
-    `SELECT program_id, asset_types, granted_at, revoked_at
-       FROM meeting_grants WHERE meeting_id = ? AND sub_meeting_id = ''`,
-    [mid],
-  )
   for (const s of item.sessions) {
-    for (const g of grantRows) {
-      await conn.execute(
-        `INSERT INTO meeting_grants (meeting_id, sub_meeting_id, program_id, asset_types, granted_at, revoked_at)
-         VALUES (?,?,?,?,?,?)`,
-        [mid, s.recordId, g.program_id,
-         g.asset_types === null ? null : JSON.stringify(g.asset_types), g.granted_at, g.revoked_at],
-      )
-    }
+    await conn.execute(
+      `INSERT INTO meeting_grants (meeting_id, sub_meeting_id, program_id, asset_types, granted_at, revoked_at)
+       SELECT meeting_id, ?, program_id, asset_types, granted_at, revoked_at
+         FROM meeting_grants WHERE meeting_id = ? AND sub_meeting_id = ''`,
+      [s.recordId, mid],
+    )
   }
   await conn.execute(`DELETE FROM meeting_grants WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid])
 
-  const [ovrRows] = await conn.execute<RowDataPacket[]>(
-    `SELECT kind, effect, asset_types, reason, created_at, revoked_at
-       FROM meeting_overrides WHERE meeting_id = ? AND sub_meeting_id = ''`,
-    [mid],
-  )
   for (const s of item.sessions) {
-    for (const o of ovrRows) {
-      await conn.execute(
-        `INSERT INTO meeting_overrides (meeting_id, sub_meeting_id, kind, effect, asset_types, reason, created_at, revoked_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
-        [mid, s.recordId, o.kind, o.effect,
-         o.asset_types === null ? null : JSON.stringify(o.asset_types), o.reason, o.created_at, o.revoked_at],
-      )
-    }
+    await conn.execute(
+      `INSERT INTO meeting_overrides (meeting_id, sub_meeting_id, kind, effect, asset_types, reason, created_at, revoked_at)
+       SELECT meeting_id, ?, kind, effect, asset_types, reason, created_at, revoked_at
+         FROM meeting_overrides WHERE meeting_id = ? AND sub_meeting_id = ''`,
+      [s.recordId, mid],
+    )
   }
   await conn.execute(`DELETE FROM meeting_overrides WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid])
 

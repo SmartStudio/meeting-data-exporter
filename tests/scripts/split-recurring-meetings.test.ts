@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { RowDataPacket } from 'mysql2'
 import { withTestDb } from '../helpers/testdb'
+import { createGrantsStore } from '../../src/store/grants'
 import { applyOne, parseArgs, planSplits } from '../../scripts/split-recurring-meetings'
 import type { Pool } from '../../src/store/db'
 
@@ -603,6 +604,131 @@ test('没有资产的会议：盘上没有东西要搬，库照样拆成两个�
       // 一个文件都没搬动，但库总归要改——所以是 already_done 而不是 not_found
       expect(res).toEqual({ outcome: 'already_done', leftOver: [] })
       expect(await subsOf(pool, 'meetings')).toEqual(['rec-1', 'rec-2'])
+    })
+  })
+})
+
+// ── 修复轮 1 ─────────────────────────────────────────────────────────────────
+
+test('回滚也必须两阶段：A↔B 交换搬到一半失败时，两个文件都原样回到原位（本地与 NAS）', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      // 两个场次的文件**互相占着对方的目标**：rec-1 的文件此刻在 REL2、要搬去 REL1，
+      // 而 rec-2 的文件此刻在 REL1、要搬去 REL2。搬运走两阶段能过，回滚要是走单阶段
+      // （逐条 to→from）就会一路覆盖：rename(2) 不问目标在不在
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await seedAsset(pool, 'rec-2', 'f2', `${REL1}/transcript.txt`)
+      await seedArchivedFiles(pool, localRoot, nasDir, 'f1', `${REL2}/transcript.txt`)
+      await seedArchivedFiles(pool, localRoot, nasDir, 'f2', `${REL1}/transcript.txt`)
+      await seedMeetingArchive(pool, nasDir)
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect(item.sessions[0]!.assets[0]!.local).toEqual({
+        from: join(localRoot, REL2, 'transcript.txt'), to: join(localRoot, REL1, 'transcript.txt'),
+      })
+      expect(item.sessions[1]!.assets[0]!.local).toEqual({
+        from: join(localRoot, REL1, 'transcript.txt'), to: join(localRoot, REL2, 'transcript.txt'),
+      })
+
+      await expect(applyOne(brokenTxPool(), item, { localRoot, now: 5000 }))
+        .rejects.toThrow('boom: connection lost')
+
+      // 两个文件都还在、内容都是自己的——一个都没被回滚覆盖掉
+      for (const root of [localRoot, nasDir]) {
+        expect(await readFile(join(root, REL2, 'transcript.txt'), 'utf8')).toBe('f1')
+        expect(await readFile(join(root, REL1, 'transcript.txt'), 'utf8')).toBe('f2')
+        await expect(stat(join(root, REL2, `transcript.txt${'.mde-split-tmp'}`))).rejects.toThrow()
+        await expect(stat(join(root, REL1, `transcript.txt${'.mde-split-tmp'}`))).rejects.toThrow()
+      }
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+
+      // 回滚干净了，重跑照样能拆
+      const retry = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, retry, { localRoot, now: 5000 })).outcome).toBe('renamed')
+      expect(await readFile(join(localRoot, REL1, 'transcript.txt'), 'utf8')).toBe('f1')
+      expect(await readFile(join(localRoot, REL2, 'transcript.txt'), 'utf8')).toBe('f2')
+    })
+  })
+})
+
+test('asset_types 非空的授权与改写整行复制过去，读回来还是数组（不许二次编码）', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await pool.execute(
+        `INSERT INTO meeting_grants (meeting_id, sub_meeting_id, program_id, asset_types, granted_at, revoked_at)
+         VALUES ('m1', '', 'prog-1', ?, 10, 0)`,
+        [JSON.stringify(['video'])],
+      )
+      await pool.execute(
+        `INSERT INTO meeting_overrides (meeting_id, sub_meeting_id, kind, effect, asset_types, reason, created_at, revoked_at)
+         VALUES ('m1', '', 'allow', 'allow', ?, '法务要求', 10, 0)`,
+        [JSON.stringify(['video', 'meeting_summary'])],
+      )
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('already_done')
+
+      // 列里存的必须还是 JSON 数组。这一条比下面的读回来更尖：被 JSON.stringify
+      // 二次编码之后列里是 JSON **字符串**，而 parseAssetTypes 的字符串分支会把它
+      // 又解回数组——读得回来不等于存对了，下一个直接用 SQL 问 asset_types 的人就中招
+      for (const t of ['meeting_grants', 'meeting_overrides']) {
+        const [rows] = await pool.execute<RowDataPacket[]>(
+          `SELECT JSON_TYPE(asset_types) AS t FROM ${t} WHERE meeting_id='m1' ORDER BY sub_meeting_id`,
+        )
+        expect(rows.map((r) => r.t)).toEqual(['ARRAY', 'ARRAY'])
+      }
+
+      // 再走 store 层的 parseAssetTypes 读一遍
+      const grants = createGrantsStore(pool)
+      for (const rec of ['rec-1', 'rec-2']) {
+        const g = await grants.listActiveGrantsForMeeting('m1', rec)
+        expect(g.map((x) => x.assetTypes)).toEqual([['video']])
+        const o = await grants.listActiveOverrides('m1', rec)
+        expect(o.map((x) => x.assetTypes)).toEqual([['video', 'meeting_summary']])
+        expect(o.map((x) => x.reason)).toEqual(['法务要求'])
+      }
+    })
+  })
+})
+
+test('有 archived_assets 行却反推不出 NAS 基准目录 → undecidable，不留无主归档行', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      // nas_path 只有四段，砍不出基准目录；也没有 meeting_archives 行兜底
+      await seedArchived(pool, 'f1', `${REL2}/transcript.txt`, 'a/b/c/d')
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect(item.nasDir).toBeNull()
+      expect(item.undecidableReason).toContain('archived_assets')
+      expect(item.sessions).toHaveLength(0)
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('undecidable')
+      expect(await subsOf(pool, 'archived_assets')).toEqual([''])
+    })
+  })
+})
+
+test('暂存名 .mde-split-tmp 已经被占着 → conflict，动手之前就拦下', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await mkdir(join(localRoot, REL2), { recursive: true })
+      await writeFile(join(localRoot, REL2, 'transcript.txt'), 'f1')
+      // 上一次跑在两阶段之间被杀掉，文件停在暂存名上。直接搬会静默覆盖它
+      await writeFile(join(localRoot, REL2, 'transcript.txt.mde-split-tmp'), '上一轮的副本')
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('conflict')
+
+      expect(await readFile(join(localRoot, REL2, 'transcript.txt.mde-split-tmp'), 'utf8')).toBe('上一轮的副本')
+      expect(await readFile(join(localRoot, REL2, 'transcript.txt'), 'utf8')).toBe('f1')
+      await expect(stat(join(localRoot, REL1, 'transcript.txt'))).rejects.toThrow()
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
     })
   })
 })
