@@ -31,63 +31,82 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FetchStall } from './view'
 
-const KEY = 'mde.jobs.fetch-stall.dismissed'
+/** 「最近 N 轮拉取连续失败」那条。身份是这一段故障里最新那次 failed 运行的 id */
+export const STALL_DISMISS_KEY = 'mde.jobs.fetch-stall.dismissed'
+/** 「N 个任务已经落后」那条。身份是 `overdueIdentity()` 拼的那串 */
+export const OVERDUE_DISMISS_KEY = 'mde.jobs.overdue.dismissed'
 
-function read(): string | null {
+function read(key: string): string | null {
   try {
-    return localStorage.getItem(KEY)
+    return localStorage.getItem(key)
   } catch {
     return null
   }
 }
 
-function write(value: string): void {
+function write(key: string, value: string): void {
   try {
-    localStorage.setItem(KEY, value)
+    localStorage.setItem(key, value)
   } catch {
     /* 存不了就只在本次会话生效 */
   }
 }
 
-function clear(): void {
+function clear(key: string): void {
   try {
-    localStorage.removeItem(KEY)
+    localStorage.removeItem(key)
   } catch {
     /* 同上：删不掉也不能让它炸掉整个页面 */
   }
 }
 
-export interface DismissedStall {
-  /** 这一段故障已经被关过了——横幅不显示 */
+export interface DismissedBanner {
+  /** 这一段（这一批）已经被关过了——横幅不显示 */
   hidden: boolean
-  /** 关掉眼前这一段。`stall` 为 null 时是空操作 */
+  /** 关掉眼前这一段。`identity` 为 null 时是空操作 */
   dismiss: () => void
 }
 
-export function useDismissedStall(stall: FetchStall | null): DismissedStall {
-  const [dismissedId, setDismissedId] = useState<string | null>(read)
-
-  // 依赖是那个 id 而不是 `stall` 本身：`fetchStall()` 每次渲染都返回一个新对象，
-  // 拿它当依赖等于每渲染一次就跑一遍这个 effect。
-  const latestFailedRunId = stall === null ? null : stall.latestFailedRunId
+/**
+ * 一条「可以关，但只对眼前这一段有效」的横幅的关闭状态。
+ *
+ * `identity` 就是「这是哪一段」：它变了就是一件你还没看过的新事实，横幅回来；
+ * 它是 `null` 表示这件事已经不存在了，那时把存储键**删掉**（理由见文件头：留着
+ * 一个旧身份，换一套数据之后完全可能撞上，把下一段的第一眼提醒悄悄吞掉）。
+ *
+ * 泛化成两个参数是为了让两条横幅共用同一套判据。它们唯一的区别就是这两个入参
+ * ——各写一份的话，「关掉之后什么时候该回来」这条规矩会在两处慢慢漂开。
+ */
+export function useDismissedBanner(storageKey: string, identity: string | null): DismissedBanner {
+  // 惰性初始化必须包一层箭头：`useState(read)` 会把 React 传进来的（没有）参数
+  // 当 key 用，读到 `localStorage.getItem(undefined)`
+  const [dismissed, setDismissed] = useState<string | null>(() => read(storageKey))
 
   useEffect(() => {
-    if (latestFailedRunId !== null) return
-    // 连续失败结束了：把这一段的身份忘掉（理由见文件头）
-    clear()
-    setDismissedId(null)
-  }, [latestFailedRunId])
+    if (identity !== null) return
+    clear(storageKey)
+    setDismissed(null)
+  }, [storageKey, identity])
 
   const dismiss = useCallback(() => {
-    if (latestFailedRunId === null) return
-    const id = String(latestFailedRunId)
-    write(id)
+    if (identity === null) return
+    write(storageKey, identity)
     // 先写存储再落 state，但两者不绑在一起：写失败（私密窗口）时横幅照样关掉，
     // 只是下次刷新还会回来。
-    setDismissedId(id)
-  }, [latestFailedRunId])
+    setDismissed(identity)
+  }, [storageKey, identity])
 
-  const hidden = latestFailedRunId !== null && dismissedId === String(latestFailedRunId)
+  return { hidden: identity !== null && dismissed === identity, dismiss }
+}
 
-  return { hidden, dismiss }
+/**
+ * 「最近 N 轮拉取连续失败」那条。行为与泛化之前**逐字不变**：同一个存储键、
+ * 同一个身份（`String(latestFailedRunId)`）。
+ */
+export function useDismissedStall(stall: FetchStall | null): DismissedBanner {
+  return useDismissedBanner(
+    STALL_DISMISS_KEY,
+    // 依赖是那个 id 而不是 `stall` 本身：`fetchStall()` 每次渲染都返回一个新对象
+    stall === null ? null : String(stall.latestFailedRunId),
+  )
 }

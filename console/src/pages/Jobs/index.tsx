@@ -8,8 +8,8 @@ import { Skeleton } from '@/ui/Skeleton'
 import { FailuresTable } from './FailuresTable'
 import { JobCard, type RunState } from './JobCard'
 import { useMarkFailuresSeen } from '@/app/failuresSeen'
-import { useDismissedStall } from './dismiss'
-import { chainEdgeText, fetchStall, jobOrdinal, overdueJobs, runQueuedNote, splitLanes } from './view'
+import { useDismissedBanner, useDismissedStall, OVERDUE_DISMISS_KEY } from './dismiss'
+import { chainEdgeText, fetchStall, jobOrdinal, overdueIdentity, overdueJobs, runQueuedNote, splitLanes } from './view'
 import styles from './Jobs.module.css'
 
 /**
@@ -195,11 +195,24 @@ function Ready({
    * 与红点只提一句。所以这里既要把话说全，也要能关——知道了的人在等修复期间
    * 还要继续用这一页。
    *
-   * 只有这一条给关闭按钮。上面那条 `jobs-overdue`（「调度器多半已经不在跑了」）
-   * 不给：它是这一页独有的出处，顶栏的 `liveAlert()` 根本不报 overdue，关掉它
-   * 就等于把"调度器死了"这件事从整个控制台里抹掉。
+   * 上面那条 `jobs-overdue`（「调度器多半已经不在跑了」）用的是同一套机制，见下面
+   * `overdueId` 那一段的注释。
    */
   const { hidden: stallDismissed, dismiss: dismissStall } = useDismissedStall(stall)
+
+  /**
+   * 落后横幅也关得掉，粒度是**这一批落后**（`overdueIdentity`）。
+   *
+   * 从前它不给关闭按钮，理由是「顶栏的 liveAlert() 不报 overdue，关掉就等于把
+   * 『调度器死了』从整个控制台里抹掉」。那条理由是对的，所以关掉的不是这件事
+   * 本身而是这一批：任一落后任务再跑一轮、或落后集合变了，它就回来。知道了的人
+   * 在等修复期间还要继续用这一页，而一条关不掉的横幅会把四张卡片一直往下挤。
+   */
+  const overdueId = overdueIdentity(o.jobs)
+  const { hidden: overdueDismissed, dismiss: dismissOverdue } = useDismissedBanner(
+    OVERDUE_DISMISS_KEY,
+    overdueId,
+  )
 
   /**
    * 卡片上那句「影响」是不是**逐字**已经在下面那张表里了。
@@ -232,7 +245,7 @@ function Ready({
 
   return (
     <>
-      {overdue.length > 0 && (
+      {overdue.length > 0 && !overdueDismissed && (
         /* 原来这条横幅底下还有一段：「下面每个格子的『下次预计』照样算得出来，
            那是算术不是承诺」。那是在替一个**此刻在说谎的标签**道歉——所以改的是
            标签：落后的任务那一格现在写「按周期应在」（见 `JobCard`），
@@ -246,6 +259,17 @@ function Ready({
             <br />
             <span className={styles.bannerSub}>先确认调度进程还在不在。</span>
           </p>
+          {/* 可访问名与黄色那条相同（「关闭」这个名字在全站归 ui/Sheet 头部那个
+              × 所有）。两条同时在时靠 data-testid 区分，测试也按它定位。 */}
+          <button
+            type="button"
+            className={styles.bannerClose}
+            aria-label="关闭这条提醒"
+            data-testid="jobs-overdue-close"
+            onClick={dismissOverdue}
+          >
+            <span aria-hidden="true">×</span>
+          </button>
         </div>
       )}
 
@@ -273,6 +297,7 @@ function Ready({
             type="button"
             className={styles.bannerClose}
             aria-label="关闭这条提醒"
+            data-testid="jobs-fetch-stalled-close"
             onClick={dismissStall}
           >
             <span aria-hidden="true">×</span>

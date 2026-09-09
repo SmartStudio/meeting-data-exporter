@@ -676,7 +676,7 @@ describe('「拉取连续失败」那条横幅关得掉，但只对这一段故�
   test('点「关闭这条提醒」，横幅消失，并记下这一段故障的身份', async () => {
     await mount(stalled())
     expect(await screen.findByTestId('jobs-fetch-stalled')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: '关闭这条提醒' }))
+    await userEvent.click(within(screen.getByTestId('jobs-fetch-stalled')).getByRole('button', { name: '关闭这条提醒' }))
     await waitFor(() => expect(screen.queryByTestId('jobs-fetch-stalled')).toBeNull())
     expect(localStorage.getItem(KEY)).toBe(String(LATEST))
   })
@@ -701,10 +701,75 @@ describe('「拉取连续失败」那条横幅关得掉，但只对这一段故�
     await waitFor(() => expect(localStorage.getItem(KEY)).toBeNull())
   })
 
-  test('「N 个任务已经落后」那条没有关闭按钮——它是这件事在控制台里唯一的出处', async () => {
-    await mount(payload({ jobs: [job({ health: 'overdue' })] }))
+})
+
+/**
+ * 落后横幅也关得掉（规格 2026-09-09 §2.1），但同样只对**这一批落后**有效。
+ *
+ * 原来的规矩是「不能关」，理由是它是这件事在控制台里唯一的出处。那条理由仍然成立
+ * ——所以关掉的粒度是「这一批」，不是「以后都别说了」：任一落后任务再跑一轮、
+ * 或者落后的集合变了，它就回来。
+ */
+describe('「N 个任务已经落后」那条横幅关得掉，但只对这一批有效', () => {
+  const KEY = 'mde.jobs.overdue.dismissed'
+
+  function overduePayload(runId = 900): Record<string, unknown> {
+    return payload({
+      jobs: [
+        job({ name: 'archive_nas', label: '归档到 NAS', health: 'overdue', lastRun: run({ id: runId }) }),
+        job({ name: 'fetch_recordings', label: '拉取新录制', health: 'ok' }),
+      ],
+    })
+  }
+
+  beforeEach(() => localStorage.clear())
+  afterEach(() => localStorage.clear())
+
+  test('点「关闭这条提醒」，横幅消失，并记下这一批的身份', async () => {
+    await mount(overduePayload())
+    expect(await screen.findByTestId('jobs-overdue')).toBeInTheDocument()
+    const banner = screen.getByTestId('jobs-overdue')
+    await userEvent.click(within(banner).getByRole('button', { name: '关闭这条提醒' }))
+    await waitFor(() => expect(screen.queryByTestId('jobs-overdue')).toBeNull())
+    expect(localStorage.getItem(KEY)).toBe('archive_nas@900')
+  })
+
+  test('这一批已经关过：首次渲染就没有这条横幅', async () => {
+    localStorage.setItem(KEY, 'archive_nas@900')
+    await mount(overduePayload())
+    await screen.findAllByTestId('job-card')
+    expect(screen.queryByTestId('jobs-overdue')).toBeNull()
+  })
+
+  test('那个落后的任务又跑了一轮：横幅回来', async () => {
+    localStorage.setItem(KEY, 'archive_nas@900')
+    await mount(overduePayload(901))
+    expect(await screen.findByTestId('jobs-overdue')).toBeInTheDocument()
+  })
+
+  test('一个落后的都没有了：那个身份被删掉，下一批从头提醒', async () => {
+    localStorage.setItem(KEY, 'archive_nas@900')
+    await mount()   // 默认五个任务都是 ok
+    await waitFor(() => expect(localStorage.getItem(KEY)).toBeNull())
+  })
+
+  test('两条横幅同时在时各关各的：关掉落后那条，连续失败那条还在', async () => {
+    const both = payload({
+      jobs: [
+        job({ name: 'archive_nas', label: '归档到 NAS', health: 'overdue', lastRun: run({ id: 900 }) }),
+        job({
+          name: 'fetch_recordings', label: '拉取新录制', health: 'ok',
+          recentRuns: Array.from({ length: TENCENT_DOWN_STREAK }, (_, i) => run({ id: 800 - i, status: 'failed' })),
+        }),
+      ],
+    })
+    await mount(both)
     const overdue = await screen.findByTestId('jobs-overdue')
-    expect(within(overdue).queryByRole('button')).toBeNull()
+    // 两条的可访问名相同（都是「关闭这条提醒」），所以按 testid 定位到各自那一颗
+    await userEvent.click(within(overdue).getByRole('button', { name: '关闭这条提醒' }))
+    await waitFor(() => expect(screen.queryByTestId('jobs-overdue')).toBeNull())
+    expect(screen.getByTestId('jobs-fetch-stalled')).toBeInTheDocument()
+    expect(localStorage.getItem('mde.jobs.fetch-stall.dismissed')).toBeNull()
   })
 })
 

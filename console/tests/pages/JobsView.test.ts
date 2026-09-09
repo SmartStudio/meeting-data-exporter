@@ -12,6 +12,7 @@ import {
   healthView,
   jobOrdinal,
   keyMetric,
+  overdueIdentity,
   overdueJobs,
   runStatusText,
   sparkBars,
@@ -388,5 +389,37 @@ describe('jobOrdinal()', () => {
 
   test('第六个之后退回阿拉伯数字，不越界也不留空', () => {
     expect(jobOrdinal(5)).toBe('6')
+  })
+})
+
+/**
+ * 「这一批落后」的身份。与连续失败横幅同一套机制：关掉的只是**眼前这一段**。
+ * 任一任务再跑一次（lastRun.id 变）、或落后的集合变了，身份就变、横幅回来。
+ */
+describe('落后横幅的身份', () => {
+  const ok = (name: string) => job({ name, health: 'ok' })
+  const late = (name: string, runId: number | null) =>
+    job({ name, health: 'overdue', lastRun: runId === null ? null : run({ id: runId }) })
+
+  test('没有落后的任务就没有身份——存储键该被删掉', () => {
+    expect(overdueIdentity([ok('a'), ok('b')])).toBeNull()
+  })
+
+  test('按任务名排序拼 <name>@<lastRunId>，用 | 连接——与后端下发顺序无关', () => {
+    expect(overdueIdentity([late('b', 22), ok('c'), late('a', 11)])).toBe('a@11|b@22')
+    expect(overdueIdentity([late('a', 11), late('b', 22)])).toBe('a@11|b@22')
+  })
+
+  test('从没跑过的落后任务用 none，不用 0——0 是一个真实的 id 取值', () => {
+    expect(overdueIdentity([late('a', null)])).toBe('a@none')
+  })
+
+  test('任一任务又跑了一轮，身份就变（横幅因此回来）', () => {
+    expect(overdueIdentity([late('a', 11), late('b', 22)]))
+      .not.toBe(overdueIdentity([late('a', 12), late('b', 22)]))
+  })
+
+  test('落后集合变了，身份也变', () => {
+    expect(overdueIdentity([late('a', 11)])).not.toBe(overdueIdentity([late('a', 11), late('b', 22)]))
   })
 })

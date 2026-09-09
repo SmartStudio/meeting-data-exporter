@@ -382,6 +382,31 @@ export function overdueJobs(jobs: readonly JobItem[]): JobItem[] {
   return jobs.filter((j) => healthView(j.health).alarm)
 }
 
+/**
+ * 「这一批落后」的身份字符串；一个落后任务都没有时是 null。
+ *
+ * 与连续失败横幅那条（`fetchStall().latestFailedRunId`）是同一套机制：关掉的只是
+ * **眼前这一段**，不是永久禁用一条告警。身份 = 落后任务按名字排序后，每个拼成
+ * `<name>@<lastRunId ?? 'none'>`，用 `|` 连接。
+ *
+ * 三个细节各有理由：
+ *
+ * - **按名字排序**：后端下发顺序是 `JOB_CATALOG` 的顺序，今天稳定，但身份字符串
+ *   不该建立在一个没人承诺过的顺序上——顺序一变，一条已经关掉的横幅会自己跳回来
+ * - **带上 lastRunId**：任一落后任务再跑一次（哪怕仍然落后），那就是一件你还没看过
+ *   的新事实，横幅该回来
+ * - **从没跑过用 `none` 而不是 0**：0 是一个真实的自增 id 取值，用它当哨兵会让
+ *   「从没跑过」与「跑过第 0 轮」撞成同一个身份
+ */
+export function overdueIdentity(jobs: readonly JobItem[]): string | null {
+  const late = overdueJobs(jobs)
+  if (late.length === 0) return null
+  return [...late]
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map((j) => `${j.name}@${j.lastRun === null ? 'none' : j.lastRun.id}`)
+    .join('|')
+}
+
 export interface FetchStall {
   streak: number
   label: string
