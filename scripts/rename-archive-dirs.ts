@@ -148,7 +148,7 @@ interface MeetingRow extends RowDataPacket {
  * 「NAS 上没有旧目录」，于是不改 NAS 目录、却照样改库里的 nas_path——
  * 库指向一个根本没建出来的路径，而 NAS 一挂回来，文件还在旧名下。
  */
-async function exists(p: string): Promise<boolean> {
+export async function exists(p: string): Promise<boolean> {
   try {
     await stat(p)
     return true
@@ -210,7 +210,7 @@ interface BaseRow extends RowDataPacket {
  * join 会把它整场漏掉（见文件头 nas_dir 那一段）。
  */
 const NAS_REL = `SUBSTRING_INDEX(SUBSTRING_INDEX(nas_path, '/', -4), '/', 3)`
-const NAS_BASE = `LEFT(nas_path, CHAR_LENGTH(nas_path) - CHAR_LENGTH(SUBSTRING_INDEX(nas_path, '/', -4)) - 1)`
+export const NAS_BASE = `LEFT(nas_path, CHAR_LENGTH(nas_path) - CHAR_LENGTH(SUBSTRING_INDEX(nas_path, '/', -4)) - 1)`
 
 /**
  * 三列路径里的**目录前缀**（前三段）各来一条 DISTINCT。
@@ -236,11 +236,11 @@ const NAS_BASE_BY_MEETING = `SELECT DISTINCT meeting_id, sub_meeting_id, ${NAS_B
      FROM archived_assets`
 
 /** 空串（nas_path 不够四段、切完什么都不剩）当没反推出来处理 */
-const cleanBase = (b: string | null | undefined): string | null =>
+export const cleanBase = (b: string | null | undefined): string | null =>
   b === null || b === undefined || b === '' ? null : b
 
 /** 一场会议（或一条路径）反推出来的基准目录：`conflict` = 反推出了不止一个 */
-interface DerivedBase {
+export interface DerivedBase {
   base: string | null
   conflict: boolean
 }
@@ -249,7 +249,7 @@ interface DerivedBase {
  * 归档行的 nas_dir 与反推出来的基准目录合成一个：有归档行以它为准，没有就用反推的；
  * 两者都有且不一样、或反推本身就自相矛盾 → 这场会议的 NAS 位置讲不清楚，交给人看。
  */
-function resolveNasBase(
+export function resolveNasBase(
   archiveDir: string | null,
   derived: DerivedBase | undefined,
 ): { dir: string | null; reason: string | null } {
@@ -270,7 +270,7 @@ function resolveNasBase(
 }
 
 /** 把一条反推结果并进 map：先到的留着，后到的不一样就标 conflict */
-function mergeBase(map: Map<string, DerivedBase>, key: string, base: string | null): void {
+export function mergeBase(map: Map<string, DerivedBase>, key: string, base: string | null): void {
   const prev = map.get(key)
   if (prev === undefined) {
     map.set(key, { base, conflict: false })
@@ -450,7 +450,7 @@ const PREFIX_MATCH = (col: string): string => `LEFT(${col}, CHAR_LENGTH(?)) = ?`
  * 把目录改回去。**自己不抛**——它跑在错误处理路径上，再抛一次就会把真正的原因盖掉，
  * 而那个原因才是要查的东西。改不回去只能喊出来，人工收尾。
  */
-async function undoRename(from: string, to: string, what: string): Promise<void> {
+export async function undoRename(from: string, to: string, what: string): Promise<void> {
   try {
     await rename(from, to)
   } catch (err) {
