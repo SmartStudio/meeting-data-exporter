@@ -93,8 +93,8 @@ export function FailuresTable({
    * 已经乐观移除的那几条先滤掉，再筛任务、再归并。
    *
    * 上面的 `counts` 与「全部 N」那颗 chip **保持读全量**：它们说的是「后端这一批
-   * 有多少条」，与屏幕上刚被点掉几条是两件事——重取一回来（`index.tsx` 里
-   * `setRemovedIds(new Set())`）那几条本来就该按后端的说法重新算。
+   * 有多少条」，与屏幕上刚被点掉几条是两件事——那一批的请求一回来（`index.tsx` 里
+   * 把这一批的 id 从 `removedIds` 里减掉）那几条本来就该按后端的说法重新算。
    */
   const groups = useMemo(() => {
     const live = o.failures.filter((f) => !removedIds.has(f.id))
@@ -146,14 +146,20 @@ export function FailuresTable({
         </p>
       )}
 
-      {o.failures.length === 0 ? (
+      {/* 空态挂在**看得见的那几组**上，不是挂在「这一批下发了多少条」上：
+          最后一行被乐观移除之后 `o.failures` 还不是空的（重取还没回来），
+          按它判会留下一张只有表头的空表，要等一次往返才补上这句话。 */}
+      {groups.length === 0 ? (
         <p className={styles.empty} data-testid="failures-empty">
           没有待处理的失败项。
         </p>
       ) : (
         <>
           {/* cards：窄屏（≤56em）一行一张卡片，不横滚（spec §11 缺口 2）。
-              每个 td 因此必须带 data-label。 */}
+              有列名的那几格因此都带 `data-label`——窄屏下 `display: block` 会让
+              浏览器丢掉表格角色，列名改由格子自己用 ::before 显示出来。行尾那格
+              「操作」**故意不带**：它是两颗按钮，占满一整行比挂一个列名槽好看，
+              `ui/Table.module.css` 里 `td[data-label]` 那条选择器正是按这个写的。 */}
           <Table data-testid="failures-table" cards>
             <thead>
               <tr>
@@ -266,7 +272,7 @@ function GroupRows({
             就不需要列名。而且这一格常常是空的（不可操作的那种失败项），带上列名
             就会在卡片里留下一行光写着「操作」、底下什么都没有的东西。
             宽屏的表头那一列仍然叫「操作」。 */}
-        <td className={styles.actions}>
+        <td>
           {/* 不可操作的行不给按钮：那种失败项每轮由各自的任务重新判定、自动恢复，
               一颗点下去只会回一句「这条没能处理」的按钮比没有按钮更糟。 */}
           {canAct.length > 0 && (

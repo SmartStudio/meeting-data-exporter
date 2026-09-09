@@ -1128,6 +1128,60 @@ describe('失败项的重试 / 忽略', () => {
     await userEvent.click(within(row).getByRole('button', { name: '忽略' }))
     await waitFor(() => expect(screen.queryByTestId('failure-row')).toBeNull())
     expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1)
+    // 屏幕上一行都不剩了就说「没有待处理的失败项」。空态挂在**看得见的那几组**
+    // 上，不是挂在这一批下发了多少条上——挂在后者时，最后一行被点掉之后留下的
+    // 是一张只有表头的空表，要等重取回来才补上这句话。
+    expect(screen.getByTestId('failures-empty')).toBeInTheDocument()
+    expect(screen.queryByTestId('failures-table')).toBeNull()
+  })
+
+  /**
+   * 两批重叠：第一批还挂在网上，第二批先回来了。
+   *
+   * 重取带回来的是后端的真相，但**只对已经回来的那一批**成立——第一批还没落库，
+   * 它那几条在重取的响应里仍然在。所以第二批成功时只能把它自己那几个 id 从
+   * 乐观移除里拿掉；一把清空的话，第一批点掉的行会当场跳回屏幕上，看起来像那次
+   * 点击被撤销了。
+   */
+  test('两批重叠：后一批做成了，不把前一批还挂着的乐观移除一起清掉', async () => {
+    const calls: Array<{ method: string; ids: number[] }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        const ids = init?.body === undefined ? [] : (JSON.parse(String(init.body)) as { ids: number[] }).ids
+        calls.push({ method, ids })
+        if (method === 'POST') {
+          // 11 那一批挂着不回；12 那一批当场成功
+          if (ids.includes(11)) return new Promise<Response>(() => {})
+          return new Response(JSON.stringify({ affected: 1, skipped: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        // 重取回来的是「12 真的没了、11 还在」——第一批那两句 UPDATE 还没发生
+        const first = calls.filter((c) => c.method === 'GET').length === 1
+        const body = first
+          ? withFailures([
+              fetchFailure({ id: 11, meetingId: 'm-1', reason: '录像：腾讯那边没有这个文件' }),
+              fetchFailure({ id: 12, meetingId: 'm-2', reason: '录像：本地写入失败' }),
+            ])
+          : withFailures([fetchFailure({ id: 11, meetingId: 'm-1', reason: '录像：腾讯那边没有这个文件' })])
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }),
+    )
+    render(<JobsPage />)
+    await screen.findByRole('heading', { name: '定时任务', level: 1 })
+    const rows = await screen.findAllByTestId('failure-row')
+    expect(rows).toHaveLength(2)
+    await userEvent.click(within(rows[0]!).getByRole('button', { name: '忽略' }))
+    await userEvent.click(within(rows[1]!).getByRole('button', { name: '忽略' }))
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET')).toHaveLength(2))
+    // 11 还在后端那份列表里，但它那一批还挂着——乐观移除必须继续压住它
+    await waitFor(() => expect(screen.queryByTestId('failure-row')).toBeNull())
   })
 
   test('做成之后重新拉一次 /admin/jobs，表上跟的是后端的真相', async () => {

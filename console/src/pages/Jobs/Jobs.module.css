@@ -594,10 +594,6 @@
 }
 
 /* 操作格：两颗小按钮，窄屏（卡片模式）下换行不挤 */
-.actions {
-  white-space: nowrap;
-}
-
 .actionRow {
   display: flex;
   flex-wrap: wrap;

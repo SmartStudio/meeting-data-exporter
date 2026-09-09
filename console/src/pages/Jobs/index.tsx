@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
   fetchJobs,
@@ -110,10 +110,28 @@ export default function JobsPage() {
   const [removedIds, setRemovedIds] = useState<ReadonlySet<number>>(() => new Set())
   const [toast, setToast] = useState<string | null>(null)
 
+  /**
+   * 计时器存在 ref 里，新的一条先把上一条的计时器清掉。
+   *
+   * 不清的话两个计时器会各自到期：第二条 toast 刚显示 1 秒，第一条那个
+   * `setToast(null)` 就到点了，把还没读完的第二条抹掉。卸载时也要清——组件都
+   * 没了还去 `setToast` 是一次对已卸载组件的 setState。
+   */
+  const toastTimer = useRef<number | null>(null)
   const showToast = useCallback((text: string) => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
     setToast(text)
-    window.setTimeout(() => setToast(null), 4200)
+    toastTimer.current = window.setTimeout(() => {
+      toastTimer.current = null
+      setToast(null)
+    }, 4200)
   }, [])
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
+    },
+    [],
+  )
 
   const onAct = useCallback(
     (action: FailureActionKind, ids: number[]) => {
@@ -126,8 +144,11 @@ export default function JobsPage() {
           if (r.skipped.length > 0) {
             showToast(failureActionSkippedText(action, r.affected, r.skipped.length))
           }
-          // 重取会带回真相（没做成的那几条还在里面），乐观移除到此为止
-          setRemovedIds(new Set())
+          // 重取会带回真相（没做成的那几条还在里面），**这一批**的乐观移除到此为止。
+          // 只减这一批的 id、不清空：另一批可能还挂在网上，它点掉的那几行在重取的
+          // 响应里仍然在（那两句 UPDATE 还没发生），一把清空会让它们跳回屏幕上，
+          // 看起来像那次点击被撤销了。
+          setRemovedIds((prev) => new Set([...prev].filter((id) => !ids.includes(id))))
           retry()
         })
         .catch((e: unknown) => {
