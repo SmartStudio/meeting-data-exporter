@@ -44,6 +44,8 @@ discovery 会给窗口内每场会议补 `ai_minutes` / `chapters`（没开智�
     SELECT asset_type, status, COUNT(*) FROM asset_contents GROUP BY 1,2;  -- ai_minutes/chapters 为 parsed
     SELECT asset_type, last_error, COUNT(*) FROM meeting_assets WHERE status IN ('dead','skipped') GROUP BY 1,2;
 NAS 抽一场：`<nas_dir>/2026/09/2026-09-0X_HHMM_<会议号>/` 下有 `minutes.md`、`chapters.json`（开了智能录制的）。
+（2026-09-09 之后目录按**录制记录**分：同一场会议同一分钟的第二条记录——腾讯常给的「转写_」孪生记录——
+目录名末尾加 `_2`、`_3`，序号按首次发现时间 `created_at`、同批再按 record id 升序钉住，先到的那条保住无后缀的原名。）
 `_manifest.json` **不在这个会议目录里**，在 `<nas_dir>/_manifest.json`（同一条归档规则渲染出的所有会议共用
 这一份）——去那份文件里找这场会议对应的条目，确认它的 `nasPath` 指向新目录。
 控制台：任一场会议 → 内容预览 → 三个 tab 都有内容；规则编辑器资产类型下拉是六项。

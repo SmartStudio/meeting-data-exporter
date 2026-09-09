@@ -33,6 +33,10 @@ export MDE_CLIENT_SECRET=xxxx
 
 本地任务队列存放在 `<out>/.mde/queue.sqlite`，记录每个资产的下载状态（pending/running/completed/failed/skipped/dead）与探测状态，跨进程、跨次调用持续有效——中途 Ctrl-C 或机器重启后重新执行同一条命令即可继续，不会重复下载已完成的资产。
 
+> 2026-09-09 起场次 id 取腾讯的 `meeting_record_id`，周期会议的每一场各占一个目录。
+> **旧的 `queue.sqlite` 不做迁移**：换一个 `--out` 目录重新跑一遍即可，已经下载过的
+> 文件仍在旧目录里，不会丢。
+
 ### `run` — 一次性完成「发现 + 下载」
 
 按 `--from/--to` 时间范围发现会议、写入队列，紧接着排空队列（下载全部待办资产）。日常导出用这一条即够。

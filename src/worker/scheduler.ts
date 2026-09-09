@@ -163,6 +163,11 @@ export interface JobFailInput {
   /** 人读的对象名。拿不到就别传，**不要编一个** */
   targetLabel?: string
   meetingId?: string | null
+  /**
+   * 场次 id。缺省 `''` 只是「调用方没说」的占位，不是新代码在写空串：会议维度的
+   * 失败项由 `recordDeadAssets` 填，它带的是资产行自己的 `sub_meeting_id`，
+   * 2026-09-09 拆场次之后那就是腾讯的 `meeting_record_id`。
+   */
   subMeetingId?: string
   reason: string
   /** 绝对计数，不给就累加。只有镜像着别处真实计数器的失败项才该给，见 RecordFailureInput.attempts */
@@ -649,6 +654,8 @@ export function createScheduler(cfg: SchedulerConfig): Scheduler {
           target: ROUND_FAILURE_TARGET,
           targetLabel: spec.label,
           meetingId: null,
+          // 整轮失败不是某一场会议的事（target 是 __round__），所以没有场次可填。
+          // 「新代码不再写空 sub_meeting_id」那条规矩管的是会议行，不管这里
           subMeetingId: '',
           reason: text,
           impact: spec.impact,
