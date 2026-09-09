@@ -266,3 +266,49 @@ test('runProbes 反查资产时带上探测行的场次——同 meeting_id 别�
   expect(r.resolved).toBe(0)          // rec-2 的那一段不算 rec-1 就绪
   expect((await store.counts()).pending).toBe(0)
 })
+
+// ---------------------------------------------------------------------------
+// 「平台没有这个文件」不是失败，是一个确定的答案。
+//
+// 走退避 → dead 的代价不是多试五次，是**留下一条永远处理不掉的失败项**：dead 是
+// 终态，`recordDeadAssets` 每轮把它重记一遍，运维在「失败项 · 需要处理」上看到的
+// 是一件永远没人能修好的事。skipped 是「确认取不到」，清单里写得明明白白，
+// 而且不计入归档判定（completed 数 > archived 数），不再拖住会议的「已归档」。
+// ---------------------------------------------------------------------------
+test('下载器报 permanent：转 skipped(upstream_missing)，不进 failed 也不进 dead', async () => {
+  const store = createStore(openDb(':memory:'))
+  await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1', fileType: 'mp4' }, 1)
+  const deps: any = {
+    store,
+    download: async () => ({ status: 'failed' as const, error: 'http 404', permanent: true }),
+    gw: {},
+    storage: { ensureFreeSpace: async () => true },
+    meetingsByPathKey: new Map([[meetingPathKey('m1', ''), { meetingId: 'm1', subMeetingId: '', subject: 's', startTime: 100, meetingCode: null, endTime: null }]]),
+  }
+  const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
+  expect(r).toEqual({ completed: 0, failed: 0, skipped: 1 })
+
+  const row = (await store.assetsForMeeting('m1', ''))[0]!
+  expect(row.status).toBe('skipped')
+  expect(row.last_error).toBe('upstream_missing')
+  expect(row.lease_expires_at).toBeNull()
+  expect(row.attempts).toBe(1)                              // 第一次就定案，没有五次退避
+  expect(await store.claimNext(99_999, 300)).toBeNull()      // 队列下一轮也不会再领它
+})
+
+test('permanent 只对带这个标记的结果生效：普通 failed 照旧走退避', async () => {
+  const store = createStore(openDb(':memory:'))
+  await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
+  await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1', fileType: 'mp4' }, 1)
+  const deps: any = {
+    store,
+    download: async () => ({ status: 'failed' as const, error: 'http 500' }),
+    gw: {},
+    storage: { ensureFreeSpace: async () => true },
+    meetingsByPathKey: new Map([[meetingPathKey('m1', ''), { meetingId: 'm1', subMeetingId: '', subject: 's', startTime: 100, meetingCode: null, endTime: null }]]),
+  }
+  const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
+  expect(r.failed).toBe(1)
+  expect((await store.assetsForMeeting('m1', ''))[0]!.status).toBe('failed')
+})

@@ -48,6 +48,10 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
   // markCompleted 顺手把 downloader 报回的真实字节数落库：平台常常不给 bytes_expected，
   // 那时这就是「这个文件多大」唯一的事实来源（见 domain/manifest.ts 的 bytes 字段注释）
   if (res.status === 'completed') { await deps.store.markCompleted(row.id, res.contentHash, res.bytesWritten, now()); result.completed++; return }
+  // 平台确认没有这个文件（下载器换过一条新链仍 404）：重试是在等一个不会到来的
+  // 修复，而五次之后那条 dead 行会永远挂在「失败项 · 需要处理」上。skipped 是
+  // 「确认取不到」，清单里说得出为什么，也不计入归档判定。
+  if (res.permanent === true) { await deps.store.markSkipped(row.id, 'upstream_missing', now()); result.skipped++; return }
   if (row.attempts >= MAX_ATTEMPTS) { await deps.store.markDead(row.id, res.error, now()); result.failed++; return }
   // `row.attempts` 是**这一次**领取之后的值（claimNext 领的时候就 +1 了），所以
   // 第一次失败传进 downloadBackoff 的是 1，等 5 分钟。退避时间由这里算、store 只写，

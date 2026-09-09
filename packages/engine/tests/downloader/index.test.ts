@@ -106,3 +106,39 @@ test('空正文（200、0 字节）：落 0 字节文件并 completed，不因 .
   expect(await storage.writtenSize('d/t.txt')).toBe(0)
   server.stop(); await rm(root, { recursive: true, force: true })
 })
+
+// 2026-09-09 本机实测：「转写_」录制记录的 video 在腾讯那边根本没有这个文件，
+// 每一次请求都回 404。换一条新链接再试一次是为了排除「这条链接本身过期了」
+// （403/410 之外还有平台偶发把过期链接回成 404 的情形）；第二次仍 404 就是
+// 平台的事实，重试多少次都是同一个答案——交给执行器判永久缺失，不要走退避到 dead。
+test('404 换一条新链接再试一次；第二次仍 404 → permanent', async () => {
+  const root = await tmp(); const storage = createLocalStorage(root)
+  let served = 0
+  const server = Bun.serve({ port: 0, fetch() { served++; return new Response('not found', { status: 404 }) } })
+  let urls = 0
+  const gw = { getDownloadUrl: async () => { urls++; return { url: `http://localhost:${server.port}/f?v=${urls}`, expiresAt: 9e9, fileType: 'mp4', bytesExpected: null } } } as any
+  const r = await downloadAsset({ storage, gw }, { assetId: 'a', relPath: 'f.mp4', bytesExpected: null, isText: false }, () => 1)
+  expect(r).toEqual({ status: 'failed', error: 'http 404', permanent: true })
+  expect(served).toBe(2)   // 只多试一次，不是把 6 次换链额度耗光
+  expect(urls).toBe(2)     // 换过一次链
+  server.stop(); await rm(root, { recursive: true, force: true })
+})
+
+// 换链之后 **不保留 size**（与 403/410 那条路径的区别）：404 之后拿到的新链接
+// 很可能指向另一份文件，拿旧的 .part 去续传会拼出一个字节数对不上的坏文件。
+test('404 之后换链成功：旧的 .part 被丢弃，落盘是完整文件而不是续上去的', async () => {
+  const root = await tmp(); const storage = createLocalStorage(root)
+  await storage.appendChunk('f.bin', 0, BODY.slice(0, 400))   // 上一轮下到 400 字节就断了
+  const server = Bun.serve({ port: 0, fetch(req) {
+    if (new URL(req.url).searchParams.get('v') === '1') return new Response('not found', { status: 404 })
+    // 带 Range 就说明 .part 没被丢掉——这正是这条用例要挡的那个 bug
+    if (req.headers.get('range')) return new Response('unexpected range', { status: 416 })
+    return new Response(BODY, { status: 200 })
+  } })
+  let v = 0
+  const gw = { getDownloadUrl: async () => { v++; return { url: `http://localhost:${server.port}/f?v=${v}`, expiresAt: 9e9, fileType: null, bytesExpected: null } } } as any
+  const r = await downloadAsset({ storage, gw }, { assetId: 'a', relPath: 'f.bin', bytesExpected: null, isText: false }, () => 1)
+  expect(r.status).toBe('completed')
+  if (r.status === 'completed') expect(r.bytesWritten).toBe(BODY.length)   // 1000，不是 1400
+  server.stop(); await rm(root, { recursive: true, force: true })
+})

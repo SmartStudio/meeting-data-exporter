@@ -859,8 +859,10 @@ describe('定时任务的任务一（fetch_recordings）', () => {
   }, 30_000)
 
   test('一轮里下挂了的资产在运行记录里看得出来，但整轮不因此标红', async () => {
-    // 视频那个文件服务上没有 → 404 → 这一条下不下来
-    await withRig({ '/file/f-sum-1': TRANSCRIPT_BODY }, async ({ pool, root, nasRoot, server }) => {
+    // 视频服务上只有半截（字节数对不上 bytes_expected）→ size mismatch → 这一条下不下来。
+    // 这里刻意**不用 404**：404 是「平台确认没有这个文件」，走的是 skipped/upstream_missing
+    // 那条永久缺失的路（见下一条用例），不是这条用例要验的「会重试的失败」。
+    await withRig({ '/file/f-sum-1': TRANSCRIPT_BODY, '/file/f-video-1': VIDEO_BODY.slice(0, 4) }, async ({ pool, root, nasRoot, server }) => {
       let clock = START
       const now = (): number => clock
       const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
@@ -893,6 +895,47 @@ describe('定时任务的任务一（fetch_recordings）', () => {
       const video = rows.find((r) => r.asset_type === 'video')!
       expect(video.status).toBe('failed')
       expect(video.last_error).not.toBeNull()
+    })
+  }, 30_000)
+
+  // 2026-09-09 本机实测：「转写_」录制记录的 video 在腾讯那边根本没有这个文件，
+  // 每次请求都回 404。它不该被当成「这次没成」重试五次再转 dead——那条 dead 行
+  // 会永远挂在「失败项 · 需要处理」上，等一个不存在的修复。
+  test('视频在平台上根本没有（404）→ skipped(upstream_missing)，不计失败、不留退避', async () => {
+    // 视频那个文件服务上没有 → 每次都 404
+    await withRig({ '/file/f-sum-1': TRANSCRIPT_BODY }, async ({ pool, root, nasRoot, server }) => {
+      let clock = START
+      const now = (): number => clock
+      const deps = makeDeps(pool, root, nasRoot, server, [TRANSCRIPT_ASSET, VIDEO_ASSET], now)
+      const jobs = createJobsStore(pool)
+      const counters = { archive: 0, cleanup: 0 }
+      const scheduler = createScheduler({
+        jobs,
+        now,
+        tzOffsetSec: 0,
+        log: () => {},
+        runners: createJobRunners({
+          fetchRound: (clk) => runFetchRound(deps, RANGE_SEL, KEYS, clk),
+          ...otherJobs(counters),
+        }),
+      })
+
+      await scheduler.bootstrap()
+      clock = START + FETCH_SLOT
+      await scheduler.tick()
+      await scheduler.drain()
+
+      const run = (await jobs.listRuns('fetch_recordings', 1))[0]!
+      expect(run.status).toBe('succeeded')
+      expect(run.summary).toMatchObject({ meetings: 1, discovered: 2, completed: 1, failed: 0, skipped: 1 })
+
+      const video = (await rowsByType(pool)).find((r) => r.asset_type === 'video')!
+      expect(video.status).toBe('skipped')
+      expect(video.last_error).toBe('upstream_missing')
+      expect(video.lease_expires_at).toBeNull()   // 终态，不再有「下次什么时候领」
+      expect(Number(video.attempts)).toBe(1)      // 第一次就定案，没有五次退避
+      // 换过一条新链接再试了一次，就只多这一次
+      expect(server.requests.filter((r) => r.path === '/file/f-video-1').length).toBe(2)
     })
   }, 30_000)
 })

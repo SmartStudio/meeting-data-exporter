@@ -13,7 +13,13 @@ export interface DownloadTask { assetId: string; relPath: string; bytesExpected:
  */
 export type DownloadResult =
   | { status: 'completed'; contentHash: string | null; bytesWritten: number }
-  | { status: 'failed'; error: string }
+  /**
+   * `permanent` = **平台确认没有这个文件**，不是「这次没成」。只有 404 走到这里
+   * （换过一条新链接仍然 404）。执行器据此把资产判成 `skipped/upstream_missing`，
+   * 不走退避、不进 dead——重试五次拿到的是同一个 404，而那五次之后留下的
+   * 一条 dead 行会永远挂在「失败项 · 需要处理」上，等一个不存在的修复。
+   */
+  | { status: 'failed'; error: string; permanent?: true }
 export interface DownloadDeps { storage: Storage; gw: Pick<AssetSource, 'getDownloadUrl'>; onProgress?: (bytes: number) => void }
 
 const PROGRESS_INTERVAL = 8 * 1024 * 1024
@@ -21,12 +27,24 @@ const PROGRESS_INTERVAL = 8 * 1024 * 1024
 export async function downloadAsset(deps: DownloadDeps, task: DownloadTask, _now: () => number): Promise<DownloadResult> {
   try {
     let link = await deps.gw.getDownloadUrl(task.assetId)
+    let renewedFor404 = false
     for (let attempt = 0; attempt < 6; attempt++) {
       let size = await deps.storage.writtenSize(task.relPath)
       const res = await fetchFrom(link.url, size)
 
       if (res.status === 416) { await deps.storage.discardPart(task.relPath); size = 0; link = await deps.gw.getDownloadUrl(task.assetId); continue }
       if (res.status === 403 || res.status === 410) { link = await deps.gw.getDownloadUrl(task.assetId); continue }  // 链接过期换新，size 保留续传
+      // 404 与 403/410 走同一条换链路径，但**不保留 size**：换回来的新链接可能
+      // 指向另一份文件，拿旧的 .part 续传会拼出一个坏文件。只换一次——第二次
+      // 仍 404 就是平台的事实，再换五次也是同一个答案。
+      // （size 不必手动清零：循环顶部每一轮都重新 writtenSize。）
+      if (res.status === 404) {
+        if (renewedFor404) return { status: 'failed', error: 'http 404', permanent: true }
+        renewedFor404 = true
+        await deps.storage.discardPart(task.relPath)
+        link = await deps.gw.getDownloadUrl(task.assetId)
+        continue
+      }
       if (res.status === 200 && size > 0) { await deps.storage.discardPart(task.relPath); size = 0 }                 // 不支持 Range，丢弃重下
       if (res.status !== 200 && res.status !== 206) { if (res.status >= 500) { link = await deps.gw.getDownloadUrl(task.assetId); continue } return { status: 'failed', error: `http ${res.status}` } }
 
