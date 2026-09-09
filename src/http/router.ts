@@ -329,6 +329,12 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/admin/meetings/:meetingId/content', consoleContentHandlers.getContent),
   compile('GET', '/api/v1/admin/meetings/:meetingId/content/chapters', consoleContentHandlers.getChapters),
   // A4 定时任务（阶段 4 · T11）。spec §4.8。
+  //
+  // 失败项的两个动作（规格 2026-09-09 §2.3）排在 `/jobs/:name/run` **之前**：
+  // 两者段数相同，末段的字面量不同，所以其实互不相干；顺序是给读代码的人看的
+  // ——具体路径排在带参数的前面
+  compile('POST', '/api/v1/admin/jobs/failures/retry', consoleJobsHandlers.retryFailures),
+  compile('POST', '/api/v1/admin/jobs/failures/ignore', consoleJobsHandlers.ignoreFailures),
   // `/jobs/:name/run` 与 `/jobs` 段数不同，compile 出来的 `[^/]+` 不跨段，
   // 两者不会互相吃掉
   compile('GET', '/api/v1/admin/jobs', consoleJobsHandlers.listJobs),

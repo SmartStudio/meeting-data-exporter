@@ -109,6 +109,8 @@ function fakeCtx(opts: {
     findRun: notUsed('findRun'),
     recordFailure: notUsed('recordFailure'),
     resolveStaleFailures: notUsed('resolveStaleFailures'),
+    listFailuresById: notUsed('listFailuresById'),
+    resolveFailuresByIds: notUsed('resolveFailuresByIds'),
     async enqueueManualRun(input) {
       spy.enqueued.push(input)
       return 77
@@ -130,6 +132,12 @@ function fakeCtx(opts: {
     adminAuth: fakeAdminAuth(opts.loggedIn !== false),
     jobs: {
       jobs,
+      // listJobs / runJob 都不该碰资产队列——碰了就说明「立即运行」在网关里
+      // 真的跑了起来（`notUsed` 会当场把这件事变成一条失败用例）
+      assets: {
+        retryMeetingAssets: notUsed('retryMeetingAssets'),
+        ignoreDeadAssets: notUsed('ignoreDeadAssets'),
+      },
       audit: {
         async record(entry: AuditEntry) {
           spy.audits.push(entry)

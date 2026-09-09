@@ -58,6 +58,7 @@ import { DEFAULT_FETCH_LOOKBACK_HOURS, createJobsStore } from '../../src/store/j
 import { createConsoleStorageStore } from '../../src/store/console-storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 import { createContentLookup } from '../../src/http/handlers/console/content'
+import { createMysqlStore } from '../../src/worker/store-mysql'
 // 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
 import {
   startFakeTencentServer,
@@ -285,6 +286,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     jobs: {
       jobs: createJobsStore(dbPool),
       audit: auditStore,
+      // 失败项动作的写侧，跟随 src/index.ts：真实 Store 接同一个 e2e 库
+      assets: createMysqlStore(dbPool),
       tzOffsetSec: 0,
       fetchLookbackHours: DEFAULT_FETCH_LOOKBACK_HOURS,
     },

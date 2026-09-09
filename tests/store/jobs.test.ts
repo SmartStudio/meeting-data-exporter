@@ -548,3 +548,35 @@ test('同一个 target 再失败一次：detail 被后一次覆盖（它说的�
     expect(fs[0]!.detail).toBe('video/r-1/mp4: http 404')
   })
 })
+
+// ── 六、失败项动作端点要用的两个读写（规格 §2.3） ────────────────
+
+test('listFailuresById 按 id 取（含已恢复的），空数组不发查询直接返回空', async () => {
+  await withStore(async (store) => {
+    const base = { targetLabel: '', subMeetingId: '', impact: '影响', maxAttempts: 5, now: 1000 }
+    await store.recordFailure({ ...base, jobName: 'fetch_recordings', target: 'm-1|', meetingId: 'm-1', reason: 'a' })
+    await store.recordFailure({ ...base, jobName: 'archive_nas', target: 'm-2|', meetingId: 'm-2', reason: 'b' })
+    const all = await store.listFailures()
+    const ids = all.map((f) => f.id)
+    expect((await store.listFailuresById(ids)).map((f) => f.id).sort()).toEqual([...ids].sort())
+    expect(await store.listFailuresById([])).toEqual([])
+    // 认不出的 id 就是查不到，不报错——端点据此把它们放进 skipped
+    expect(await store.listFailuresById([999_999])).toEqual([])
+  })
+})
+
+test('resolveFailuresByIds 只关还开着的，返回真的被关掉的行数', async () => {
+  await withStore(async (store) => {
+    const base = { targetLabel: '', subMeetingId: '', impact: '影响', maxAttempts: 5, now: 1000 }
+    await store.recordFailure({ ...base, jobName: 'fetch_recordings', target: 'm-1|', meetingId: 'm-1', reason: 'a' })
+    await store.recordFailure({ ...base, jobName: 'fetch_recordings', target: 'm-2|', meetingId: 'm-2', reason: 'b' })
+    const ids = (await store.listFailures()).map((f) => f.id)
+
+    expect(await store.resolveFailuresByIds(ids, 2000)).toBe(2)
+    expect(await store.listFailures()).toEqual([])
+    // 再关一次是 0，不是 2：已经恢复的不重复计，端点的 affected 才不会撒谎
+    expect(await store.resolveFailuresByIds(ids, 3000)).toBe(0)
+    const all = await store.listFailures({ includeResolved: true })
+    expect(all.every((f) => f.resolvedAt === 2000)).toBe(true)
+  })
+})

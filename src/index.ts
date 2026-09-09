@@ -10,6 +10,7 @@ import { createAuthStore } from './store/auth'
 import { createAdminStore } from './store/admin'
 import { createAuditStore } from './store/audit'
 import { createJobsStore, schedulerFetchLookbackHours, schedulerTzOffsetSec } from './store/jobs'
+import { createMysqlStore } from './worker/store-mysql'
 import { createMeetingCacheStore } from './store/meetings'
 import { createTencentClient } from './tencent/client'
 import { createRecordsApi } from './tencent/records'
@@ -297,6 +298,10 @@ async function main(): Promise<void> {
     jobs: {
       jobs: jobsStore,
       audit: auditStore,
+      // 失败项的「重试 / 忽略」要改 meeting_assets，走的是 Store 的两个写法。
+      // store-mysql 住在 worker/ 下但只是一个 store：运行时依赖只有 mysql2 与
+      // 引擎（网关本来就 import 着引擎），**不会把 scheduler 拖进网关进程**
+      assets: createMysqlStore(pool),
       // **必须与调度器进程用同一个值**，两处读的是同一个环境变量。
       // 配得不一样时「下次运行」会比真实时刻差几个小时，而且不报任何错。
       tzOffsetSec: schedulerTzOffsetSec(process.env),

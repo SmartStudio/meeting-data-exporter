@@ -90,6 +90,10 @@ export const AUDIT_ACTION_LABELS = {
 
   // ── 控制台 · 定时任务 ─────────────────────────────────────────────
   run_job: '手动触发定时任务',
+  /** 把一条失败项对应会议的 failed/dead 资产打回下载队列（attempts 清零） */
+  job_failure_retry: '重试一条失败项',
+  /** 把一条失败项对应会议的 dead 资产判成不用管了（skipped/ignored_by_admin） */
+  job_failure_ignore: '忽略一条失败项',
 
   // ── 控制台 · 内容查看（两条都留痕，spec §2）──────────────────────
   view_content: '查看会议内容',
@@ -141,6 +145,8 @@ export const AUDIT_ACTION = {
   extendRetention: 'extend_retention',
 
   runJob: 'run_job',
+  jobFailureRetry: 'job_failure_retry',
+  jobFailureIgnore: 'job_failure_ignore',
 
   viewContent: 'view_content',
   viewRestrictedContent: 'view_restricted_content',

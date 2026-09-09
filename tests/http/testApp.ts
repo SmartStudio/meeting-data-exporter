@@ -42,6 +42,7 @@ import { createConsoleStorageStore } from '../../src/store/console-storage'
 import type { StorageDeps } from '../../src/http/handlers/console/storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 import { createContentLookup } from '../../src/http/handlers/console/content'
+import { createMysqlStore } from '../../src/worker/store-mysql'
 import type { VisibilityDeps } from '../../src/worker/visibility'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
@@ -250,6 +251,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     jobs: {
       jobs: jobsStore,
       audit: auditStore,
+      // 失败项的「重试 / 忽略」要改 meeting_assets，跟随 src/index.ts 接真实的
+      // Store 实现，接的是同一个测试库
+      assets: createMysqlStore(pool),
       tzOffsetSec: 0,
       // 跟随 src/index.ts 的默认值：真实装配读的是 MDE_SCHEDULER_FETCH_LOOKBACK_HOURS，
       // 测试固定用同一个常量，需要非默认值的用例自己覆盖（见 console-jobs.test.ts）

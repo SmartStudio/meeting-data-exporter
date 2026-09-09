@@ -47,7 +47,7 @@ import {
  *   的动作**（它由定时任务五写，操作者是 system）
  * - `src/http/handlers/console/rules.ts`：规则四个
  * - `src/http/handlers/console/storage.ts`：存储六个（含 `extend_retention`）
- * - `src/http/handlers/console/jobs.ts`：`run_job`
+ * - `src/http/handlers/console/jobs.ts`：`run_job` 与失败项动作两个
  * - `src/http/handlers/console/content.ts`：查看内容两个
  */
 const WRITTEN_ACTIONS = [
@@ -89,6 +89,8 @@ const WRITTEN_ACTIONS = [
   'extend_retention',
   // 定时任务
   'run_job',
+  'job_failure_retry',
+  'job_failure_ignore',
   // 内容查看
   'view_content',
   'view_restricted_content',

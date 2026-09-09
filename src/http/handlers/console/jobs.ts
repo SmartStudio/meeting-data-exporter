@@ -1,9 +1,13 @@
 /**
  * 「定时任务」页（spec.md §4.8）的 API —— 阶段 4 · T11（A4）。
  *
- * 两个端点，都要管理员会话：
- *   GET  /api/v1/admin/jobs                五个任务 + 各自的 sparkline + 失败项表
- *   POST /api/v1/admin/jobs/:name/run      手动触发（**只排队，不执行**）
+ * 四个端点，都要管理员会话：
+ *   GET  /api/v1/admin/jobs                    五个任务 + 各自的 sparkline + 失败项表
+ *   POST /api/v1/admin/jobs/:name/run          手动触发（**只排队，不执行**）
+ *   POST /api/v1/admin/jobs/failures/retry     把一条失败项对应会议的资产打回下载队列
+ *   POST /api/v1/admin/jobs/failures/ignore    把它的 dead 资产判成不用管了
+ *
+ * 后两个与「立即运行」的差别（为什么它们能在网关里当场执行）写在 `actOnFailures`。
  *
  * ## 这个 handler 为什么不 import `src/worker/scheduler.ts`
  *
@@ -29,12 +33,14 @@
  *    实际调度器已经死了三天」这件事自己现形
  */
 import type { RouteCtx } from '../../router'
-import { json } from '../../respond'
+import { json, readJson } from '../../respond'
 import { requireAdminAuth, requireAdminWrite } from '../../middleware'
 import { buildAuditDetail, type AuditEntry, type AuditStore } from '../../../store/audit'
 import { AUDIT_ACTION } from '../../../audit/actions'
+import type { Store } from '@yaowu/mde-engine'
 import {
   JOB_CATALOG,
+  JOB_FETCH_RECORDINGS,
   JOB_RUNS_SPARKLINE_LIMIT,
   describeSchedule,
   jobSpec,
@@ -53,6 +59,18 @@ export interface JobsDeps {
    * 取数据」那一族，而本阶段有好几个并行任务都要写管理员审计。
    */
   audit: Pick<AuditStore, 'record'>
+  /**
+   * 资产队列的写侧，**收窄到失败项动作要用的那两个方法**。
+   *
+   * 装配处给的是 `createMysqlStore(pool)`（`src/worker/store-mysql.ts`）。它住在
+   * `worker/` 目录下，但它是一个 **store**，不是调度器：运行时只依赖 mysql2 与
+   * `@yaowu/mde-engine`（网关本来就在 rules/meetings/policy 几处 import 着后者），
+   * 一行 `src/worker/scheduler.ts` 都没有——与「调度器不进网关进程」那条约束不冲突。
+   *
+   * 收窄成 Pick 而不是整个 `Store`：这个 handler 不该够得着 `claimNext`。网关是
+   * 多实例的，一个能领任务的网关就是五个任务各跑 N 份的第一步。
+   */
+  assets: Pick<Store, 'retryMeetingAssets' | 'ignoreDeadAssets'>
   /**
    * **必须与调度器进程用的是同一个值**（`SchedulerConfig.tzOffsetSec`）。
    *
@@ -79,6 +97,57 @@ export interface JobsDeps {
 
 /** 失败项表一次最多带回多少行。§4.8 那是一段列表，不分页 */
 const FAILURES_PAGE_LIMIT = 100
+
+/** 一次批量动作最多多少个 id（规格 §2.3）。上限与 `FAILURES_PAGE_LIMIT` 同值不是巧合：
+ *  屏幕上一次最多就这么多条，「全部重试」永远塞不满这个上限 */
+const FAILURE_ACTION_MAX_IDS = 100
+
+/**
+ * 请求体里的 ids。**任何一处不合规就整条拒绝**，不做「挑出合法的那几个继续」——
+ * 那会让一次手滑（多打一个字符串）变成一次只做了一半的批量操作，而调用方
+ * 从 200 响应里看不出自己少做了什么。
+ */
+function parseFailureIds(body: unknown): number[] | null {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null
+  const raw = (body as { ids?: unknown }).ids
+  if (!Array.isArray(raw)) return null
+  if (raw.length < 1 || raw.length > FAILURE_ACTION_MAX_IDS) return null
+  const out: number[] = []
+  for (const v of raw) {
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) return null
+    // 同一个 id 报两次是同一件事，做两遍没有意义（第二遍的 affected 还会撒谎）
+    if (!out.includes(v)) out.push(v)
+  }
+  return out
+}
+
+/**
+ * 可操作的失败项只有一种（规格 §2.3）：调度器任务一按 dead 资产登记的、
+ * 会议维度的、还没恢复的那种。
+ *
+ * 其余任务的失败项每轮由各自的枚举源重新判定、`resolveStaleFailures` 自动关掉
+ * ——对它们「重试」没有对应的动作可做（下一轮本来就会再试一次），「忽略」更是
+ * 一个假承诺（它下一轮还会回来）。端点对它们返回 skipped，界面上也不给按钮。
+ */
+function isActionableFailure(f: JobFailureRecord): boolean {
+  return f.jobName === JOB_FETCH_RECORDINGS && f.meetingId !== null && f.resolvedAt === null
+}
+
+/** 两个动作各自的那个动词，只进审计明细里那句人话 */
+const FAILURE_ACTION_TEXT = { retry: '重试', ignore: '忽略' } as const
+type FailureActionKind = keyof typeof FAILURE_ACTION_TEXT
+
+/**
+ * 动作 → `audit_log.action`。查表而不是在赋值处写三目，是为了让
+ * `tests/audit/actions.test.ts` 那条绊线还能看懂这里：它扫的是
+ * 「同一行里既有 `action:` 又有字符串字面量」，而 `action: k === 'retry' ? …`
+ * 会被它读成一个绕过登记表的动作名。绊线宁可误报也不该被放宽——它挡的是
+ * 「新加的写操作忘了登记标签」，那种漏只在有人去读审计页的时候才会被发现。
+ */
+const FAILURE_ACTION_AUDIT = {
+  retry: AUDIT_ACTION.jobFailureRetry,
+  ignore: AUDIT_ACTION.jobFailureIgnore,
+} as const
 
 // 这里曾有一个 clipDetail（同 storage.ts）：自由文本被裁到 64 字符塞进
 // audit_log.asset_type。migrations/008 的 detail TEXT 之后不再需要它——
@@ -298,4 +367,103 @@ export async function runJob(req: Request, ctx: RouteCtx): Promise<Response> {
       '已排队。定时任务由 worker 进程的调度器执行（网关是多实例的，不能在这里跑），' +
       '它会在下一个 tick 认领这一次触发——刷新本页看运行记录。',
   })
+}
+
+// ────────────────────────────────────────────────────────────────
+// POST /api/v1/admin/jobs/failures/{retry,ignore}
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * 失败项上的两个动作（规格 §2.3）。
+ *
+ * ## 为什么这两个动作能在网关里真的执行，而「立即运行」只能排队
+ *
+ * 「立即运行」要跑一整轮任务体（归档要搬文件、清理要删文件），网关是多实例的，
+ * 跑起来就是 N 份同时对同一批文件动手。这两个动作是**两条 UPDATE**：把一场
+ * 会议的资产行改个状态。幂等、无副作用、跑几遍结果一样，没有理由绕一圈去排队
+ * ——排队的话管理员点完还要等下一个 tick 才看得见变化。
+ *
+ * ## 顺序：先改资产、再关失败项、最后记账
+ *
+ * 失败项是「资产此刻是否 dead」的镜像（见 scheduler.ts 的 recordDeadAssets）。
+ * 先关失败项再改资产的话，中间失败会留下一条「已恢复」的记录而资产还是 dead
+ * ——下一轮它又被重新登记，运维看到的是一条自己关掉又自己回来的失败项。
+ * 审计放最后，理由同 runJob：审计是对**已发生事实**的记录。
+ */
+async function actOnFailures(
+  req: Request,
+  ctx: RouteCtx,
+  // 形参不叫 `action`：`if (action === 'retry')` 会被上面说的那条绊线读成
+  // 一个没登记的动作名。名字让给 `audit_log.action` 那一列
+  kind: FailureActionKind,
+): Promise<Response> {
+  const auth = await requireAdminWrite(req, ctx.deps.adminAuth, ctx.deps.now())
+  if (!auth.ok) return auth.response
+
+  const ids = parseFailureIds(await readJson<unknown>(req))
+  if (ids === null) {
+    return json(400, {
+      error: 'invalid_ids',
+      message:
+        `请求体要 {"ids": [失败项 id, …]}，1–${FAILURE_ACTION_MAX_IDS} 个正整数。` +
+        '有一个不合规就整条拒绝——只做一半的批量操作在 200 响应里看不出来。',
+    })
+  }
+
+  const d = ctx.deps.jobs
+  const now = ctx.deps.now()
+
+  const found = await d.jobs.listFailuresById(ids)
+  const byId = new Map(found.map((f) => [f.id, f]))
+  const doable: JobFailureRecord[] = []
+  const skipped: number[] = []
+  for (const id of ids) {
+    const f = byId.get(id)
+    if (f !== undefined && isActionableFailure(f)) doable.push(f)
+    else skipped.push(id)   // 找不到、已恢复、或不是可操作的那种——三种都不编一个结果
+  }
+
+  for (const f of doable) {
+    const key = { meetingId: f.meetingId!, subMeetingId: f.subMeetingId }
+    if (kind === 'retry') await d.assets.retryMeetingAssets(key, now)
+    else await d.assets.ignoreDeadAssets(key, now)
+  }
+  await d.jobs.resolveFailuresByIds(doable.map((f) => f.id), now)
+
+  // 逐条一行审计（与 purge_local 同一个先例）：这一列要答得出「是谁把哪一场
+  // 会议的资产打回了队列」。一批一条的话，事后按会议查审计就查不到这件事。
+  for (const f of doable) {
+    const entry: AuditEntry = {
+      occurredAt: now,
+      actorType: 'admin',
+      actorId: auth.identity.adminId,
+      action: FAILURE_ACTION_AUDIT[kind],
+      meetingId: f.meetingId,
+      // audit_log 没有「对象类型」这一列，assetId 在管理员这一族里当对象键用。
+      // `failure:` 前缀免得与会议维度的记录（`sub:` 前缀）混在一起
+      assetId: `failure:${f.target}`,
+      assetType: null,
+      decision: 'allow',
+      matchedRuleId: null,
+      clientKind: 'console',
+      detail: buildAuditDetail({
+        text: `${FAILURE_ACTION_TEXT[kind]}失败项 #${f.id}（${f.reason}）`,
+        // 结构化的一份：批量里的一条与单点的一条，事后要分得开
+        data: { failureId: f.id, jobName: f.jobName, target: f.target, batchSize: ids.length },
+      }),
+    }
+    await d.audit.record(entry)
+  }
+
+  return json(200, { affected: doable.length, skipped })
+}
+
+/** 打回下载队列：`meeting_assets` 的 failed/dead → pending，attempts 清零 */
+export async function retryFailures(req: Request, ctx: RouteCtx): Promise<Response> {
+  return actOnFailures(req, ctx, 'retry')
+}
+
+/** 判成不用管了：`meeting_assets` 的 dead → skipped/ignored_by_admin */
+export async function ignoreFailures(req: Request, ctx: RouteCtx): Promise<Response> {
+  return actOnFailures(req, ctx, 'ignore')
 }

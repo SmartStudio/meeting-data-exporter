@@ -54,6 +54,15 @@ export type JobName = (typeof JOB_NAMES)[number]
 export const JOB_ARCHIVE_NAS: JobName = 'archive_nas'
 
 /**
+ * 拉取任务的名字，单独导出。与 `JOB_ARCHIVE_NAS` 同一个先例：它有两个跨模块的
+ * 消费方——写侧是调度器任务一，读侧是失败项动作端点的「可操作」判据
+ * （`job_name = 'fetch_recordings'`，规格 §2.3）。两处各写一个字面量的话，
+ * 哪天任务改名，写侧照常记账、端点把每一条都判成不可操作，而界面上只会显示
+ * 「按钮点了没反应」，没有任何东西报错。
+ */
+export const JOB_FETCH_RECORDINGS: JobName = 'fetch_recordings'
+
+/**
  * 触发频率。三种形状覆盖 spec §4.8 的五个任务，**不做通用 cron 表达式**：
  * cron 的表达力这里一条都用不上，而它换来的是一个要自己写解析器与夏令时语义的东西。
  */
@@ -549,6 +558,20 @@ export interface JobsStore {
   resolveStaleFailures(jobName: string, before: number, now: number): Promise<number>
 
   listFailures(opts?: ListFailuresOptions): Promise<JobFailureRecord[]>
+  /**
+   * 按 id 取失败项，**含已恢复的**。只给动作端点用：它必须分得清
+   * 「这个 id 不存在」与「这条已经恢复了」——两者都进 `skipped`，但把
+   * 已恢复的当成不存在会让人以为自己点错了 id。
+   */
+  listFailuresById(ids: readonly number[]): Promise<JobFailureRecord[]>
+  /**
+   * 把这几条失败项标成已恢复，返回**真的被标记的行数**（已经恢复过的不重复计）。
+   *
+   * 与 `resolveStaleFailures` 的分工：那个是轮次跑完后按时间线自动关，
+   * 这个是人在界面上按了「重试 / 忽略」之后立刻关——不立刻关的话，那一行要
+   * 等到下一轮拉取（最多 15 分钟）才消失，而按钮点下去屏幕上什么都没变。
+   */
+  resolveFailuresByIds(ids: readonly number[], now: number): Promise<number>
   /** 每个任务还有几个没处理的失败项。**没有失败项的任务不出现在返回的对象里** */
   countOpenFailures(): Promise<Record<string, number>>
 }
@@ -877,6 +900,29 @@ export function createJobsStore(pool: Pool): JobsStore {
         params,
       )
       return rows.map(mapFailure)
+    },
+
+    async listFailuresById(ids) {
+      // 空数组是「这次没有要问的失败项」，不是「不筛选」——退化成无条件查询会
+      // 把整张表捞回来，而端点会照着它去改一堆没人点过的会议
+      if (ids.length === 0) return []
+      const holes = ids.map(() => '?').join(', ')
+      const [rows] = await pool.execute<FailureSqlRow[]>(
+        `SELECT ${FAILURE_COLS} FROM job_failures WHERE id IN (${holes}) ORDER BY id`,
+        [...ids],
+      )
+      return rows.map(mapFailure)
+    },
+
+    async resolveFailuresByIds(ids, now) {
+      if (ids.length === 0) return 0
+      const holes = ids.map(() => '?').join(', ')
+      const [res] = await pool.execute<ResultSetHeader>(
+        `UPDATE job_failures SET resolved_at = ?
+          WHERE resolved_at IS NULL AND id IN (${holes})`,
+        [now, ...ids],
+      )
+      return res.affectedRows
     },
 
     async countOpenFailures() {
