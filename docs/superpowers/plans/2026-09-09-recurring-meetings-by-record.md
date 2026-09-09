@@ -684,6 +684,36 @@ EOF
 
 ---
 
+### Task 2b: 同一分钟的第二条录制记录：目录名加确定性序号（控制器裁定，规格 §2.3 的补充）
+
+**背景（事实）：** 规格假设「各场次 start_time 不同，目录天然分开」。实测不成立：腾讯常给同一场会议两条记录——正常录制 + 主题带「转写_」前缀的转写记录，两者 `media_start_time` **相同**；本机库 294 场会议里有 84 组（168 条记录）落在同一 `(meeting_id, 起始分钟)`，其中 80 组是转写记录、4 组是同一分钟的两次正常录制。Task 2 之后这两条记录是两场会议，`meetingDirPath` 却给出同一个目录，`siblingRank` 各自从 1 起算 → `transcript.txt`、`meeting.json`、`_manifest.json` 互相覆盖，且每轮清单写入来回翻转。
+
+**裁定：** 同一 `meeting_id` 下、`meetingDirPath` 算出同名目录的多条记录，按 `sub_meeting_id` **字符串升序**编号：第 1 条目录名不变，第 2 条起在目录名末尾加 `_2`、`_3`…（`<yyyy>/<mm>/<yyyy-mm-dd>_<hhmm>_<code>_2`）。`''`（存量空串行）排最前，所以存量目录永远保持原名。record id 是时间序递增的，先出现的记录保住无后缀的目录。
+
+**Files:**
+- Modify: `packages/engine/src/domain/filename.ts`（`meetingDirPath(m, fallbackCode, dirOrdinal = 1)`：`dirOrdinal > 1` 时最后一段追加 `_${dirOrdinal}`；其余一个字符不动）
+- Create: `packages/engine/src/domain/dir-ordinal.ts`：`export function assignDirOrdinals<T extends MeetingDirInfo & { meetingId: string; subMeetingId: string }>(rows: readonly T[]): Map<string, number>`——键 `meetingPathKey(meetingId, subMeetingId)`，值 = 序号。分组键 = `meetingId + '\u0000' + meetingDirPath(row, meetingId)`（写成转义序列 `'\u0000'`，不要把 NUL 字节写进源文件）；组内按 `subMeetingId` 用 `<` 比较升序。纯函数，两个宿主共用；从 `packages/engine/src/index.ts` 导出。
+- Modify: `packages/engine/src/store/index.ts`（`MeetingPathRow` 加 `dirOrdinal: number`；SQLite `meetingsForPaths` 查完行后用 `assignDirOrdinals` 填）
+- Modify: `src/worker/store-mysql.ts`（MySQL `meetingsForPaths` 同样）
+- Modify: `packages/engine/src/executor/index.ts`（`buildRelPath`：`meetingDirPath(m, row.meeting_id, m.dirOrdinal)`）
+- Modify: `packages/engine/src/manifest/index.ts`（`writeMeetingManifest` 需要拿到 `dirOrdinal`：`writeMeetingManifests` 把 Map 的值整行传下去，`writeMeetingManifest(deps, row: { meetingId; subMeetingId; dirOrdinal }, now)`，目录用 `meetingDirPath(meeting, meetingId, row.dirOrdinal)`；调用方只有 `writeMeetingManifests`，其它调用方（若有）一并改）
+- Test: `packages/engine/tests/domain/dir-ordinal.test.ts`（新）、现有的 filename 测试文件、`packages/engine/tests/store/index.test.ts`、`tests/worker/store-mysql.test.ts`、`packages/engine/tests/executor/index.test.ts`、`packages/engine/tests/manifest/index.test.ts`
+
+**Interfaces:**
+- Consumes: Task 2 的 `meetingPathKey`、`MeetingPathRow`、`meetingsByPathKey`。
+- Produces: `meetingDirPath(m, fallbackCode, dirOrdinal?)`；`assignDirOrdinals(rows)`；`MeetingPathRow.dirOrdinal`。**Task 5/6 的拆分脚本必须用同一个 `assignDirOrdinals` 算每个场次的目录**（脚本在规划时按会议把全部场次行喂给它）。
+
+**测试要点（每条都要有，先写失败的测试）：**
+1. `assignDirOrdinals`：同 meeting 两行同 start 分钟同 code → `''`/较小 sub 得 1、另一条得 2；不同分钟 → 都是 1；不同 meeting 同分钟 → 都是 1；三条同分钟 → 1/2/3 且按 sub 升序。
+2. `meetingDirPath` 带 `dirOrdinal=2` → 末尾 `_2`；`dirOrdinal=1` 或省略 → 与之前逐字相同（既有测试全部不改就是证明）。
+3. 两个 Store 宿主的 `meetingsForPaths`：同 meeting 两场次同分钟 → 值里 `dirOrdinal` 1 与 2；不同分钟 → 都 1。
+4. 执行器：两场次同分钟各下载一个 transcript → 落在 `…_<code>/transcript.txt` 与 `…_<code>_2/transcript.txt`，互不覆盖。
+5. 清单：两场次同分钟 → 两个目录各有自己的 `meeting.json` / `_manifest.json`，`written=2`。
+
+**约束：** 不改 UTC、不改 `cleanDirName`；两个宿主同改；`dirOrdinal` 只在 `meetingsForPaths` 处算一次（`assignDirOrdinals` 是唯一实现）；NAS 路径来自本地 `target_path` 的相对路径，序号因此自动带到 NAS，归档流水线不用改（若核实发现 NAS 目录另算，报 DONE_WITH_CONCERNS 说明）。提交信息 `feat(engine): 同一分钟的第二条录制记录目录名加序号` + 结尾 trailer。
+
+---
+
 ### Task 3: 资产清单按场次收窄（引擎 → 两个 AssetSource → 公开 API）
 
 **Files:**
