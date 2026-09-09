@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import type { RowDataPacket } from 'mysql2'
 import { withTestDb } from '../helpers/testdb'
 import { createGrantsStore } from '../../src/store/grants'
-import { applyOne, parseArgs, planSplits } from '../../scripts/split-recurring-meetings'
+import { applyOne, parseArgs, planSplits, runSplit } from '../../scripts/split-recurring-meetings'
 import type { Pool } from '../../src/store/db'
 
 /**
@@ -729,6 +729,140 @@ test('暂存名 .mde-split-tmp 已经被占着 → conflict，动手之前就拦
       expect(await readFile(join(localRoot, REL2, 'transcript.txt'), 'utf8')).toBe('f1')
       await expect(stat(join(localRoot, REL1, 'transcript.txt'))).rejects.toThrow()
       expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+test('原文件已经不在、只剩 .mde-split-tmp → conflict（不许判成 not_found 就放过去）', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      // 上一次跑在两阶段之间被杀掉，而且是在第一阶段之后：原路径已经空了，
+      // 新位置还没建出来，唯一的副本躺在暂存名上。classify 把它判成 gone，
+      // 「全 gone → not_found」会让这一场悄悄溜过去（退出码都不变），
+      // 而下一轮 worker 会照着库里的旧路径重新下载、把这份副本永远晾在那儿
+      await mkdir(join(localRoot, REL2), { recursive: true })
+      await writeFile(join(localRoot, REL2, 'transcript.txt.mde-split-tmp'), '上一轮的副本')
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('conflict')
+
+      expect(await readFile(join(localRoot, REL2, 'transcript.txt.mde-split-tmp'), 'utf8')).toBe('上一轮的副本')
+      await expect(stat(join(localRoot, REL1, 'transcript.txt'))).rejects.toThrow()
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+/** 抓一遍 runSplit 打出来的行：它的结论一半在退出码上、一半在输出里 */
+async function withCapturedOutput<T>(fn: () => Promise<T>): Promise<{ value: T; out: string }> {
+  const lines: string[] = []
+  const orig = { log: console.log, error: console.error, warn: console.warn }
+  const grab = (...a: unknown[]): void => { lines.push(a.map(String).join(' ')) }
+  console.log = grab
+  console.error = grab
+  console.warn = grab
+  try {
+    return { value: await fn(), out: lines.join('\n') }
+  } finally {
+    console.log = orig.log
+    console.error = orig.error
+    console.warn = orig.warn
+  }
+}
+
+test('跑完还剩 sub_meeting_id = "" 的行 → 打出剩余计数，--apply 下退出码 2', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      // 文件新旧位置都不在（本地被到期清理删过）→ not_found，这一场拆不动
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+
+      // dry-run：同样把剩余数报出来，但不改退出码
+      const dry = await withCapturedOutput(() => runSplit(pool, { localRoot, apply: false, now: 5000 }))
+      expect(dry.value).toBe(0)
+      expect(dry.out).toContain('剩余未拆的会议：1（起服务前必须为 0）')
+
+      const run = await withCapturedOutput(() => runSplit(pool, { localRoot, apply: true, now: 5000 }))
+      expect(run.out).toContain('not_found=1')
+      expect(run.out).toContain('剩余未拆的会议：1（起服务前必须为 0）')
+      // 起服务前必须为 0——not_found 本身不进退出码（本地文件到期被清是正常的），
+      // 但「拆完了还剩空串行」这件事必须让操作员停下来
+      expect(run.value).toBe(2)
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+test('archived_assets 行对不上任何 meeting_assets 行 → undecidable，不留无主归档行', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await seedMeetingArchive(pool, nasDir)
+      // 归档行的自然键（remote_id=f9）在 meeting_assets 里没有对应行：资产行被删过、
+      // 或者归档写完之后资产行换了 remote_id。搬运计划按资产行走，这一行谁也认领不了，
+      // 于是它会留在空 sub_meeting_id 上，而 meetings 的 '' 行同一个事务里就删了
+      await seedArchived(pool, 'f9', `${REL2}/transcript_9.txt`, join(nasDir, REL2, 'transcript_9.txt'))
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect(item.undecidableReason).toContain('archived_assets')
+      expect(item.undecidableReason).toContain('f9')
+      expect(item.sessions).toHaveLength(0)
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('undecidable')
+      expect(await subsOf(pool, 'archived_assets')).toEqual([''])
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+test('NAS 清单里的 archive.archivedAt 是原来那次归档的时刻，不是拆分时刻', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      const now = 5000
+      await seedMeeting(pool, { records: [{ id: 'rec-1', start: DAY1 }] })
+      await seedAsset(pool, 'rec-1', 'f1', `${REL1}/transcript.txt`)
+      await seedArchivedFiles(pool, localRoot, nasDir, 'f1', `${REL1}/transcript.txt`)
+      await seedMeetingArchive(pool, nasDir)      // archived_at = 100
+
+      const item = (await planSplits(pool, localRoot, now))[0]!
+      expect((await applyOne(pool, item, { localRoot, now })).outcome).toBe('already_done')
+
+      const manifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
+      // 保留窗口是从**归档那一刻**开始算的（meeting_archives.archived_at 原样复制过来了），
+      // 清单写成拆分时刻的话，数年后在 NAS 上翻到这份清单的人会以为它晚归档了 N 天
+      expect(manifest.archive.archivedAt).toBe(100)
+      expect(manifest.archive.retentionDays).toBe(30)
+      expect(manifest.generatedAt).toBe(now)
+    })
+  })
+})
+
+test('事务提交之后收尾失败 → 报「已提交，收尾失败」而不是 failed，退出码 2', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await seedArchivedFiles(pool, localRoot, nasDir, 'f1', `${REL2}/transcript.txt`)
+      await seedMeetingArchive(pool, nasDir)
+      // 旧目录里的 `_manifest.json` 是个**目录**（谁手工建的都算）：收尾时那一步
+      // `rm(..., { force: true })` 对目录必炸，于是收尾在事务提交之后失败
+      await mkdir(join(localRoot, REL2, '_manifest.json'), { recursive: true })
+
+      const run = await withCapturedOutput(() => runSplit(pool, { localRoot, apply: true, now: 5000 }))
+      expect(run.out).toContain('已提交，收尾失败')
+      expect(run.out).not.toContain('  failed：')
+      expect(run.out).toContain('failed=0')
+      expect(run.value).toBe(2)
+
+      // 库已经改完并提交、文件也搬好了——重跑修不了它，所以不能报成 failed
+      expect(await subsOf(pool, 'meetings')).toEqual(['rec-1', 'rec-2'])
+      expect(await readFile(join(localRoot, REL1, 'transcript.txt'), 'utf8')).toBe('f1')
+      expect(await subsOf(pool, 'archived_assets')).toEqual(['rec-1'])
     })
   })
 })

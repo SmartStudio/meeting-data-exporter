@@ -375,6 +375,22 @@ function planOne(m: MeetingRow, input: PlanInput): SplitItem {
     }
   }
 
+  // ①bis 归档行必须都有主。`archived_assets` 的 sub_meeting_id 是**跟着资产行**改的
+  //      （`splitRows` 逐个 `a.nas` 发 UPDATE），所以一条对不上任何 meeting_assets
+  //      自然键的归档行谁也认领不了：它会留在空 sub_meeting_id 上，而 meetings 的
+  //      '' 行同一个事务里就删掉了——又是一条谁也扫不出来的无主行（与上面那条
+  //      「有归档行却反推不出 NAS 基准目录」是同一种损失的两个来路）。
+  //      真出现的来路：资产行被手工删过、或归档写完之后 remote_id 变了。
+  const claimed = new Set(input.assets.map((a) => naturalKey(a)))
+  const unclaimed = [...input.archived.values()].filter((r) => !claimed.has(naturalKey(r)))
+  if (unclaimed.length > 0) {
+    return bail(
+      `${unclaimed.length} 行 archived_assets 对不上任何 meeting_assets 行` +
+        `（${unclaimed.map((r) => `${r.asset_type}/${r.remote_id}/${r.file_type}`).join('、')}）——` +
+        '这些行的 sub_meeting_id 是跟着资产行改的，没有资产行认领就会留在空 sub_meeting_id 上，成为无主行',
+    )
+  }
+
   // ② 场次清单 = meeting_cache 的行 + 至多一个「缓存里没有」的孤儿 record id
   const known = new Set(input.cache.map((c) => c.meeting_record_id))
   const orphans = [...new Set(input.assets.map((a) => a.record_id!))].filter((r) => !known.has(r))
@@ -553,6 +569,26 @@ export async function applyOne(
     if (c === null) return { outcome: 'conflict', leftOver: [] }
     planned.push(c)
   }
+  // 暂存路径已经被占着：上一次跑在两阶段之间被杀掉，文件停在 .tmp 上。
+  // 直接搬会**静默覆盖**那个文件（rename(2) 不问目标在不在），而它是上一轮唯一的副本。
+  // 这一场整场不动，让人先把 .tmp 收拾了。
+  //
+  // **每一条计划都要查，不只是 state==='move' 的那些**：第一阶段之后被杀掉时源路径
+  // 已经空了（文件正躺在 .tmp 上），新位置又还没建出来，于是 classify 把这一条判成
+  // `gone`——而全 gone 是 `not_found`，退出码都不变，这一场就悄悄溜过去了，
+  // 下一轮 worker 照着库里的旧路径重新下载，那份唯一的副本永远晾在 .tmp 上没人认领。
+  // 所以这道闸必须排在下面「全 gone → not_found」**之前**。
+  for (const p of planned) {
+    if (await exists(p.from + TMP_SUFFIX)) {
+      console.error(
+        `⚠ ${item.meetingId} conflict：${p.from + TMP_SUFFIX} 已经存在——` +
+          '上一次跑多半在两阶段搬运之间被杀掉了，文件还停在这个暂存名上。' +
+          '先手工去掉 .mde-split-tmp 后缀把它改回去，再重跑本脚本',
+      )
+      return { outcome: 'conflict', leftOver: [] }
+    }
+  }
+
   // 一个文件都没找到（新旧位置都不在）：多半是根目录指错了，或者归档区被清理过。
   // 这时候改库等于把库指到一堆并不存在的路径上，宁可什么都不做、让人看见
   if (planned.length > 0 && planned.every((p) => p.state === 'gone')) {
@@ -562,21 +598,6 @@ export async function applyOne(
   // 「这一条的文件哪儿都不在」是操作员该看见的事实（spec §2.4 执行 1 的 not_found）
   for (const p of planned) {
     if (p.state === 'gone') console.warn(`⚠ ${item.meetingId} not_found：${p.from} 新旧位置都不在`)
-  }
-
-  // 暂存路径已经被占着：上一次跑在两阶段之间被杀掉，文件停在 .tmp 上。
-  // 直接搬会**静默覆盖**那个文件（rename(2) 不问目标在不在），而它是上一轮唯一的副本。
-  // 这一场整场不动，让人先把 .tmp 收拾了
-  for (const p of planned) {
-    if (p.state !== 'move') continue
-    if (await exists(p.from + TMP_SUFFIX)) {
-      console.error(
-        `⚠ ${item.meetingId} conflict：${p.from + TMP_SUFFIX} 已经存在——` +
-          '上一次跑多半在两阶段搬运之间被杀掉了，文件还停在这个暂存名上。' +
-          '先手工去掉 .mde-split-tmp 后缀把它改回去，再重跑本脚本',
-      )
-      return { outcome: 'conflict', leftOver: [] }
-    }
   }
 
   // ── 搬文件：两阶段 ──────────────────────────────────────────────────
@@ -655,11 +676,35 @@ export async function applyOne(
   }
 
   // ── 收尾：侧车与空目录（都在事务之后，失败不回滚已经一致的库与盘）────────
-  await rewriteNasSidecars(pool, item, opts.now)
-  const leftOver = await cleanupOldDirs(item, planned, opts.localRoot)
-  // 一个文件都没搬动、但库刚刚才改成：上一次跑在事务之前断掉了，这一次把库补上。
-  // 这不是「什么都没做」，所以它与 not_found / conflict 分得开
-  return { outcome: moved.size === 0 ? 'already_done' : 'renamed', leftOver }
+  // 这里往后炸的事**一律包成 FinishError**：事务已经提交、文件已经搬好，
+  // 报成 failed 会让操作员按 failed 的默认读法去重跑，而重跑什么也修不了
+  try {
+    await rewriteNasSidecars(pool, item, opts.now)
+    const leftOver = await cleanupOldDirs(item, planned, opts.localRoot)
+    // 一个文件都没搬动、但库刚刚才改成：上一次跑在事务之前断掉了，这一次把库补上。
+    // 这不是「什么都没做」，所以它与 not_found / conflict 分得开
+    return { outcome: moved.size === 0 ? 'already_done' : 'renamed', leftOver }
+  } catch (err) {
+    throw new FinishError(item, err)
+  }
+}
+
+/**
+ * 收尾（NAS 侧车 / 清空旧目录）失败，而**库已经提交、文件已经搬好**。
+ *
+ * 与 `scripts/rename-archive-dirs.ts` 的 `ManifestOnlyError` 同一形状、同一用途：
+ * 「已经提交了什么」必须说出来。报成一行 failed 的话，操作员会按 failed 的默认读法
+ * （「修掉原因重跑」）去重跑——而这一场的 `''` 行已经没了，重跑一步都不会走到它，
+ * 于是那份没写成的侧车、那个没清掉的旧目录永远留在盘上，而日志说它「失败了」。
+ */
+class FinishError extends Error {
+  constructor(
+    readonly item: SplitItem,
+    readonly cause: unknown,
+  ) {
+    super(`收尾失败：${cause}`)
+    this.name = 'FinishError'
+  }
 }
 
 /** 七张表的改写与三张表的删除，全在调用方的事务里 */
@@ -792,6 +837,11 @@ async function rewriteNasSidecars(pool: Pool, item: SplitItem, now: number): Pro
         nasRoot: item.nasDir,
         nasDir: item.nasDir,
         retentionDays: rec?.retentionDays ?? 30,
+        // 归档时刻取**这一场自己那行 meeting_archives 的 archived_at**（刚刚由
+        // `splitRows` 从 '' 行原样复制过来）。写成 now 就是把保留窗口的起点说成了
+        // 拆分时刻——库里明明还是原来那个数，数年后翻到这份清单的人会以为它晚归了
+        // N 天。取不到行时（理论上不会：archived 为真才走到这里）退回 now
+        archivedAt: rec?.archivedAt,
         now,
       })
     } catch (err) {
@@ -832,6 +882,107 @@ async function cleanupOldDirs(
   return leftOver
 }
 
+/**
+ * 一整轮的规划 + 执行，收一个已经跑过迁移的池。返回**退出码**。
+ *
+ * 与 `main` 分开是为了让「跑完之后库里还剩几行没拆」「收尾失败怎么报」这些
+ * 只在整轮层面才成立的判断测得到——它们的现场是一份计划跑完之后的库，
+ * 而不是某一场 `applyOne` 的返回值。
+ *
+ * @param opts.now 规划与执行共用的秒数（见文件头）；不给就取此刻。
+ */
+export async function runSplit(
+  pool: Pool,
+  opts: { localRoot: string; apply: boolean; now?: number },
+): Promise<number> {
+  const { localRoot, apply } = opts
+  // 规划与执行**共用这一个 now**：它会被写进每一行新建的 meetings.created_at，
+  // 而新目录的序号正是按那一列排的。两遍各取一次的话，算出来的目录名与插进去的行
+  // 在跨秒的那一瞬间就会对不上
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const plan = await planSplits(pool, localRoot, now)
+
+  // NAS 基准目录先各 stat 一次：挂载点没挂上时全部文件都会被判成「不在」，
+  // 整份计划安静地退化成 not_found——这种半拉子结果比直接不跑坏得多
+  const nasDirs = [...new Set(plan.flatMap((i) => (i.nasDir === null ? [] : [i.nasDir])))]
+  const missing: string[] = []
+  for (const d of nasDirs) if (!(await exists(d))) missing.push(d)
+  if (missing.length > 0) {
+    for (const d of missing) console.error(`‼ NAS 基准目录不存在：${d}`)
+    console.error('NAS 多半没挂上。挂好再跑——现在跑一场都动不了')
+    if (apply) return 2
+  }
+
+  const counts = { renamed: 0, already_done: 0, not_found: 0, conflict: 0, undecidable: 0 }
+  let failed = 0
+  let finishFailed = 0
+  const leftOver: string[] = []
+  for (const item of plan) {
+    const who = item.meetingId
+    if (item.undecidableReason !== null) {
+      counts.undecidable++
+      console.error(`⚠ ${who} undecidable：${item.undecidableReason}——这一场不动，请人工确认`)
+      continue
+    }
+    const sessions = item.sessions.map((s) => `${s.recordId}→${s.newRel}（${s.assets.length} 个资产）`)
+    console.log(`${who}\n  ${item.oldRel}\n  → ${sessions.join('\n  → ')}`)
+    if (!apply) continue
+    try {
+      const r = await applyOne(pool, item, { localRoot, now })
+      counts[r.outcome]++
+      leftOver.push(...r.leftOver)
+      if (r.outcome === 'conflict') console.error('  conflict：目标已被别的东西占着，未动')
+      else if (r.outcome === 'not_found') console.error('  not_found：新旧位置都找不到这些文件')
+      else console.log(`  ok（${r.outcome}）`)
+    } catch (err) {
+      if (err instanceof FinishError) {
+        // 库已经提交、文件已经搬好，只有收尾没做完。**不算 failed**：failed 的
+        // 读法是「修掉原因重跑」，而这一场的 '' 行已经没了，重跑一步都走不到它
+        finishFailed++
+        console.error(
+          `  已提交，收尾失败：${err.cause}（不会重跑，按日志手工收尾）\n` +
+            '    库改完并提交了、文件也各就各位了；重跑本脚本会跳过这一场。\n' +
+            `    人工要做的两件事：清掉搬空的旧目录 ${join(localRoot, item.oldRel)}；` +
+            `NAS 侧车 ${item.nasDir === null ? '（这场没有 NAS 归档，不用管）' : join(item.nasDir, '_manifest.json')} ` +
+            '下一轮归档会自己重写，等一轮即可',
+        )
+      } else {
+        // 一场炸了不该把剩下几百场一起停掉——已经回滚干净了，接着跑
+        failed++
+        console.error(`  failed：${err}`)
+      }
+    }
+  }
+  for (const d of leftOver) {
+    console.error(`⚠ 旧目录里还有不认识的文件，已保留：${d}`)
+  }
+  console.log(
+    apply
+      ? `renamed=${counts.renamed} already_done=${counts.already_done} not_found=${counts.not_found} ` +
+        `conflict=${counts.conflict} undecidable=${counts.undecidable} finish_failed=${finishFailed} ` +
+        `failed=${failed} left_over=${leftOver.length}`
+      : `dry-run：${plan.length} 场会议待拆（其中 ${counts.undecidable} 场说不清），加 --apply 执行`,
+  )
+
+  // 最后再问一遍库：**还剩几行没拆**。这一问覆盖了所有「这一场没拆成」的来路
+  // （not_found / conflict / undecidable / failed），而且问的是库本身，不是这一轮
+  // 数出来的账——起服务的前提是这个数为 0（'' 行还在时，引擎会给这场会议再建一套
+  // 按场次的行，库就进了混合状态，见 runbook §0.1）
+  const [leftRows] = await pool.execute<RowDataPacket[]>(
+    `SELECT COUNT(*) AS n FROM meetings WHERE sub_meeting_id = ''`,
+  )
+  const remaining = Number(leftRows[0]?.n ?? 0)
+  console.log(`剩余未拆的会议：${remaining}（起服务前必须为 0）`)
+
+  // conflict / undecidable / 收尾失败是「要人来看」的结局，退出码 2（spec §2.4）；
+  // failed 是「跑炸了」，退出码 1。两者分开，好让 CI 与 `&&` 串起来的下一条命令分得清。
+  // 「跑完还剩 '' 行」同样是 2：not_found 自己不进退出码（本地文件到期被清是正常的），
+  // 但它留下的那一行会让下一轮拉取进混合状态——那是必须停下来看的事
+  if (counts.conflict > 0 || counts.undecidable > 0 || finishFailed > 0) return 2
+  if (apply && remaining > 0) return 2
+  return failed > 0 ? 1 : 0
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2))
   const databaseUrl = process.env.DATABASE_URL
@@ -848,62 +999,7 @@ async function main(): Promise<number> {
       console.error(`‼ MDE_ARCHIVE_ROOT 不存在：${localRoot}`)
       return 2
     }
-    // 规划与执行**共用这一个 now**：它会被写进每一行新建的 meetings.created_at，
-    // 而新目录的序号正是按那一列排的。两遍各取一次的话，算出来的目录名与插进去的行
-    // 在跨秒的那一瞬间就会对不上
-    const now = Math.floor(Date.now() / 1000)
-    const plan = await planSplits(pool, localRoot, now)
-
-    // NAS 基准目录先各 stat 一次：挂载点没挂上时全部文件都会被判成「不在」，
-    // 整份计划安静地退化成 not_found——这种半拉子结果比直接不跑坏得多
-    const nasDirs = [...new Set(plan.flatMap((i) => (i.nasDir === null ? [] : [i.nasDir])))]
-    const missing: string[] = []
-    for (const d of nasDirs) if (!(await exists(d))) missing.push(d)
-    if (missing.length > 0) {
-      for (const d of missing) console.error(`‼ NAS 基准目录不存在：${d}`)
-      console.error('NAS 多半没挂上。挂好再跑——现在跑一场都动不了')
-      if (args.apply) return 2
-    }
-
-    const counts = { renamed: 0, already_done: 0, not_found: 0, conflict: 0, undecidable: 0 }
-    let failed = 0
-    const leftOver: string[] = []
-    for (const item of plan) {
-      const who = item.meetingId
-      if (item.undecidableReason !== null) {
-        counts.undecidable++
-        console.error(`⚠ ${who} undecidable：${item.undecidableReason}——这一场不动，请人工确认`)
-        continue
-      }
-      const sessions = item.sessions.map((s) => `${s.recordId}→${s.newRel}（${s.assets.length} 个资产）`)
-      console.log(`${who}\n  ${item.oldRel}\n  → ${sessions.join('\n  → ')}`)
-      if (!args.apply) continue
-      try {
-        const r = await applyOne(pool, item, { localRoot, now })
-        counts[r.outcome]++
-        leftOver.push(...r.leftOver)
-        if (r.outcome === 'conflict') console.error('  conflict：目标已被别的东西占着，未动')
-        else if (r.outcome === 'not_found') console.error('  not_found：新旧位置都找不到这些文件')
-        else console.log(`  ok（${r.outcome}）`)
-      } catch (err) {
-        // 一场炸了不该把剩下几百场一起停掉——已经回滚干净了，接着跑
-        failed++
-        console.error(`  failed：${err}`)
-      }
-    }
-    for (const d of leftOver) {
-      console.error(`⚠ 旧目录里还有不认识的文件，已保留：${d}`)
-    }
-    console.log(
-      args.apply
-        ? `renamed=${counts.renamed} already_done=${counts.already_done} not_found=${counts.not_found} ` +
-          `conflict=${counts.conflict} undecidable=${counts.undecidable} failed=${failed} left_over=${leftOver.length}`
-        : `dry-run：${plan.length} 场会议待拆（其中 ${counts.undecidable} 场说不清），加 --apply 执行`,
-    )
-    // conflict / undecidable 是「要人来看」的结局，退出码 2（spec §2.4）；
-    // failed 是「跑炸了」，退出码 1。两者分开，好让 CI 与 `&&` 串起来的下一条命令分得清
-    if (counts.conflict > 0 || counts.undecidable > 0) return 2
-    return failed > 0 ? 1 : 0
+    return await runSplit(pool, { localRoot, apply: args.apply })
   } finally {
     await pool.end()
   }

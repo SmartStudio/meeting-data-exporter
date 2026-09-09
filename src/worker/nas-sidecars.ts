@@ -47,6 +47,16 @@ export interface NasSidecarInput {
   nasDir: string
   retentionDays: number
   now: number
+  /**
+   * 清单里 `archive.archivedAt` 写哪个时刻。缺省 `now`——归档流水线正是**此刻**
+   * 把文件写上 NAS 的，两者同值。
+   *
+   * 拆场次脚本要给：它重写的是一份**早就归档过**的会议的清单，那一场的
+   * `meeting_archives.archived_at` 原样复制给了每个场次（保留窗口从归档那一刻起算，
+   * 不因为拆分而重新计时）。清单里写成拆分时刻的话，数年后在 NAS 上翻到这份清单的
+   * 人会以为它晚归档了 N 天——而 US-6.2 要的就是「无需本工具即可知道」。
+   */
+  archivedAt?: number
   /** 缺省 `createNasStorage(nasRoot, timeoutMs).writeMeta` */
   writeMeta?: (relPath: string, data: unknown) => Promise<void>
   /** 缺省 `NAS_WRITE_TIMEOUT_MS` */
@@ -159,7 +169,7 @@ export async function writeNasSidecars(input: NasSidecarInput): Promise<void> {
     subMeetingId,
     assets,
     missing: missingEntries,
-    archive: { archivedAt: now, retentionDays, nasDir },
+    archive: { archivedAt: input.archivedAt ?? now, retentionDays, nasDir },
     generatedAt: now,
     generatedBy: 'mde-worker',
   }
