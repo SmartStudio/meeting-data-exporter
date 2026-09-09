@@ -203,23 +203,43 @@ test('同一分钟的两个场次（转写记录）：第二场的目录加 _2�
   })
 })
 
-test('已经按场次建好的行占着无后缀目录时，新场次让到 _2（序号按 created_at 钉住）', async () => {
+test('这个 meeting_id 已经有按场次的行 → 混合状态，整场 undecidable，不在两套序号之间猜', async () => {
   await withDb(async (pool) => {
     await withDirs(async (localRoot) => {
       await seedMeeting(pool, {
         records: [{ id: 'rec-a', start: DAY1 }, { id: 'rec-z', start: DAY1 }],
       })
-      // rec-z 上一轮就被新代码建成了独立会议行，它的目录已经装着文件；
-      // 字符串序里 rec-a 更靠前，但 created_at 更早的 rec-z 不该被挤走
+      await seedAsset(pool, 'rec-a', 'f1', `${REL1}/transcript.txt`)
+      // rec-z 上一轮就被新代码建成了独立会议行：眼下引擎把 '' 旧行也算进序号，
+      // 于是 rec-z 的文件躺在 `…_2/` 里；'' 行一被删掉，引擎又会说它该在无后缀的
+      // 目录里。脚本此刻正要往 `…_2/` 里搬旧行的文件——搬过去就是覆盖
       await pool.execute(
         `INSERT INTO meetings (meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time, created_at, updated_at)
          VALUES ('m1', 'rec-z', '881', '销售日会', 'u1', ?, ?, 5, 5)`,
         [DAY1, DAY1 + 1800],
       )
 
-      const item = (await planSplits(pool, localRoot, 1_800_000_000))[0]!
-      expect(item.sessions.map((s) => s.recordId)).toEqual(['rec-a', 'rec-z'])
-      expect(item.sessions.map((s) => s.newRel)).toEqual([`${REL1}_2`, REL1])
+      const item = (await planSplits(pool, localRoot))[0]!
+      expect(item.undecidableReason).toContain('已有按场次的行')
+      expect(item.sessions).toHaveLength(0)
+    })
+  })
+})
+
+test('别的会议已经拆过不碍事：兄弟行只看同一个 meeting_id', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await pool.execute(
+        `INSERT INTO meetings (meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time, created_at, updated_at)
+         VALUES ('m2', 'rec-9', '882', '别的会', 'u1', ?, ?, 5, 5)`,
+        [DAY1, DAY1 + 1800],
+      )
+
+      const plan = await planSplits(pool, localRoot)
+      expect(plan.map((i) => i.meetingId)).toEqual(['m1'])
+      expect(plan[0]!.undecidableReason).toBeNull()
+      expect(plan[0]!.sessions.map((s) => s.newRel)).toEqual([REL1, REL2])
     })
   })
 })

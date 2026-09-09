@@ -182,9 +182,9 @@ export async function planSplits(
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<SplitItem[]> {
   // 要拆的是 '' 行，但**同一个 meeting_id 下已经按场次建好的兄弟行也要读出来**：
-  // 它们的目录已经装着文件，新场次不能跟它们抢同一个目录名（见 planOne 的 ③）。
-  // 这种混合状态是真会出现的——上一轮被判 undecidable 跳过的会议留着 '' 行，
-  // 而调度器接着又按新代码给它的新场次建了行。
+  // 有兄弟行 = 这场会议已经处在「一半旧一半新」的混合状态里，整场判 undecidable
+  // 不动手（planOne 的 ⓪ 写着为什么不试着修）。这种状态是真会出现的——上一轮被判
+  // undecidable 跳过的会议留着 '' 行，而调度器接着又按新代码给它的新场次建了行。
   const [meetingRows] = await pool.execute<MeetingRow[]>(
     `SELECT meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time, created_at
        FROM meetings ORDER BY meeting_id, sub_meeting_id`,
@@ -286,26 +286,52 @@ interface SessionMeta {
   endTime: number | null
 }
 
+/**
+ * BIGINT 列显式 Number 化，与 `src/worker/store-mysql.ts` 的 `meetingsForPaths` 同一条理由：
+ * `created_at` 是目录序号的主序、`start_time` 进目录名，混进一个字符串会让比较规则取决于
+ * 驱动怎么返回 BIGINT，而序号定的是盘上的目录名——脚本与引擎必须给出同一个答案。
+ */
+const num = (v: number | null): number | null => (v === null ? null : Number(v))
+
 /** assignDirOrdinals 要的那几个字段 */
 const dirRow = (meetingId: string, subMeetingId: string, createdAt: number, s: {
   subject: string | null; startTime: number | null; meetingCode: string | null
 }) => ({ meetingId, subMeetingId, createdAt, subject: s.subject, startTime: s.startTime, meetingCode: s.meetingCode })
 
 function planOne(m: MeetingRow, input: PlanInput): SplitItem {
-  const self = { subject: m.subject, startTime: m.start_time, meetingCode: m.meeting_code }
+  const self = { subject: m.subject, startTime: num(m.start_time), meetingCode: m.meeting_code }
   // 旧行**此刻在盘上的**目录：按库里现有的行（'' 行 + 已经拆好的兄弟行）算一遍序号，
   // 与引擎这一刻算出来的口径一致。绝大多数会议只有 '' 行一行，序号就是 1、没有后缀。
   const oldOrdinals = assignDirOrdinals([
-    dirRow(m.meeting_id, '', m.created_at, self),
+    dirRow(m.meeting_id, '', Number(m.created_at), self),
     ...input.siblings.map((s) =>
-      dirRow(s.meeting_id, s.sub_meeting_id, s.created_at, {
-        subject: s.subject, startTime: s.start_time, meetingCode: s.meeting_code,
+      dirRow(s.meeting_id, s.sub_meeting_id, Number(s.created_at), {
+        subject: s.subject, startTime: num(s.start_time), meetingCode: s.meeting_code,
       })),
   ])
   const oldRel = meetingDirPath(self, m.meeting_id, oldOrdinals.get(meetingPathKey(m.meeting_id, '')) ?? 1)
   const bail = (reason: string): SplitItem => ({
     meetingId: m.meeting_id, oldRel, nasDir: input.nas.dir, sessions: [], undecidableReason: reason,
   })
+
+  // ⓪ 混合状态：这个 meeting_id 下已经有按场次建好的行了。不修、不猜，整场不动。
+  //
+  //    这种库同时被两套目录序号解释：眼下引擎把 '' 旧行也算进去（它 created_at 最早、
+  //    占着序号 1），于是与它同分钟的那个兄弟场次的文件躺在 `…_2/` 里；而 '' 行一旦被
+  //    这个脚本删掉，引擎下一轮就会说那个兄弟该在无后缀的目录里。也就是说**在脚本动手
+  //    之前，盘上的位置就已经和拆完之后的库对不上了**，而脚本正要把旧行的文件往那个
+  //    `…_2/` 里搬——搬过去就是覆盖。
+  //
+  //    要修得动它，脚本得反过来给兄弟行的文件也改名、连带 meeting_assets 的文件名序号
+  //    （assignOrdinals 只看得见 '' 行的资产，兄弟行的资产不在计划里，改完还会撞
+  //    uk_asset）。那是另一个脚本的活。**正确做法是别让这种状态出现**：拆分脚本要在
+  //    新代码首轮拉取之前跑（spec §2.5 的上线顺序）。
+  if (input.siblings.length > 0) {
+    return bail(
+      `会议 ${m.meeting_id} 已有按场次的行（${input.siblings.length} 条），` +
+        '拆分脚本必须在新代码首轮拉取之前跑；请按 runbook 先停服务，删掉这些场次行及其下载文件后重跑',
+    )
+  }
 
   if (input.nas.reason !== null) return bail(input.nas.reason)
 
@@ -339,11 +365,11 @@ function planOne(m: MeetingRow, input: PlanInput): SplitItem {
   const sessionsMeta: SessionMeta[] = [
     ...input.cache.map((c) => ({
       recordId: c.meeting_record_id, subject: c.subject, meetingCode: c.meeting_code,
-      hostUserId: c.host_user_id, startTime: c.start_time, endTime: c.end_time,
+      hostUserId: c.host_user_id, startTime: Number(c.start_time), endTime: Number(c.end_time),
     })),
     ...orphans.map((r) => ({
       recordId: r, subject: m.subject, meetingCode: m.meeting_code,
-      hostUserId: m.host_userid, startTime: m.start_time, endTime: m.end_time,
+      hostUserId: m.host_userid, startTime: num(m.start_time), endTime: num(m.end_time),
     })),
   ]
   if (sessionsMeta.length === 0) {
@@ -354,25 +380,16 @@ function planOne(m: MeetingRow, input: PlanInput): SplitItem {
   //    本机 84/294 场）算出同名目录，靠 assignDirOrdinals 给第二条加 `_2`——序号
   //    绝不自己另算，脚本与引擎必须是同一份实现（见 domain/dir-ordinal.ts）。
   //
-  //    喂进去的是**拆完之后库里会有的那批行**：已经建好的兄弟行带自己的 created_at
-  //    （它们的目录已经装着文件，序号按首次发现时间钉住不动），本轮新建的场次行带
-  //    同一个 `now`，于是同批之间按 record id 定序——与执行那一遍插完行之后引擎自己
-  //    再算一遍的答案逐字一致。
+  //    喂进去的就是**拆完之后这个 meeting_id 下会有的全部行**：本轮新建的这批场次，
+  //    `created_at` 全是同一个 `now`，于是定序的是 record id 那一档——与执行那一遍插完行
+  //    之后引擎自己再算一遍的答案逐字一致。
   //
-  //    待删的 '' 旧行**不进这个名单**：它在同一个事务里就没了，把它算进去会让与它
-  //    同目录的那个场次白白挪到 `_2`，而下一轮引擎（那时 '' 行已不存在）又会说它该在
-  //    无后缀的目录里——盘上的文件与库从此各说各话。
-  const createdAtOf = new Map(input.siblings.map((s) => [s.sub_meeting_id, s.created_at]))
-  const planned = new Set(sessionsMeta.map((s) => s.recordId))
-  const dirOrdinals = assignDirOrdinals([
-    ...input.siblings
-      .filter((s) => !planned.has(s.sub_meeting_id))
-      .map((s) => dirRow(s.meeting_id, s.sub_meeting_id, s.created_at, {
-        subject: s.subject, startTime: s.start_time, meetingCode: s.meeting_code,
-      })),
-    ...sessionsMeta.map((s) =>
-      dirRow(m.meeting_id, s.recordId, createdAtOf.get(s.recordId) ?? input.now, s)),
-  ])
+  //    名单里没有别人：待删的 '' 旧行同一个事务里就没了（算进去会让与它同目录的那个
+  //    场次白白挪到 `_2`，而下一轮引擎又说它该在无后缀的目录里），已经按场次建好的
+  //    兄弟行在上面 ⓪ 就整场 bail 掉了。
+  const dirOrdinals = assignDirOrdinals(
+    sessionsMeta.map((s) => dirRow(m.meeting_id, s.recordId, input.now, s)),
+  )
 
   // ④ 每个资产的新路径
   const ordinalOf = assignOrdinals(input.assets)
