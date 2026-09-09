@@ -253,6 +253,25 @@ export function buildJobs(nowSec: number, meetings: readonly Meeting[]): ProtoJo
         lastAgoSec: 3.5 * HOUR,
       }),
     ),
+    // 拉取维度、带会议的失败项——**原型里唯一一种给「重试」「忽略」按钮的**
+    // （判据 `isActionableFailure`：拉取任务记的、带会议的那种）。两条同因同影响，
+    // 所以在界面上归成一组，组行上是「全部重试」「全部忽略」；`detail` 逐条不同，
+    // 正是「技术详情」那个折叠要摆出来给人比对的东西。
+    ...meetings.slice(0, 2).map((m, i) =>
+      failure(700 + i, nowSec, {
+        jobName: 'fetch_recordings',
+        target: `${m.id}|`,
+        targetLabel: m.title,
+        meetingId: m.id,
+        reason: '录像：腾讯那边没有这个文件。',
+        impact: '录制在腾讯会议过期后就再也拉不回来了。',
+        detail: `video/${m.id}/mp4: http 404 record_file_not_found`,
+        attempts: i === 0 ? 5 : 3,
+        maxAttempts: 5,
+        firstAgoSec: 20 * HOUR,
+        lastAgoSec: 2 * HOUR,
+      }),
+    ),
     // 整轮维度的失败项：没有会议，`meetingId` 是 null，人读的名字也给不出
     failure(690, nowSec, {
       jobName: 'archive_nas',

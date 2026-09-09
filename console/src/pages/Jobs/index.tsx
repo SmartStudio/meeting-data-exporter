@@ -1,15 +1,35 @@
 import { useCallback, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { fetchJobs, newestFailedAt, runJob, type JobItem, type JobsOverview } from '@/api/admin/jobs'
+import {
+  fetchJobs,
+  ignoreFailures,
+  newestFailedAt,
+  retryFailures,
+  runJob,
+  type JobItem,
+  type JobsOverview,
+} from '@/api/admin/jobs'
 import { useResource } from '@/lib/useResource'
 import { Button } from '@/ui/Button'
 import { PageShell } from '@/ui/PageShell'
 import { Skeleton } from '@/ui/Skeleton'
+import { Toast } from '@/ui/Toast'
 import { FailuresTable } from './FailuresTable'
 import { JobCard, type RunState } from './JobCard'
 import { useMarkFailuresSeen } from '@/app/failuresSeen'
 import { useDismissedBanner, useDismissedStall, OVERDUE_DISMISS_KEY } from './dismiss'
-import { chainEdgeText, fetchStall, jobOrdinal, overdueIdentity, overdueJobs, runQueuedNote, splitLanes } from './view'
+import {
+  chainEdgeText,
+  failureActionErrorText,
+  failureActionSkippedText,
+  fetchStall,
+  jobOrdinal,
+  overdueIdentity,
+  overdueJobs,
+  runQueuedNote,
+  splitLanes,
+  type FailureActionKind,
+} from './view'
 import styles from './Jobs.module.css'
 
 /**
@@ -80,6 +100,45 @@ export default function JobsPage() {
     [retry],
   )
 
+  /**
+   * 已经乐观移除、等重取确认的失败项 id。
+   *
+   * 放在 `JobsPage` 而不是 `Ready`：`retry()` 会把资源打回 loading，`Ready` 因此
+   * 卸载重建，state 放在它里面会丢。（loading 期间整张表本来就不在屏幕上，所以
+   * 那一瞬间没有可闪的东西。）
+   */
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<number>>(() => new Set())
+  const [toast, setToast] = useState<string | null>(null)
+
+  const showToast = useCallback((text: string) => {
+    setToast(text)
+    window.setTimeout(() => setToast(null), 4200)
+  }, [])
+
+  const onAct = useCallback(
+    (action: FailureActionKind, ids: number[]) => {
+      // 先移除再发请求：这两条端点是两句 UPDATE，快得看不见，但网络不是。
+      // 点下去屏幕上什么都不变，看起来像按钮坏了——同 `onRun` 那句 note 的理由。
+      setRemovedIds((prev) => new Set([...prev, ...ids]))
+      const call = action === 'retry' ? retryFailures : ignoreFailures
+      void call(ids)
+        .then((r) => {
+          if (r.skipped.length > 0) {
+            showToast(failureActionSkippedText(action, r.affected, r.skipped.length))
+          }
+          // 重取会带回真相（没做成的那几条还在里面），乐观移除到此为止
+          setRemovedIds(new Set())
+          retry()
+        })
+        .catch((e: unknown) => {
+          // 没做成就必须让行回来：乐观移除不能把一次失败演成一次成功
+          setRemovedIds((prev) => new Set([...prev].filter((id) => !ids.includes(id))))
+          showToast(failureActionErrorText(action, e instanceof Error ? e.message : String(e)))
+        })
+    },
+    [retry, showToast],
+  )
+
   return (
     /* 页头那句「五个任务串起整条链路。」删了：它说的不是事实（只有三个串在
        一条链上），而两组各自的标题下面现在各有一句准确的。没有说明句时
@@ -87,7 +146,10 @@ export default function JobsPage() {
     <PageShell title="定时任务">
       {res.state === 'loading' && <Loading />}
       {res.state === 'error' && <ErrorBox message={res.error.message} onRetry={retry} />}
-      {res.state === 'ready' && <Ready o={res.data} runStates={runStates} onRun={onRun} />}
+      {res.state === 'ready' && (
+        <Ready o={res.data} runStates={runStates} onRun={onRun} removedIds={removedIds} onAct={onAct} />
+      )}
+      <Toast open={toast !== null} onClose={() => setToast(null)} message={toast ?? ''} />
     </PageShell>
   )
 }
@@ -175,10 +237,14 @@ function Ready({
   o,
   runStates,
   onRun,
+  removedIds,
+  onAct,
 }: {
   o: JobsOverview
   runStates: Record<string, RunState>
   onRun: (name: string) => void
+  removedIds: ReadonlySet<number>
+  onAct: (action: FailureActionKind, ids: number[]) => void
 }) {
   const overdue = overdueJobs(o.jobs)
   const stall = fetchStall(o.jobs)
@@ -323,7 +389,7 @@ function Ready({
         </Lane>
       )}
 
-      <FailuresTable o={o} now={o.now} />
+      <FailuresTable o={o} now={o.now} removedIds={removedIds} onAct={onAct} />
     </>
   )
 }

@@ -113,10 +113,10 @@ interface StubOpts {
 }
 
 function stubApi(body: unknown, opts: StubOpts = {}) {
-  const calls: Array<{ url: string; method: string }> = []
+  const calls: Array<{ url: string; method: string; body: unknown }> = []
   const f = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
-    calls.push({ url, method })
+    calls.push({ url, method, body: init?.body === undefined ? null : JSON.parse(String(init.body)) })
     const isRun = method === 'POST'
     const status = isRun ? (opts.runStatus ?? 202) : (opts.getStatus ?? 200)
     const out = isRun ? (opts.runBody ?? ACCEPTED) : (opts.getBody ?? body)
@@ -841,14 +841,17 @@ describe('「新建任务」按钮已删（裁定 G-g）', () => {
 })
 
 describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
-  test('失败项表的六个格子都带 data-label', async () => {
+  test('失败项表带列名的六个格子都有 data-label；行尾的操作格没有', async () => {
     await mount(payload({ failuresTotal: 1, failures: [failure()] }))
     const row = await screen.findByTestId('failure-row')
     const labels = [...row.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
     // 「影响」改名「如果不处理」（D-jobs-storage brief）：这句话现在只在这张表
     // 里、只对真正失败的那一项写一次，不再是每张任务卡固定挂的一行。
     // 一行是一件事（按任务 + 原因归并），所以任务与原因在前，「涉及」说这件事牵扯了什么
-    expect(labels).toEqual(['任务', '原因', '涉及', '最近失败', '已自动重试', '如果不处理'])
+    // 行尾的操作格是 `null`：`ui/Table.module.css` 把「勾选框、标题、行尾的动作」
+    // 划为不需要列名的一类（窄屏占满一行）。它还常常是空的（不可操作的失败项没有
+    // 按钮），带上列名会在卡片里留下一行光写着「操作」、底下什么都没有的东西。
+    expect(labels).toEqual(['任务', '原因', '涉及', '最近失败', '已自动重试', '如果不处理', null])
   })
 })
 
@@ -1032,5 +1035,175 @@ describe('失败项按「任务 + 原因」归并', () => {
     await user.click(more)
     expect(screen.getAllByTestId('failure-row')).toHaveLength(15)
     expect(screen.queryByTestId('failures-more-groups')).toBeNull()
+  })
+})
+
+/**
+ * 失败项上的两个动作（规格 §2.3）与「技术详情」（§2.4）。
+ *
+ * 这一组盯三件事：**不可操作的行不给按钮**（一颗点了只会报错的按钮比没有更糟）、
+ * **点完当场消失**（不然要等一次重取才看得出有反应）、**失败时行回来并说清原因**
+ * （乐观移除不能把一个没做成的操作演成做成了）。
+ */
+describe('失败项的重试 / 忽略', () => {
+  const fetchFailure = (over: Record<string, unknown> = {}) =>
+    failure({
+      jobName: 'fetch_recordings',
+      reason: '录像：腾讯那边没有这个文件',
+      impact: '录制在腾讯会议过期后就再也拉不回来了',
+      detail: 'video/r-1/mp4: http 404',
+      ...over,
+    })
+
+  function withFailures(fs: Record<string, unknown>[]): Record<string, unknown> {
+    return payload({ failures: fs, failuresTotal: fs.length })
+  }
+
+  /**
+   * `stubApi` 对所有 POST 回同一个 `runBody`，默认是「立即运行」那个 202 载荷。
+   * 动作端点的契约是 `{ affected, skipped }`，读不出来会当场抛——所以凡是要点按钮的
+   * 用例都得显式给一个动作端点的响应。
+   */
+  const acted = (affected: number, skipped: number[] = []): StubOpts => ({
+    runStatus: 200,
+    runBody: { affected, skipped },
+  })
+
+  test('可操作的行给「重试」「忽略」两颗按钮', async () => {
+    await mount(withFailures([fetchFailure({ id: 11, meetingId: 'm-1' })]))
+    const row = await screen.findByTestId('failure-row')
+    expect(within(row).getByRole('button', { name: '重试' })).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: '忽略' })).toBeInTheDocument()
+  })
+
+  test('归档任务与整轮那种不给按钮——它们每轮自己判定、自己恢复', async () => {
+    await mount(
+      withFailures([
+        failure({ id: 21, jobName: 'archive_nas', meetingId: 'm-2', reason: 'NAS 写入超时' }),
+        fetchFailure({ id: 22, meetingId: null, target: '__round__', reason: '整轮没跑成' }),
+      ]),
+    )
+    const rows = await screen.findAllByTestId('failure-row')
+    expect(rows).toHaveLength(2)
+    for (const row of rows) {
+      expect(within(row).queryByRole('button', { name: '重试' })).toBeNull()
+      expect(within(row).queryByRole('button', { name: '忽略' })).toBeNull()
+    }
+  })
+
+  test('归并组给「全部重试」「全部忽略」，一次带上组内全部 id', async () => {
+    const three = [11, 12, 13].map((id) => fetchFailure({ id, meetingId: `m-${id}` }))
+    const { calls } = await mount(withFailures(three), acted(3))
+    const row = await screen.findByTestId('failure-row')
+    expect(row).toHaveAttribute('data-count', '3')
+    await userEvent.click(within(row).getByRole('button', { name: '全部重试' }))
+    const post = await waitFor(() => {
+      const c = calls.find((x) => x.method === 'POST')
+      expect(c).toBeDefined()
+      return c!
+    })
+    expect(post.url).toContain('/jobs/failures/retry')
+    expect(post.body).toEqual({ ids: [11, 12, 13] })
+  })
+
+  test('点完当场从表上消失——不等那次请求回来', async () => {
+    // POST 挂着不回：这一条断言的正是「乐观」两个字。请求回来之前屏幕上什么都
+    // 不变的话，看起来就像按钮坏了。
+    const calls: Array<{ method: string }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        calls.push({ method })
+        if (method === 'POST') return new Promise<Response>(() => {})
+        return new Response(JSON.stringify(withFailures([fetchFailure({ id: 11, meetingId: 'm-1' })])), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }),
+    )
+    render(<JobsPage />)
+    await screen.findByRole('heading', { name: '定时任务', level: 1 })
+    const row = await screen.findByTestId('failure-row')
+    await userEvent.click(within(row).getByRole('button', { name: '忽略' }))
+    await waitFor(() => expect(screen.queryByTestId('failure-row')).toBeNull())
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1)
+  })
+
+  test('做成之后重新拉一次 /admin/jobs，表上跟的是后端的真相', async () => {
+    /**
+     * 第二次 GET 回的是**动作已经生效之后**的列表（那条失败项没了）。
+     *
+     * 不能让两次 GET 回同一份：那等于让 mock 说「我改了库，但列表没变」——一件
+     * 后端不会发生的事。乐观移除在重取回来那一刻就作废（`index.tsx` 里
+     * `setRemovedIds(new Set())`），所以拿一份陈旧的响应去测，测的是 mock 的谎，
+     * 不是这段代码。
+     */
+    const calls: Array<{ method: string }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        calls.push({ method })
+        if (method === 'POST') {
+          return new Response(JSON.stringify({ affected: 1, skipped: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        const first = calls.filter((c) => c.method === 'GET').length === 1
+        const body = first ? withFailures([fetchFailure({ id: 11, meetingId: 'm-1' })]) : withFailures([])
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }),
+    )
+    render(<JobsPage />)
+    await screen.findByRole('heading', { name: '定时任务', level: 1 })
+    const row = await screen.findByTestId('failure-row')
+    await userEvent.click(within(row).getByRole('button', { name: '忽略' }))
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET')).toHaveLength(2))
+    await waitFor(() => expect(screen.queryByTestId('failure-row')).toBeNull())
+    expect(await screen.findByTestId('failures-empty')).toBeInTheDocument()
+  })
+
+  // 乐观移除不能把一次失败演成一次成功：没做成，那一行必须回来。
+  test('后端报错：行回来，并且说清是哪个动作、后端原话是什么', async () => {
+    await mount(withFailures([fetchFailure({ id: 11, meetingId: 'm-1' })]), {
+      runStatus: 500,
+      runBody: { error: 'boom' },
+    })
+    const row = await screen.findByTestId('failure-row')
+    await userEvent.click(within(row).getByRole('button', { name: '重试' }))
+    // toast 是 role="status"（ui/Toast.tsx），按文字找到它再断言内容
+    const toast = await screen.findByText(/重试没做成/)
+    expect(toast).toBeInTheDocument()
+    expect(toast.textContent ?? '').toContain('500')
+    expect(screen.getByTestId('failure-row')).toBeInTheDocument()
+  })
+
+  test('一批里有几条没做成：两个数都说出来，不含糊成「部分成功」', async () => {
+    const two = [11, 12].map((id) => fetchFailure({ id, meetingId: `m-${id}` }))
+    await mount(withFailures(two), acted(1, [12]))
+    const row = await screen.findByTestId('failure-row')
+    await userEvent.click(within(row).getByRole('button', { name: '全部忽略' }))
+    const toast = await screen.findByText(/另外 1 条没能处理/)
+    expect(toast.textContent ?? '').toContain('忽略了 1 条')
+  })
+
+  test('detail 非空时有一个默认收起的「技术详情」，原文在里面', async () => {
+    await mount(withFailures([fetchFailure({ id: 11, meetingId: 'm-1' })]))
+    const row = await screen.findByTestId('failure-row')
+    const details = within(row).getByTestId('failure-detail') as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    expect(within(row).getByText('技术详情')).toBeInTheDocument()
+    expect(details).toHaveTextContent('video/r-1/mp4: http 404')
+  })
+
+  test('detail 是 null 就不画那个折叠——不留一个展开后空着的东西', async () => {
+    await mount(withFailures([fetchFailure({ id: 11, meetingId: 'm-1', detail: null })]))
+    const row = await screen.findByTestId('failure-row')
+    expect(within(row).queryByTestId('failure-detail')).toBeNull()
   })
 })

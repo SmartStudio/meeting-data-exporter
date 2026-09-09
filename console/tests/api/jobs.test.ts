@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { ApiError } from '../../src/api/client'
 import { ApiShapeError } from '../../src/api/validate'
-import { FAILURES_PAGE_LIMIT, fetchJobs, runJob } from '../../src/api/admin/jobs'
+import { FAILURES_PAGE_LIMIT, fetchJobs, ignoreFailures, retryFailures, runJob } from '../../src/api/admin/jobs'
 
 /**
  * `api/admin/jobs.ts` 的契约测试。
@@ -283,5 +283,61 @@ describe('FAILURES_PAGE_LIMIT', () => {
     // 后端 `src/http/handlers/console/jobs.ts` 里那个常量。对不上时界面会把
     // "显示 100 条"说成"一共 100 条"，而那正是这一页最不该含糊的地方。
     expect(FAILURES_PAGE_LIMIT).toBe(100)
+  })
+})
+
+/**
+ * 失败项上的两个动作（规格 §2.3）。这一层只保证「打对端点、发对请求体、
+ * 响应读不出来就大声报」——三件里最要紧的是最后一件：`skipped` 读不出来，
+ * 界面上那句「另外 N 条没能处理」就没有依据，而它正是要拿这个数说话的。
+ */
+describe('失败项动作', () => {
+  test('retryFailures / ignoreFailures 打到各自的端点，请求体是 {ids}', async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = []
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), method: init?.method ?? 'GET', body: JSON.parse(String(init?.body ?? 'null')) })
+      return new Response(JSON.stringify({ affected: 2, skipped: [7] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', f)
+
+    expect(await retryFailures([1, 2, 7])).toEqual({ affected: 2, skipped: [7] })
+    expect(calls[0]!.url).toContain('/api/v1/admin/jobs/failures/retry')
+    expect(calls[0]!.method).toBe('POST')
+    expect(calls[0]!.body).toEqual({ ids: [1, 2, 7] })
+
+    await ignoreFailures([3])
+    expect(calls[1]!.url).toContain('/api/v1/admin/jobs/failures/ignore')
+    expect(calls[1]!.body).toEqual({ ids: [3] })
+  })
+
+  test('响应形状不对就抛（带端点名），不静默当成"做成了"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ affected: 1 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    )
+    await expect(retryFailures([1])).rejects.toThrow('/api/v1/admin/jobs/failures/retry')
+  })
+
+  test('skipped 里混进非数字也抛——「哪几条没做成」不能是半真的', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ affected: 1, skipped: ['7'] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    )
+    await expect(ignoreFailures([1])).rejects.toThrow('/api/v1/admin/jobs/failures/ignore')
   })
 })

@@ -2,14 +2,20 @@ import { describe, expect, test } from 'vitest'
 import { TENCENT_DOWN_STREAK, fetchStreakText } from '../../src/api/admin/health'
 import type { JobItem, JobRun } from '../../src/api/admin/jobs'
 import {
+  FAILURE_ACTION_LABEL,
+  FAILURE_GROUP_ACTION_LABEL,
   SPARK_MIN_PCT,
+  actionableIds,
   attemptsText,
+  failureActionErrorText,
+  failureActionSkippedText,
   fetchStall,
   fmtAfter,
   fmtAgo,
   fmtGap,
   fmtSpan,
   healthView,
+  isActionableFailure,
   jobOrdinal,
   keyMetric,
   overdueIdentity,
@@ -421,5 +427,49 @@ describe('落后横幅的身份', () => {
 
   test('落后集合变了，身份也变', () => {
     expect(overdueIdentity([late('a', 11)])).not.toBe(overdueIdentity([late('a', 11), late('b', 22)]))
+  })
+})
+
+describe('哪些失败项能单独动', () => {
+  test('只有拉取任务的、带会议的那种', () => {
+    expect(isActionableFailure({ jobName: 'fetch_recordings', meetingId: 'm-1' })).toBe(true)
+    // 归档失败项每轮自己判定、自己恢复，「重试」在它上面没有对应的动作
+    expect(isActionableFailure({ jobName: 'archive_nas', meetingId: 'm-1' })).toBe(false)
+    // 整轮维度的失败项没有会议，没有可以打回队列的资产
+    expect(isActionableFailure({ jobName: 'fetch_recordings', meetingId: null })).toBe(false)
+    expect(isActionableFailure({ jobName: 'fetch_recordings', meetingId: '' })).toBe(false)
+  })
+
+  test('一组里只挑得动的那几条 id，顺序照组内顺序', () => {
+    const g = {
+      items: [
+        { id: 3, jobName: 'fetch_recordings', meetingId: 'm-1' },
+        { id: 4, jobName: 'archive_nas', meetingId: 'm-2' },
+        { id: 5, jobName: 'fetch_recordings', meetingId: 'm-3' },
+      ],
+    } as unknown as Parameters<typeof actionableIds>[0]
+    expect(actionableIds(g)).toEqual([3, 5])
+  })
+})
+
+describe('动作的两句话', () => {
+  test('按钮文案逐字照规格', () => {
+    expect(FAILURE_ACTION_LABEL.retry).toBe('重试')
+    expect(FAILURE_ACTION_LABEL.ignore).toBe('忽略')
+    expect(FAILURE_GROUP_ACTION_LABEL.retry).toBe('全部重试')
+    expect(FAILURE_GROUP_ACTION_LABEL.ignore).toBe('全部忽略')
+  })
+
+  test('出错那句带上动作名与后端的原话——不说一句笼统的「操作失败」', () => {
+    const t = failureActionErrorText('retry', 'HTTP 500')
+    expect(t).toContain('重试')
+    expect(t).toContain('HTTP 500')
+  })
+
+  test('部分没做成那句把两个数都说出来，不含糊成「部分成功」', () => {
+    const t = failureActionSkippedText('ignore', 5, 2)
+    expect(t).toContain('忽略')
+    expect(t).toContain('5')
+    expect(t).toContain('2')
   })
 })

@@ -5,8 +5,11 @@ import { Button } from '@/ui/Button'
 import { Chip } from '@/ui/Chip'
 import { Table } from '@/ui/Table'
 import {
+  FAILURE_ACTION_LABEL,
   FAILURE_GROUPS_PAGE,
+  FAILURE_GROUP_ACTION_LABEL,
   FAILURE_ITEMS_PAGE,
+  actionableIds,
   attemptsText,
   failureCountsByJob,
   fmtAgo,
@@ -15,6 +18,7 @@ import {
   groupScopeText,
   hiddenFailureCount,
   targetView,
+  type FailureActionKind,
   type FailureGroup,
 } from './view'
 import styles from './Jobs.module.css'
@@ -44,18 +48,36 @@ import styles from './Jobs.module.css'
  * 这正是原来「表一大整个页面滚动就不对」的另一种写法。高度靠归并和分页收住，
  * 不靠一个固定高度的滚动框。
  *
- * ## 为什么每行没有「重试」按钮
+ * ## 每行的「重试」「忽略」（规格 2026-09-09 §2.3）
  *
- * 原型里有一个（`gate-console.html` 的 `data-retry`），但后端只有一条写端点
- * （`POST /api/v1/admin/jobs/:name/run`），**没有"重试这一条失败项"这个动作**。
- * 每个任务的重试都是由各自的枚举源结构性驱动的：那一条失败项下一轮照样会被捞起来
- * 重试，不需要也没法单独点。把整个任务的「立即运行」伪装成行内的「重试」，
- * 点下去实际跑的是一整轮——那是一个名字和行为对不上的按钮。
+ * 这两颗按钮从前不存在，理由写在这里：后端只有「跑一整轮任务」这一条写端点，
+ * 把它伪装成行内的「重试」是一个名字和行为对不上的按钮。现在有了两条真的作用在
+ * 一条失败项上的端点，那条理由不再成立。
+ *
+ * 但**只有一种失败项给按钮**：拉取任务按 dead 资产记的、带会议的那种
+ * （`isActionableFailure`，判据与后端逐字相同）。归档、清理那几种失败项每轮由
+ * 各自的枚举源重新判定、`resolveStaleFailures` 自动关掉——对它们「重试」没有
+ * 对应的动作（下一轮本来就会再试），「忽略」是个假承诺（它下一轮还会回来）。
+ *
+ * 归并组上的是「全部重试」「全部忽略」，作用于**这一批下发下来的**组内失败项
+ * （`actionableIds`）。被 `FAILURES_PAGE_LIMIT` 截掉的不在其中，表头上方那句
+ * 「还有 N 条没有列出来」已经把这件事说清楚了。
  *
  * 「已自动重试」这个列名把"它在被重试、不用人点"写进了表头，逐行的 `2 / 5`
  * 就是这条承诺可核对的样子；表头上方因此不用再挂一段说明。
  */
-export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
+export function FailuresTable({
+  o,
+  now,
+  removedIds,
+  onAct,
+}: {
+  o: JobsOverview
+  now: number
+  /** 已经乐观移除、等重取确认的失败项 id。放在页面那一层，理由见 `index.tsx` */
+  removedIds: ReadonlySet<number>
+  onAct: (action: FailureActionKind, ids: number[]) => void
+}) {
   const hidden = hiddenFailureCount(o)
   const base = new Date(now * 1000)
   const labelOf = (name: string): string => o.jobs.find((j) => j.name === name)?.label ?? name
@@ -67,10 +89,18 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
   const filterAlive = jobFilter === null || counts.some((c) => c.name === jobFilter)
   const activeFilter = filterAlive ? jobFilter : null
 
+  /**
+   * 已经乐观移除的那几条先滤掉，再筛任务、再归并。
+   *
+   * 上面的 `counts` 与「全部 N」那颗 chip **保持读全量**：它们说的是「后端这一批
+   * 有多少条」，与屏幕上刚被点掉几条是两件事——重取一回来（`index.tsx` 里
+   * `setRemovedIds(new Set())`）那几条本来就该按后端的说法重新算。
+   */
   const groups = useMemo(() => {
-    const list = activeFilter === null ? o.failures : o.failures.filter((f) => f.jobName === activeFilter)
+    const live = o.failures.filter((f) => !removedIds.has(f.id))
+    const list = activeFilter === null ? live : live.filter((f) => f.jobName === activeFilter)
     return groupFailures(list)
-  }, [o.failures, activeFilter])
+  }, [o.failures, activeFilter, removedIds])
 
   const [groupLimit, setGroupLimit] = useState(FAILURE_GROUPS_PAGE)
   // 换筛选就从第一页重新数——上一个筛选翻到第三页，不代表这个也要从第三页看起。
@@ -138,11 +168,13 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
                     一件**还没处理的事**，列名说的就是不处理的下场。任务卡上那行
                     标签是「影响：」——那里说的是这个任务本身的性质，不针对某一条。 */}
                 <th scope="col">如果不处理</th>
+                {/* 「操作」而不是「动作」：这一列里是两颗按钮，不是一个状态 */}
+                <th scope="col">操作</th>
               </tr>
             </thead>
             <tbody>
               {shown.map((g) => (
-                <GroupRows key={g.key} g={g} label={labelOf(g.jobName)} base={base} now={now} />
+                <GroupRows key={g.key} g={g} label={labelOf(g.jobName)} base={base} now={now} onAct={onAct} />
               ))}
             </tbody>
           </Table>
@@ -167,8 +199,21 @@ export function FailuresTable({ o, now }: { o: JobsOverview; now: number }) {
  * 「到上限」的含义是**该找人了**，不是"系统放弃了"：每个任务的重试都由各自的
  * 枚举源驱动，没有一个会因为这个数字停下来。
  */
-function GroupRows({ g, label, base, now }: { g: FailureGroup; label: string; base: Date; now: number }) {
+function GroupRows({
+  g,
+  label,
+  base,
+  now,
+  onAct,
+}: {
+  g: FailureGroup
+  label: string
+  base: Date
+  now: number
+  onAct: (action: FailureActionKind, ids: number[]) => void
+}) {
   const single = g.items.length === 1
+  const canAct = actionableIds(g)
   const [open, setOpen] = useState(false)
   const [itemLimit, setItemLimit] = useState(FAILURE_ITEMS_PAGE)
   const escalated = g.escalated === g.items.length ? 'true' : g.escalated > 0 ? 'partial' : 'false'
@@ -184,6 +229,7 @@ function GroupRows({ g, label, base, now }: { g: FailureGroup; label: string; ba
         </td>
         <td className={styles.reason} data-label="原因">
           {g.reason}
+          <FailureDetails g={g} />
         </td>
         <td data-label="涉及">
           {single ? (
@@ -215,10 +261,29 @@ function GroupRows({ g, label, base, now }: { g: FailureGroup; label: string; ba
         <td className={styles.impactCell} data-label="如果不处理">
           {g.impact}
         </td>
+        {/* 这一格**不带 data-label**（窄屏卡片形态因此占满一行，不排成「列名 ｜ 值」）。
+            `ui/Table.module.css` 就是这么分的：「勾选框、标题、行尾的动作」本来
+            就不需要列名。而且这一格常常是空的（不可操作的那种失败项），带上列名
+            就会在卡片里留下一行光写着「操作」、底下什么都没有的东西。
+            宽屏的表头那一列仍然叫「操作」。 */}
+        <td className={styles.actions}>
+          {/* 不可操作的行不给按钮：那种失败项每轮由各自的任务重新判定、自动恢复，
+              一颗点下去只会回一句「这条没能处理」的按钮比没有按钮更糟。 */}
+          {canAct.length > 0 && (
+            <div className={styles.actionRow}>
+              <Button size="sm" onClick={() => onAct('retry', canAct)}>
+                {single ? FAILURE_ACTION_LABEL.retry : FAILURE_GROUP_ACTION_LABEL.retry}
+              </Button>
+              <Button size="sm" variant="quiet" onClick={() => onAct('ignore', canAct)}>
+                {single ? FAILURE_ACTION_LABEL.ignore : FAILURE_GROUP_ACTION_LABEL.ignore}
+              </Button>
+            </div>
+          )}
+        </td>
       </tr>
       {!single && open && (
         <tr className={styles.itemsRow} data-testid="failure-items">
-          <td colSpan={6}>
+          <td colSpan={7}>
             <ul className={styles.items} aria-label={`${label}：${g.reason}`}>
               {shownItems.map((f) => (
                 <li key={f.id} className={styles.item}>
@@ -252,6 +317,34 @@ function Target({ f }: { f: JobFailure }) {
       <span className={t.sub === '' && f.targetLabel === '' ? styles.targetId : styles.targetName}>{t.name}</span>
       {t.sub !== '' && <span className={styles.sub}>{t.sub}</span>}
     </span>
+  )
+}
+
+/**
+ * 「技术详情」：原始报错，默认收起。
+ *
+ * 放在**组行**上而不是逐条明细里：归并键是「任务 + 原因 + 影响」，所以一组里
+ * 每一条的人话原因逐字相同，不同的正是这一段——把它们摆在一起，运维一眼看得出
+ * 「这 23 场是不是同一个毛病」。等宽字体、可换行：里面是 `video/r-1/mp4: http 404`
+ * 这种东西，按正文排版会在标点处断得很难读。
+ *
+ * `detail` 全为 null 时**不画这个折叠**：一个展开之后空着的 `<details>` 比没有
+ * 更糟——它承诺了一份并不存在的明细。
+ */
+function FailureDetails({ g }: { g: FailureGroup }) {
+  const withDetail = g.items.filter((f) => f.detail !== null && f.detail !== '')
+  if (withDetail.length === 0) return null
+  return (
+    <details className={styles.detailBox} data-testid="failure-detail">
+      <summary className={styles.detailSummary}>技术详情</summary>
+      {withDetail.map((f) => (
+        <pre key={f.id} className={styles.detailText}>
+          {targetView(f).name}
+          {'\n'}
+          {f.detail}
+        </pre>
+      ))}
+    </details>
   )
 }
 

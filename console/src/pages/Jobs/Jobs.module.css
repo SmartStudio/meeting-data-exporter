@@ -593,6 +593,41 @@
   overflow-wrap: anywhere;
 }
 
+/* 操作格：两颗小按钮，窄屏（卡片模式）下换行不挤 */
+.actions {
+  white-space: nowrap;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+/* 「技术详情」：原始报错，默认收起。等宽 + 可换行——里面是
+   `video/r-1/mp4: http 404` 这种东西，按正文排版会在标点处断得很难读。 */
+.detailBox {
+  margin-top: var(--s-2);
+}
+
+.detailSummary {
+  cursor: pointer;
+  font-size: var(--t-2xs);
+  color: var(--ink-3);
+}
+
+.detailText {
+  margin: var(--s-2) 0 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: var(--t-2xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* 「18 场会议 ›」：展开这一组的按钮。长得像链接、不像按钮，是因为它在一个
  * 表格格子里，一颗带边框的按钮会把这一行撑高。高度仍给到 --btn-h-sm，
  * 点击热区不因为它长得像文字就缩水。 */

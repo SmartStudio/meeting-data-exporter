@@ -716,3 +716,63 @@ export function failureCountsByJob(o: Pick<JobsOverview, 'jobs' | 'failures'>): 
   for (const [name, count] of counts) out.push({ name, label: name, count })
   return out
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   失败项上的两个动作（规格 2026-09-09 §2.3）
+   ══════════════════════════════════════════════════════════════════ */
+
+export type FailureActionKind = 'retry' | 'ignore'
+
+/** 行级按钮的字（规格 §2.3，逐字） */
+export const FAILURE_ACTION_LABEL: Record<FailureActionKind, string> = {
+  retry: '重试',
+  ignore: '忽略',
+}
+/** 归并组上那两颗按钮的字 */
+export const FAILURE_GROUP_ACTION_LABEL: Record<FailureActionKind, string> = {
+  retry: '全部重试',
+  ignore: '全部忽略',
+}
+
+/**
+ * 这一条失败项能不能单独动。**判据与后端逐字相同**（`isActionableFailure`，
+ * `src/http/handlers/console/jobs.ts`）：拉取任务记的、带会议的那种。
+ *
+ * 两处各判一次不是重复：后端那一份是权威（端点对不可操作的返回 skipped），
+ * 前端这一份决定**给不给按钮**。少了前端这一份，界面上会出现一颗点下去只会
+ * 回一句「这条没能处理」的按钮——一个承诺了一件做不到的事的按钮。
+ */
+export function isActionableFailure(f: Pick<JobFailure, 'jobName' | 'meetingId'>): boolean {
+  return f.jobName === FETCH_JOB_NAME && f.meetingId !== null && f.meetingId !== ''
+}
+
+/**
+ * 一组里能动的那几条 id。
+ *
+ * 作用范围是**这一批下发下来的失败项**（`g.items`），不是"展开列表里正显示的那几条"：
+ * 组行上写的就是「18 场会议」，那颗「全部重试」必须真的是这 18 场。被后端
+ * `FAILURES_PAGE_LIMIT` 截掉的那些压根不在 `o.failures` 里，所以也不在动作里——
+ * 表头上方那句「还有 N 条没有列出来」已经把这件事说了。
+ *
+ * 条数上限天然满足端点的 1–100：整页失败项就最多 100 条，一组不会更多。
+ */
+export function actionableIds(g: Pick<FailureGroup, 'items'>): number[] {
+  return g.items.filter(isActionableFailure).map((f) => f.id)
+}
+
+/** 动作没做成时那句 toast。带上动作名与后端原话——「操作失败」等于什么都没说 */
+export function failureActionErrorText(action: FailureActionKind, message: string): string {
+  return `${FAILURE_ACTION_LABEL[action]}没做成：${message}`
+}
+
+/**
+ * 一批里有几条没能处理时那句 toast。**两个数都说出来**：只说「部分成功」的话，
+ * 人无法判断还剩多少要管，也不知道该不该再点一次。
+ */
+export function failureActionSkippedText(
+  action: FailureActionKind,
+  done: number,
+  skipped: number,
+): string {
+  return `${FAILURE_ACTION_LABEL[action]}了 ${done} 条；另外 ${skipped} 条没能处理（已经恢复了，或者不是能单独处理的那种）。`
+}

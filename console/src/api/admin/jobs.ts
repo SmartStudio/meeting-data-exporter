@@ -254,3 +254,51 @@ export function newestFailedAt(failures: ReadonlyArray<Pick<JobFailure, 'lastFai
   }
   return newest
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   失败项上的两个动作（规格 2026-09-09 §2.3）
+   ══════════════════════════════════════════════════════════════════ */
+
+/** 两个失败项动作的响应（后端 `actOnFailures`，`src/http/handlers/console/jobs.ts`）。 */
+export interface FailureActionResult {
+  /**
+   * 真的被处理掉的**失败项**条数——不是被改的资产行数。一条失败项对应一场会议，
+   * 它下面可能有 0..N 条资产被改（资产在这之前自己好了，那 `affected` 仍然算 1，
+   * 因为失败项那一行确实被关掉了）。界面上不要把它说成"重新入队了几个文件"。
+   */
+  affected: number
+  /**
+   * 没能处理的失败项 id：找不到、已经恢复了、或者不是可以单独重试的那种。
+   * **不是错误**——一次批量里混进这三种是常事，界面上说一句就够。
+   * 顺序照请求里的出现顺序（后端已去重）。
+   */
+  skipped: number[]
+}
+
+async function actOnFailures(
+  kind: 'retry' | 'ignore',
+  ids: readonly number[],
+): Promise<FailureActionResult> {
+  const path = `${BASE}/jobs/failures/${kind}`
+  const raw = await apiSend<unknown>('POST', path, { ids: [...ids] })
+  const r = reader(`POST ${path}`)
+  const o = r.object(raw, '')
+  const skipped = o.skipped
+  if (!Array.isArray(skipped) || skipped.some((v) => typeof v !== 'number')) {
+    // 这里不能宽容：`skipped` 读不出来就意味着「哪几条没做成」这句话没有依据，
+    // 而界面正要拿它告诉人「另外 N 条没能处理」。宁可整条报错。
+    // （`reader` 没有 `numList`，所以自己收窄一次，并把出错位置说清楚。）
+    r.fail(`skipped 应该是 number[]，实际是 ${Array.isArray(skipped) ? '混了非数字的数组' : typeof skipped}`, raw)
+  }
+  return { affected: r.num(o, 'affected', ''), skipped: skipped as number[] }
+}
+
+/** 把这几条失败项对应会议的 failed/dead 资产打回下载队列（后端会把 attempts 清零）。 */
+export function retryFailures(ids: readonly number[]): Promise<FailureActionResult> {
+  return actOnFailures('retry', ids)
+}
+
+/** 把这几条失败项对应会议的 dead 资产判成「不用管了」。 */
+export function ignoreFailures(ids: readonly number[]): Promise<FailureActionResult> {
+  return actOnFailures('ignore', ids)
+}

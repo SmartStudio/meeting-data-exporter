@@ -415,6 +415,19 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
     )
   }
 
+  // 失败项动作。原型里没有真的资产队列，所以它只回一个诚实的形状：
+  // 认得出的 id 算做成了，认不出的进 skipped。**不假装改了什么**——
+  // 下一次 GET /jobs 仍然由 buildJobs 现算，那批失败项还在，这正是原型该有的样子
+  // （它演的是界面，不是后端的状态机）。
+  const failureAction = /^\/api\/v1\/admin\/jobs\/failures\/(retry|ignore)$/.exec(path)
+  if (failureAction && method === 'POST') {
+    const rawIds = (body as { ids?: unknown }).ids
+    const ids = Array.isArray(rawIds) ? rawIds : []
+    const known = new Set(buildJobs(nowSec, snapshot()).failures.map((f) => f.id))
+    const skipped = ids.filter((id) => typeof id !== 'number' || !known.has(id))
+    return json({ affected: ids.length - skipped.length, skipped })
+  }
+
   /* ── 归档存储 ─────────────────────────────────────────────────── */
 
   if (path === `${PREFIX}/storage` && method === 'GET') {
