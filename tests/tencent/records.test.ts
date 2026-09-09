@@ -65,19 +65,22 @@ function memCache(seed: readonly Meeting[] = []): MeetingCacheLookup & {
   }
 }
 
-/** 网关侧的 Meeting——缓存里存的就是这个形状 */
-const cached = (o: Partial<Meeting> = {}): Meeting => ({
-  meetingId: 'm-1',
-  subMeetingId: '',
-  meetingRecordId: 'rec-1',
-  meetingCode: '88123456',
-  subject: '评审',
-  hostUserId: 'tm-alice',
-  startTime: 1767225600,
-  endTime: 1767229200,
-  state: 'completed',
-  ...o,
-})
+/** 网关侧的 Meeting——缓存里存的就是这个形状。场次 id 就是 record id（spec §2.1） */
+const cached = (o: Partial<Meeting> = {}): Meeting => {
+  const meetingRecordId = o.meetingRecordId ?? 'rec-1'
+  return {
+    meetingId: 'm-1',
+    subMeetingId: meetingRecordId,
+    meetingRecordId,
+    meetingCode: '88123456',
+    subject: '评审',
+    hostUserId: 'tm-alice',
+    startTime: 1767225600,
+    endTime: 1767229200,
+    state: 'completed',
+    ...o,
+  }
+}
 
 const onePage = (meetings: unknown[]) => ({
   total_count: meetings.length, current_size: meetings.length,
@@ -446,4 +449,20 @@ test('createCorpRecordsApi 只做窗口枚举，自己会切 31 天窗口', asyn
   expect(paths).toEqual([CORP_RECORDS_PATH, CORP_RECORDS_PATH, CORP_RECORDS_PATH])
   expect(queries).toHaveLength(3)
   expect(ms).toHaveLength(3)
+})
+
+test('场次 id = meeting_record_id：同一个 meeting_id 的两条录制记录是两场会议', async () => {
+  const { client } = stubClient([
+    onePage([
+      { ...corpMeeting, meeting_record_id: 'rec-1', meeting_id: 'm-1', media_start_time: 1767225600000 },
+      { ...corpMeeting, meeting_record_id: 'rec-2', meeting_id: 'm-1', media_start_time: 1767312000000 },
+    ]),
+  ])
+  const api = createRecordsApi(client, 'admin', memCache())
+  // to: 1000 —— 一个 31 天窗口就够，桩把同一页回放给每个窗口，多窗口只会把两条记录复读
+  const ms = await api.listMeetings({ kind: 'range', from: 0, to: 1000 }, NOW)
+
+  expect(ms.map((m) => m.subMeetingId)).toEqual(['rec-1', 'rec-2'])
+  // 单次会议不是特例：它也只有一条记录，规则统一
+  expect(ms.every((m) => m.subMeetingId === m.meetingRecordId)).toBe(true)
 })

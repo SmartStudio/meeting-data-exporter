@@ -301,6 +301,35 @@ describe('runMigrations', () => {
       await cleanup()
     }
   })
+
+  test('013 把 meeting_cache 里的空 sub_meeting_id 回填成 meeting_record_id', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      // 造一行上线之前的数据：sub_meeting_id 是空串
+      await pool.execute(
+        `INSERT INTO meeting_cache
+           (meeting_record_id, meeting_id, sub_meeting_id, meeting_code, subject,
+            host_user_id, start_time, end_time, state, updated_at)
+         VALUES ('rec-old', 'm-old', '', '881', '旧数据', 'u', 1000, 2000, 'completed', 1)`,
+      )
+      const { runMigrations } = await import('../../src/store/db')
+      await runMigrations(pool)
+
+      const [rows] = await pool.query<any[]>(
+        `SELECT sub_meeting_id FROM meeting_cache WHERE meeting_record_id = 'rec-old'`,
+      )
+      expect(rows[0].sub_meeting_id).toBe('rec-old')
+
+      // 幂等：再跑一次不会把已经回填过的行改坏
+      await runMigrations(pool)
+      const [again] = await pool.query<any[]>(
+        `SELECT sub_meeting_id FROM meeting_cache WHERE meeting_record_id = 'rec-old'`,
+      )
+      expect(again[0].sub_meeting_id).toBe('rec-old')
+    } finally {
+      await cleanup()
+    }
+  })
 })
 
 /**

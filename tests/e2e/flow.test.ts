@@ -419,10 +419,16 @@ function webhookRequest(encrypted: string, now: number): Request {
  *
  * `assetTypes: null` = 不额外限制资产范围，判定完全由规则那一栈说了算。
  */
-async function grantMeeting(meetingId: string, programId: string): Promise<void> {
+async function grantMeeting(
+  meetingId: string,
+  programId: string,
+  subMeetingId: string,
+): Promise<void> {
   await createGrantsStore(pool).grant({
     meetingId,
-    subMeetingId: '',
+    // 场次 id = record id（spec §2.1）。授权挂在**场次**上，挂在空串上等于挂在一场
+    // 不存在的会议上——判定会安静地变成「没有授权」
+    subMeetingId,
     programId,
     assetTypes: null,
     now: NOW * 1000,
@@ -478,7 +484,7 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
     effect: 'allow',
     note: '放行 e2e 全流程采集程序',
   })
-  await grantMeeting(meetingId, 'prog-e2e-full-1')
+  await grantMeeting(meetingId, 'prog-e2e-full-1', meetingRecordId)
 
   // STS-Token 就位：真实发起 ensureFresh（对假服务的一次真实带签名 HTTP 调用），
   // 再用真实的 webhook 端点投递回调完成续期——不是直接往 DB 里塞一条 fulfilled 记录。
@@ -683,7 +689,7 @@ test('策略拒绝时整条链路在 download-url 处被拦截', async () => {
     note: '只放行录像',
   })
   // 授权不限制范围：这条用例要拦住 audio 的是**规则**，不是授权
-  await grantMeeting(meetingId, 'prog-e2e-deny-1')
+  await grantMeeting(meetingId, 'prog-e2e-deny-1', meetingRecordId)
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-deny-1', 'ww-e2e-deny-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -769,7 +775,7 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
     note: '全部放行',
   })
   // 授权也给上：这条用例要证明的是「改写压过规则」，不能让「没授权」抢在前面
-  await grantMeeting(meetingId, 'prog-e2e-ovr-1')
+  await grantMeeting(meetingId, 'prog-e2e-ovr-1', meetingRecordId)
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-ovr-1', 'ww-e2e-ovr-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -795,7 +801,7 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
   //    安全规则，只是一个展示效果
   await createGrantsStore(pool).putOverride({
     meetingId,
-    subMeetingId: '',
+    subMeetingId: meetingRecordId,
     kind: 'allow',
     effect: 'deny',
     assetTypes: null,
@@ -819,7 +825,7 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
   expect((await deniedDl.json()).error).toBe('forbidden')
 
   // ⑤ 撤销改写后回落到规则判定
-  await createGrantsStore(pool).revokeOverride(meetingId, '', 'allow', NOW * 1000 + 1)
+  await createGrantsStore(pool).revokeOverride(meetingId, meetingRecordId, 'allow', NOW * 1000 + 1)
   const restoredDl = await app(
     new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
       method: 'POST',
@@ -873,7 +879,7 @@ test('STS-Token 未就位时，video 可下载而优化版逐字稿返回 unavai
     assetTypes: ['*'],
     effect: 'allow',
   })
-  await grantMeeting(meetingId, 'prog-e2e-sts-1')
+  await grantMeeting(meetingId, 'prog-e2e-sts-1', meetingRecordId)
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-sts-1', 'ww-e2e-sts-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -947,8 +953,8 @@ test('会议号命中多场时列出候选', async () => {
     assetTypes: ['*'],
     effect: 'allow',
   })
-  await grantMeeting('m-e2e-multi-1', 'prog-e2e-multi-1')
-  await grantMeeting('m-e2e-multi-2', 'prog-e2e-multi-1')
+  await grantMeeting('m-e2e-multi-1', 'prog-e2e-multi-1', 'rec-e2e-multi-1')
+  await grantMeeting('m-e2e-multi-2', 'prog-e2e-multi-1', 'rec-e2e-multi-2')
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-multi-1', 'ww-e2e-multi-1')
   const headers = { Authorization: `Bearer ${access_token}` }
@@ -1101,7 +1107,7 @@ test('范围查询经 /v1/corp/records 拿到别人主持的会议——不再�
     effect: 'allow',
     note: '放行 e2e 企业维度采集程序',
   })
-  for (let i = 0; i < hosts.length; i++) await grantMeeting('m-e2e-corp-' + i, 'prog-e2e-corp-1')
+  for (let i = 0; i < hosts.length; i++) await grantMeeting('m-e2e-corp-' + i, 'prog-e2e-corp-1', 'rec-e2e-corp-' + i)
 
   const { access_token } = await serviceLogin(app, 'prog-e2e-corp-1', 'ww-e2e-corp-1')
   const headers = { Authorization: 'Bearer ' + access_token }
@@ -1157,7 +1163,7 @@ test('精确查询走 corp + meeting_cache：查得到别人主持的会议，�
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-e2e-exact-1', assetTypes: ['*'], effect: 'allow',
   })
-  await grantMeeting('m-e2e-exact-1', 'prog-e2e-exact-1')
+  await grantMeeting('m-e2e-exact-1', 'prog-e2e-exact-1', 'rec-e2e-exact-1')
   const { access_token } = await serviceLogin(app, 'prog-e2e-exact-1', 'ww-e2e-exact-1')
   const headers = { Authorization: 'Bearer ' + access_token }
 

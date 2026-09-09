@@ -196,7 +196,10 @@ function toMeeting(r: RawCorpRecordMeeting): Meeting {
   }
   return {
     meetingId: r.meeting_id,
-    subMeetingId: '',
+    // 场次 id 就是这条录制记录自己的 id（spec §2.1）。周期会议的每一场各有一条
+    // record，单次会议也只有一条——规则统一，没有「周期会议才拆」这种特例。
+    // 平台**没有** sub_meeting_id 这个字段，这一列的含义由我们定，定的就是它。
+    subMeetingId: r.meeting_record_id,
     meetingRecordId: r.meeting_record_id,
     meetingCode: r.meeting_code,
     subject: r.subject,

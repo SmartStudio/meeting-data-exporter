@@ -129,8 +129,8 @@ test('列表按策略过滤，被拒的会议不出现', async () => {
   })
   // 两场都授权，这条用例问的才是「规则把 B 过滤掉了」——只授权 A 的话，
   // B 不出现在列表里也可能只是因为它没授权，规则那一半就再也没被验证过
-  await insertGrant(pool, { meetingId: 'm-a-1', programId: 'prog-alice-1' })
-  await insertGrant(pool, { meetingId: 'm-b-1', programId: 'prog-alice-1' })
+  await insertGrant(pool, { meetingId: 'm-a-1', subMeetingId: 'rec-a-1', programId: 'prog-alice-1' })
+  await insertGrant(pool, { meetingId: 'm-b-1', subMeetingId: 'rec-b-1', programId: 'prog-alice-1' })
 
   const res = await app(new Request('https://gw/api/v1/meetings', { headers: bearer(alice) }))
   expect(res.status).toBe(200)
@@ -250,8 +250,8 @@ test('download-url 对越权构造的 assetId 返回 403（不是 404）', async
   })
   // 同上：两场都授权，这条 403 才确实是「规则不放行别人主持的会议」，
   // 而不是「m-b-2 恰好没授权」
-  await insertGrant(pool, { meetingId: 'm-a-2', programId: 'prog-alice-2' })
-  await insertGrant(pool, { meetingId: 'm-b-2', programId: 'prog-alice-2' })
+  await insertGrant(pool, { meetingId: 'm-a-2', subMeetingId: 'rec-a-2', programId: 'prog-alice-2' })
+  await insertGrant(pool, { meetingId: 'm-b-2', subMeetingId: 'rec-b-2', programId: 'prog-alice-2' })
 
   const headers = bearer(alice)
   // 列会议使 meetingB 也进入 meeting_cache（尽管它对 alice 不可见——缓存写入
@@ -309,7 +309,7 @@ test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条�
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-kate-1', assetTypes: ['*'], effect: 'allow',
   })
-  await insertGrant(pool, { meetingId: 'm-kate-1', programId: 'prog-kate-1' })
+  await insertGrant(pool, { meetingId: 'm-kate-1', subMeetingId: 'rec-kate-1', programId: 'prog-kate-1' })
 
   const headers = bearer(kate)
 
@@ -390,8 +390,8 @@ test('meeting_code 命中多场时返回数组而非单个对象', async () => {
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-erin-1', assetTypes: ['*'], effect: 'allow',
   })
-  await insertGrant(pool, { meetingId: 'm-e-1', programId: 'prog-erin-1' })
-  await insertGrant(pool, { meetingId: 'm-e-2', programId: 'prog-erin-1' })
+  await insertGrant(pool, { meetingId: 'm-e-1', subMeetingId: 'rec-e-1', programId: 'prog-erin-1' })
+  await insertGrant(pool, { meetingId: 'm-e-2', subMeetingId: 'rec-e-2', programId: 'prog-erin-1' })
 
   const res = await app(
     new Request('https://gw/api/v1/meetings?meeting_code=886', { headers: bearer(erin) }),
@@ -462,7 +462,7 @@ test('STS-Token 不可用时 ai_* 资产不出现，video 仍可下载', async (
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-grace-1', assetTypes: ['*'], effect: 'allow',
   })
-  await insertGrant(pool, { meetingId: 'm-g-1', programId: 'prog-grace-1' })
+  await insertGrant(pool, { meetingId: 'm-g-1', subMeetingId: 'rec-g-1', programId: 'prog-grace-1' })
 
   const headers = bearer(grace)
   const res = await app(new Request('https://gw/api/v1/meetings/m-g-1/assets', { headers }))
@@ -499,7 +499,7 @@ test('STS-Token 不可用时请求优化版逐字稿的 download-url 返回 503�
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-ivan-1', assetTypes: ['*'], effect: 'allow',
   })
-  await insertGrant(pool, { meetingId: 'm-i-1', programId: 'prog-ivan-1' })
+  await insertGrant(pool, { meetingId: 'm-i-1', subMeetingId: 'rec-i-1', programId: 'prog-ivan-1' })
 
   const headers = bearer(ivan)
   // 先让 meeting 进入缓存（不依赖 /assets 列表，直接用 /meetings 即可）
@@ -617,7 +617,7 @@ test('补上授权行之后，同一场会议立刻列得出来、下载地址�
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-lena-1', assetTypes: ['*'], effect: 'allow',
   })
-  await insertGrant(pool, { meetingId: 'm-l-2', programId: 'prog-lena-1' })
+  await insertGrant(pool, { meetingId: 'm-l-2', subMeetingId: 'rec-l-2', programId: 'prog-lena-1' })
 
   const headers = bearer(lena)
 
