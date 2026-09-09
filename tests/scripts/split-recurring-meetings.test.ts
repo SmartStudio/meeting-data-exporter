@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import type { RowDataPacket } from 'mysql2'
 import { withTestDb } from '../helpers/testdb'
-import { parseArgs, planSplits } from '../../scripts/split-recurring-meetings'
+import { applyOne, parseArgs, planSplits } from '../../scripts/split-recurring-meetings'
 import type { Pool } from '../../src/store/db'
 
 /**
@@ -306,6 +307,302 @@ test('archived_assets.local_path 与 meeting_assets.target_path 不一致 → un
 
       const item = (await planSplits(pool, localRoot))[0]!
       expect(item.undecidableReason).toContain('local_path')
+    })
+  })
+})
+
+// ── 执行这一遍 ────────────────────────────────────────────────────────────────
+
+/** 一个**已归档**的资产：archived_assets 行 + 本地文件 + NAS 文件都落到盘上 */
+async function seedArchivedFiles(
+  pool: Pool, localRoot: string, nasDir: string, remoteId: string, targetPath: string,
+): Promise<void> {
+  await seedArchived(pool, remoteId, targetPath, join(nasDir, targetPath))
+  await mkdir(join(localRoot, dirname(targetPath)), { recursive: true })
+  await writeFile(join(localRoot, targetPath), remoteId)
+  await mkdir(join(nasDir, dirname(targetPath)), { recursive: true })
+  await writeFile(join(nasDir, targetPath), remoteId)
+}
+
+async function seedMeetingArchive(pool: Pool, nasDir: string): Promise<void> {
+  await pool.execute(
+    `INSERT INTO meeting_archives (meeting_id, sub_meeting_id, nas_dir, archived_at, retention_days, created_at, updated_at)
+     VALUES ('m1', '', ?, 100, 30, 1, 1)`,
+    [nasDir],
+  )
+}
+
+/** UPDATE 与 rollback 一起失败的连接池——断掉的连接就是这个样子（同改名脚本的测试） */
+function brokenTxPool(): Pool {
+  return {
+    getConnection: async () => ({
+      beginTransaction: async (): Promise<void> => {},
+      execute: async (): Promise<never> => { throw new Error('boom: connection lost') },
+      query: async (): Promise<never> => { throw new Error('boom: connection lost') },
+      commit: async (): Promise<void> => {},
+      rollback: async (): Promise<never> => { throw new Error('rollback also failed') },
+      release: (): void => {},
+    }),
+  } as unknown as Pool
+}
+
+const subsOf = async (pool: Pool, table: string): Promise<string[]> => {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT sub_meeting_id FROM ${table} WHERE meeting_id = 'm1' ORDER BY sub_meeting_id`,
+  )
+  return rows.map((r) => r.sub_meeting_id as string)
+}
+
+test('端到端：文件按场次搬走、七张表跟着改、旧行没了、旧目录删掉、NAS 侧车重写', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      const now = 5000
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await seedAsset(pool, 'rec-2', 'f2', `${REL2}/transcript_2.txt`)
+      await seedArchivedFiles(pool, localRoot, nasDir, 'f1', `${REL2}/transcript.txt`)
+      await seedArchivedFiles(pool, localRoot, nasDir, 'f2', `${REL2}/transcript_2.txt`)
+      await seedMeetingArchive(pool, nasDir)
+      await pool.execute(
+        `INSERT INTO asset_contents (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, content, content_hash, bytes, parsed_at)
+         VALUES ('m1', '', 'meeting_summary', 'f1', 'txt', 'parsed', '正文', 'h', 6, 1)`,
+      )
+      await pool.execute(
+        `INSERT INTO meeting_grants (meeting_id, sub_meeting_id, program_id, asset_types, granted_at, revoked_at)
+         VALUES ('m1', '', 'prog-1', NULL, 10, 0), ('m1', '', 'prog-2', NULL, 10, 50)`,
+      )
+      await pool.execute(
+        `INSERT INTO meeting_overrides (meeting_id, sub_meeting_id, kind, effect, asset_types, reason, created_at, revoked_at)
+         VALUES ('m1', '', 'allow', 'deny', NULL, '法务要求', 10, 0)`,
+      )
+      await pool.execute(
+        `INSERT INTO meeting_asset_probes (meeting_id, sub_meeting_id, asset_type, state, deadline_at)
+         VALUES ('m1', '', 'video', 'probing', 999)`,
+      )
+      await pool.execute(
+        `INSERT INTO job_failures (job_name, target, target_label, meeting_id, sub_meeting_id, reason, impact, first_failed_at, last_failed_at)
+         VALUES ('archive', 'm1|', '销售日会', 'm1', '', '归不上', '未归档', 1, 1)`,
+      )
+
+      const item = (await planSplits(pool, localRoot, now))[0]!
+      const res = await applyOne(pool, item, { localRoot, now })
+      expect(res.outcome).toBe('renamed')
+      expect(res.leftOver).toEqual([])
+
+      // 文件各就各位，旧目录空了被删掉
+      await stat(join(localRoot, REL1, 'transcript.txt'))
+      await stat(join(localRoot, REL2, 'transcript.txt'))
+      await stat(join(nasDir, REL1, 'transcript.txt'))
+      expect(await readFile(join(localRoot, REL1, 'transcript.txt'), 'utf8')).toBe('f1')
+      expect(await readFile(join(localRoot, REL2, 'transcript.txt'), 'utf8')).toBe('f2')
+      await expect(stat(join(localRoot, REL2, 'transcript_2.txt'))).rejects.toThrow()
+
+      // 七张表
+      expect(await subsOf(pool, 'meetings')).toEqual(['rec-1', 'rec-2'])
+      expect(await subsOf(pool, 'meeting_assets')).toEqual(['rec-1', 'rec-2'])
+      expect(await subsOf(pool, 'archived_assets')).toEqual(['rec-1', 'rec-2'])
+      expect(await subsOf(pool, 'asset_contents')).toEqual(['rec-1'])
+      expect(await subsOf(pool, 'meeting_archives')).toEqual(['rec-1', 'rec-2'])
+      expect(await subsOf(pool, 'meeting_grants')).toEqual(['rec-1', 'rec-1', 'rec-2', 'rec-2'])
+      expect(await subsOf(pool, 'meeting_overrides')).toEqual(['rec-1', 'rec-2'])
+      expect(await subsOf(pool, 'meeting_asset_probes')).toEqual([])   // 过程量，下一轮重建
+
+      // 新建的场次行 created_at 就是规划用的那个 now——目录序号按它排，两遍必须同值
+      const [created] = await pool.execute<RowDataPacket[]>(
+        `SELECT created_at FROM meetings WHERE meeting_id='m1' AND sub_meeting_id='rec-1'`,
+      )
+      expect(Number(created[0]!.created_at)).toBe(now)
+
+      const [assets] = await pool.execute<RowDataPacket[]>(
+        `SELECT sub_meeting_id, target_path FROM meeting_assets WHERE meeting_id='m1' ORDER BY sub_meeting_id`,
+      )
+      expect(assets[0]!.target_path).toBe(`${REL1}/transcript.txt`)
+      expect(assets[1]!.target_path).toBe(`${REL2}/transcript.txt`)
+      const [arch] = await pool.execute<RowDataPacket[]>(
+        `SELECT local_path, nas_path FROM archived_assets WHERE meeting_id='m1' AND sub_meeting_id='rec-1'`,
+      )
+      expect(arch[0]!.local_path).toBe(`${REL1}/transcript.txt`)
+      expect(arch[0]!.nas_path).toBe(join(nasDir, REL1, 'transcript.txt'))
+      // meeting_archives 的保留窗口原样复制过去，不是从 now 重新开始计时
+      const [archives] = await pool.execute<RowDataPacket[]>(
+        `SELECT archived_at, retention_days FROM meeting_archives WHERE meeting_id='m1' AND sub_meeting_id='rec-1'`,
+      )
+      expect(Number(archives[0]!.archived_at)).toBe(100)
+      expect(Number(archives[0]!.retention_days)).toBe(30)
+
+      // 失败项标为已恢复（dead 资产下一轮由调度器按场次重新登记）
+      const [fails] = await pool.execute<RowDataPacket[]>(
+        `SELECT resolved_at FROM job_failures WHERE target = 'm1|'`,
+      )
+      expect(Number(fails[0]!.resolved_at)).toBe(now)
+
+      // NAS 侧车重写过（nas_dir 根上那一份，spec §2.4 步骤 4）
+      const manifest = JSON.parse(await readFile(join(nasDir, '_manifest.json'), 'utf8'))
+      expect(['rec-1', 'rec-2']).toContain(manifest.subMeetingId)
+      expect(await readFile(join(nasDir, 'meeting.json'), 'utf8')).toContain('"subMeetingId"')
+
+      // 幂等：跑完之后计划就空了
+      expect(await planSplits(pool, localRoot, now)).toHaveLength(0)
+    })
+  })
+})
+
+test('目标文件已存在（且不是同一个文件）→ conflict，一个文件都不动、库一列没改', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await mkdir(join(localRoot, REL2), { recursive: true })
+      await writeFile(join(localRoot, REL2, 'transcript.txt'), 'f1')
+      // 别人已经在新目录里放了一个同名文件
+      await mkdir(join(localRoot, REL1), { recursive: true })
+      await writeFile(join(localRoot, REL1, 'transcript.txt'), '别的东西')
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('conflict')
+
+      expect(await readFile(join(localRoot, REL2, 'transcript.txt'), 'utf8')).toBe('f1')
+      expect(await readFile(join(localRoot, REL1, 'transcript.txt'), 'utf8')).toBe('别的东西')
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+test('改 sub_meeting_id 撞上 uk_asset → conflict，文件搬回原位、库一列没改', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool, { records: [{ id: 'rec-1', start: DAY1 }] })
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await mkdir(join(localRoot, REL2), { recursive: true })
+      await writeFile(join(localRoot, REL2, 'transcript.txt'), 'f1')
+      // 目标自然键 (m1, rec-1, meeting_summary, f1, txt) 上已经有一行。规划这一遍
+      // 拦掉的是有 meetings 兄弟行的混合状态，拦不住只有资产行的这一种——
+      // 撞唯一键必须落成 conflict，不许冒成未捕获异常
+      await pool.execute(
+        `INSERT INTO meeting_assets (meeting_id, sub_meeting_id, asset_type, remote_id, asset_id, file_type, status, target_path, created_at, updated_at)
+         VALUES ('m1', 'rec-1', 'meeting_summary', 'f1', 'rec-1:f1:meeting_summary:txt', 'txt', 'completed', ?, 1, 1)`,
+        [`${REL1}/transcript.txt`],
+      )
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect(item.undecidableReason).toBeNull()
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('conflict')
+
+      // 文件搬回了原位，库一列没改
+      expect(await readFile(join(localRoot, REL2, 'transcript.txt'), 'utf8')).toBe('f1')
+      await expect(stat(join(localRoot, REL1, 'transcript.txt'))).rejects.toThrow()
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+test('写库失败（连回滚都失败）时文件搬回原位、库一列没动，原始错误照抛', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot, nasRoot) => {
+      const nasDir = join(nasRoot, 'all')
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await seedArchivedFiles(pool, localRoot, nasDir, 'f1', `${REL2}/transcript.txt`)
+      await seedMeetingArchive(pool, nasDir)
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      // 抛的必须是 UPDATE 那个错，不是 rollback 那个——被盖掉的话原因就查不出来了
+      await expect(applyOne(brokenTxPool(), item, { localRoot, now: 5000 }))
+        .rejects.toThrow('boom: connection lost')
+
+      await stat(join(localRoot, REL2, 'transcript.txt'))
+      await stat(join(nasDir, REL2, 'transcript.txt'))
+      await expect(stat(join(localRoot, REL1, 'transcript.txt'))).rejects.toThrow()
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+
+      // 回滚干净了，重跑照样能拆
+      const retry = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, retry, { localRoot, now: 5000 })).outcome).toBe('renamed')
+    })
+  })
+})
+
+test('旧文件与新文件都不在 → not_found，什么都不动（多半是 MDE_ARCHIVE_ROOT 指错了）', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)   // 盘上什么都没有
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('not_found')
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+test('文件已经在新位置（上一次跑在事务之前断掉）→ already_done，库这一次补上', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      // 只有一个场次：断言 meetings 只剩 rec-1 这一行，才说得清"库补上了"
+      await seedMeeting(pool, { records: [{ id: 'rec-1', start: DAY1 }] })
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await mkdir(join(localRoot, REL1), { recursive: true })
+      await writeFile(join(localRoot, REL1, 'transcript.txt'), 'f1')   // 已经在新位置
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      expect((await applyOne(pool, item, { localRoot, now: 5000 })).outcome).toBe('already_done')
+      expect(await subsOf(pool, 'meetings')).toEqual(['rec-1'])        // 库补上了
+    })
+  })
+})
+
+test('旧目录里还有不认识的文件时保留目录并记 left_over，绝不删非空目录', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)
+      await seedAsset(pool, 'rec-1', 'f1', `${REL2}/transcript.txt`)
+      await mkdir(join(localRoot, REL2), { recursive: true })
+      await writeFile(join(localRoot, REL2, 'transcript.txt'), 'f1')
+      await writeFile(join(localRoot, REL2, '不认识的东西.bin'), 'x')
+      // 旧目录里的本地侧车是描述一个已经搬空了的地方的，收尾时要删掉
+      await writeFile(join(localRoot, REL2, '_manifest.json'), '{}')
+      await writeFile(join(localRoot, REL2, 'meeting.json'), '{}')
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      const res = await applyOne(pool, item, { localRoot, now: 5000 })
+      expect(res.outcome).toBe('renamed')
+      expect(res.leftOver).toEqual([join(localRoot, REL2)])
+      await stat(join(localRoot, REL2, '不认识的东西.bin'))            // 还在
+      await expect(stat(join(localRoot, REL2, '_manifest.json'))).rejects.toThrow()
+      await expect(stat(join(localRoot, REL2, 'meeting.json'))).rejects.toThrow()
+    })
+  })
+})
+
+test('undecidable 的计划项 applyOne 一步都不做', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool, { records: [] })
+      await seedAsset(pool, 'rec-x', 'f1', `${REL2}/transcript.txt`)
+      await seedAsset(pool, 'rec-y', 'f2', `${REL2}/transcript_2.txt`)
+      await mkdir(join(localRoot, REL2), { recursive: true })
+      await writeFile(join(localRoot, REL2, 'transcript.txt'), 'f1')
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      const res = await applyOne(pool, item, { localRoot, now: 5000 })
+      expect(res).toEqual({ outcome: 'undecidable', leftOver: [] })
+      await stat(join(localRoot, REL2, 'transcript.txt'))
+      expect(await subsOf(pool, 'meetings')).toEqual([''])
+    })
+  })
+})
+
+test('没有资产的会议：盘上没有东西要搬，库照样拆成两个场次（结局 already_done）', async () => {
+  await withDb(async (pool) => {
+    await withDirs(async (localRoot) => {
+      await seedMeeting(pool)                                   // meeting_cache 两场，零资产
+
+      const item = (await planSplits(pool, localRoot, 5000))[0]!
+      const res = await applyOne(pool, item, { localRoot, now: 5000 })
+      // 一个文件都没搬动，但库总归要改——所以是 already_done 而不是 not_found
+      expect(res).toEqual({ outcome: 'already_done', leftOver: [] })
+      expect(await subsOf(pool, 'meetings')).toEqual(['rec-1', 'rec-2'])
     })
   })
 })

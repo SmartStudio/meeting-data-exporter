@@ -21,11 +21,16 @@
  * （undoRename）这几件事——各写一遍就会漂移，而漂移的表现是「NAS 掉线被当成目录不
  * 存在，于是只改库不改盘」这种查不出来的事。
  *
- * ⚠️ 本文件目前只有**规划**这一遍（`planSplits`）。执行（`applyOne` / `main`）是下一
- * 个任务，`ApplyOutcome` 这套词汇先在这里定下来，两遍共用同一份类型。
+ * 两遍：`planSplits` 只读、算出每场会议要拆成什么样；`applyOne` 按计划动手
+ * （先搬文件、再一个事务改七张表、最后重写 NAS 侧车并清空旧目录）。**事务里不碰文件、
+ * 事务外不碰库**——文件系统没有回滚，库有。
+ *
+ * ⚠️ **规划与执行必须用同一个 `now`**：目录序号按 `meetings.created_at` 排，而那一列
+ * 写进去的就是执行这一遍的 `now`。`main` 只取一次，两遍共用。
  */
-import { join } from 'node:path'
-import type { RowDataPacket } from 'mysql2/promise'
+import { mkdir, readdir, rename, rm, rmdir, stat } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import {
   ASSET_KEY_TO_GATEWAY_TYPE,
   GATEWAY_TYPE_TO_ASSET_KEY,
@@ -35,8 +40,13 @@ import {
   meetingPathKey,
   type AssetKey,
 } from '@yaowu/mde-engine'
-import type { Pool } from '../src/store/db'
-import { NAS_BASE, cleanBase, mergeBase, resolveNasBase, type DerivedBase } from './rename-archive-dirs'
+import { createPool, runMigrations, type Pool } from '../src/store/db'
+import { createArchivesStore } from '../src/store/archives'
+import { jobFailureTarget } from '../src/store/jobs'
+import { writeNasSidecars } from '../src/worker/nas-sidecars'
+import {
+  NAS_BASE, cleanBase, exists, mergeBase, resolveNasBase, undoRename, type DerivedBase,
+} from './rename-archive-dirs'
 
 export interface SplitArgs { apply: boolean }
 
@@ -436,4 +446,445 @@ function planOne(m: MeetingRow, input: PlanInput): SplitItem {
   }
 
   return { meetingId: m.meeting_id, oldRel, nasDir: input.nas.dir, sessions, undecidableReason: null }
+}
+
+export interface ApplyResult {
+  outcome: ApplyOutcome
+  /** 搬空之后**没有**删掉的旧目录：里面还有不认识的东西。绝不删非空目录 */
+  leftOver: string[]
+}
+
+/** 一次文件搬运的三种处境 */
+type MoveState = 'move' | 'done' | 'gone'
+
+interface PlannedMove extends SplitFile { state: MoveState }
+
+/**
+ * 两阶段搬运的临时后缀。加在**源文件原地**（同目录），所以那一步改名是原子的、
+ * 也不会碰上 NAS 挂载点与本地盘之间的 EXDEV。
+ */
+const TMP_SUFFIX = '.mde-split-tmp'
+
+/**
+ * 两个路径是不是同一个文件。**不能只比字符串**：macOS 的默认文件系统大小写不敏感，
+ * 而「同一个文件的两个写法」被判成 conflict 会让整场会议白白停下。
+ */
+async function sameFile(a: string, b: string): Promise<boolean> {
+  if (a === b) return true
+  try {
+    const [x, y] = [await stat(a), await stat(b)]
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 一条搬运的处境；目标被**外人**占了返回 null（调用方按 conflict 处理）。
+ *
+ * `sources` 是这一场会议自己要搬走的全部源路径。目标被占、而占着它的正是我们自己
+ * 要搬走的另一个文件时**不算冲突**——拆场次天然会出现这种交换：
+ * 第一场的 `transcript.txt` 要搬到自己的新目录去，而第二场的 `transcript_2.txt`
+ * 要改名成 `transcript.txt` 顶上它的位置。两阶段搬运（先全部让位到 .tmp，再各就各位）
+ * 处理的就是这种交换，包括首尾相接的环。
+ */
+async function classify(f: SplitFile, sources: ReadonlySet<string>): Promise<PlannedMove | null> {
+  if (await sameFile(f.from, f.to)) return { ...f, state: 'done' }
+  if (await exists(f.from)) {
+    if ((await exists(f.to)) && !sources.has(f.to)) return null
+    return { ...f, state: 'move' }
+  }
+  return { ...f, state: (await exists(f.to)) ? 'done' : 'gone' }
+}
+
+/**
+ * 撞唯一键。`meeting_assets.uk_asset`、`archived_assets` / `asset_contents` 的主键都是
+ * `(meeting_id, sub_meeting_id, asset_type, remote_id, file_type)`，把 `sub_meeting_id`
+ * 从空串改成 record id 时，目标那一行已经有人占着就是这个错。
+ */
+function isDuplicateKey(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false
+  const e = err as { code?: unknown; errno?: unknown }
+  return e.code === 'ER_DUP_ENTRY' || e.errno === 1062
+}
+
+/**
+ * 拆一场会议。顺序固定（spec §2.4「执行」）：本地文件 → NAS 文件 → 一个事务 →
+ * 侧车与空目录。事务失败把已经搬动的文件原样搬回去。
+ *
+ * **事务里不碰文件、事务外不碰库**：文件系统没有回滚，库有。所以先做能撤销的
+ * （搬文件，撤销 = 搬回来），再做原子的（一个事务改七张表）；反过来的话事务提交了
+ * 而文件搬到一半，库与盘的对应关系就再也说不清了。
+ *
+ * @param opts.now 必须与算出这份 `item` 的 `planSplits(pool, root, now)` 是**同一个**值：
+ *   它会被写进每一行新建的 `meetings.created_at`，而目录序号正是按那一列排的。
+ */
+export async function applyOne(
+  pool: Pool,
+  item: SplitItem,
+  opts: { localRoot: string; now: number },
+): Promise<ApplyResult> {
+  if (item.undecidableReason !== null) return { outcome: 'undecidable', leftOver: [] }
+
+  // ── 分类 ────────────────────────────────────────────────────────────
+  const files: SplitFile[] = []
+  for (const s of item.sessions) {
+    for (const a of s.assets) {
+      if (a.local !== null) files.push(a.local)
+      if (a.nas !== null) files.push(a.nas)
+    }
+  }
+  const sources = new Set(files.map((f) => f.from))
+  const planned: PlannedMove[] = []
+  for (const f of files) {
+    const c = await classify(f, sources)
+    if (c === null) return { outcome: 'conflict', leftOver: [] }
+    planned.push(c)
+  }
+  // 一个文件都没找到（新旧位置都不在）：多半是根目录指错了，或者归档区被清理过。
+  // 这时候改库等于把库指到一堆并不存在的路径上，宁可什么都不做、让人看见
+  if (planned.length > 0 && planned.every((p) => p.state === 'gone')) {
+    return { outcome: 'not_found', leftOver: [] }
+  }
+  // 单个找不到的文件不拦整场（本地文件被到期清理删过是正常的），但要逐条说出来：
+  // 「这一条的文件哪儿都不在」是操作员该看见的事实（spec §2.4 执行 1 的 not_found）
+  for (const p of planned) {
+    if (p.state === 'gone') console.warn(`⚠ ${item.meetingId} not_found：${p.from} 新旧位置都不在`)
+  }
+
+  // ── 搬文件：两阶段 ──────────────────────────────────────────────────
+  // ① 全部源文件先改名到同目录下的 .tmp，② 再从 .tmp 各就各位。
+  // 一阶段直接 from→to 不行：拆场次天然有「A 的目标就是 B 的源」这种交换，
+  // 顺序怎么排都可能撞上，环状的更是排不出来。同目录内改名是原子的，也不会 EXDEV。
+  // 两阶段之间进程被杀的话，文件停在 .tmp 上，重跑会把它判成 not_found——
+  // 那时按输出里的路径找 `*.mde-split-tmp` 手工改回去即可。
+  const staged: PlannedMove[] = []
+  const moved = new Set<PlannedMove>()
+  const undoAll = async (): Promise<void> => {
+    for (const p of [...staged].reverse()) {
+      if (moved.has(p)) await undoRename(p.to, p.from, '拆场次搬运')
+      else await undoRename(p.from + TMP_SUFFIX, p.from, '拆场次暂存')
+    }
+  }
+  try {
+    for (const p of planned) {
+      if (p.state !== 'move') continue
+      await rename(p.from, p.from + TMP_SUFFIX)
+      staged.push(p)
+    }
+    for (const p of staged) {
+      await mkdir(dirname(p.to), { recursive: true })
+      await rename(p.from + TMP_SUFFIX, p.to)
+      moved.add(p)
+    }
+  } catch (err) {
+    await undoAll()
+    throw err
+  }
+
+  // ── 一个事务 ────────────────────────────────────────────────────────
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await splitRows(conn, item, opts.now)
+    await conn.commit()
+  } catch (err) {
+    // rollback 自己也可能抛（UPDATE 失败最常见的原因就是连接断了，而断了的连接
+    // 回滚同样会炸）。它抛出去的话下面的文件回滚一步都跑不到，于是文件在新位置、
+    // 库还是旧的——而重跑会把这些文件判成 already_done，再也没人回来看它。
+    // 所以：回滚失败只记一行，文件一定要搬回去，最后抛的是**最初那个**错误。
+    try { await conn.rollback() } catch (rollbackErr) {
+      console.error(`‼ ${item.meetingId} 事务回滚失败：${rollbackErr}`)
+    }
+    await undoAll()
+    // 撞唯一键 = 目标那一行已经被别人占着，与「目标文件被外人占着」是同一件事的两半，
+    // 所以落成 conflict 而不是往上抛。抛出去只会变成一行 failed，而 failed 的默认读法
+    // 是「重跑一次就好」——重跑还会撞同一行，那是要人来看的事。
+    // （规划这一遍已经把有兄弟 meetings 行的混合状态整场判掉了，但只有资产行、
+    //   没有会议行的半拉子状态它看不见。）
+    if (isDuplicateKey(err)) {
+      console.error(`⚠ ${item.meetingId} conflict：改 sub_meeting_id 撞上唯一键（${err}），已回滚、文件搬回原位`)
+      return { outcome: 'conflict', leftOver: [] }
+    }
+    throw err
+  } finally {
+    conn.release()
+  }
+
+  // ── 收尾：侧车与空目录（都在事务之后，失败不回滚已经一致的库与盘）────────
+  await rewriteNasSidecars(pool, item, opts.now)
+  const leftOver = await cleanupOldDirs(item, planned, opts.localRoot)
+  // 一个文件都没搬动、但库刚刚才改成：上一次跑在事务之前断掉了，这一次把库补上。
+  // 这不是「什么都没做」，所以它与 not_found / conflict 分得开
+  return { outcome: moved.size === 0 ? 'already_done' : 'renamed', leftOver }
+}
+
+/** 七张表的改写与三张表的删除，全在调用方的事务里 */
+async function splitRows(conn: PoolConnection, item: SplitItem, now: number): Promise<void> {
+  const mid = item.meetingId
+
+  // ① meetings：每个场次一行。created_at 用 now——目录序号按它排，规划那一遍算目录名
+  //    时喂给 assignDirOrdinals 的就是这个值
+  for (const s of item.sessions) {
+    await conn.execute(
+      `INSERT INTO meetings (meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [mid, s.recordId, s.meetingCode, s.subject, s.hostUserId, s.startTime, s.endTime, now, now],
+    )
+  }
+
+  // ② meeting_assets / archived_assets / asset_contents：逐行改，走主键与自然键，
+  //    不做前缀匹配（要做的话见 rename-archive-dirs.ts 的 PREFIX_SWAP，绝不用 LIKE）
+  for (const s of item.sessions) {
+    for (const a of s.assets) {
+      await conn.execute(
+        `UPDATE meeting_assets SET sub_meeting_id = ?, target_path = ?, updated_at = ? WHERE id = ?`,
+        [s.recordId, a.newTargetPath, now, a.id],
+      )
+      if (a.nas !== null) {
+        await conn.execute(
+          `UPDATE archived_assets SET sub_meeting_id = ?, local_path = ?, nas_path = ?
+            WHERE meeting_id = ? AND sub_meeting_id = '' AND asset_type = ? AND remote_id = ? AND file_type = ?`,
+          [s.recordId, a.newTargetPath, a.nas.to, mid, a.assetType, a.remoteId, a.fileType],
+        )
+      }
+      await conn.execute(
+        `UPDATE asset_contents SET sub_meeting_id = ?
+          WHERE meeting_id = ? AND sub_meeting_id = '' AND asset_type = ? AND remote_id = ? AND file_type = ?`,
+        [s.recordId, mid, a.assetType, a.remoteId, a.fileType],
+      )
+    }
+  }
+
+  // ③ meeting_archives：复制给**有 archived_assets 行的**场次。没归档过的场次不该
+  //    凭空拿到一个归档记录——那会让它的保留窗口从别人的 archived_at 开始计时
+  const [archRows] = await conn.execute<RowDataPacket[]>(
+    `SELECT nas_dir, archived_at, retention_days, extended_days, local_purged_at, created_at
+       FROM meeting_archives WHERE meeting_id = ? AND sub_meeting_id = ''`,
+    [mid],
+  )
+  for (const s of item.sessions) {
+    if (!s.archived) continue
+    for (const r of archRows) {
+      await conn.execute(
+        `INSERT INTO meeting_archives (meeting_id, sub_meeting_id, nas_dir, archived_at, retention_days, extended_days, local_purged_at, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [mid, s.recordId, r.nas_dir, r.archived_at, r.retention_days, r.extended_days,
+         r.local_purged_at, r.created_at, now],
+      )
+    }
+  }
+  await conn.execute(`DELETE FROM meeting_archives WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid])
+
+  // ④ meeting_grants / meeting_overrides：复制给**每一个**场次（含已撤销的行，
+  //    revoked_at 原样）——一场会议上的授权与改写，对它的每个场次都成立
+  const [grantRows] = await conn.execute<RowDataPacket[]>(
+    `SELECT program_id, asset_types, granted_at, revoked_at
+       FROM meeting_grants WHERE meeting_id = ? AND sub_meeting_id = ''`,
+    [mid],
+  )
+  for (const s of item.sessions) {
+    for (const g of grantRows) {
+      await conn.execute(
+        `INSERT INTO meeting_grants (meeting_id, sub_meeting_id, program_id, asset_types, granted_at, revoked_at)
+         VALUES (?,?,?,?,?,?)`,
+        [mid, s.recordId, g.program_id,
+         g.asset_types === null ? null : JSON.stringify(g.asset_types), g.granted_at, g.revoked_at],
+      )
+    }
+  }
+  await conn.execute(`DELETE FROM meeting_grants WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid])
+
+  const [ovrRows] = await conn.execute<RowDataPacket[]>(
+    `SELECT kind, effect, asset_types, reason, created_at, revoked_at
+       FROM meeting_overrides WHERE meeting_id = ? AND sub_meeting_id = ''`,
+    [mid],
+  )
+  for (const s of item.sessions) {
+    for (const o of ovrRows) {
+      await conn.execute(
+        `INSERT INTO meeting_overrides (meeting_id, sub_meeting_id, kind, effect, asset_types, reason, created_at, revoked_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [mid, s.recordId, o.kind, o.effect,
+         o.asset_types === null ? null : JSON.stringify(o.asset_types), o.reason, o.created_at, o.revoked_at],
+      )
+    }
+  }
+  await conn.execute(`DELETE FROM meeting_overrides WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid])
+
+  // ⑤ 探测行删掉：它是过程量，下一轮发现会按场次重建。复制过去反而会让每个场次
+  //    继承同一个 deadline_at 与 attempts，看着像真的、其实是编的
+  await conn.execute(
+    `DELETE FROM meeting_asset_probes WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid],
+  )
+
+  // ⑥ 会议维度的失败项标为已恢复：它的 target 编的是 `<meeting_id>|`，拆完之后
+  //    再也不会有任何一轮往这个 target 上写。dead 资产下一轮由调度器按场次重新登记
+  await conn.execute(
+    `UPDATE job_failures SET resolved_at = ? WHERE target = ? AND resolved_at IS NULL`,
+    [now, jobFailureTarget(mid, '')],
+  )
+
+  // ⑦ audit_log **不动**：它没有 sub 列，延长保留期的历史挂在 meeting_id 上。
+  //    已知损失，写在上线 runbook 里
+
+  await conn.execute(`DELETE FROM meetings WHERE meeting_id = ? AND sub_meeting_id = ''`, [mid])
+}
+
+/**
+ * 按新场次把 NAS 侧车重写一遍。
+ *
+ * **侧车在 `nas_dir` 根上，不在会议目录里**（`writeNasSidecars` 落的是
+ * `<nasDir>/meeting.json`），同一条归档规则渲染出的所有会议共用那一份，归档流水线
+ * 每轮也是这么覆盖的。这里逐场次写一遍，最后一场留在盘上——与流水线现有行为一致，
+ * 不在一次性脚本里另发明一套。所以 NAS 那边**没有**「旧目录里的侧车」要删。
+ *
+ * 写不出来不算失败：文件与库已经一致了，侧车下一轮归档还会再写。但要留痕。
+ */
+async function rewriteNasSidecars(pool: Pool, item: SplitItem, now: number): Promise<void> {
+  if (item.nasDir === null) return
+  const archives = createArchivesStore(pool)
+  for (const s of item.sessions) {
+    if (!s.archived) continue
+    try {
+      const rec = await archives.findMeetingArchive(item.meetingId, s.recordId)
+      await writeNasSidecars({
+        meetingId: item.meetingId,
+        subMeetingId: s.recordId,
+        meeting: {
+          meetingId: item.meetingId, subMeetingId: s.recordId, meetingCode: s.meetingCode,
+          subject: s.subject, hostUserId: s.hostUserId, startTime: s.startTime, endTime: s.endTime,
+        },
+        completed: await archives.listCompletedAssets(item.meetingId, s.recordId),
+        archived: await archives.listArchivedAssetsForMeeting(item.meetingId, s.recordId),
+        missing: await archives.listMissingAssets(item.meetingId, s.recordId),
+        // 侧车落在 nas_dir 根上，所以 root 与 dir 是同一个：relative(root, dir) = ''
+        nasRoot: item.nasDir,
+        nasDir: item.nasDir,
+        retentionDays: rec?.retentionDays ?? 30,
+        now,
+      })
+    } catch (err) {
+      console.warn(`⚠ ${item.meetingId}/${s.recordId} NAS 侧车没写成（文件与库已经一致，下一轮归档会补）：${err}`)
+    }
+  }
+}
+
+/**
+ * 旧目录的收尾：先删掉旧目录里的 `_manifest.json` / `meeting.json`（本地那两份是
+ * 按目录写的，留在旧目录里只会描述一个已经搬空了的地方，下一轮 worker 会按场次
+ * 重新写出来），然后**空了才删目录**。
+ *
+ * 不空一律保留并记 left_over：里面躺着我们不认识的东西，删掉就再也找不回来了。
+ */
+async function cleanupOldDirs(
+  item: SplitItem, planned: PlannedMove[], localRoot: string,
+): Promise<string[]> {
+  // 某个场次的**新**目录不在清理范围里：它刚刚才收到文件，本来就该有东西。
+  // 周期会议里有一场的新目录恰好就是旧目录（start_time 最新的那一场，旧 meetings 行
+  // 描述的正是它），不排除的话它会被当成「没搬干净的旧目录」报进 left_over
+  const keep = new Set(planned.filter((p) => p.state !== 'gone').map((p) => dirname(p.to)))
+  const dirs = new Set(planned.filter((p) => p.state === 'move').map((p) => dirname(p.from)))
+  dirs.add(join(localRoot, item.oldRel))
+  const leftOver: string[] = []
+  for (const d of [...dirs].sort()) {
+    if (keep.has(d)) continue
+    if (!(await exists(d))) continue
+    for (const f of ['_manifest.json', 'meeting.json']) {
+      await rm(join(d, f), { force: true })
+    }
+    const rest = await readdir(d)
+    // rmdir 而不是 rm：rm 对目录必须带 recursive，而带上它就成了「连里面的东西一起删」
+    // ——这里要的恰恰是「只删空目录」，非空一律保留
+    if (rest.length === 0) await rmdir(d)
+    else leftOver.push(d)
+  }
+  return leftOver
+}
+
+async function main(): Promise<number> {
+  const args = parseArgs(process.argv.slice(2))
+  const databaseUrl = process.env.DATABASE_URL
+  const localRoot = process.env.MDE_ARCHIVE_ROOT
+  if (!databaseUrl || !localRoot) {
+    console.error('需要 DATABASE_URL 与 MDE_ARCHIVE_ROOT')
+    return 2
+  }
+  console.log('提示：把输出留下来——`… 2>&1 | tee split-$(date +%s).log`')
+  const pool = createPool(databaseUrl)
+  try {
+    await runMigrations(pool)
+    if (!(await exists(localRoot))) {
+      console.error(`‼ MDE_ARCHIVE_ROOT 不存在：${localRoot}`)
+      return 2
+    }
+    // 规划与执行**共用这一个 now**：它会被写进每一行新建的 meetings.created_at，
+    // 而新目录的序号正是按那一列排的。两遍各取一次的话，算出来的目录名与插进去的行
+    // 在跨秒的那一瞬间就会对不上
+    const now = Math.floor(Date.now() / 1000)
+    const plan = await planSplits(pool, localRoot, now)
+
+    // NAS 基准目录先各 stat 一次：挂载点没挂上时全部文件都会被判成「不在」，
+    // 整份计划安静地退化成 not_found——这种半拉子结果比直接不跑坏得多
+    const nasDirs = [...new Set(plan.flatMap((i) => (i.nasDir === null ? [] : [i.nasDir])))]
+    const missing: string[] = []
+    for (const d of nasDirs) if (!(await exists(d))) missing.push(d)
+    if (missing.length > 0) {
+      for (const d of missing) console.error(`‼ NAS 基准目录不存在：${d}`)
+      console.error('NAS 多半没挂上。挂好再跑——现在跑一场都动不了')
+      if (args.apply) return 2
+    }
+
+    const counts = { renamed: 0, already_done: 0, not_found: 0, conflict: 0, undecidable: 0 }
+    let failed = 0
+    const leftOver: string[] = []
+    for (const item of plan) {
+      const who = item.meetingId
+      if (item.undecidableReason !== null) {
+        counts.undecidable++
+        console.error(`⚠ ${who} undecidable：${item.undecidableReason}——这一场不动，请人工确认`)
+        continue
+      }
+      const sessions = item.sessions.map((s) => `${s.recordId}→${s.newRel}（${s.assets.length} 个资产）`)
+      console.log(`${who}\n  ${item.oldRel}\n  → ${sessions.join('\n  → ')}`)
+      if (!args.apply) continue
+      try {
+        const r = await applyOne(pool, item, { localRoot, now })
+        counts[r.outcome]++
+        leftOver.push(...r.leftOver)
+        if (r.outcome === 'conflict') console.error('  conflict：目标已被别的东西占着，未动')
+        else if (r.outcome === 'not_found') console.error('  not_found：新旧位置都找不到这些文件')
+        else console.log(`  ok（${r.outcome}）`)
+      } catch (err) {
+        // 一场炸了不该把剩下几百场一起停掉——已经回滚干净了，接着跑
+        failed++
+        console.error(`  failed：${err}`)
+      }
+    }
+    for (const d of leftOver) {
+      console.error(`⚠ 旧目录里还有不认识的文件，已保留：${d}`)
+    }
+    console.log(
+      args.apply
+        ? `renamed=${counts.renamed} already_done=${counts.already_done} not_found=${counts.not_found} ` +
+          `conflict=${counts.conflict} undecidable=${counts.undecidable} failed=${failed} left_over=${leftOver.length}`
+        : `dry-run：${plan.length} 场会议待拆（其中 ${counts.undecidable} 场说不清），加 --apply 执行`,
+    )
+    // conflict / undecidable 是「要人来看」的结局，退出码 2（spec §2.4）；
+    // failed 是「跑炸了」，退出码 1。两者分开，好让 CI 与 `&&` 串起来的下一条命令分得清
+    if (counts.conflict > 0 || counts.undecidable > 0) return 2
+    return failed > 0 ? 1 : 0
+  } finally {
+    await pool.end()
+  }
+}
+
+// 被 import 时（测试）不自动执行
+if (import.meta.main) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(err)
+      process.exit(1)
+    })
 }
