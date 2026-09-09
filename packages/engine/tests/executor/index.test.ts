@@ -2,6 +2,7 @@ import { expect, test, spyOn } from 'bun:test'
 import { openDb } from '../../src/store/db'
 import { createStore } from '../../src/store'
 import { downloadBackoff, runExecutor } from '../../src/executor'
+import { meetingPathKey } from '../../src/domain/types'
 // 用真实 store + 假 downloadAsset（注入）+ 临时目录
 
 test('并发池领任务并下载，全部 completed；幂等重跑零下载', async () => {
@@ -10,7 +11,7 @@ test('并发池领任务并下载，全部 completed；幂等重跑零下载', a
   for (const rid of ['r1', 'r2', 'r3']) await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: rid, bytesExpected: 10, fileType: 'mp4' }, 1)
   let downloads = 0
   const fakeDownload = async () => { downloads++; return { status: 'completed' as const, contentHash: null, bytesWritten: 10 } }
-  const deps: any = { store, download: fakeDownload, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
+  const deps: any = { store, download: fakeDownload, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsByPathKey: new Map([[meetingPathKey('m1', ''), { meetingId: 'm1', subMeetingId: '', subject: 's', startTime: 100, meetingCode: null, endTime: null }]]) }
   const r1 = await runExecutor(deps, { concurrency: 2, leaseSec: 300 }, () => 1000)
   expect(r1.completed).toBe(3)
   expect(downloads).toBe(3)
@@ -23,7 +24,7 @@ test('磁盘不足 → 该任务 skipped(disk_full)，不写半截', async () =>
   const store = createStore(openDb(':memory:'))
   await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1', bytesExpected: 10, fileType: 'mp4' }, 1)
-  const deps: any = { store, download: async () => ({ status: 'completed', contentHash: null, bytesWritten: 10 }), gw: {}, storage: { ensureFreeSpace: async () => false }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
+  const deps: any = { store, download: async () => ({ status: 'completed', contentHash: null, bytesWritten: 10 }), gw: {}, storage: { ensureFreeSpace: async () => false }, meetingsByPathKey: new Map([[meetingPathKey('m1', ''), { meetingId: 'm1', subMeetingId: '', subject: 's', startTime: 100, meetingCode: null, endTime: null }]]) }
   const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
   expect(r.skipped).toBe(1)
 })
@@ -33,11 +34,35 @@ test('同一会议同类多段文本 → 输出路径不碰撞', async () => {
   await store.upsertMeeting({ meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
   for (const rid of ['rf1', 'rf2']) await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'meeting_summary', remoteId: rid, fileType: 'pdf' }, 1)
   const paths: string[] = []
-  const deps: any = { store, download: async (t: any) => { paths.push(t.relPath); return { status: 'completed', contentHash: null, bytesWritten: 7 } }, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]) }
+  const deps: any = { store, download: async (t: any) => { paths.push(t.relPath); return { status: 'completed', contentHash: null, bytesWritten: 7 } }, gw: {}, storage: { ensureFreeSpace: async () => true }, meetingsByPathKey: new Map([[meetingPathKey('m1', ''), { meetingId: 'm1', subMeetingId: '', subject: 's', startTime: 100, meetingCode: null, endTime: null }]]) }
   const r = await runExecutor(deps, { concurrency: 2, leaseSec: 300 }, () => 1000)
   expect(r.completed).toBe(2)
   expect(new Set(paths).size).toBe(2)                        // 两个路径不同 —— 不碰撞
   expect(paths.some((p) => p.endsWith('transcript_2.pdf'))).toBe(true)
+})
+
+test('两个场次各落各的目录：buildRelPath 按 (meeting_id, sub_meeting_id) 查', async () => {
+  const s = createStore(openDb(':memory:'))
+  await s.upsertMeeting({ meetingId: 'm1', subMeetingId: 'rec-1', meetingCode: '881', subject: 's', hostUserId: 'h', startTime: 0, endTime: 0 }, 1)
+  await s.upsertMeeting({ meetingId: 'm1', subMeetingId: 'rec-2', meetingCode: '881', subject: 's', hostUserId: 'h', startTime: 86400, endTime: 86400 }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'rec-1', assetType: 'meeting_summary', remoteId: 'r1', fileType: 'txt' }, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'rec-2', assetType: 'meeting_summary', remoteId: 'r2', fileType: 'txt' }, 1)
+
+  const paths: string[] = []
+  const deps: any = {
+    store: s,
+    download: async (t: any) => { paths.push(t.relPath); return { status: 'completed', contentHash: null, bytesWritten: 1 } },
+    gw: {},
+    storage: { ensureFreeSpace: async () => true },
+    meetingsByPathKey: await s.meetingsForPaths(),
+  }
+  await runExecutor(deps, { concurrency: 1, leaseSec: 60 }, () => 1)
+
+  // 两个目录，且各自的文件名都不带 _2 后缀——分组变小之后同类只剩一个
+  expect(paths.sort()).toEqual([
+    '1970/01/1970-01-01_0000_881/transcript.txt',
+    '1970/01/1970-01-02_0000_881/transcript.txt',
+  ])
 })
 
 // ---------------------------------------------------------------------------
@@ -66,7 +91,10 @@ test('touchProgress 写库失败不中断下载，但错误会被 console.warn �
       },
       gw: {},
       storage: { ensureFreeSpace: async () => true },
-      meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]),
+      meetingsByPathKey: new Map([[meetingPathKey('m1', ''), {
+        meetingId: 'm1', subMeetingId: '', subject: 's',
+        startTime: 100, meetingCode: null, endTime: null,
+      }]]),
     }
     const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
     expect(r.completed).toBe(1)        // 下载仍然完成，没被进度写库失败打断
@@ -101,7 +129,10 @@ test('markCompleted 把下载器报的真实字节数写进 bytes_written，覆�
     },
     gw: {},
     storage: { ensureFreeSpace: async () => true },
-    meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]),
+    meetingsByPathKey: new Map([[meetingPathKey('m1', ''), {
+      meetingId: 'm1', subMeetingId: '', subject: 's',
+      startTime: 100, meetingCode: null, endTime: null,
+    }]]),
   }
   const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
 
@@ -135,7 +166,10 @@ test('下载一直失败：按 5/10/20/40 分钟退避重试，第 5 次转 dead
     download: async () => { downloads++; return { status: 'failed' as const, error: 'HTTP 500' } },
     gw: {},
     storage: { ensureFreeSpace: async () => true },
-    meetingsById: new Map([['m1', { subject: 's', startTime: 100 }]]),
+    meetingsByPathKey: new Map([[meetingPathKey('m1', ''), {
+      meetingId: 'm1', subMeetingId: '', subject: 's',
+      startTime: 100, meetingCode: null, endTime: null,
+    }]]),
   }
   const row = async () => (await store.assetsForMeeting('m1', ''))[0]!
 

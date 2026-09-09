@@ -146,3 +146,18 @@ export type MeetingSelector =
 
 export type AssetStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'dead'
 export type ProbeState = 'probing' | 'resolved' | 'abandoned'
+
+/**
+ * 会议目录 Map 的键：`meeting_id` + `\u0000` + `sub_meeting_id`。
+ *
+ * 分隔符与 `src/store/archives.ts` 的 `archiveStateKey`、`src/worker/archive.ts` 的
+ * `overrideKey` 是同一个，理由也同一条：两段都是平台给的字符串，用可打印字符分隔会让
+ * `("a:b", "")` 与 `("a", "b")` 撞成同一个键，而 `\u0000` 在任何一段里都不会出现。
+ *
+ * 它取代的是「只按 meeting_id 建 Map」——周期会议各场次共享 meeting_id、start_time
+ * 各不相同，而 start_time 进目录名，于是所有场次的文件会落进某一场次的目录里
+ * （2026-09-09 之前的行为，src/worker/store-mysql.ts 的注释承认过这个洞）。
+ */
+export function meetingPathKey(meetingId: string, subMeetingId: string): string {
+  return `${meetingId}\u0000${subMeetingId}`
+}

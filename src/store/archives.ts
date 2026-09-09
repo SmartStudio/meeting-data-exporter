@@ -158,13 +158,12 @@ export interface ArchivesStore {
    *  这正是想要的：那种会议本来就有事没办完。归档完且有行的会议仍然一轮都不会进来。
    *
    *  这是 Step 5 归档循环真正的枚举源，取代最初错误复用的 Store.meetingsForPaths()：
-   *  那个方法按 meeting_id 去重（专为local 落盘路径命名设计——一次只需要一个"代表"
+   *  那个方法当年按 meeting_id 去重（专为本地落盘路径命名设计——一次只需要一个"代表"
    *  meeting 元数据的场次），周期性会议同一 meeting_id 下的其它 sub_meeting_id 会被
    *  静默丢弃、永远不会被传给 archiveMeeting，对应场次因此永远不会归档到 NAS、
-   *  永远不会出现在 meeting_archives 里，Task 8 的到期清理也永远看不到它们
-   *  （tests/worker/store-mysql.test.ts:393 一条既有回归测试钉住了 meetingsForPaths
-   *  这个"后一行覆盖前一行"的行为——它对自己的原始用途是对的，只是不该被当成
-   *  归档流水线的枚举源复用）。
+   *  永远不会出现在 meeting_archives 里，Task 8 的到期清理也永远看不到它们。
+   *  那个去重 2026-09-09 已经补掉（meetingsForPaths 改按 (meeting_id, sub_meeting_id)
+   *  建键），但枚举源仍然分成两个——理由见下一段的早退。
    *
    *  同时也是"没有待办事项就不必再查"的早退：**归档完了、而且已经有 meeting_archives
    *  那一行**的会议不会出现在结果里，不会每轮都被重新 archiveMeeting 一遍；压根没有

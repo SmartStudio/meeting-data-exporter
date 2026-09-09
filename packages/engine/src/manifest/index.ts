@@ -189,10 +189,12 @@ export interface ManifestRoundOutcome {
  *
  * `meetings` 直接收 `Store.meetingsForPaths()` 的返回值——**刻意与 executor 拼落盘
  * 路径时用的是同一张 Map**：目录由它算出，清单也就该按它枚举，两边同源才谈得上
- * 「sidecar 和资产在同一个目录」。（这也意味着它继承了那张 Map 按 meeting_id 去重的
- * 已知窟窿：周期性会议同一 meeting_id 下只有胜出的那个场次会拿到 sidecar。修那个洞
- * 是另一件事，见 src/worker/store-mysql.ts 里 meetingsForPaths 的注释；在它被修好
- * 之前，与资产落盘保持同一种（哪怕是错的）行为，好过在这里自作主张地分叉。）
+ * 「sidecar 和资产在同一个目录」。那张 Map 现在按 `(meeting_id, sub_meeting_id)`
+ * 建键，所以周期会议的每个场次各拿到自己的 sidecar（2026-09-09 之前只有胜出的
+ * 那个场次有，那是与 executor 一起的同一个洞，已经补掉）。
+ *
+ * 遍历的是 **values**，两段主键从值里取：键是 `meetingPathKey` 拼出来的，拆键还原
+ * 等于把编码规则又实现一遍。
  *
  * 写 sidecar 失败**不能让整轮挂掉**：资产已经落盘了，一份没写出来的清单不该把一轮
  * 成功的下载变成失败。但也**不许静默吞掉**——照 executor 里进度回写失败的先例，
@@ -200,17 +202,17 @@ export interface ManifestRoundOutcome {
  */
 export async function writeMeetingManifests(
   deps: ManifestDeps,
-  meetings: ReadonlyMap<string, { subMeetingId: string }>,
+  meetings: ReadonlyMap<string, { meetingId: string; subMeetingId: string }>,
   now: () => number,
 ): Promise<ManifestRoundOutcome> {
   const out: ManifestRoundOutcome = { written: 0, unchanged: 0, skipped: 0, failed: 0 }
-  for (const [meetingId, m] of meetings) {
+  for (const m of meetings.values()) {
     try {
-      const r = await writeMeetingManifest(deps, meetingId, m.subMeetingId, now())
+      const r = await writeMeetingManifest(deps, m.meetingId, m.subMeetingId, now())
       out[r]++
     } catch (err) {
       out.failed++
-      console.warn(`manifest write failed for meeting=${meetingId} subMeeting=${m.subMeetingId}: ${err}`)
+      console.warn(`manifest write failed for meeting=${m.meetingId} subMeeting=${m.subMeetingId}: ${err}`)
     }
   }
   return out

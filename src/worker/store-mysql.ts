@@ -1,5 +1,6 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2'
 import type { PoolConnection } from 'mysql2/promise'
+import { meetingPathKey } from '@yaowu/mde-engine'
 import type { AssetRow, AssetStatus, ProbeRow, Store } from '@yaowu/mde-engine'
 import type { Pool } from '../store/db'
 
@@ -299,35 +300,36 @@ export function createMysqlStore(pool: Pool): MysqlStore {
       return res.affectedRows
     },
 
+    /**
+     * 键是 `meetingPathKey(meeting_id, sub_meeting_id)`，与 SQLite 宿主逐字同构。
+     *
+     * 2026-09-09 之前这里的键只有 meeting_id，后一行覆盖前一行——周期会议各场次共享
+     * meeting_id、start_time 各不相同，而 start_time 进目录名，于是**所有场次的文件
+     * 落进某一场次的目录**。那个洞随 sub_meeting_id = meeting_record_id 一起补掉。
+     *
+     * ORDER BY 留着：它让行序确定，出问题时两个宿主的输出可以逐行对。
+     */
     async meetingsForPaths() {
-      // 去重方式与 SQLite 版同构：同一 meeting_id 有多个 sub_meeting_id 时
-      // 后一行覆盖前一行，胜出的是 sub_meeting_id 最大的那条。
-      //
-      // ORDER BY 是显式钉住这件事，不是改行为——今天不加 ORDER BY 时 InnoDB 全表扫
-      // 走聚簇索引、恰好也是 (meeting_id, sub_meeting_id) 序，胜出行一模一样。但那是
-      // 当前执行计划的副产物，不是 SQL 语义保证：优化器哪天改挑一个覆盖索引，
-      // 胜出行就会静默换人。把「凑巧确定」写成「明确确定」。
-      //
-      // 注意这个「后行覆盖」本身仍是个洞（两个宿主都有，本任务不修）：周期性会议
-      // 各场次共享 meeting_id、start_time 各不相同，而 start_time 会进目录名
-      // （packages/engine/src/executor/index.ts:51-54），所以后果是**所有场次的文件
-      // 落进某一场次的目录**。已记进台账。
       const [rows] = await pool.query<RowDataPacket[]>(
         `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time
            FROM meetings ORDER BY meeting_id, sub_meeting_id`,
       )
-      return new Map(rows.map((r) => [r.meeting_id as string, {
-        subject: (r.subject ?? null) as string | null,
-        startTime: r.start_time === null ? null : Number(r.start_time),
-        meetingCode: (r.meeting_code ?? null) as string | null,
-        endTime: r.end_time === null ? null : Number(r.end_time),
-        subMeetingId: r.sub_meeting_id as string,
-      }]))
+      return new Map(rows.map((r) => [
+        meetingPathKey(r.meeting_id as string, r.sub_meeting_id as string),
+        {
+          meetingId: r.meeting_id as string,
+          subMeetingId: r.sub_meeting_id as string,
+          subject: (r.subject ?? null) as string | null,
+          startTime: r.start_time === null ? null : Number(r.start_time),
+          meetingCode: (r.meeting_code ?? null) as string | null,
+          endTime: r.end_time === null ? null : Number(r.end_time),
+        },
+      ]))
     },
 
     // meetingsForPaths 之外**另开**一个按精确 (meeting_id, sub_meeting_id) 取的读法：
-    // 前者按 meeting_id 去重、且只带拼路径用得上的几列（没有 host_userid），
-    // meeting.json 要写的是这一场会议的全部元数据，只能按真实主键取。
+    // 前者虽然也按两段主键建键，却只带拼路径用得上的几列（没有 host_userid），
+    // meeting.json 要写的是这一场会议的全部元数据，只能按真实主键取回整行。
     // 与 SQLite 版同一条语句、同一组列。
     async getMeeting(meetingId, subMeetingId) {
       const [rows] = await pool.query<RowDataPacket[]>(

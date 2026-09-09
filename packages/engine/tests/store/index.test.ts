@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { openDb } from '../../src/store/db'
 import { createStore } from '../../src/store'
+import { meetingPathKey } from '../../src/domain/types'
 
 function fresh() { return createStore(openDb(':memory:')) }
 const M = { meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }
@@ -119,10 +120,31 @@ test('siblingRank 对同格式的多段录制仍然给出序号', async () => {
   expect(await store.siblingRank(second)).toEqual({ ordinal: 2, total: 2 })
 })
 
+test('meetingsForPaths 按 (meeting_id, sub_meeting_id) 建键：周期会议每个场次各一项', async () => {
+  const s = fresh()
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-1', subject: '第一场', startTime: 1000 }, 1)
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-2', subject: '第二场', startTime: 2000 }, 1)
+
+  const map = await s.meetingsForPaths()
+  expect(map.size).toBe(2)                       // 不再塌成一条
+  expect(map.get(meetingPathKey('m1', 'rec-1'))).toEqual({
+    meetingId: 'm1', subMeetingId: 'rec-1', subject: '第一场',
+    startTime: 1000, meetingCode: '88', endTime: 200,
+  })
+  expect(map.get(meetingPathKey('m1', 'rec-2'))!.startTime).toBe(2000)
+})
+
+test('meetingsForPaths 仍认得空 sub_meeting_id 的旧行（旧 SQLite 库的兼容口径）', async () => {
+  const s = fresh()
+  await s.upsertMeeting(M, 1)                    // M.subMeetingId === ''
+  const map = await s.meetingsForPaths()
+  expect(map.get(meetingPathKey('m1', ''))!.meetingId).toBe('m1')
+})
+
 // ---------------------------------------------------------------------------
 // sidecar（meeting.json / _manifest.json）要的两个读方法。两者都按**精确的
 // (meeting_id, sub_meeting_id)** 取，与归档流水线的 listCompletedAssets 同口径：
-// meetingsForPaths 那种按 meeting_id 去重的形状只适合拼路径，当枚举源会丢场次。
+// meetingsForPaths 虽然也按两段主键建键，却只带拼路径用得上的几列，替代不了它们。
 // ---------------------------------------------------------------------------
 
 test('getMeeting 按精确 (meeting_id, sub_meeting_id) 取回，不存在给 null', async () => {

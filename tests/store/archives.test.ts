@@ -326,8 +326,9 @@ test('listMeetingsNeedingArchive 精确按 (meeting_id, sub_meeting_id) 枚举�
   const { pool, cleanup } = await withTestDb()
   try {
     // 周期性会议的真实场景：同一 meeting_id，两个不同的 sub_meeting_id，各自都有
-    // 已完成但还没归档的资产。这是钉住 review Critical 的用例——如果枚举源退化成
-    // 按 meeting_id 去重（比如又被换回 Store.meetingsForPaths()），这里只会剩一行。
+    // 已完成但还没归档的资产。这是钉住 review Critical 的用例——枚举源一旦退化成
+    // 按 meeting_id 去重（历史上就是被换成 Store.meetingsForPaths() 才出的事），
+    // 这里只会剩一行。
     await seedAsset(pool, { meetingId: 'm-periodic', subMeetingId: 's1', remoteId: 'r-1' })
     await seedAsset(pool, { meetingId: 'm-periodic', subMeetingId: 's2', remoteId: 'r-1' })
 

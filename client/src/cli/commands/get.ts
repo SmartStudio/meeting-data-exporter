@@ -17,8 +17,8 @@ export async function cmdGet(cmd: ParsedCommand, env: Record<string, string | un
   const d = await discover({ gw, store }, sel, cmd.assets, now())
   console.log(`discovered meetings=${d.meetings} tasks=${d.tasks}`)
 
-  const meetingsById = await store.meetingsForPaths()
-  const deps = { store, gw, storage, meetingsById,
+  const meetingsByPathKey = await store.meetingsForPaths()
+  const deps = { store, gw, storage, meetingsByPathKey,
     download: (task: DownloadTask, onProgress: (b: number) => void) => downloadAsset({ storage, gw, onProgress }, task, now) }
   await runProbes(deps, now)
   const r = await runExecutor(deps, { concurrency: cfg.concurrency, leaseSec: cfg.leaseSec }, now)

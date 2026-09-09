@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RowDataPacket } from 'mysql2'
+import { meetingPathKey } from '@yaowu/mde-engine'
 import type { Meeting } from '@yaowu/mde-engine'
 import type { Pool } from '../../src/store/db'
 import { withTestDb } from '../helpers/testdb'
@@ -498,7 +499,7 @@ describe('createMysqlStore', () => {
     })
   })
 
-  test('meetingsForPaths 返回按 meeting_id 索引的会议元数据', async () => {
+  test('meetingsForPaths 按 (meeting_id, sub_meeting_id) 建键，值里带回两段原文', async () => {
     await withDb(async (pool) => {
       const s = createMysqlStore(pool)
       await s.upsertMeeting(M, 100)
@@ -508,38 +509,35 @@ describe('createMysqlStore', () => {
       }, 100)
       const map = await s.meetingsForPaths()
       expect(map.size).toBe(2)
-      expect(map.get('m1')).toEqual({
-        subject: '周会', startTime: 1000, meetingCode: '881', endTime: 2000, subMeetingId: '',
+      expect(map.get(meetingPathKey('m1', ''))).toEqual({
+        meetingId: 'm1', subMeetingId: '', subject: '周会',
+        startTime: 1000, meetingCode: '881', endTime: 2000,
       })
-      expect(map.get('m2')).toEqual({
-        subject: null, startTime: null, meetingCode: null, endTime: null, subMeetingId: 's1',
+      expect(map.get(meetingPathKey('m2', 's1'))).toEqual({
+        meetingId: 'm2', subMeetingId: 's1', subject: null,
+        startTime: null, meetingCode: null, endTime: null,
       })
     })
   })
 
   /**
-   * 钉住「同一 meeting_id 有多个 sub_meeting_id 时谁胜出」的当前行为：
-   * Map 键只有 meeting_id，后一行覆盖前一行，配上 ORDER BY 之后胜出的确定是
-   * sub_meeting_id 最大的那条。
-   *
-   * 这个行为本身是个洞，本任务不修（SQLite 宿主也一样）：周期性会议各场次共享
-   * meeting_id，而胜出行的 start_time 会进目录名，于是所有场次的文件会落进
-   * 某一场次的目录。将来根治那条任务改到这里时，这条用例会明确告诉他改动了什么，
-   * 而不是让他猜原来是什么行为。
+   * 2026-09-09 之前这里钉的是「同 meeting_id 多 sub_meeting 时 sub_meeting_id 最大的
+   * 一条胜出」——那是个洞：周期会议的所有场次会共用胜出那一场的目录。现在钉的是补好
+   * 之后的行为：两个场次各一项，各自带着自己的 start_time（也就是各自的目录）。
    */
-  test('meetingsForPaths 同 meeting_id 多 sub_meeting 时由 sub_meeting_id 最大的一条胜出', async () => {
+  test('meetingsForPaths 同 meeting_id 多场次时各成一项，不再互相覆盖', async () => {
     await withDb(async (pool) => {
       const s = createMysqlStore(pool)
-      // 故意先插 's1' 再插 ''，让「插入顺序」与「sub_meeting_id 序」相反，
-      // 否则两种可能的行序会给出同样的结果，用例就区分不出来了
-      await s.upsertMeeting({ ...M, subMeetingId: 's1', subject: '第二场', startTime: 2000 }, 100)
-      await s.upsertMeeting({ ...M, subMeetingId: '', subject: '第一场', startTime: 1000 }, 100)
+      // 故意先插 'rec-2' 再插 'rec-1'，插入顺序与键序相反，塌成一条时立刻看得出来
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-2', subject: '第二场', startTime: 2000 }, 100)
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-1', subject: '第一场', startTime: 1000 }, 100)
 
       const map = await s.meetingsForPaths()
-      expect(map.size).toBe(1) // 两条会议行，塌成一个 Map 条目——这就是那个洞
-      expect(map.get('m1')).toEqual({
-        subject: '第二场', startTime: 2000, meetingCode: '881', endTime: 2000, subMeetingId: 's1',
-      })
+      expect(map.size).toBe(2)
+      expect(map.get(meetingPathKey('m1', 'rec-1'))!.subject).toBe('第一场')
+      expect(map.get(meetingPathKey('m1', 'rec-1'))!.startTime).toBe(1000)
+      expect(map.get(meetingPathKey('m1', 'rec-2'))!.subject).toBe('第二场')
+      expect(map.get(meetingPathKey('m1', 'rec-2'))!.startTime).toBe(2000)
     })
   })
 
@@ -550,8 +548,8 @@ describe('createMysqlStore', () => {
       await s.upsertMeeting({ ...M, subject: '改过的主题', endTime: 3000 }, 200)
       const map = await s.meetingsForPaths()
       expect(map.size).toBe(1)
-      expect(map.get('m1')!.subject).toBe('改过的主题')
-      expect(map.get('m1')!.endTime).toBe(3000)
+      expect(map.get(meetingPathKey('m1', ''))!.subject).toBe('改过的主题')
+      expect(map.get(meetingPathKey('m1', ''))!.endTime).toBe(3000)
     })
   })
 

@@ -1,8 +1,8 @@
-import type { Store, AssetRow } from '../store'
+import type { MeetingPathRow, Store, AssetRow } from '../store'
 import type { DownloadResult, DownloadTask } from '../downloader'
 import type { Storage } from '../storage/types'
 import type { AssetSource } from '../source/types'
-import { GATEWAY_TYPE_TO_ASSET_KEY, assetKeyToFilename, isTextAssetType, ASSET_WAIT_CAP_SEC } from '../domain/types'
+import { GATEWAY_TYPE_TO_ASSET_KEY, assetKeyToFilename, isTextAssetType, ASSET_WAIT_CAP_SEC, meetingPathKey } from '../domain/types'
 import { meetingDirPath } from '../domain/filename'
 import { judgeReadiness } from '../domain/readiness'
 
@@ -11,7 +11,13 @@ export interface ExecutorDeps {
   download: (task: DownloadTask, onProgress: (b: number) => void) => Promise<DownloadResult>
   storage: Pick<Storage, 'ensureFreeSpace' | 'writeMeta'>
   gw: Pick<AssetSource, 'listAssets'>
-  meetingsById: Map<string, { subject: string | null; startTime: number | null; meetingCode: string | null; endTime: number | null; subMeetingId: string }>
+  /**
+   * `Store.meetingsForPaths()` 的返回值，键是 `meetingPathKey(meeting_id, sub_meeting_id)`。
+   * 字段名不叫 meetingsById 了——键不再是 meeting_id，叫那个名字会让下一个读代码的人
+   * 按 `get(row.meeting_id)` 写，而那句在周期会议上永远查不到、静默把资产判成
+   * meeting_meta_missing。
+   */
+  meetingsByPathKey: Map<string, MeetingPathRow>
 }
 const MAX_ATTEMPTS = 5
 
@@ -58,7 +64,9 @@ async function handleOne(deps: ExecutorDeps, row: AssetRow, leaseSec: number, no
  * 一个没有资产的目录里去。
  */
 async function buildRelPath(deps: ExecutorDeps, row: AssetRow): Promise<string | null> {
-  const m = deps.meetingsById.get(row.meeting_id)
+  // 按两段键查：周期会议各场次共享 meeting_id，只按它查会拿到别的场次的 start_time，
+  // 于是这一场的文件落进另一场的目录
+  const m = deps.meetingsByPathKey.get(meetingPathKey(row.meeting_id, row.sub_meeting_id))
   if (!m) return null
   const key = GATEWAY_TYPE_TO_ASSET_KEY[row.asset_type] ?? (row.asset_type as any)
   const { ordinal } = await deps.store.siblingRank(row)

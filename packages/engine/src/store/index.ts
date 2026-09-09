@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite'
-import type { Meeting, AssetStatus, ProbeState } from '../domain/types'
+import { meetingPathKey, type Meeting, type AssetStatus, type ProbeState } from '../domain/types'
 
 export interface AssetUpsert {
   meetingId: string; subMeetingId: string; assetType: string; remoteId: string
@@ -16,6 +16,16 @@ export interface AssetRow {
 export interface ProbeUpsert { meetingId: string; subMeetingId: string; assetType: string; deadlineAt: number; probeAfter: number }
 export interface ProbeRow { meeting_id: string; sub_meeting_id: string; asset_type: string; state: ProbeState; attempts: number; deadline_at: number }
 export interface ProbeKey { meetingId: string; subMeetingId: string; assetType: string }
+
+/** `meetingsForPaths()` 的值：拼目录名要的三列，加上两段主键原文 */
+export interface MeetingPathRow {
+  meetingId: string
+  subMeetingId: string
+  subject: string | null
+  startTime: number | null
+  meetingCode: string | null
+  endTime: number | null
+}
 
 export interface Store {
   upsertMeeting(m: Meeting, now: number): Promise<void>
@@ -97,20 +107,23 @@ export interface Store {
    */
   resetFailed(now: number): Promise<number>
   /**
-   * 拼落盘路径要用的会议元数据，键为 meeting_id。
+   * 拼落盘路径要用的会议元数据，键为 `meetingPathKey(meeting_id, sub_meeting_id)`。
+   *
+   * 键是两段的，不是 meeting_id：周期会议的每个场次各有自己的 start_time，也就各有
+   * 自己的目录。值里带回 `meetingId` / `subMeetingId` 两段原文，调用方（executor 拼
+   * 路径、manifest 逐场写 sidecar）因此不必再去拆键。
    *
    * 新增这个方法不是顺手加功能——`client/src/cli/commands/{run,execute}.ts` 各有一份
    * **逐字重复**的 `loadMeetings(db)`，都绕过 Store 直接查 SQLite 的 `db`，且全程 `any`。
    * 那条路在 MySQL 宿主下根本不存在，必须收进接口。
    */
-  meetingsForPaths(): Promise<Map<string, { subject: string | null; startTime: number | null; meetingCode: string | null; endTime: number | null; subMeetingId: string }>>
+  meetingsForPaths(): Promise<Map<string, MeetingPathRow>>
   /**
    * 单场会议的完整元数据，按**精确的 (meeting_id, sub_meeting_id)** 取；没有则 null。
    *
-   * 与 `meetingsForPaths()` 是两件事，不要用后者代替：那个方法按 meeting_id 去重
-   * （一次只要一个「代表」场次来拼目录名），周期性会议的其它场次会被静默丢掉；
-   * 而且它刻意只带拼路径用得上的几列，没有 `host_userid`。`meeting.json` 要写的是
-   * 这一场会议的全部元数据，只能按真实主键取。
+   * 与 `meetingsForPaths()` 是两件事，不要用后者代替：那个方法虽然也按两段主键建键，
+   * 却刻意只带拼路径用得上的几列，没有 `host_userid`。`meeting.json` 要写的是这一场
+   * 会议的全部元数据，只能按真实主键取回整行。
    */
   getMeeting(meetingId: string, subMeetingId: string): Promise<Meeting | null>
   /**
@@ -215,9 +228,10 @@ export function createStore(db: Database): Store {
                               meeting_code: string | null; start_time: number | null; end_time: number | null }, []>(
         `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time FROM meetings`,
       ).all()
-      return new Map(rows.map((r) => [r.meeting_id, {
+      return new Map(rows.map((r) => [meetingPathKey(r.meeting_id, r.sub_meeting_id), {
+        meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id,
         subject: r.subject, startTime: r.start_time, meetingCode: r.meeting_code,
-        endTime: r.end_time, subMeetingId: r.sub_meeting_id,
+        endTime: r.end_time,
       }]))
     },
     async getMeeting(meetingId, subMeetingId) {

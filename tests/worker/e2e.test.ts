@@ -688,9 +688,8 @@ describe('runWorkerOnce', () => {
 
   test('归档步骤按 (meeting_id, sub_meeting_id) 精确枚举，不按 meeting_id 去重：同一 meeting_id 下两个 sub_meeting_id 都有完成资产时，一轮之后两个都被归档', async () => {
     // 这是 code review 抓出的 Critical 的回归用例：归档步骤最初错误复用了
-    // Store.meetingsForPaths()（专为本地路径命名设计，按 meeting_id 去重，见
-    // tests/worker/store-mysql.test.ts:393 那条钉住"后一行覆盖前一行"的既有用例）
-    // 当枚举源。周期性会议共享 meeting_id、各场次有不同的 sub_meeting_id 是真实场景
+    // Store.meetingsForPaths()（专为本地路径命名设计，当年按 meeting_id 去重；那个
+    // 去重 2026-09-09 已经补掉，但这条断言钉的是归档枚举源本身）当枚举源。周期性会议共享 meeting_id、各场次有不同的 sub_meeting_id 是真实场景
     // （meetings 表主键就是 (meeting_id, sub_meeting_id)），去重会让除"胜出"那条之外
     // 的场次永远不被传给 archiveMeeting——静默地永远不归档、永远不进
     // meeting_archives、Task 8 的到期清理也永远看不到。

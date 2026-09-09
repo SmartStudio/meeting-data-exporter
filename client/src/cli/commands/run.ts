@@ -18,9 +18,9 @@ export async function cmdRun(cmd: ParsedCommand, env: Record<string, string | un
   const d = await discover({ gw, store }, sel, cmd.assets, now())
   console.log(`discovered meetings=${d.meetings} tasks=${d.tasks}`)
 
-  // 发现之后才能建 meetingsById（拿到刚写入的会议元数据用于拼路径）
-  const meetingsById = await store.meetingsForPaths()
-  const deps = { store, gw, storage, meetingsById,
+  // 发现之后才能建 meetingsByPathKey（拿到刚写入的会议元数据用于拼路径）
+  const meetingsByPathKey = await store.meetingsForPaths()
+  const deps = { store, gw, storage, meetingsByPathKey,
     download: (task: DownloadTask, onProgress: (b: number) => void) => downloadAsset({ storage, gw, onProgress }, task, now) }
   await runProbes(deps, now)
   const r = await runExecutor(deps, { concurrency: cfg.concurrency, leaseSec: cfg.leaseSec }, now)
@@ -28,7 +28,7 @@ export async function cmdRun(cmd: ParsedCommand, env: Record<string, string | un
   await warnIfLeaseLocked(store, r, cfg.leaseSec)
   // 一轮的收尾：给每场会议写 meeting.json / _manifest.json（US-6.2）。写失败只 warn 不改
   // 退出码——文件已经在盘上了，一份没写出来的清单不该把一轮成功的下载判成失败。
-  const man = await writeMeetingManifests({ store, storage, generatedBy: 'mde-engine' }, meetingsById, now)
+  const man = await writeMeetingManifests({ store, storage, generatedBy: 'mde-engine' }, meetingsByPathKey, now)
   console.log(`manifests written=${man.written} unchanged=${man.unchanged} skipped=${man.skipped} failed=${man.failed}`)
   return r.failed > 0 ? 1 : 0
 }

@@ -50,10 +50,10 @@ function realBytesOf(relPath: string): number {
 
 /** 真 store + 真 runExecutor + 假下载：让 target_path 由**真实的**拼路径逻辑产生 */
 async function downloadAll(store: Store, bytesOf: (relPath: string) => number = realBytesOf): Promise<string[]> {
-  const meetingsById = await store.meetingsForPaths()
+  const meetingsByPathKey = await store.meetingsForPaths()
   const relPaths: string[] = []
   const deps = {
-    store, gw: {}, meetingsById,
+    store, gw: {}, meetingsByPathKey,
     storage: { ensureFreeSpace: async () => true, writeMeta: async () => {} },
     // 与真 downloader 同规则：文本类算整文件 sha256，视频/音频不算（会吃爆内存）；
     // bytesWritten 是下载器完成那一刻的累加值 = 盘上的真实大小
@@ -213,9 +213,9 @@ test('writeMeta 抛错不让整轮挂掉，但必须留下 warn 痕迹（不是�
   const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
   try {
     const storage = { readMeta: async () => null, writeMeta: async () => { throw new Error('nas gone') } }
-    const meetingsById = await store.meetingsForPaths()
+    const meetingsByPathKey = await store.meetingsForPaths()
 
-    const r = await writeMeetingManifests({ store, storage, generatedBy: 'mde-worker' }, meetingsById, () => 5000)
+    const r = await writeMeetingManifests({ store, storage, generatedBy: 'mde-worker' }, meetingsByPathKey, () => 5000)
 
     expect(r).toEqual({ written: 0, unchanged: 0, skipped: 0, failed: 1 })   // 整轮正常返回，没有抛出
     expect(warnSpy).toHaveBeenCalled()                          // 但错误留下了痕迹
@@ -399,4 +399,20 @@ test('一轮收尾：unchanged 单独计数，不混进 written', async () => {
 
   expect(first).toEqual({ written: 1, unchanged: 0, skipped: 1, failed: 0 })
   expect(second).toEqual({ written: 0, unchanged: 1, skipped: 1, failed: 0 })
+})
+
+test('一轮收尾按场次各写一份 sidecar：同 meeting_id 的两场各有自己的目录', async () => {
+  const store = await seeded()                       // m1 / sub ''，已下载
+  await store.upsertMeeting({ ...MEETING, subMeetingId: 'rec-2', meetingCode: '881-123-40', subject: '第二场', startTime: (MEETING.startTime ?? 0) + 86400 }, 1)
+  await store.upsertAsset({ meetingId: MEETING.meetingId, subMeetingId: 'rec-2', assetType: 'meeting_summary', remoteId: 'r-2', fileType: 'txt' }, 1)
+  await downloadAll(store)
+  const storage = fakeStorage()
+
+  const r = await writeMeetingManifests(
+    { store, storage, generatedBy: 'mde-worker' }, await store.meetingsForPaths(), () => 5000,
+  )
+
+  expect(r.written).toBe(2)                          // 两场各一份，不是一场
+  const dirs = [...storage.writes.keys()].filter((k) => k.endsWith('/meeting.json')).sort()
+  expect(dirs).toHaveLength(2)
 })

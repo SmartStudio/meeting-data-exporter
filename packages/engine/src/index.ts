@@ -4,7 +4,7 @@ export { cleanDirName, cleanSubjectSegment, meetingDirPath } from './domain/file
 export type { MeetingDirInfo } from './domain/filename'
 export { splitWindow } from './domain/window'
 export type { AssetSource, SourceAsset, DownloadUrl } from './source/types'
-export type { Store, AssetRow, AssetUpsert, ProbeRow, ProbeKey, ProbeUpsert } from './store'
+export type { Store, AssetRow, AssetUpsert, MeetingPathRow, ProbeRow, ProbeKey, ProbeUpsert } from './store'
 export { createStore } from './store'
 export { openDb } from './store/db'
 export type { Storage } from './storage/types'

@@ -195,13 +195,13 @@ export async function runFetchRound(
   // 必须在发现之后才建：拼落盘路径要用刚写进 meetings 表的会议元数据。
   // 走 Store.meetingsForPaths() 而不是自己拿 pool 查一遍——CLI 那边正是因为绕过
   // Store 直连 db，才长出过三份逐字重复的 loadMeetings（T3 已删）。
-  const meetingsById = await deps.store.meetingsForPaths()
+  const meetingsByPathKey = await deps.store.meetingsForPaths()
 
   const execDeps = {
     store: deps.store,
     storage: deps.storage,
     gw: deps.source,
-    meetingsById,
+    meetingsByPathKey,
     download: (task: DownloadTask, onProgress: (b: number) => void) =>
       downloadAsset({ storage: deps.storage, gw: deps.source, onProgress }, task, now),
   }
@@ -217,11 +217,10 @@ export async function runFetchRound(
   // 系统理解」）。放在这里而不是 executor 里边下边写，是因为 runExecutor 是逐资产的并发
   // 执行体，内部根本没有「这场会议下完了」这个判定——详见 packages/engine/src/manifest。
   //
-  // 枚举源用 meetingsById 而不是归档那边的 listMeetingsNeedingArchive()：sidecar 描述的是
-  // **本地归档区里那个目录**，而那个目录正是 meetingsById 算出来的；两边必须同源，否则
-  // 清单会落到一个没有资产的目录里。这也意味着它继承了 meetingsById 按 meeting_id 去重的
-  // 已知窟窿（见下方 archive 段落的说明）——在那个洞被修好之前，与资产落盘保持同一种行为，
-  // 好过在这里自作主张地分叉。
+  // 枚举源用 meetingsByPathKey 而不是归档那边的 listMeetingsNeedingArchive()：sidecar
+  // 描述的是**本地归档区里那个目录**，而那个目录正是它算出来的，两边必须同源，否则
+  // 清单会落到一个没有资产的目录里。这张 Map 现在按 (meeting_id, sub_meeting_id)
+  // 建键，周期会议的每个场次各写各的 sidecar。
   //
   // 这一段写的是**本地归档区**那一份（deps.storage 指向 MDE_ARCHIVE_ROOT）。
   // NAS 上那一份由归档链路**独立生成**（archiveMeeting → writeNasSidecars），
@@ -231,7 +230,7 @@ export async function runFetchRound(
   // 的同一套类型（NAS 版是本地版的 extends），格式不分叉。
   const manifests = await writeMeetingManifests(
     { store: deps.store, storage: deps.storage, generatedBy: 'mde-worker' },
-    meetingsById,
+    meetingsByPathKey,
     now,
   )
 
@@ -257,16 +256,13 @@ export async function runWorkerOnce(
 
   // 归档：把（本轮以及此前遗留、这一轮才终于补齐的）已完成下载的资产搬到 NAS。
   //
-  // 枚举源是 ArchivesStore.listMeetingsNeedingArchive()，不是上面的 meetingsById——
-  // meetingsById 是 Store.meetingsForPaths() 给的，按 meeting_id 去重，专为本地落盘
-  // 路径命名设计（一次只需要一个"代表"元数据的场次）。周期性会议同一 meeting_id 下
-  // 还有其它 sub_meeting_id 时，去重会把它们静默丢掉，永远不会被传给 archiveMeeting，
-  // 对应场次因此永远不会归档、永远进不了 meeting_archives（这个去重行为本身是对的，
-  // 被 tests/worker/store-mysql.test.ts:393 的既有回归测试钉住了；错的是把它复用成
-  // 归档流水线的枚举源）。listMeetingsNeedingArchive() 直接按 (meeting_id,
-  // sub_meeting_id) 这个真实主键枚举，不丢会议；它还只返回"completed 数量 > 已归档
-  // 数量"的那些，顺带给出"没有待办事项就不必再查"的早退，不会对早就归档完的会议
-  // 每轮都重新查一遍。
+  // 枚举源是 ArchivesStore.listMeetingsNeedingArchive()，不是上面的 meetingsByPathKey。
+  // 两者今天都按 (meeting_id, sub_meeting_id) 这个真实主键枚举，谁都不会丢场次
+  // （meetingsByPathKey 按 meeting_id 去重、把周期会议的其它场次静默丢掉，是
+  // 2026-09-09 之前的事，已经补掉）。仍然分成两个枚举源，是因为它们回答的不是同一个
+  // 问题：meetingsForPaths() 给的是 meetings 表的**全部**会议（拼目录名要的那几列），
+  // 而 listMeetingsNeedingArchive() 只返回"completed 数量 > 已归档数量"的那些，
+  // 顺带给出"没有待办事项就不必再查"的早退，不会对早就归档完的会议每轮都重新查一遍。
   //
   // 逐会议错误隔离（一场会议的 archiveMeeting 抛出不连累其它会议）与
   // "archived_at 不被空转重跑推着走"的守卫都在 archivePendingMeetings /
