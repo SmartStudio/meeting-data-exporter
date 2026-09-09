@@ -1,5 +1,6 @@
 import { ASSET_KEYS } from '../admin/programs'
 import type { AssetKey, Consumer, Meeting } from '../types'
+import { MOCK_SUB_MEETING_ID } from './meetings'
 
 /**
  * 迁自原型的 `CONSUMERS`。
@@ -162,7 +163,7 @@ function item(m: Meeting, program: string, nowSec: number, shiftSec: number): Re
   const idMatch = /#(\d+)/.exec(m.why.allow.text)
   return {
     meetingId: m.id,
-    subMeetingId: '',
+    subMeetingId: MOCK_SUB_MEETING_ID,
     assetTypes: REACH[program] ?? [],
     expiresAt,
     expiringSoon:

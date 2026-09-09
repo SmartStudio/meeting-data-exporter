@@ -1,5 +1,5 @@
 import type { Meeting } from '../types'
-import { MEETINGS, MOCK_NOW } from './meetings'
+import { MEETINGS, MOCK_NOW, MOCK_SUB_MEETING_ID } from './meetings'
 
 /**
  * 三栈规则的种子 + 一个够用的判定引擎（原型模式）。
@@ -468,7 +468,7 @@ export function buildMatches(
     matches: hits.map((m) => ({
       id: m.id,
       meetingId: m.id,
-      subMeetingId: '',
+      subMeetingId: MOCK_SUB_MEETING_ID,
       title: m.title,
       startAt: m.startAt + shiftSec,
       missing: [],

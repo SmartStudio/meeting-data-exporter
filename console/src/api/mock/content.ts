@@ -1,4 +1,5 @@
 import type { AssetKey, Meeting } from '../types'
+import { MOCK_SUB_MEETING_ID } from './meetings'
 
 /**
  * 内容预览页的两条端点（`.../content` 与 `.../content/chapters`）。
@@ -207,7 +208,7 @@ function meetingBlock(m: Meeting, shiftSec: number): Record<string, unknown> {
   return {
     id: m.id,
     meetingId: m.id,
-    subMeetingId: '',
+    subMeetingId: MOCK_SUB_MEETING_ID,
     title: m.title,
     code: m.code,
     startAt: m.startAt + shiftSec,

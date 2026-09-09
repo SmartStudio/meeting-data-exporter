@@ -10,7 +10,7 @@ import {
 } from './consumers'
 import { buildChapters, buildContent } from './content'
 import { applyTencentDown, buildJobs, makeQueuedRun, withQueued, type QueuedRun } from './jobs'
-import { MEETINGS, MOCK_NOW } from './meetings'
+import { MEETINGS, MOCK_NOW, MOCK_SUB_MEETING_ID } from './meetings'
 import {
   buildMatches,
   buildPreview,
@@ -140,7 +140,7 @@ function wire(m: Meeting): Record<string, unknown> {
   return {
     id: m.id,
     meetingId: m.id,
-    subMeetingId: '',
+    subMeetingId: MOCK_SUB_MEETING_ID,
     title: m.title,
     code: m.code,
     startAt: shift(m.startAt),
@@ -264,7 +264,7 @@ function putOverride(m: Meeting, body: Record<string, unknown>): Response {
   return json({
     id: 1,
     meetingId: m.id,
-    subMeetingId: '',
+    subMeetingId: MOCK_SUB_MEETING_ID,
     kind,
     effect,
     assetTypes: body.assetTypes ?? null,
@@ -625,7 +625,7 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
       }
       return json({
         meetingId: live.id,
-        subMeetingId: '',
+        subMeetingId: MOCK_SUB_MEETING_ID,
         addedDays: days,
         extendedDays: live.keep.extended * days,
         archivedAt: shift(live.keep.archivedAt) ?? nowSec,
@@ -641,7 +641,7 @@ function handle(method: string, url: URL, body: Record<string, unknown>): Respon
       return json({
         id: 1,
         meetingId: live.id,
-        subMeetingId: '',
+        subMeetingId: MOCK_SUB_MEETING_ID,
         programId,
         assetTypes: body.assetTypes ?? null,
         grantedAt: nowSec,

@@ -7,6 +7,12 @@ import type { Meeting } from '../types'
  */
 export const MOCK_NOW = ts(2026, 8, 23, 15, 0)
 
+/**
+ * mock 里的示例场次 id。真实取值是腾讯的 `meeting_record_id`（一串纯数字），
+ * 不是空串——空串是 2026-09-09 之前的写法，界面按两段键工作，示例数据也该长得像真的。
+ */
+export const MOCK_SUB_MEETING_ID = '2095448286274887680'
+
 /** 本地时区的 unix 秒。会议开始时间、历史事件时间都用它构造。 */
 function ts(y: number, m: number, d: number, h = 0, mi = 0): number {
   return Math.floor(new Date(y, m - 1, d, h, mi).getTime() / 1000)

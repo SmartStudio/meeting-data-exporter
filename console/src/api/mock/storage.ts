@@ -1,5 +1,5 @@
 import type { Meeting } from '../types'
-import { MOCK_NOW } from './meetings'
+import { MOCK_NOW, MOCK_SUB_MEETING_ID } from './meetings'
 
 /**
  * NAS 状态 + 本地保留窗口（`GET /api/v1/admin/storage`）。
@@ -118,7 +118,7 @@ export function buildStorage(
 export function cleanupItem(m: Meeting): Record<string, unknown> {
   return {
     meetingId: m.id,
-    subMeetingId: '',
+    subMeetingId: MOCK_SUB_MEETING_ID,
     assetCount: sum(Object.values(m.assets).map((a) => a?.got ?? 0)),
     localBytes: m.sizeBytes ?? 0,
   }

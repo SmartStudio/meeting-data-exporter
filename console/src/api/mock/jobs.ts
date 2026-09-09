@@ -1,4 +1,5 @@
 import type { Meeting } from '../types'
+import { MOCK_SUB_MEETING_ID } from './meetings'
 
 /**
  * 五个内置定时任务（`JOB_CATALOG`）的种子。
@@ -107,7 +108,7 @@ function failure(
     target: o.target,
     targetLabel: o.targetLabel,
     meetingId: o.meetingId,
-    subMeetingId: '',
+    subMeetingId: MOCK_SUB_MEETING_ID,
     reason: o.reason,
     impact: o.impact,
     attempts: o.attempts,
