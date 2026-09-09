@@ -1,7 +1,7 @@
 import { expect, test, spyOn } from 'bun:test'
 import { openDb } from '../../src/store/db'
 import { createStore } from '../../src/store'
-import { downloadBackoff, runExecutor } from '../../src/executor'
+import { downloadBackoff, runExecutor, runProbes } from '../../src/executor'
 import { meetingPathKey } from '../../src/domain/types'
 // 用真实 store + 假 downloadAsset（注入）+ 临时目录
 
@@ -241,4 +241,28 @@ test('downloadBackoff 的曲线与上限', () => {
   // 没有它，第 8 次失败要等 10 小时
   expect(downloadBackoff(5)).toBe(3600)
   expect(downloadBackoff(8)).toBe(3600)
+})
+
+test('runProbes 反查资产时带上探测行的场次——同 meeting_id 别的场次的资产不该把它判成就绪', async () => {
+  const store = createStore(openDb(':memory:'))
+  await store.upsertMeeting({ meetingId: 'm1', subMeetingId: 'rec-1', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }, 1)
+  await store.upsertMeeting({ meetingId: 'm1', subMeetingId: 'rec-2', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 300, endTime: 400 }, 1)
+  // 只有 rec-1 在等 video；rec-2 那一场的 video 早就在了
+  await store.upsertProbe({ meetingId: 'm1', subMeetingId: 'rec-1', assetType: 'video', deadlineAt: 99999, probeAfter: 0 })
+
+  const seen: Array<[string, string]> = []
+  const gw = {
+    listAssets: async (id: string, sub: string) => {
+      seen.push([id, sub])
+      return sub === 'rec-2'
+        ? [{ assetId: 'm1:rec-2:video:0', assetType: 'video', remoteId: 'rf2', state: 3, allowDownload: true, bytesExpected: 1, fileType: 'mp4' }]
+        : []
+    },
+  }
+  const deps: any = { store, gw, download: async () => ({ status: 'completed', contentHash: null, bytesWritten: 1 }), storage: { ensureFreeSpace: async () => true }, meetingsByPathKey: new Map() }
+
+  const r = await runProbes(deps, () => 1000)
+  expect(seen).toEqual([['m1', 'rec-1']])
+  expect(r.resolved).toBe(0)          // rec-2 的那一段不算 rec-1 就绪
+  expect((await store.counts()).pending).toBe(0)
 })

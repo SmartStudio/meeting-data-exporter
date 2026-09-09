@@ -91,3 +91,20 @@ test('网关没给 message 时保留原有的兜底措辞，不产出 undefined'
   expect(err!.message).toBe('meeting not found in range')
   expect(err!.message).not.toContain('undefined')
 })
+
+test('listAssets 把场次带进 query：给了 sub_meeting_id 就点名那一场，空串不带这个参数', async () => {
+  const seen: string[] = []
+  const fetchStub = stub([
+    { match: (u) => u.includes('/auth/service-token'), res: () => ok({ access_token: 'tok', expires_in: 900 }) },
+    { match: (u) => u.includes('/assets'), res: () => ok({ assets: [] }) },
+  ])
+  const wrapped: typeof fetch = (async (i, init) => { if (String(i).includes('/assets')) seen.push(String(i)); return fetchStub(i, init) }) as typeof fetch
+  const gw = createGatewayClient(cfg, { fetch: wrapped, now: () => 1000 })
+
+  await gw.listAssets('m1', 'rec-2')
+  await gw.listAssets('m1', '')
+
+  expect(seen[0]).toContain('sub_meeting_id=rec-2')
+  // 空串不带参数：网关那边「没给」= 取最新一条，与旧客户端逐字一致
+  expect(seen[1]).not.toContain('sub_meeting_id')
+})

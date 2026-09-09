@@ -31,6 +31,14 @@ export interface DownloadUrl {
  */
 export interface AssetSource {
   listMeetings(sel: MeetingSelector, cursor?: string, limit?: number): Promise<{ meetings: Meeting[]; nextCursor: string | null }>
-  listAssets(meetingId: string, from?: number, to?: number): Promise<SourceAsset[]>
+  /**
+   * 一场**会议场次**的资产清单。
+   *
+   * `subMeetingId` 是第二个位置参数而不是可选项：同一个 meeting_id 下可能有好几条
+   * 录制记录（周期会议），不收窄的话每个场次都会把全部场次的资产各存一份。
+   * **空串 = 不收窄**（旧 CLI 的 SQLite 库、上线之前留下的探测行），这条兼容口径
+   * 会随存量数据自然消失。
+   */
+  listAssets(meetingId: string, subMeetingId: string, from?: number, to?: number): Promise<SourceAsset[]>
   getDownloadUrl(assetId: string): Promise<DownloadUrl>
 }

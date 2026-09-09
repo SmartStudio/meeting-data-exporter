@@ -82,8 +82,9 @@ function assetId(row: AssetRow): string { return `${row.meeting_id}:${row.remote
 export async function runProbes(deps: ExecutorDeps & { store: Store }, now: () => number) {
   const out = { resolved: 0, abandoned: 0, newTasks: 0 }
   for (const p of await deps.store.dueProbes(now())) {
-    const meetingKey = p.meeting_id
-    const assets = await deps.gw.listAssets(meetingKey)
+    // 探测行本来就是按 (meeting_id, sub_meeting_id, asset_type) 存的，反查时把场次
+    // 一起带上——不带的话一条探测行会被同 meeting_id 别的场次的资产判成「就绪」
+    const assets = await deps.gw.listAssets(p.meeting_id, p.sub_meeting_id)
     const a = assets.find((x) => x.assetType === p.asset_type)
     const verdict = judgeReadiness({ present: !!a, state: a?.state, allowDownload: a?.allowDownload, now: now(), deadlineAt: p.deadline_at })
     // p 来自 dueProbes()，形状为 ProbeRow（snake_case: meeting_id/sub_meeting_id/asset_type），

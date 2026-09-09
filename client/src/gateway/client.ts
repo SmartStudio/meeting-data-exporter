@@ -67,8 +67,11 @@ export function createGatewayClient(
       const b = (await res.json()) as { meetings: RawMeeting[]; next_cursor: string | null }
       return { meetings: b.meetings.map(toMeeting), nextCursor: b.next_cursor }
     },
-    async listAssets(meetingId, from, to) {
-      const q = new URLSearchParams(); if (from) q.set('from', String(from)); if (to) q.set('to', String(to))
+    async listAssets(meetingId, subMeetingId, from, to) {
+      const q = new URLSearchParams()
+      // 空串不带这个参数：网关那边「没给」= 取最新一条，与旧客户端的行为一致
+      if (subMeetingId) q.set('sub_meeting_id', subMeetingId)
+      if (from) q.set('from', String(from)); if (to) q.set('to', String(to))
       const res = await authed(`/api/v1/meetings/${encodeURIComponent(meetingId)}/assets?${q}`)
       if (!res.ok) return parseError(res)
       const b = (await res.json()) as { assets: RawAsset[] }

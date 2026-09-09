@@ -48,6 +48,23 @@ function parseIntParam(v: string | null): number | undefined {
 }
 
 /**
+ * 从同 meeting_id 的多条录制记录里挑出这次要的那一条。
+ *
+ * `sub_meeting_id` 给了就按 `meetingRecordId` 精确取——周期会议的每一场是一条记录，
+ * 点名要哪一场只能靠它（spec §2.2）。没给保持既有口径：`startTime` 最新的那条，
+ * 这是「问一个 meeting_id 要详情」的合理默认，也不改变任何旧调用方的行为。
+ *
+ * 挑不出来返回 null，由调用方按「范围外未命中」的同一个形状回 404——区分
+ * 「不存在」与「无权限」本身就是一种信息泄露，两条路必须长得一样。
+ */
+function pickMeeting(meetings: Meeting[], subMeetingId: string | null): Meeting | null {
+  if (subMeetingId !== null && subMeetingId !== '') {
+    return meetings.find((m) => m.meetingRecordId === subMeetingId) ?? null
+  }
+  return [...meetings].sort((a, b) => b.startTime - a.startTime)[0] ?? null
+}
+
+/**
  * 这场会议对该 actor 的采集权限判定。**一场会议只判一次**——判定结果里带着
  * 「放行哪几类资产」，具体某一类取不取得到由 `allowsAsset` 作用在结果之上
  * （计划 §3.4.1 D-e：asset_types 是命中规则的载荷，不是筛选条件）。
@@ -146,11 +163,11 @@ export async function listMeetings(req: Request, ctx: RouteCtx): Promise<Respons
 }
 
 /**
- * GET /api/v1/meetings/:meetingId?from=&to=
+ * GET /api/v1/meetings/:meetingId?sub_meeting_id=&from=&to=
  *
- * 单场会议详情，含（已按策略过滤的）资产清单。若同一 meeting_id 在窗口内
- * 命中多条记录（理论上限于周期性会议的多次实例复用同一 meeting_id），
- * 取时间最新的一条作为主记录——这是一个尽力而为的简化，详见任务报告。
+ * 单场会议详情，含（已按策略过滤的）资产清单。同一 meeting_id 在窗口内可能
+ * 命中多条录制记录（周期会议的每一场是一条），要哪一场由 `sub_meeting_id`
+ * 点名；不给则取 startTime 最新的那条（见 `pickMeeting`）。
  *
  * 整场可见性检查（与 listMeetings 完全一致的口径：采集权限判定为 allow
  * 且至少放行一类资产）在这里同样是必需的——否则会议本身的属性
@@ -181,7 +198,11 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
   }
 
   // 缓存写入由 recordsApi 统一负责（见上面 listMeetings 处的说明）
-  const meeting = [...meetings].sort((a, b) => b.startTime - a.startTime)[0]!
+  const meeting = pickMeeting(meetings, url.searchParams.get('sub_meeting_id'))
+  if (meeting === null) {
+    const notFound = new MeetingNotFoundInRangeError(meetingIdParam, from ?? now - DEFAULT_WINDOW_SEC, to ?? now)
+    return json(404, { error: 'meeting_not_found_in_range', message: notFound.message })
+  }
 
   // 整场会议只判一次：可见性与「哪几类资产能列出来」用的是**同一个判定结果**。
   // 判两次不只是多花一次查询——两次之间规则若被改动，就会出现「会议可见但
@@ -203,7 +224,10 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
 }
 
 /**
- * GET /api/v1/meetings/:meetingId/assets?from=&to=
+ * GET /api/v1/meetings/:meetingId/assets?sub_meeting_id=&from=&to=
+ *
+ * 场次的挑选与 `getMeeting` 同一口径（`pickMeeting`）：`sub_meeting_id` 给了就
+ * 取那一条录制记录，不给取最新一条，点不中回 404 meeting_not_found_in_range。
  *
  * STS-Token 不可用时，catalog.listAssets 已经在更底层把 ai_* 资产直接排除
  * （字段缺失即不产生该资产，见 catalog/index.ts），video/audio/meeting_summary
@@ -232,7 +256,11 @@ export async function listAssets(req: Request, ctx: RouteCtx): Promise<Response>
   }
 
   // 缓存写入由 recordsApi 统一负责（见上面 listMeetings 处的说明）
-  const meeting = [...meetings].sort((a, b) => b.startTime - a.startTime)[0]!
+  const meeting = pickMeeting(meetings, url.searchParams.get('sub_meeting_id'))
+  if (meeting === null) {
+    const notFound = new MeetingNotFoundInRangeError(ctx.params.meetingId!, from ?? now - DEFAULT_WINDOW_SEC, to ?? now)
+    return json(404, { error: 'meeting_not_found_in_range', message: notFound.message })
+  }
 
   const assets = await ctx.deps.catalog.listAssets(meeting)
   const decision = await decideMeeting(ctx, auth.identity, meeting, now)

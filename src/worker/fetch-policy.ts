@@ -339,7 +339,7 @@ function createMeetingTape(gw: AssetSource) {
           nextCursor: page.nextCursor,
         }
       },
-      listAssets: (meetingId, from, to) => gw.listAssets(meetingId, from, to),
+      listAssets: (meetingId, subMeetingId, from, to) => gw.listAssets(meetingId, subMeetingId, from, to),
       getDownloadUrl: (assetId) => gw.getDownloadUrl(assetId),
     }
   }

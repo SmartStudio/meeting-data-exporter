@@ -7,7 +7,7 @@ import { createInProcSource } from '../../src/worker/source-inproc'
 const GW_MEETING: Meeting = {
   meetingId: 'm1',
   subMeetingId: 's1',
-  meetingRecordId: 'rec1',
+  meetingRecordId: 's1',
   meetingCode: '881-123-40',
   subject: '周会',
   hostUserId: 'u1',
@@ -77,7 +77,7 @@ describe('createInProcSource', () => {
 
   test('listAssets 把 recordFileId 映射成 remoteId', async () => {
     const src = make()
-    const assets = await src.listAssets('m1', 0, 9999)
+    const assets = await src.listAssets('m1', '', 0, 9999)
     expect(assets).toEqual([
       {
         assetId: 'rec1:f1:video:0',
@@ -92,12 +92,12 @@ describe('createInProcSource', () => {
 
   test('listAssets 不产出 state 字段——网关的 wire 格式本来就没有它', async () => {
     const src = make()
-    const [a] = await src.listAssets('m1')
+    const [a] = await src.listAssets('m1', '')
     expect('state' in a!).toBe(false)
   })
 
   test('一个 meetingId 下多个 sub_meeting 的资产会被合并', async () => {
-    const second = { ...GW_MEETING, subMeetingId: 's2', meetingRecordId: 'rec2' }
+    const second = { ...GW_MEETING, subMeetingId: 's2', meetingRecordId: 's2' }
     const src = make({
       recordsApi: { listMeetings: async () => [GW_MEETING, second] },
       catalog: {
@@ -107,8 +107,39 @@ describe('createInProcSource', () => {
         resolveDownloadUrl: async () => ({ url: 'https://x/f', expiresAt: 9999 }),
       },
     } as any)
-    const assets = await src.listAssets('m1')
+    const assets = await src.listAssets('m1', '')
     expect(assets.map((a) => a.remoteId)).toEqual(['f-s1', 'f-s2'])
+  })
+
+  test('listAssets 按场次收窄：只要 meetingRecordId 等于 subMeetingId 的那一条记录', async () => {
+    const second = { ...GW_MEETING, subMeetingId: 'rec2', meetingRecordId: 'rec2' }
+    const src = make({
+      recordsApi: { listMeetings: async () => [GW_MEETING, second] },
+      catalog: {
+        listAssets: async (m: Meeting) => [
+          { ...GW_ASSET, subMeetingId: m.subMeetingId, recordFileId: `f-${m.subMeetingId}` },
+        ],
+        resolveDownloadUrl: async () => ({ url: 'https://x/f', expiresAt: 9999 }),
+      },
+    } as any)
+
+    const only = await src.listAssets('m1', 'rec2')
+    expect(only.map((a) => a.remoteId)).toEqual(['f-rec2'])
+  })
+
+  test('listAssets 的 subMeetingId 为空串时保留全部记录（旧库与旧探测行的兼容口径）', async () => {
+    const second = { ...GW_MEETING, subMeetingId: 'rec2', meetingRecordId: 'rec2' }
+    const src = make({
+      recordsApi: { listMeetings: async () => [GW_MEETING, second] },
+      catalog: {
+        listAssets: async (m: Meeting) => [
+          { ...GW_ASSET, subMeetingId: m.subMeetingId, recordFileId: `f-${m.subMeetingId}` },
+        ],
+        resolveDownloadUrl: async () => ({ url: 'https://x/f', expiresAt: 9999 }),
+      },
+    } as any)
+
+    expect((await src.listAssets('m1', '')).map((a) => a.remoteId)).toHaveLength(2)
   })
 
   test('getDownloadUrl 从 assetId 合成 Asset 的三个字段（assetId/recordFileId/assetType），不额外打 listAssets', async () => {
@@ -230,7 +261,7 @@ describe('createInProcSource + 真实 catalog：多格式资产按 file_type 定
       getMinutes: async () => '# 纪要\n',
       getChapters: async () => null,
     })
-    const assets = await source.listAssets('m1')
+    const assets = await source.listAssets('m1', '')
     const minutes = assets.find((a) => a.assetType === 'ai_minutes')!
     expect(minutes.assetId.endsWith(':ai_minutes:md')).toBe(true)
     const link = await source.getDownloadUrl(minutes.assetId)

@@ -12,6 +12,24 @@ function fakeGw(assetsByMeeting: Record<string, any[]>): AssetSource {
   }
 }
 
+test('discovery 把会议的场次一起交给 listAssets——同 meeting_id 的多个场次各要各的资产', async () => {
+  const store = createStore(openDb(':memory:'))
+  const seen: Array<[string, string]> = []
+  const gw: AssetSource = {
+    listMeetings: async () => ({ meetings: [
+      { meetingId: 'm1', subMeetingId: 'rec-1', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 },
+      { meetingId: 'm1', subMeetingId: 'rec-2', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 300, endTime: 400 },
+    ], nextCursor: null }),
+    listAssets: async (id, sub) => {
+      seen.push([id, sub])
+      return [{ assetId: `m1:${sub}:video:0`, assetType: 'video', remoteId: `rf-${sub}`, state: 3, allowDownload: true, bytesExpected: 1, fileType: 'mp4' }]
+    },
+    getDownloadUrl: async () => ({ url: '', expiresAt: 0, fileType: null, bytesExpected: null }),
+  }
+  await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video'], 1000)
+  expect(seen).toEqual([['m1', 'rec-1'], ['m1', 'rec-2']])
+})
+
 test('就绪资产建 pending 任务；不在清单的想要类型建 probing 探测', async () => {
   const store = createStore(openDb(':memory:'))
   const gw = fakeGw({ m1: [

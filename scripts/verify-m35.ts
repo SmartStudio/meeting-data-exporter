@@ -93,7 +93,7 @@ async function cmdRange(a: Args): Promise<void> {
 
   console.log(`\n§4.1 Range 支持（会议 ${a.meeting}，资产类型 ${wantType}）`)
 
-  const assets = await gw.listAssets(a.meeting)
+  const assets = await gw.listAssets(a.meeting, '')
   if (assets.length === 0) {
     fail('取到资产清单', '这场会议一个资产都没有，换一场有录制的')
     return

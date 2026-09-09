@@ -650,3 +650,57 @@ test('未知路径返回 404', async () => {
   const res = await app(new Request('https://gw/api/v1/does-not-exist'))
   expect(res.status).toBe(404)
 })
+
+test('单场详情与资产清单可按 sub_meeting_id 点名要某一场，未命中 404', async () => {
+  const judy: ActorIdentity = {
+    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-judy-1', programId: 'prog-judy-1',
+  }
+  // 同一个 meeting_id 的两条录制记录 = 周期会议的两场
+  const first = rawMeeting({
+    meeting_record_id: 'rec-j-1', meeting_id: 'm-j-1', meeting_code: '893', host_user_id: 'tm-judy-1',
+    subject: '第一场',
+  })
+  const second = {
+    ...(rawMeeting({
+      meeting_record_id: 'rec-j-2', meeting_id: 'm-j-1', meeting_code: '893', host_user_id: 'tm-judy-1',
+      subject: '第二场',
+    }) as Record<string, unknown>),
+    media_start_time: (NOW + 3600) * 1000,   // 更晚的一场：不带参数时它胜出
+  }
+
+  const { app } = buildTestApp(pool, {
+    now: () => NOW + 7200,
+    tencentGet: (path) => (recordsFor(path, [first, second]) ?? {}),
+  })
+  await insertPolicyRule(pool, { priority: 10, programId: 'prog-judy-1', assetTypes: ['*'], effect: 'allow' })
+  await insertGrant(pool, { meetingId: 'm-j-1', subMeetingId: 'rec-j-1', programId: 'prog-judy-1' })
+  await insertGrant(pool, { meetingId: 'm-j-1', subMeetingId: 'rec-j-2', programId: 'prog-judy-1' })
+  const headers = bearer(judy, NOW + 7200)
+
+  // ① 不给 sub_meeting_id：保持旧口径，取 startTime 最新的一条
+  const latest = await app(new Request('https://gw/api/v1/meetings/m-j-1', { headers }))
+  expect(latest.status).toBe(200)
+  expect(((await latest.json()) as { subject: string }).subject).toBe('第二场')
+
+  // ② 给了就取那一条
+  const pinned = await app(
+    new Request('https://gw/api/v1/meetings/m-j-1?sub_meeting_id=rec-j-1', { headers }),
+  )
+  expect(pinned.status).toBe(200)
+  const pinnedBody = (await pinned.json()) as { subject: string; sub_meeting_id: string }
+  expect(pinnedBody.subject).toBe('第一场')
+  expect(pinnedBody.sub_meeting_id).toBe('rec-j-1')
+
+  // ③ 没命中：404，与「范围外未命中」同一个形状
+  const miss = await app(
+    new Request('https://gw/api/v1/meetings/m-j-1?sub_meeting_id=rec-nope', { headers }),
+  )
+  expect(miss.status).toBe(404)
+  expect(((await miss.json()) as { error: string }).error).toBe('meeting_not_found_in_range')
+
+  // ④ 资产端点同样认这个参数
+  const assets = await app(
+    new Request('https://gw/api/v1/meetings/m-j-1/assets?sub_meeting_id=rec-nope', { headers }),
+  )
+  expect(assets.status).toBe(404)
+})

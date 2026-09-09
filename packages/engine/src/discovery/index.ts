@@ -15,7 +15,7 @@ export async function discover(
   const wantedFields = new Map(wantedKeys.map((k) => [ASSET_KEY_TO_GATEWAY_TYPE[k], k]))
   for (const m of meetings) {
     await deps.store.upsertMeeting(m, now)
-    const assets = await deps.gw.listAssets(m.meetingId, sel.kind !== 'range' ? sel.from : undefined, sel.kind !== 'range' ? sel.to : undefined)
+    const assets = await deps.gw.listAssets(m.meetingId, m.subMeetingId, sel.kind !== 'range' ? sel.from : undefined, sel.kind !== 'range' ? sel.to : undefined)
     for (const [field, key] of wantedFields) {
       const present = assets.filter((a) => a.assetType === field)
       const rep = present[0]  // 同一 meeting 的同类多段共享 allow_download/state，取代表判定类型级就绪

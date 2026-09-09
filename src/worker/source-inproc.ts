@@ -71,9 +71,8 @@ export function createInProcSource(deps: InProcSourceDeps): AssetSource {
    * 回归用例：tests/worker/exact-lookup.test.ts。
    *
    * 同一个 meetingId 在时间窗内可能命中多条记录（周期性会议的多次实例复用同一
-   * meeting_id）；这里全部返回，由 listAssets 逐条聚合资产，不像 HTTP 网关的
-   * getMeeting/listAssets 那样只取时间最新的一条——worker 的职责是把数据完整
-   * 归档，不是只展示"当前"这一场。
+   * meeting_id）；这里全部返回，由 `listAssets` 按它拿到的 `subMeetingId` 收窄到
+   * 其中一条——反查这一层不知道调用方要哪一场，收窄的判断只能放在上面。
    */
   async function meetingsById(meetingId: string, from?: number, to?: number): Promise<GatewayMeeting[]> {
     return deps.recordsApi.listMeetings({ kind: 'id', meetingId, from, to }, deps.now())
@@ -86,9 +85,13 @@ export function createInProcSource(deps: InProcSourceDeps): AssetSource {
       return { meetings: meetings.map(toEngineMeeting), nextCursor: null }
     },
 
-    async listAssets(meetingId, from, to) {
+    async listAssets(meetingId, subMeetingId, from, to) {
       const out: SourceAsset[] = []
       for (const m of await meetingsById(meetingId, from, to)) {
+        // 场次收窄（spec §2.2）：sub 给了就只要那一条录制记录。反查按 meeting_id 走，
+        // 周期会议会命中多条，全都列进来的话每个场次都会存下全部场次的资产。
+        // 空串保留全部——旧库与旧探测行的兼容口径。
+        if (subMeetingId !== '' && m.meetingRecordId !== subMeetingId) continue
         for (const a of await deps.catalog.listAssets(m)) out.push(toSourceAsset(a))
       }
       return out
