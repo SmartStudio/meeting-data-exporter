@@ -35,7 +35,10 @@ export MDE_CLIENT_SECRET=xxxx
 
 > 2026-09-09 起场次 id 取腾讯的 `meeting_record_id`，周期会议的每一场各占一个目录。
 > **旧的 `queue.sqlite` 不做迁移**：换一个 `--out` 目录重新跑一遍即可，已经下载过的
-> 文件仍在旧目录里，不会丢。
+> 文件仍在旧目录里，不会丢。**继续用原来那个 `--out` 的话，每一场会议都会重新下载
+> 到 `_2` 目录里**——旧库里那些空串场次行的目录序号仍然占着 1，新拉到的场次行只能
+> 顺次拿到 `_2`（目录序号按 `(created_at, sub_meeting_id)` 排，见
+> `packages/engine/src/domain/dir-ordinal.ts`）。
 
 ### `run` — 一次性完成「发现 + 下载」
 

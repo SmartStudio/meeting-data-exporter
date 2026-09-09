@@ -688,7 +688,7 @@ EOF
 
 **背景（事实）：** 规格假设「各场次 start_time 不同，目录天然分开」。实测不成立：腾讯常给同一场会议两条记录——正常录制 + 主题带「转写_」前缀的转写记录，两者 `media_start_time` **相同**；本机库 294 场会议里有 84 组（168 条记录）落在同一 `(meeting_id, 起始分钟)`，其中 80 组是转写记录、4 组是同一分钟的两次正常录制。Task 2 之后这两条记录是两场会议，`meetingDirPath` 却给出同一个目录，`siblingRank` 各自从 1 起算 → `transcript.txt`、`meeting.json`、`_manifest.json` 互相覆盖，且每轮清单写入来回翻转。
 
-**裁定：** 同一 `meeting_id` 下、`meetingDirPath` 算出同名目录的多条记录，按 `sub_meeting_id` **字符串升序**编号：第 1 条目录名不变，第 2 条起在目录名末尾加 `_2`、`_3`…（`<yyyy>/<mm>/<yyyy-mm-dd>_<hhmm>_<code>_2`）。`''`（存量空串行）排最前，所以存量目录永远保持原名。record id 是时间序递增的，先出现的记录保住无后缀的目录。
+**裁定：** 同一 `meeting_id` 下、`meetingDirPath` 算出同名目录的多条记录，按 `(created_at, sub_meeting_id)` **升序**编号（首次发现时间是主序，`sub_meeting_id` 只在同批发现时定次序）：第 1 条目录名不变，第 2 条起在目录名末尾加 `_2`、`_3`…（`<yyyy>/<mm>/<yyyy-mm-dd>_<hhmm>_<code>_2`）。存量空串行的 `created_at` 更早，所以存量目录永远保持原名。**实现落地时按 `created_at` 主序**（见 `packages/engine/src/domain/dir-ordinal.ts` 的注释）：光按 record id 字符串排的话，上游后补出一条更早的 record id 会把已经装着文件的目录当场改名。
 
 **Files:**
 - Modify: `packages/engine/src/domain/filename.ts`（`meetingDirPath(m, fallbackCode, dirOrdinal = 1)`：`dirOrdinal > 1` 时最后一段追加 `_${dirOrdinal}`；其余一个字符不动）

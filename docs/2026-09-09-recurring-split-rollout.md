@@ -75,11 +75,28 @@ ps -ef | grep bun | grep -v grep           # 确认真的没了再往下走
   回调只到其中一台（见 memory `sts-single-active-token-per-app`）。所以第 4 节起服务器
   的调度器**之前**，必须先确认本机的已经停了。
 
+**本机（Mac）库里同样有存量的 `''` 行。** 它和生产是两套库，脚本跑生产不会动本机。
+所以本机只有两条路，二选一：
+
+- 也按第 3 节对本机库跑一遍脚本（`DATABASE_URL` 指本机、`MDE_ARCHIVE_ROOT` 指本机归档区）；
+- 或者**本机调度器保持停用**，直到本机库也拆过。
+
+否则本机首轮 `fetch_recordings` 会在那些 `''` 行旁边新建按场次的行，本机库当场进入
+混合状态（§0.1），再想拆就得先按 §7.1 收拾。**跑脚本之前本机这三个进程都要停**：
+网关（`:3100`）、调度器、以及控制台的 vite dev server。
+
+```bash
+lsof -ti :3100 | xargs -r kill              # 本机网关
+pkill -f 'bun src/worker/scheduler.ts'      # 本机调度器
+pkill -f 'vite'                             # console 的 dev server
+```
+
 顺手备份：
 
 ```bash
 mysqldump <db> meetings meeting_assets archived_assets meeting_archives \
   meeting_grants meeting_overrides asset_contents meeting_asset_probes \
+  job_failures meeting_cache \
   > backup-2026-09-09.sql
 ```
 
@@ -109,10 +126,17 @@ bun scripts/split-recurring-meetings.ts 2>&1 | tee split-dry-$(date +%s).log
 - 每场会议列出的场次数与你在控制台上看到的日会次数对得上；
 - `undecidable` 的那几场，逐条看理由（脚本会把理由整句打出来）：会议已有按场次的行
   = 混合状态（见 7.1）/ NAS 基准目录讲不清（`nas_dir` 与从 `nas_path` 反推的对不上）/
+  有 `archived_assets` 行却反推不出 NAS 基准目录（没有 `meeting_archives` 行，
+  `nas_path` 又短到砍不出前四段）/ `archived_assets` 行对不上任何 `meeting_assets` 行 /
   `asset_id` 是空的 / `asset_type` 不在引擎的资产词汇表里 / `archived_assets.local_path`
   与 `meeting_assets.target_path` 不一致 / record id 在 `meeting_cache` 里查不到 /
+  `meeting_cache` 里没有这个 `meeting_id` 的任何场次（资产也反推不出 record id）/
   两个场次算出同一个目录 / 两个资产算出同一个新路径。
   **不要绕过它们**——退出码 2 就是让你停下来看这个的。
+  其中两条「归档行对不上」的理由（反推不出 NAS 基准目录、对不上任何 `meeting_assets`
+  行）指向同一件事：拆了会把那些 `archived_assets` 行留在空 `sub_meeting_id` 上，
+  挂在一个**已经不存在的会议**下（`meetings` 的 `''` 行同一个事务里就删了），
+  之后谁也扫不出来。
 - 输出里有 `‼ NAS 基准目录不存在：…` 的话，是 NAS 没挂上。dry-run 只警告不中止，
   `--apply` 会直接退出码 2、一场都不动。挂好再来。
 
@@ -133,14 +157,28 @@ bun scripts/split-recurring-meetings.ts --apply 2>&1 | tee split-$(date +%s).log
 
 | 码 | 含义 | 该做什么 |
 | --- | --- | --- |
-| 0 | 全部处理完，没有要人看的 | 翻一遍日志找 `left_over`（见下），没有就起服务 |
-| 1 | 有会议跑炸了（`failed=N`）；那几场**已经逐场回滚干净**，别的会议照常拆完了 | 看日志里的 `failed：…`，修掉原因后重跑（脚本幂等、可重复跑） |
-| 2 | 有 `conflict` 或 `undecidable`；或者环境不对（缺 `DATABASE_URL` / `MDE_ARCHIVE_ROOT`、`MDE_ARCHIVE_ROOT` 不存在、NAS 没挂上） | **先别起服务**，按日志逐条人工确认 |
+| 0 | 全部处理完，没有要人看的，**而且最后一行的「剩余未拆的会议」是 0** | 翻一遍日志找 `left_over`（见下），没有就起服务 |
+| 1 | 有会议跑炸了（`failed=N`）而库里已经一行不剩；那几场**已经逐场回滚干净** | 看日志里的 `failed：…`，修掉原因后重跑（脚本幂等、可重复跑） |
+| 2 | 有 `conflict` / `undecidable` / `finish_failed`；**或者跑完还剩 `sub_meeting_id = ''` 的行**；或者环境不对（缺 `DATABASE_URL` / `MDE_ARCHIVE_ROOT`、`MDE_ARCHIVE_ROOT` 不存在、NAS 没挂上） | **先别起服务**，按日志逐条人工确认 |
+
+**退出码 0 的含义是「没有要人看的**并且**一行没拆的都不剩」。** 脚本最后一行就是这个数：
+
+```
+剩余未拆的会议：N（起服务前必须为 0）
+```
+
+`N > 0` 时 `--apply` 一律返回 2——这一条把 `not_found`（本地文件被到期清理删过，
+它自己不进退出码）、`conflict`、`undecidable`、`failed` 留下的行**一网打尽**：
+只要还有 `''` 行，起服务之后首轮拉取就会在它旁边新建按场次的行，库当场进混合状态
+（§0.1），再想拆得先按 §7.1 收拾。dry-run 也打这一行，但不改它的退出码。
+
+> 因此实践中**退出码 1 几乎见不到**：跑炸的那场会议 `''` 行还在，剩余数不为 0，
+> 退出码会是 2。日志里的 `failed=N` 仍然分得清是哪一档。
 
 汇总行：
 
 ```
-renamed=… already_done=… not_found=… conflict=… undecidable=… failed=… left_over=…
+renamed=… already_done=… not_found=… conflict=… undecidable=… finish_failed=… failed=… left_over=…
 ```
 
 **`left_over` 不进退出码**。它是「旧目录搬空了，但里面还有不认识的东西，所以目录被
@@ -167,7 +205,19 @@ renamed=… already_done=… not_found=… conflict=… undecidable=… failed=�
 
 ## 4. 起
 
-先起网关，再起调度器。**起调度器之前再确认一次本机的调度器已经停了**（STS token 单例）。
+**起之前的硬门槛**（脚本最后一行说的就是它，这里再自己查一遍）：
+
+```sql
+SELECT COUNT(*) FROM meetings WHERE sub_meeting_id = '';   -- 必须是 0
+```
+
+不为 0 就**别起**：首轮 `fetch_recordings` 会在那些行旁边新建场次行，库进混合状态。
+先回第 3 节把剩下的拆完（或按 §7 逐条收拾）。
+
+**本机同理**：本机库要么也拆过、要么本机调度器保持停用（见第 1 节末尾那一段）。
+起服务器调度器之前再确认一次本机的调度器已经停了（STS token 全局单例）。
+
+先起网关，再起调度器。
 
 ```bash
 cd /home/ubuntu/mde/app
@@ -253,10 +303,20 @@ SELECT sub_meeting_id, created_at, subject FROM meetings
 
 脚本搬文件分两阶段：先把全部源文件就地改名成 `<原路径>.mde-split-tmp`，再从 `.tmp`
 各就各位（拆场次天然有「A 的目标就是 B 的源」这种交换，一阶段直排解不了环）。
-两阶段之间进程被杀（`kill -9`、断电）时，文件会停在 `.mde-split-tmp` 上；重跑会把它
-判成 `not_found`（新旧位置都不在），**而 `not_found` 不影响退出码**。
+两阶段之间进程被杀（`kill -9`、断电）时，文件会停在 `.mde-split-tmp` 上。
 
-收拾：
+**重跑会把这一整场判成 `conflict` 并原地不动**（退出码 2），日志里是这一句：
+
+```
+⚠ <mid> conflict：<路径>.mde-split-tmp 已经存在——上一次跑多半在两阶段搬运之间被
+  杀掉了，文件还停在这个暂存名上。先手工去掉 .mde-split-tmp 后缀把它改回去，再重跑本脚本
+```
+
+这道闸排在「新旧位置都不在 → `not_found`」**之前**，所以源路径已经空掉的那种残留
+（第一阶段之后被杀）也拦得住——不然这一场会被判成 `not_found` 悄悄溜过去，
+下一轮 worker 照着库里的旧路径重新下载，而那份唯一的副本永远晾在 `.tmp` 上。
+
+收拾（把它改回原名，再重跑；脚本会正常拆这一场）：
 
 ```bash
 find "$MDE_ARCHIVE_ROOT" <nas_dir> -name '*.mde-split-tmp'
@@ -283,6 +343,15 @@ find "$MDE_ARCHIVE_ROOT" <nas_dir> -name '*.mde-split-tmp'
 那几场已经逐场回滚干净（事务回滚 + 文件搬回原位），别的会议照常拆完了。修掉日志里
 写的原因，直接重跑——脚本只处理 `sub_meeting_id = ''` 的行，自消耗、可重复跑。
 
-例外是这一行：`‼ <mid> 事务回滚失败：…`。回滚本身也失败了，库可能停在中间态，
+例外一，这一行：`‼ <mid> 事务回滚失败：…`。回滚本身也失败了，库可能停在中间态，
 **这一场必须人工核对**（对着备份看 `meetings` / `meeting_assets` 那几张表），
 不要盲目重跑。
+
+例外二，`已提交，收尾失败：…（不会重跑，按日志手工收尾）`（汇总行里的
+`finish_failed=N`，退出码 2）。这一场**库已经提交、文件也已经搬好**，只是收尾那两步
+（重写 NAS 侧车 / 清掉搬空的旧目录）里有一步炸了。**重跑修不了它**——这一场的 `''` 行
+已经没了，脚本再跑一遍一步都走不到它。人工要做的只有两件：
+
+- 清掉日志里那个搬空了的旧目录（先看一眼里面剩下什么，脚本绝不删非空目录）；
+- NAS 侧车（`<nas_dir>/_manifest.json` 与 `meeting.json`）不用手写，**下一轮归档会自己
+  按新场次重写**，等一轮即可。
