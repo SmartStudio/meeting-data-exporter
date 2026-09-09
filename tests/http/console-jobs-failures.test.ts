@@ -43,6 +43,11 @@ function fakeAdminAuth(identity: AdminIdentity | null): AdminAuth {
 interface Rig {
   ctx: RouteCtx
   audits: AuditEntry[]
+  /**
+   * 每写一行审计之前先跑一次。用来在「写这一行审计」的那一刻回头看库里的状态
+   * ——交错那条用例的全部内容就是这个时刻差（见文件末尾）。
+   */
+  onAudit: { fn: ((e: AuditEntry) => Promise<void>) | null }
   jobs: ReturnType<typeof createJobsStore>
   store: ReturnType<typeof createMysqlStore>
 }
@@ -56,18 +61,24 @@ async function withRig(
     const jobs = createJobsStore(pool)
     const store = createMysqlStore(pool)
     const audits: AuditEntry[] = []
+    const onAudit: Rig['onAudit'] = { fn: null }
     const deps = {
       now: () => NOW,
       adminAuth: fakeAdminAuth(identity),
       jobs: {
         jobs,
         assets: store,
-        audit: { async record(e: AuditEntry) { audits.push(e) } },
+        audit: {
+          async record(e: AuditEntry) {
+            if (onAudit.fn !== null) await onAudit.fn(e)
+            audits.push(e)
+          },
+        },
         tzOffsetSec: 0,
         fetchLookbackHours: 24,
       },
     } as unknown as AppDeps
-    await fn({ ctx: { params: {}, deps }, audits, jobs, store })
+    await fn({ ctx: { params: {}, deps }, audits, onAudit, jobs, store })
   } finally {
     await cleanup()
   }
@@ -251,4 +262,35 @@ test('只读角色 403，未登录 401——两种都不许改任何一行', asy
     expect(res.status).toBe(401)
     expect((await rig.store.assetsForMeeting('m-1', ''))[0]!.status).toBe('dead')
   }, null)
+})
+
+/**
+ * 一批里的每一条**各自走完三步**（改资产 → 关失败项 → 写审计），而不是
+ * 先把全批的资产都改了、再一起关、最后补一堆审计。
+ *
+ * 为什么这个顺序要被钉住：审计行是「这件事真的发生了」的唯一凭据。分三轮写时，
+ * 一批 20 条里第 12 条炸掉，库里已经有 11 条改动而审计一行都还没写；交错之后，
+ * 写下来的每一行审计都对得上一次已经落库的改动，中途挂掉也只差最后那一条。
+ */
+test('交错：每条的审计紧跟自己那次改动，不是全改完再补审计', async () => {
+  await withRig(async (rig) => {
+    const id1 = await seedDeadMeeting(rig, { meetingId: 'm-1' })
+    const id2 = await seedDeadMeeting(rig, { meetingId: 'm-2' })
+    const snaps: Array<{ m1: string; m2: string; open: number }> = []
+    rig.onAudit.fn = async () => {
+      snaps.push({
+        m1: (await rig.store.assetsForMeeting('m-1', ''))[0]!.status,
+        m2: (await rig.store.assetsForMeeting('m-2', ''))[0]!.status,
+        open: (await rig.jobs.listFailures()).length,
+      })
+    }
+    const res = await retryFailures(
+      post('/api/v1/admin/jobs/failures/retry', { ids: [id1, id2] }), rig.ctx,
+    )
+    expect(await res.json()).toEqual({ affected: 2, skipped: [] })
+
+    // 第一行审计落笔时：m-1 已经打回队列、它那条失败项已经关掉，而 m-2 一行没动。
+    expect(snaps[0]).toEqual({ m1: 'pending', m2: 'dead', open: 1 })
+    expect(snaps[1]).toEqual({ m1: 'pending', m2: 'pending', open: 0 })
+  })
 })

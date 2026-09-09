@@ -46,7 +46,7 @@ test('认不出的错与没有错误信息都回一句最弱的话，不编一�
 // 404 那条要排在 5xx 之前判：`http 404` 不以 `http 5` 开头，两条不会打架，
 // 但顺序写反时 `http 500` 会被 startsWith('http 4') 之类的手滑写法捞走。
 test('判定顺序：含 ENOENT 的 404 仍然算「腾讯那边没有这个文件」', () => {
-  expect(describeDownloadError('http 404')).toBe('腾讯那边没有这个文件')
+  expect(describeDownloadError("http 404 (ENOENT: open '/x/y.part')")).toBe('腾讯那边没有这个文件')
 })
 
 test('资产名用全项目那一份中文；认不出的类型原样带出，不映成任何一个已知的', () => {

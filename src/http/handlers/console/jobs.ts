@@ -423,16 +423,23 @@ async function actOnFailures(
     else skipped.push(id)   // 找不到、已恢复、或不是可操作的那种——三种都不编一个结果
   }
 
+  // 一条一条走完：改资产 → 关掉它自己那条失败项 → 写它自己那行审计。三步交错，
+  // 不是「先全改完、再一起关、最后补一批审计」。
+  //
+  // 审计行是「这件事真的发生了」的唯一凭据，所以它必须跟在自己那次改动之后。
+  // 分三轮写时，一批 20 条里第 12 条炸掉，库里已经有 11 条改动而审计一行都没写
+  // ——事后按会议查审计，查到的是「没人动过」。交错之后写下来的每一行审计都对得上
+  // 一次已经落库的改动，中途挂掉最多差最后那一条。
+  //
+  // 逐条一行审计（与 purge_local 同一个先例）：这一列要答得出「是谁把哪一场
+  // 会议的资产打回了队列」。一批一条的话，事后按会议查审计就查不到这件事。
   for (const f of doable) {
     const key = { meetingId: f.meetingId!, subMeetingId: f.subMeetingId }
     if (kind === 'retry') await d.assets.retryMeetingAssets(key, now)
     else await d.assets.ignoreDeadAssets(key, now)
-  }
-  await d.jobs.resolveFailuresByIds(doable.map((f) => f.id), now)
+    // 批量接口收一个只有一条的数组：语义与逐条一致，也省得为这里另开一个方法
+    await d.jobs.resolveFailuresByIds([f.id], now)
 
-  // 逐条一行审计（与 purge_local 同一个先例）：这一列要答得出「是谁把哪一场
-  // 会议的资产打回了队列」。一批一条的话，事后按会议查审计就查不到这件事。
-  for (const f of doable) {
     const entry: AuditEntry = {
       occurredAt: now,
       actorType: 'admin',
