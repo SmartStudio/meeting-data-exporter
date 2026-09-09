@@ -27,6 +27,12 @@ export interface MeetingPathRow {
   meetingCode: string | null
   endTime: number | null
   /**
+   * 这一行**第一次**被写进库的时刻（`meetings.created_at`；两个宿主的
+   * `upsertMeeting` 在冲突时都只改 `updated_at`）。目录序号的主序就是它——
+   * 晚一轮才被发现的兄弟场次不许把先到者从它的目录里挤走，见 `assignDirOrdinals`。
+   */
+  createdAt: number
+  /**
    * 这条录制记录在**算出同名目录的兄弟记录**中的 1-based 序号，传给
    * `meetingDirPath` 的第三个参数（1 不加后缀，2 起追加 `_<n>`）。
    *
@@ -235,13 +241,14 @@ export function createStore(db: Database): Store {
     async resetFailed(now) { return db.query(`UPDATE assets SET status='pending', last_error=NULL, lease_expires_at=NULL, updated_at=?  WHERE status IN ('failed','dead')`).run(now).changes },
     async meetingsForPaths() {
       const rows = db.query<{ meeting_id: string; sub_meeting_id: string; subject: string | null;
-                              meeting_code: string | null; start_time: number | null; end_time: number | null }, []>(
-        `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time FROM meetings`,
+                              meeting_code: string | null; start_time: number | null; end_time: number | null;
+                              created_at: number }, []>(
+        `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time, created_at FROM meetings`,
       ).all()
       const meetings = rows.map((r) => ({
         meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id,
         subject: r.subject, startTime: r.start_time, meetingCode: r.meeting_code,
-        endTime: r.end_time,
+        endTime: r.end_time, createdAt: r.created_at,
       }))
       // 目录序号要看到**全部**行才算得出来（同名目录的兄弟是谁），所以在这里算一次、
       // 随值带走。两个宿主共用 assignDirOrdinals，不许各写一份。

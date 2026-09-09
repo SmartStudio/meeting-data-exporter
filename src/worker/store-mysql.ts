@@ -311,7 +311,7 @@ export function createMysqlStore(pool: Pool): MysqlStore {
      */
     async meetingsForPaths() {
       const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time
+        `SELECT meeting_id, sub_meeting_id, subject, meeting_code, start_time, end_time, created_at
            FROM meetings ORDER BY meeting_id, sub_meeting_id`,
       )
       const meetings = rows.map((r) => ({
@@ -321,6 +321,10 @@ export function createMysqlStore(pool: Pool): MysqlStore {
         startTime: r.start_time === null ? null : Number(r.start_time),
         meetingCode: (r.meeting_code ?? null) as string | null,
         endTime: r.end_time === null ? null : Number(r.end_time),
+        // created_at 是 BIGINT NOT NULL，与 start_time 一样显式 Number 化：这一列是
+        // 目录序号的主序，混进一个字符串会让比较规则取决于驱动怎么返回 BIGINT，
+        // 而序号定的是盘上的目录名，两个宿主必须给出同一个答案
+        createdAt: Number(r.created_at),
       }))
       // 目录序号与 SQLite 宿主同一个函数、同一个位置算（见引擎侧 meetingsForPaths）。
       // 不靠上面那句 ORDER BY：排序归排序，序号的定义写在 assignDirOrdinals 里，

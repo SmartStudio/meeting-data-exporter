@@ -129,7 +129,7 @@ test('meetingsForPaths 按 (meeting_id, sub_meeting_id) 建键：周期会议每
   expect(map.size).toBe(2)                       // 不再塌成一条
   expect(map.get(meetingPathKey('m1', 'rec-1'))).toEqual({
     meetingId: 'm1', subMeetingId: 'rec-1', subject: '第一场',
-    startTime: 1000, meetingCode: '88', endTime: 200, dirOrdinal: 1,
+    startTime: 1000, meetingCode: '88', endTime: 200, createdAt: 1, dirOrdinal: 1,
   })
   expect(map.get(meetingPathKey('m1', 'rec-2'))!.startTime).toBe(2000)
 })
@@ -168,6 +168,26 @@ test('meetingsForPaths 存量空串行排最前：dirOrdinal=1，目录名保持
   const map = await s.meetingsForPaths()
   expect(map.get(meetingPathKey('m1', ''))!.dirOrdinal).toBe(1)
   expect(map.get(meetingPathKey('m1', 'rec-9'))!.dirOrdinal).toBe(2)
+})
+
+/**
+ * 序号在两轮之间必须**钉住**：上游晚一轮才补出来的兄弟场次不许把先到者挤走。
+ * 挤走的后果是先到者已完成的资产留在旧目录（清单从此写不出来）、未完成的落进新
+ * 目录，而后来者下载进那个已经装着别人文件的目录——正是这个序号要防的碰撞。
+ * 所以序号按 created_at 排，而 upsertMeeting 在冲突时不改 created_at。
+ */
+test('meetingsForPaths 序号钉住：晚一轮才发现的兄弟场次（sub 更小）拿 2，先到者仍是 1', async () => {
+  const s = fresh()
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-5', startTime: 1000 }, 100)
+  expect((await s.meetingsForPaths()).get(meetingPathKey('m1', 'rec-5'))!.dirOrdinal).toBe(1)
+
+  // 下一轮才被发现的孪生记录，sub 更小但 created_at 更晚
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-3', subject: '转写_', startTime: 1010 }, 200)
+  await s.upsertMeeting({ ...M, subMeetingId: 'rec-5', startTime: 1000 }, 300)   // 先到者被重新投递：created_at 不该被改写
+
+  const map = await s.meetingsForPaths()
+  expect(map.get(meetingPathKey('m1', 'rec-5'))!.dirOrdinal).toBe(1)   // 目录名没变
+  expect(map.get(meetingPathKey('m1', 'rec-3'))!.dirOrdinal).toBe(2)
 })
 
 test('meetingsForPaths 仍认得空 sub_meeting_id 的旧行（旧 SQLite 库的兼容口径）', async () => {

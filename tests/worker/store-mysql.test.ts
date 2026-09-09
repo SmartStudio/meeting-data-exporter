@@ -511,11 +511,11 @@ describe('createMysqlStore', () => {
       expect(map.size).toBe(2)
       expect(map.get(meetingPathKey('m1', ''))).toEqual({
         meetingId: 'm1', subMeetingId: '', subject: '周会',
-        startTime: 1000, meetingCode: '881', endTime: 2000, dirOrdinal: 1,
+        startTime: 1000, meetingCode: '881', endTime: 2000, createdAt: 100, dirOrdinal: 1,
       })
       expect(map.get(meetingPathKey('m2', 's1'))).toEqual({
         meetingId: 'm2', subMeetingId: 's1', subject: null,
-        startTime: null, meetingCode: null, endTime: null, dirOrdinal: 1,
+        startTime: null, meetingCode: null, endTime: null, createdAt: 100, dirOrdinal: 1,
       })
     })
   })
@@ -581,6 +581,27 @@ describe('createMysqlStore', () => {
       const map = await s.meetingsForPaths()
       expect(map.get(meetingPathKey('m1', ''))!.dirOrdinal).toBe(1)
       expect(map.get(meetingPathKey('m1', 'rec-9'))!.dirOrdinal).toBe(2)
+    })
+  })
+
+  /**
+   * 序号在两轮之间必须**钉住**（与 SQLite 宿主逐条对齐）：晚一轮才被发现的兄弟场次
+   * 不许把先到者挤走，否则先到者已完成的资产留在旧目录、未完成的落进新目录，而后来者
+   * 下载进那个已经装着别人文件的目录。靠的是 created_at——ON DUPLICATE KEY UPDATE
+   * 只改 updated_at，不碰 created_at。
+   */
+  test('meetingsForPaths 序号钉住：晚一轮才发现的兄弟场次（sub 更小）拿 2，先到者仍是 1', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-5', startTime: 1000 }, 100)
+      expect((await s.meetingsForPaths()).get(meetingPathKey('m1', 'rec-5'))!.dirOrdinal).toBe(1)
+
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-3', subject: '转写_周会', startTime: 1010 }, 200)
+      await s.upsertMeeting({ ...M, subMeetingId: 'rec-5', startTime: 1000 }, 300)  // 重新投递不该改写 created_at
+
+      const map = await s.meetingsForPaths()
+      expect(map.get(meetingPathKey('m1', 'rec-5'))!.dirOrdinal).toBe(1)
+      expect(map.get(meetingPathKey('m1', 'rec-3'))!.dirOrdinal).toBe(2)
     })
   })
 
