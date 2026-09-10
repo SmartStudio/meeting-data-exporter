@@ -16,10 +16,6 @@ export interface AppConfig {
     qps: number
     baseUrl: string
   }
-  webhook: {
-    token: string
-    aesKey: string
-  }
   /**
    * 企业微信自建应用。**为 null 表示本次部署不启用企微登录**——设备授权流程
    * （扫码登录）随之整体不可用，客户端只能走服务账号认证。
@@ -31,7 +27,6 @@ export interface AppConfig {
   wecom: WecomConfig | null
   databaseUrl: string
   jwtSecret: string
-  stsEncKey: string
   gatewayBaseUrl: string
   identityStrategy: IdentityStrategy
   trustedProxyHops: number
@@ -64,11 +59,6 @@ function optional(env: Record<string, string | undefined>, key: string): string 
 }
 
 export function loadConfig(env: Record<string, string | undefined>): AppConfig {
-  const webhookToken = required(env, 'TM_WEBHOOK_TOKEN')
-  if (webhookToken.length !== 25) {
-    throw new Error('TM_WEBHOOK_TOKEN must be exactly 25 characters')
-  }
-
   const strategy = required(env, 'IDENTITY_STRATEGY')
   if (!IDENTITY_STRATEGIES.includes(strategy as IdentityStrategy)) {
     throw new Error(
@@ -119,16 +109,6 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
     throw new Error('JWT_SECRET must be at least 32 characters')
   }
 
-  // STS-Token 落库加密密钥，必须独立于 JWT_SECRET：两者分属不同信任域
-  // （会话签名 vs STS 密文存储），任一泄露不得牵连另一个（见 Global Constraints）。
-  const stsEncKey = required(env, 'STS_ENC_KEY')
-  if (stsEncKey.length < 32) {
-    throw new Error('STS_ENC_KEY must be at least 32 characters')
-  }
-  if (stsEncKey === jwtSecret) {
-    throw new Error('STS_ENC_KEY must differ from JWT_SECRET (separate trust domains)')
-  }
-
   return {
     tencent: {
       appId: required(env, 'TM_APP_ID'),
@@ -139,14 +119,9 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       qps,
       baseUrl: optional(env, 'TM_BASE_URL') ?? 'https://api.meeting.qq.com',
     },
-    webhook: {
-      token: webhookToken,
-      aesKey: required(env, 'TM_WEBHOOK_AES_KEY'),
-    },
     wecom,
     databaseUrl: required(env, 'DATABASE_URL'),
     jwtSecret,
-    stsEncKey,
     gatewayBaseUrl: required(env, 'GATEWAY_BASE_URL'),
     identityStrategy: strategy as IdentityStrategy,
     trustedProxyHops,

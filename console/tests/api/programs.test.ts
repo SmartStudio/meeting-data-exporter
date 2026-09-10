@@ -68,10 +68,9 @@ function program(over: Partial<ServiceProgram> = {}): ServiceProgram {
 }
 
 describe('资产类型的中文名', () => {
-  test('六类各有名字，与网关那份逐字一致', () => {
+  test('五类各有名字，与网关那份逐字一致', () => {
     expect(assetLabel('ai_minutes')).toBe('纪要')
     expect(assetLabel('transcript')).toBe('逐字稿')
-    expect(assetLabel('ai_transcript')).toBe('逐字稿（智能优化版）')
     expect(assetLabel('chapters')).toBe('时间轴')
   })
 

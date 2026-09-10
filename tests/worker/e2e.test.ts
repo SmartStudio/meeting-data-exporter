@@ -991,10 +991,10 @@ describe('parseWorkerArgs', () => {
   // `--concurrency` 覆盖 env 默认值、`--code` 配 `--from/--to` 缩窗）走的恰恰是
   // 中间那条谁都没断言过的路。都是纯解析，写用例几乎不要钱。
 
-  test('--assets 真的把资产集换掉：all 展开成全六类，csv 按给的顺序取', () => {
+  test('--assets 真的把资产集换掉：all 展开成全五类，csv 按给的顺序取', () => {
     // `all` 是报告 §3 示例命令里用的那个值
     expect(parseWorkerArgs(['--code', 'c', '--assets', 'all'], 4).keys).toEqual(ALL_ASSET_KEYS)
-    expect(parseWorkerArgs(['--code', 'c', '--assets', 'all'], 4).keys.length).toBe(6)
+    expect(parseWorkerArgs(['--code', 'c', '--assets', 'all'], 4).keys.length).toBe(5)
     // csv：只要给了这个旗标，就不能再回落到 DEFAULT_ASSET_KEYS
     const csv = parseWorkerArgs(['--code', 'c', '--assets', 'video,ai_minutes'], 4).keys
     expect(csv).toEqual(['video', 'ai_minutes'])

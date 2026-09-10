@@ -82,7 +82,6 @@ export interface TencentClientDeps {
 }
 
 export interface RequestOptions {
-  stsToken?: string
   /**
    * 这次调用算在哪条分钟级配额上，缺省是 path 本身。
    *
@@ -153,7 +152,7 @@ export function createTencentClient(
       // 每次重试都重新构造 URL 与请求头——nonce 与 timestamp 必须换新，
       // 否则触发 190301 请求重放错误。
       const built = buildUrl(cfg.baseUrl, path, query)
-      const headers = buildAuthHeaders(cfg, method, built, body, opts.stsToken)
+      const headers = buildAuthHeaders(cfg, method, built, body)
 
       const res = await deps.fetch(built.url, {
         method,

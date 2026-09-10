@@ -545,7 +545,7 @@ test('同一场会议的不同查看，text 各不相同 —— 区分字段是 
   }
   const texts = body.rows.map((r) => r.text)
   expect(new Set(texts).size, `四次不同的查看渲染成了同一句话：${texts[0]}`).toBe(4)
-  // 机器名翻成 spec §6.2 那张表上的中文（ASSET_LABEL 那一份，六类收拢之后是
+  // 机器名翻成 spec §6.2 那张表上的中文（ASSET_LABEL 那一份，五类收拢之后是
   // 「纪要」「逐字稿」）；index / chapters 不是资产，是视图
   expect(texts.join(' ')).toContain('纪要')
   expect(texts.join(' ')).toContain('逐字稿')

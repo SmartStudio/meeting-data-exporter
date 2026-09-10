@@ -499,7 +499,7 @@ describe('fetchRulesSchema', () => {
     expect(s.fields[4]!.ops[0]!.unitSuffix).toBe('内')
     expect(s.stacks.map((k) => k.kind)).toEqual(['fetch', 'archive', 'allow'])
     expect(s.stacks[1]!.freeform).toMatch(/归档目录模板/)
-    expect(s.assetTypes).toHaveLength(8)
+    expect(s.assetTypes).toHaveLength(5)
     expect(s.assetAll).toBe('*')
   })
 

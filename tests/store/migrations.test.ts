@@ -556,3 +556,18 @@ describe('004 三栈规则模型迁移', () => {
     }
   })
 })
+
+describe('015 下线 STS-Token 链路与 ai_transcript 资产', () => {
+  test('sts_token_requests 表被整个丢掉', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const [rows] = await pool.query<any[]>(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()`,
+      )
+      const names = rows.map((r) => (r.table_name ?? r.TABLE_NAME) as string)
+      expect(names).not.toContain('sts_token_requests')
+    } finally {
+      await cleanup()
+    }
+  })
+})

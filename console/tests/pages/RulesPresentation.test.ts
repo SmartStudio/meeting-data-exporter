@@ -205,17 +205,14 @@ describe('titleDisplay —— "标题缺失"与"标题为空"必须分得开', (
   })
 })
 
-describe('八类资产（同样来自 schema，前端不再抄一份键名）', () => {
+describe('五类资产（同样来自 schema，前端不再抄一份键名）', () => {
   test('用网关的键名，不许出现 summary / aitr / digest 那套短名', () => {
     expect(RULES_SCHEMA.assetTypes.map((a) => a.value)).toEqual([
       'video',
       'audio',
       'transcript',
-      'ai_transcript',
       'ai_minutes',
-      'ai_topic_minutes',
-      'ai_speaker_minutes',
-      'ai_ds_minutes',
+      'chapters',
     ])
     for (const a of RULES_SCHEMA.assetTypes) expect(a.label).toBeTypeOf('string')
   })

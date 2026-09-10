@@ -114,12 +114,8 @@ import { createProgramsStore } from '../store/programs'
 import { createContentsStore } from '../store/contents'
 import { createConsoleMeetingsStore } from '../store/console-meetings'
 import { createAuditStore } from '../store/audit'
-import { createStsStore } from '../store/sts'
 import { createMeetingCacheStore } from '../store/meetings'
 import { createMeetingHostIdsStore, createTmUsersStore } from '../store/tm-users'
-import { createStsManager } from '../sts/manager'
-import { createTokenCipher } from '../sts/cipher'
-import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
 import { createTencentClient } from '../tencent/client'
 import { createRecordsApi } from '../tencent/records'
 import { createAddressesApi } from '../tencent/addresses'
@@ -884,7 +880,7 @@ export function assertSchedulerFetchConcurrencyFitsPool(concurrency: number): vo
 
 async function main(): Promise<number> {
   // 与网关、一次性 worker 共用同一份 loadConfig 与同一个 .env——三个进程同机部署，
-  // 共享腾讯凭据、DATABASE_URL 与 STS_ENC_KEY。
+  // 共享腾讯凭据与 DATABASE_URL。
   const config = loadConfig(process.env)
   const archiveRoot = await assertArchiveRootUsable(process.env.MDE_ARCHIVE_ROOT)
   const nasRoot = process.env.MDE_NAS_ROOT
@@ -945,24 +941,9 @@ async function main(): Promise<number> {
     const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
     const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
     const smartApi = createSmartApi(tencentClient, config.tencent.operatorId)
-    const tokenCipher = createTokenCipher(config.stsEncKey)
-    // STS-Token 的**续期是网关的活**（平台异步回调，落点是网关的 webhook 路由）。
-    // 这里只读同一张表里当前有效的那一枚，与一次性 worker 完全一致。表里没有有效
-    // token 时，**只影响优化版逐字稿（ai_meeting_transcripts）**：纪要与时间轴走
-    // 智能接口（AK/SK 直调），不依赖 STS。
-    const stsManager = createStsManager({
-      store: createStsStore(pool),
-      client: tencentClient,
-      operatorId: config.tencent.operatorId,
-      webhookToken: config.webhook.token,
-      aesKey: config.webhook.aesKey,
-      encrypt: tokenCipher.encrypt,
-      decrypt: tokenCipher.decrypt,
-      verify: verifySignature,
-      decryptEvent,
-      decryptCheckStr,
-    })
-    const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
+    // 五类资产全部 AK/SK 直调（批量 addresses + 智能接口），调度器不持有任何 STS 状态，
+    // 本机与服务器同时跑也不会互相打掉对方的凭据。
+    const catalog = createCatalog({ addressesApi, smartApi, now })
     const source = createInProcSource({ recordsApi, catalog, now })
 
     const archiveDeps: ArchiveDeps = {

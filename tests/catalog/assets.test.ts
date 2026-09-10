@@ -8,16 +8,15 @@ const detail = {
   audio_address: 'https://cos/audio.m4a',
   audio_address_file_type: 'm4a',
   meeting_summary: [{ download_address: 'https://cos/s.txt', file_type: 'txt' }],
-  ai_meeting_transcripts: [{ download_address: 'https://cos/t.txt', file_type: 'txt' }],
 }
 
 const NONE = { minutes: false, chapters: false }
 const BOTH = { minutes: true, chapters: true }
 
-test('提取六类资产：四类来自 addresses 详情，纪要与时间轴由 smart 探测结果决定', () => {
+test('提取五类资产：三类来自 addresses 详情，纪要与时间轴由 smart 探测结果决定', () => {
   const assets = extractAssets('m1', '', 'rec-1', detail, true, BOTH)
   expect(assets.map((a) => a.assetType).sort()).toEqual([
-    'ai_meeting_transcripts', 'ai_minutes', 'audio', 'chapters', 'meeting_summary', 'video',
+    'ai_minutes', 'audio', 'chapters', 'meeting_summary', 'video',
   ])
 })
 
@@ -59,29 +58,21 @@ test('assetId 以 meetingRecordId 为前缀（自包含，支持无状态解析�
 })
 
 test('同一字段的数组含多项时各自成为独立资产', () => {
-  const multi = { ...detail, ai_meeting_transcripts: [
+  const multi = { ...detail, meeting_summary: [
     { download_address: 'a', file_type: 'txt' },
     { download_address: 'b', file_type: 'pdf' },
   ] }
   const assets = extractAssets('m1', '', 'rec-1', multi, true, NONE)
-    .filter((a) => a.assetType === 'ai_meeting_transcripts')
+    .filter((a) => a.assetType === 'meeting_summary')
   expect(assets).toHaveLength(2)
   expect(assets[1]!.fileType).toBe('pdf')
 })
 
 test('fileType 来自平台，不写死扩展名', () => {
-  const htm = { ...detail, ai_meeting_transcripts: [{ download_address: 'https://cos/t.htm', file_type: 'htm' }] }
+  const htm = { ...detail, meeting_summary: [{ download_address: 'https://cos/s.htm', file_type: 'htm' }] }
   const assets = extractAssets('m1', '', 'rec-1', htm, true, NONE)
-  expect(assets.find((a) => a.assetType === 'ai_meeting_transcripts')!.fileType).toBe('htm')
+  expect(assets.find((a) => a.assetType === 'meeting_summary')!.fileType).toBe('htm')
   expect(assets.find((a) => a.assetType === 'video')!.fileType).toBe('mp4')
-})
-
-test('allowDownload=false 时 ai_meeting_transcripts 被标记不可下载', () => {
-  const assets = extractAssets('m1', '', 'rec-1', detail, false, NONE)
-  const transcripts = assets.filter((a) => a.assetType === 'ai_meeting_transcripts')
-  expect(transcripts).toHaveLength(1)
-  expect(transcripts.every((a) => a.allowDownload === false)).toBe(true)
-  expect(assets.find((a) => a.assetType === 'video')!.allowDownload).toBe(true)
 })
 
 test('字段缺失时不产生该资产（而非产生空资产）', () => {
@@ -92,8 +83,8 @@ test('字段缺失时不产生该资产（而非产生空资产）', () => {
 })
 
 test('空数组字段不产生资产', () => {
-  const empty = { ...detail, ai_meeting_transcripts: [] }
+  const empty = { ...detail, meeting_summary: [] }
   expect(
-    extractAssets('m1', '', 'rec-1', empty, true, NONE).some((a) => a.assetType === 'ai_meeting_transcripts'),
+    extractAssets('m1', '', 'rec-1', empty, true, NONE).some((a) => a.assetType === 'meeting_summary'),
   ).toBe(false)
 })

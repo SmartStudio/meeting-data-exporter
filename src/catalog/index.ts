@@ -1,28 +1,26 @@
 import { parseAssetId } from '../domain/assetid'
-import type { Asset, AssetType, Meeting } from '../domain/types'
-import type { StsManager } from '../sts/manager'
-import { StsTokenUnavailableError } from '../sts/manager'
-import type { AddressesApi, RawAddressFile } from '../tencent/addresses'
+import type { Asset, Meeting } from '../domain/types'
+import type { AddressesApi } from '../tencent/addresses'
 import { serializeChapters, type SmartApi } from '../tencent/smart'
-import { extractAssets, type RawDetail, type RawFileEntry, type SmartPresence } from './assets'
+import { extractAssets, type RawFileEntry, type SmartPresence } from './assets'
 
 /** /v1/addresses（批量）链接时效：6 小时 */
 const BATCH_URL_TTL_SEC = 6 * 3600
-/** /v1/addresses/{record_file_id}（详情）链接时效：5 分钟 */
-const DETAIL_URL_TTL_SEC = 5 * 60
 /**
  * 智能接口两类资产的 `data:` URL 时效。`data:` URL 里正文是内嵌的，没有真实时效；
- * 给一个与详情链接同量级的数，让引擎的续签逻辑有个明确的到期点。
+ * 给一个明确的短时效，让引擎的续签逻辑有个明确的到期点。
  */
 const SMART_URL_TTL_SEC = 5 * 60
 
-/** 走 51180 详情接口（要 STS-Token）的资产类型：只剩优化版逐字稿 */
-const STS_TYPES: ReadonlySet<AssetType> = new Set<AssetType>(['ai_meeting_transcripts'])
-
+/**
+ * 整个目录层**不再有任何资产依赖 STS-Token**：video / audio / meeting_summary 走批量
+ * `/v1/addresses`（AK/SK 签名，6 小时链接），ai_minutes / chapters 走智能接口
+ * `/v1/smart/*`（AK/SK 直调）。唯一要 STS 的「逐字稿智能优化版」及其详情接口调用
+ * 已于 2026-09-10 移除。
+ */
 export interface CatalogDeps {
   addressesApi: AddressesApi
   smartApi: SmartApi
-  stsManager: StsManager
   now: () => number
 }
 
@@ -72,7 +70,6 @@ interface UrlSource {
   download_address?: string
   audio_address?: string
   meeting_summary?: RawFileEntry[]
-  ai_meeting_transcripts?: RawFileEntry[]
 }
 
 /**
@@ -94,11 +91,9 @@ function pickUrl(source: UrlSource, asset: Asset): string | undefined {
 
   // 纪要与时间轴不走这里：它们的正文由智能接口取回、内嵌成 data: URL，
   // resolveDownloadUrl 在调用 pickUrl 之前就已返回。
-  if (asset.assetType !== 'meeting_summary' && asset.assetType !== 'ai_meeting_transcripts') {
-    return undefined
-  }
+  if (asset.assetType !== 'meeting_summary') return undefined
 
-  const entries = source[asset.assetType]
+  const entries = source.meeting_summary
   if (!Array.isArray(entries)) return undefined
 
   const selector = asset.assetId.split(':').at(-1) ?? ''
@@ -125,44 +120,12 @@ async function probeSmart(api: SmartApi, recordFileId: string, allowDownload: bo
 }
 
 export function createCatalog(deps: CatalogDeps): Catalog {
-  /** 一次 listAssets 调用内只判断一次 STS 可用性，避免每个 record_file 重复取一次 token */
-  async function tryGetToken(now: number): Promise<string | null> {
-    try {
-      return await deps.stsManager.getToken(now)
-    } catch (err) {
-      if (err instanceof StsTokenUnavailableError) return null
-      throw err
-    }
-  }
-
-  function mergeDetail(file: RawAddressFile, aiDetail: RawDetail | null): RawDetail {
-    return {
-      record_file_id: file.record_file_id,
-      download_address: file.download_address,
-      download_address_file_type: file.download_address_file_type,
-      audio_address: file.audio_address,
-      audio_address_file_type: file.audio_address_file_type,
-      meeting_summary: file.meeting_summary,
-      ai_meeting_transcripts: aiDetail?.ai_meeting_transcripts,
-    }
-  }
-
   return {
     async listAssets(meeting) {
-      const now = deps.now()
       const files = await deps.addressesApi.listByRecordId(meeting.meetingRecordId)
       const out: Asset[] = []
 
-      // STS-Token 不可用时 token 为 null；merge 后 ai_meeting_transcripts 字段缺失，extractAssets 按
-      // “字段缺失不产生该资产”的既有约定跳过它——video/audio/meeting_summary
-      // 与智能接口两类都不受影响，也不会让 listAssets 整体失败。
-      const token = await tryGetToken(now)
-
       for (const file of files) {
-        const aiDetail =
-          token !== null ? await deps.addressesApi.detailByFileId(file.record_file_id, token) : null
-        const merged = mergeDetail(file, aiDetail)
-
         const allowDownload = file.allow_download ?? true
         const smart = await probeSmart(deps.smartApi, file.record_file_id, allowDownload)
 
@@ -171,7 +134,14 @@ export function createCatalog(deps: CatalogDeps): Catalog {
             meeting.meetingId,
             meeting.subMeetingId,
             meeting.meetingRecordId,
-            merged,
+            {
+              record_file_id: file.record_file_id,
+              download_address: file.download_address,
+              download_address_file_type: file.download_address_file_type,
+              audio_address: file.audio_address,
+              audio_address_file_type: file.audio_address_file_type,
+              meeting_summary: file.meeting_summary,
+            },
             allowDownload,
             smart,
           ),
@@ -197,15 +167,6 @@ export function createCatalog(deps: CatalogDeps): Catalog {
           url: dataUrl('application/json', serializeChapters(asset.recordFileId, chapters)),
           expiresAt: now + SMART_URL_TTL_SEC,
         }
-      }
-
-      if (STS_TYPES.has(asset.assetType)) {
-        // 优化版逐字稿只能来自详情接口，STS 不可用时让 StsTokenUnavailableError 原样抛出
-        const token = await deps.stsManager.getToken(now)
-        const detail = await deps.addressesApi.detailByFileId(asset.recordFileId, token)
-        const url = pickUrl(detail, asset)
-        if (url === undefined) throw new AssetUrlMissingError(asset.assetId)
-        return { url, expiresAt: now + DETAIL_URL_TTL_SEC }
       }
 
       // 无状态解析：meetingRecordId 直接从 assetId 反解，不依赖任何跨请求缓存，

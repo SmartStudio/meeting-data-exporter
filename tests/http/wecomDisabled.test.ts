@@ -61,18 +61,15 @@ test('企微未配置不影响服务账号认证端点（仍走正常的凭证�
   expect((await res.json()).error).toBe('invalid_credentials')
 })
 
-test('企微未配置不影响 healthz 与 webhook 等无关端点', async () => {
+test('企微未配置不影响 healthz 等无关端点', async () => {
   const { app } = buildTestApp(pool, { wecomDisabled: true })
   expect((await app(new Request('https://gw/healthz'))).status).toBe(200)
-
+  // 曾经这里还打 /webhook/tencent-meeting 验证「401 而非 501」；
+  // 该路由已随 STS 链路于 2026-09-10 移除，现在是普通 404
   const webhookRes = await app(
-    new Request('https://gw/webhook/tencent-meeting', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data: 'x' }),
-    }),
+    new Request('https://gw/webhook/tencent-meeting', { method: 'POST' }),
   )
-  expect(webhookRes.status).toBe(401) // 缺验签参数，而非 501
+  expect(webhookRes.status).toBe(404)
 })
 
 test('企微已配置时这些路由不再返回 501', async () => {

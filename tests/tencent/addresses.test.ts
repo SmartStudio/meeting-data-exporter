@@ -5,7 +5,6 @@ import {
   InvalidAssetIdError,
   type CatalogDeps,
 } from '../../src/catalog/index'
-import { StsTokenUnavailableError, type StsManager } from '../../src/sts/manager'
 import type { QueryParams } from '../../src/tencent/url'
 import type { RequestOptions, TencentClient } from '../../src/tencent/client'
 import type { Meeting } from '../../src/domain/types'
@@ -13,8 +12,13 @@ import type { SmartApi } from '../../src/tencent/smart'
 
 const NOW = 1_800_000_000
 
-/** 这些用例钉的是 addresses 两个接口的编排，智能接口一律回「没有」 */
+/** 智能接口一律回「没有」：这些用例钉的是 /v1/addresses 这一个接口本身的编排 */
 const NO_SMART: SmartApi = { getMinutes: async () => null, getChapters: async () => null }
+/** 纪要与时间轴都探测到：用于验证 listAssets 合并两个接口的行为 */
+const BOTH_SMART: SmartApi = {
+  getMinutes: async () => '# 纪要\n',
+  getChapters: async () => [{ chapterId: 'c1', name: '开场', startMs: 0 }],
+}
 
 interface Call {
   path: string
@@ -22,10 +26,9 @@ interface Call {
   opts?: RequestOptions
 }
 
-/** 依据路径分派：/v1/addresses（批量）与 /v1/addresses/{id}（详情） */
+/** 目录层不再有详情接口，这里只需要按 /v1/addresses（批量）分派 */
 function stubClient(handlers: {
   list?: (query: QueryParams) => unknown
-  detail?: (recordFileId: string, opts: RequestOptions | undefined) => unknown
 }): { client: TencentClient; calls: Call[] } {
   const calls: Call[] = []
   return {
@@ -35,10 +38,6 @@ function stubClient(handlers: {
         calls.push({ path, query, opts })
         if (path === '/v1/addresses') {
           return (handlers.list?.(query) ?? {}) as T
-        }
-        const m = /^\/v1\/addresses\/(.+)$/.exec(path)
-        if (m) {
-          return (handlers.detail?.(m[1]!, opts) ?? {}) as T
         }
         throw new Error(`unexpected path: ${path}`)
       },
@@ -82,19 +81,7 @@ test('listByRecordId 多页时自动翻页并聚合 record_files', async () => {
   expect(files.map((f) => f.record_file_id)).toEqual(['f1', 'f2'])
 })
 
-test('detailByFileId 请求路径含 record_file_id 且携带 stsToken', async () => {
-  const { client, calls } = stubClient({
-    detail: (id) => ({ record_file_id: id }),
-  })
-  const api = createAddressesApi(client, 'admin')
-  await api.detailByFileId('f9', 'sts-tok-x')
-  expect(calls[0]!.path).toBe('/v1/addresses/f9')
-  expect(calls[0]!.opts?.stsToken).toBe('sts-tok-x')
-  expect(calls[0]!.query.operator_id).toBe('admin')
-  expect(calls[0]!.query.operator_id_type).toBe(1)
-})
-
-// ---------- Catalog：orchestration across both endpoints ----------
+// ---------- Catalog：orchestration across addresses + smart ----------
 
 const meeting: Meeting = {
   meetingId: 'm1',
@@ -123,68 +110,31 @@ const listResponse = {
   ],
 }
 
-const detailResponse = {
-  record_file_id: 'f1',
-  ai_meeting_transcripts: [{ download_address: 'https://cos/t.txt', file_type: 'txt' }],
-}
-
-function stsAvailable(token = 'sts-tok'): StsManager {
-  return {
-    async ensureFresh() {},
-    async pruneStale() { return 0 },
-    async getToken() { return token },
-    async handleWebhook() {},
-    verifyUrlChallenge(): { plain: string; candidate: number } {
-      throw new Error('not used in these tests')
-    },
-  }
-}
-
-function stsUnavailable(): StsManager {
-  return {
-    async ensureFresh() {},
-    async pruneStale() { return 0 },
-    async getToken(): Promise<string> { throw new StsTokenUnavailableError() },
-    async handleWebhook() {},
-    verifyUrlChallenge(): { plain: string; candidate: number } {
-      throw new Error('not used in these tests')
-    },
-  }
-}
-
-function buildCatalogDeps(sts: StsManager): CatalogDeps {
-  const { client } = stubClient({
-    list: () => listResponse,
-    detail: () => detailResponse,
-  })
+function buildCatalogDeps(smart: SmartApi = NO_SMART): CatalogDeps {
+  const { client } = stubClient({ list: () => listResponse })
   return {
     addressesApi: createAddressesApi(client, 'admin'),
-    smartApi: NO_SMART,
-    stsManager: sts,
+    smartApi: smart,
     now: () => NOW,
   }
 }
 
-test('STS-Token 可用时 listAssets 合并两接口，返回 addresses 侧的四类', async () => {
-  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
+test('listAssets 合并批量接口与智能接口，返回五类资产', async () => {
+  const catalog = createCatalog(buildCatalogDeps(BOTH_SMART))
   const assets = await catalog.listAssets(meeting)
   expect(assets.map((a) => a.assetType).sort()).toEqual([
-    'ai_meeting_transcripts', 'audio', 'meeting_summary', 'video',
+    'ai_minutes', 'audio', 'chapters', 'meeting_summary', 'video',
   ])
 })
 
-test('STS-Token 缺失时 ai_* 降级为不可得，但 video/audio/逐字稿仍可用，且不抛错', async () => {
-  const catalog = createCatalog(buildCatalogDeps(stsUnavailable()))
+test('智能接口探测为否时 listAssets 只返回 addresses 侧的三类', async () => {
+  const catalog = createCatalog(buildCatalogDeps(NO_SMART))
   const assets = await catalog.listAssets(meeting)
-  const types = assets.map((a) => a.assetType)
-  expect(types).toContain('video')
-  expect(types).toContain('audio')
-  expect(types).toContain('meeting_summary')
-  expect(types.some((t) => t.startsWith('ai_'))).toBe(false)
+  expect(assets.map((a) => a.assetType).sort()).toEqual(['audio', 'meeting_summary', 'video'])
 })
 
 test('resolveDownloadUrl：video 走批量接口，expiresAt = now + 6*3600', async () => {
-  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
+  const catalog = createCatalog(buildCatalogDeps())
   const assets = await catalog.listAssets(meeting)
   const video = assets.find((a) => a.assetType === 'video')!
   const { url, expiresAt } = await catalog.resolveDownloadUrl(video)
@@ -192,30 +142,30 @@ test('resolveDownloadUrl：video 走批量接口，expiresAt = now + 6*3600', as
   expect(expiresAt).toBe(NOW + 6 * 3600)
 })
 
-test('resolveDownloadUrl：ai_meeting_transcripts 走详情接口，expiresAt = now + 300', async () => {
-  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
+test('resolveDownloadUrl：ai_minutes 走智能接口，expiresAt = now + 300', async () => {
+  const catalog = createCatalog(buildCatalogDeps(BOTH_SMART))
   const assets = await catalog.listAssets(meeting)
-  const aiTranscripts = assets.find((a) => a.assetType === 'ai_meeting_transcripts')!
-  const { url, expiresAt } = await catalog.resolveDownloadUrl(aiTranscripts)
-  expect(url).toBe('https://cos/t.txt')
+  const minutes = assets.find((a) => a.assetType === 'ai_minutes')!
+  const { url, expiresAt } = await catalog.resolveDownloadUrl(minutes)
+  expect(url.startsWith('data:text/markdown;charset=utf-8;base64,')).toBe(true)
   expect(expiresAt).toBe(NOW + 300)
 })
 
 test('两个接口的 expiresAt 相差 6*3600 - 300 秒', async () => {
-  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
+  const catalog = createCatalog(buildCatalogDeps(BOTH_SMART))
   const assets = await catalog.listAssets(meeting)
   const video = assets.find((a) => a.assetType === 'video')!
-  const aiTranscripts = assets.find((a) => a.assetType === 'ai_meeting_transcripts')!
+  const minutes = assets.find((a) => a.assetType === 'ai_minutes')!
   const videoResult = await catalog.resolveDownloadUrl(video)
-  const aiResult = await catalog.resolveDownloadUrl(aiTranscripts)
-  expect(videoResult.expiresAt - aiResult.expiresAt).toBe(6 * 3600 - 300)
+  const minutesResult = await catalog.resolveDownloadUrl(minutes)
+  expect(videoResult.expiresAt - minutesResult.expiresAt).toBe(6 * 3600 - 300)
 })
 
 test('resolveDownloadUrl：assetId 自包含 meetingRecordId，无需先调用 listAssets 即可解析（多实例安全）', async () => {
   // 新建一个从未调用过 listAssets 的 catalog 实例，模拟请求被负载均衡到另一台实例，
   // 直接用一个手工构造的 assetId（往返验证：meetingRecordId 能从中正确解析回来）
   // 调用 resolveDownloadUrl，验证其不依赖任何跨请求缓存也能成功。
-  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
+  const catalog = createCatalog(buildCatalogDeps())
   const video = {
     assetId: 'rec-1:f1:video:0',
     meetingId: 'm1',
@@ -232,7 +182,7 @@ test('resolveDownloadUrl：assetId 自包含 meetingRecordId，无需先调用 l
 })
 
 test('resolveDownloadUrl：assetId 段数不足（非法格式）时抛出明确错误', async () => {
-  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
+  const catalog = createCatalog(buildCatalogDeps())
   const malformed = {
     assetId: 'f1:video',
     meetingId: 'm1',
@@ -244,13 +194,4 @@ test('resolveDownloadUrl：assetId 段数不足（非法格式）时抛出明确
     allowDownload: true,
   }
   await expect(catalog.resolveDownloadUrl(malformed)).rejects.toThrow(InvalidAssetIdError)
-})
-
-test('resolveDownloadUrl：ai_* 资产在 STS 不可用时抛出 StsTokenUnavailableError', async () => {
-  const catalog = createCatalog(buildCatalogDeps(stsAvailable()))
-  const assets = await catalog.listAssets(meeting)
-  const aiTranscripts = assets.find((a) => a.assetType === 'ai_meeting_transcripts')!
-
-  const degraded = createCatalog(buildCatalogDeps(stsUnavailable()))
-  await expect(degraded.resolveDownloadUrl(aiTranscripts)).rejects.toThrow(StsTokenUnavailableError)
 })

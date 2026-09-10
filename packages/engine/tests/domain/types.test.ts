@@ -4,8 +4,8 @@ import {
   parseAssetKeys, UnknownAssetKeyError, assetKeyToFilename,
 } from '../../src/domain/types'
 
-test('默认集为全部六类', () => {
-  expect(DEFAULT_ASSET_KEYS).toEqual(['video', 'audio', 'transcript', 'ai_transcript', 'ai_minutes', 'chapters'])
+test('默认集为全部五类', () => {
+  expect(DEFAULT_ASSET_KEYS).toEqual(['video', 'audio', 'transcript', 'ai_minutes', 'chapters'])
 })
 test('键↔字段双向映射一致', () => {
   for (const k of ALL_ASSET_KEYS) expect(GATEWAY_TYPE_TO_ASSET_KEY[ASSET_KEY_TO_GATEWAY_TYPE[k]]).toBe(k)
@@ -37,8 +37,7 @@ test('assetKeyToFilename：文本类多段加序号，单段与视频音频不�
  * 与**真网关词汇表**的硬绑定（M3.5 联调核实，2026-08-21）。
  *
  * 网关 `src/domain/types.ts` 的 ASSET_TYPES 是：
- *   video / audio / meeting_summary / ai_meeting_transcripts /
- *   ai_minutes / chapters
+ *   video / audio / meeting_summary / ai_minutes / chapters
  *
  * 客户端原先按 spec §17 的推断，把这里映射成腾讯的**平台字段名**
  * （download_address / audio_address …）。只有 video 与 audio 两项不同，
@@ -49,7 +48,7 @@ test('assetKeyToFilename：文本类多段加序号，单段与视频音频不�
  */
 test('映射值必须逐字等于网关 ASSET_TYPES 的取值', () => {
   const GATEWAY_ASSET_TYPES = [
-    'video', 'audio', 'meeting_summary', 'ai_meeting_transcripts',
+    'video', 'audio', 'meeting_summary',
     'ai_minutes', 'chapters',
   ]
   const mapped = ALL_ASSET_KEYS.map((k) => ASSET_KEY_TO_GATEWAY_TYPE[k])
@@ -67,7 +66,6 @@ test('isTextAssetType：视频音频不整读，文本与 AI 纪要整读', () =
   expect(isTextAssetType('video')).toBe(false)
   expect(isTextAssetType('audio')).toBe(false)
   expect(isTextAssetType('meeting_summary')).toBe(true)
-  expect(isTextAssetType('ai_meeting_transcripts')).toBe(true)
   expect(isTextAssetType('chapters')).toBe(true)
 })
 

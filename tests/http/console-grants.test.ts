@@ -705,7 +705,7 @@ test('grantMeeting 成功：把 sub 场次带进 store，返回生效的授权�
 
 test('grantMeeting 的资产范围完整落进 detail，不会被截断', async () => {
   const all = [
-    'video', 'audio', 'transcript', 'ai_transcript', 'ai_minutes', 'chapters',
+    'video', 'audio', 'transcript', 'ai_minutes', 'chapters',
   ]
   const r = rig({ params: { meetingId: 'm-1' }, programs: [program()] })
   await grantMeeting(
@@ -713,7 +713,7 @@ test('grantMeeting 的资产范围完整落进 detail，不会被截断', async 
     r.ctx,
   )
   const detail = r.audits[0]!.detail ?? ''
-  // 六个键**原样连在一起**的那一串必须整个出现在 detail 里——「授权了什么范围」
+  // 五个键**原样连在一起**的那一串必须整个出现在 detail 里——「授权了什么范围」
   // 正是这一行审计要回答的问题，不该被任何长度上限悄悄切掉最后一类。
   // 钉全串而不是钉长度：长度过得去而顺序或分隔符变了，一样是另一件事
   expect(detail).toContain(all.join(','))
@@ -1314,7 +1314,7 @@ test('patchProgram：省略 autoGrantAssetTypes = 不额外限制（null），�
   expect(r.audits[0]!.detail).toContain('不限制')
 })
 
-test("patchProgram：['*'] 展开成六类之后存下去，库里那一列永远只有真实的资产键", async () => {
+test("patchProgram：['*'] 展开成五类之后存下去，库里那一列永远只有真实的资产键", async () => {
   const r = rig({ params: { id: PROGRAM }, programs: [program()] })
   const res = await patchProgram(
     req('PATCH', `/api/v1/admin/programs/${PROGRAM}`, { autoGrant: true, autoGrantAssetTypes: ['*'] }),

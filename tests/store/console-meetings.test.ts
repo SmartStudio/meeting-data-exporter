@@ -77,7 +77,7 @@ async function seedMeeting(pool: Pool, input: SeedMeetingInput): Promise<void> {
 interface SeedAssetInput {
   meetingId: string
   subMeetingId?: string
-  /** 库里存的是**网关的 asset_type**（meeting_summary / ai_meeting_transcripts…），
+  /** 库里存的是**网关的 asset_type**（meeting_summary / ai_minutes…），
    *  不是客户端的 AssetKey。这个区分正是 M3.5 吃过亏的地方 */
   assetType?: string
   remoteId?: string

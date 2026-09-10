@@ -141,8 +141,8 @@ const INDEX = {
       nasPath: '/nas/2026/08/m-1/transcript.txt',
     }),
     asset({
-      assetType: 'ai_transcript',
-      assetKey: 'ai_transcript',
+      assetType: 'meeting_summary',
+      assetKey: 'transcript',
       remoteId: 'r-3',
       fileType: 'docx',
       availability: 'unsupported_format',
@@ -814,8 +814,8 @@ describe('右下角是「这场会议的资产与去向」', () => {
     // 不许把一个可修复的缺口藏到点开之后
     expect(within(panel).getAllByText(/未解析（格式不支持）/)[0]).toBeVisible()
     // 后端逐条写的理由是明细，展开后一字不改地在
-    // 这条理由属于 ai_transcript 那一组
-    await openAssetGroup(user, panel, /^逐字稿（智能优化版）$/)
+    // 这条理由属于 transcript 那一组（docx 与已解析的 txt 合并展示）
+    await openAssetGroup(user, panel, /^逐字稿$/)
     expect(within(panel).getByText(/文件在 NAS 上/)).toBeVisible()
   })
 

@@ -657,7 +657,7 @@ interface ResolvedType {
 
 /**
  * `?type=` 认两套词汇：契约的 `AssetKey`（`transcript`）与网关的 `asset_type`
- * （`meeting_summary`）。两者只有 transcript / ai_transcript 两项不同名，而这种
+ * （`meeting_summary`）。两者只有 transcript 一项不同名，而这种
  * **部分重合**恰好是引擎那份注释记着的一次真实故障（M3.5，dev-plan §5 C7）——
  * 前端拿哪一套过来都能用，是这里唯一不会再踩一次的做法。
  *
@@ -1220,8 +1220,8 @@ async function buildSelected(
 // GET /api/v1/admin/meetings/:meetingId/content/chapters
 // ===========================================================================
 
-/** 时间轴优先读完整转写，其次 AI 转写。两者都是 `isTextAssetType`，都在库里 */
-const TRANSCRIPT_PREFERENCE: readonly AssetKey[] = ['transcript', 'ai_transcript']
+/** 时间轴读逐字稿（`transcript`）。曾经的第二候选 `ai_transcript` 已随 STS 链路移除 */
+const TRANSCRIPT_PREFERENCE: readonly AssetKey[] = ['transcript']
 
 export interface ChapterItem {
   /** 腾讯的章节 id，原样带出 */
@@ -1314,7 +1314,7 @@ export async function getChapters(req: Request, ctx: RouteCtx): Promise<Response
   if (!p.ok) return p.response
   const { key, row, access, adminId } = p.prepared
 
-  // 逐个候选类型找第一段有正文的转写。最多两次查询（transcript / ai_transcript）,
+  // 逐个候选类型找第一段有正文的转写，
   // 不是把整场会议的正文都读出来。先找转写再找章节：章节要挑同一个
   // record_file 的那一段，需要先知道转写落在哪一段上
   let picked: { row: ContentSegmentRow; assetKey: AssetKey } | null = null

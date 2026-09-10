@@ -41,7 +41,7 @@ const NAS_READ_TIMEOUT_MS = 60_000
  * 而不同步的表现是「新纪要类型的正文悄悄不入库」——预览页查无此物，没有任何报错。
  *
  * 存进库的是**网关的 asset_type**（`meeting_assets.asset_type` 那一列的原值），
- * 不是客户端的 `AssetKey`：两者只有 transcript / ai_transcript 两项不同名，
+ * 不是客户端的 `AssetKey`：两者只有 transcript 一项不同名，
  * 而这种部分重合恰好是引擎那份注释记着的一次真实故障。
  */
 export const TEXT_GATEWAY_ASSET_TYPES: readonly string[] = ALL_ASSET_KEYS

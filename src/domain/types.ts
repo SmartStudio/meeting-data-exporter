@@ -1,10 +1,11 @@
-/** 六类资产。前四类取值来自腾讯 /v1/addresses 响应字段名；后两类是网关自己的名字，
- *  来自 /v1/smart/minutes 与 /v1/smart/chapters（src/tencent/smart.ts） */
+/** 五类资产。前三类取值来自腾讯 /v1/addresses 响应字段名；后两类是网关自己的名字，
+ *  来自 /v1/smart/minutes 与 /v1/smart/chapters（src/tencent/smart.ts）。
+ *  「逐字稿（智能优化版）」`ai_meeting_transcripts` 已于 2026-09-10 移除：它是唯一
+ *  需要 STS-Token（详情接口 /v1/addresses/{record_file_id}）的资产，整条 STS 链路随之下线。 */
 export const ASSET_TYPES = [
   'video',
   'audio',
   'meeting_summary',
-  'ai_meeting_transcripts',
   'ai_minutes',
   'chapters',
 ] as const

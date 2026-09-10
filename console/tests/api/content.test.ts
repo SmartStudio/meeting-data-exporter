@@ -341,12 +341,11 @@ describe('fetchMeetingGrantIds —— 「已授权给谁」的窄读', () => {
 })
 
 describe('标签表', () => {
-  test('六个资产键与后端 src/domain/asset-labels.ts 逐字一致', () => {
+  test('五个资产键与后端 src/domain/asset-labels.ts 逐字一致', () => {
     expect(ASSET_LABEL).toEqual({
       video: '录像',
       audio: '音频',
       transcript: '逐字稿',
-      ai_transcript: '逐字稿（智能优化版）',
       ai_minutes: '纪要',
       chapters: '时间轴',
     })

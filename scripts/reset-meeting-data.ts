@@ -60,7 +60,6 @@ export const KEPT_TABLES: ReadonlyArray<{ table: string; why: string }> = [
   { table: 'refresh_tokens', why: '采集端的刷新令牌。清了所有已接入的程序当场掉线，要重走一遍设备授权' },
   { table: 'device_authorizations', why: '设备授权码。清了正在走授权流程的设备会卡在半路，且看不出是为什么' },
   { table: 'identity_map', why: '企业微信 userid 到本系统身份的映射。清了每个人都要重新绑一次' },
-  { table: 'sts_token_requests', why: '腾讯云临时凭据请求，与会议无关，且会自己过期' },
   { table: 'audit_log', why: '审计。它记的是**谁在什么时候做了什么**，那件事真的发生过——清库不该把它一起抹掉' },
 ]
 

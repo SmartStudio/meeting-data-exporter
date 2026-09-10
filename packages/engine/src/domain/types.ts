@@ -1,11 +1,15 @@
 export type AssetKey =
-  | 'video' | 'audio' | 'transcript' | 'ai_transcript'
+  | 'video' | 'audio' | 'transcript'
   | 'ai_minutes' | 'chapters'
 
 export const ALL_ASSET_KEYS: AssetKey[] = [
-  'video', 'audio', 'transcript', 'ai_transcript', 'ai_minutes', 'chapters',
+  'video', 'audio', 'transcript', 'ai_minutes', 'chapters',
 ]
-/** 纪要与时间轴不再依赖 STS（走 /v1/smart/*，见 src/tencent/smart.ts），默认全要 */
+/**
+ * 五类全要。纪要与时间轴走 /v1/smart/*（见 src/tencent/smart.ts），录像/音频/逐字稿
+ * 走批量 /v1/addresses——没有一类依赖 STS-Token。曾经的第六类 `ai_transcript`
+ * （逐字稿智能优化版）是唯一要 STS 的资产，2026-09-10 连同整条 STS 链路一起移除。
+ */
 export const DEFAULT_ASSET_KEYS: AssetKey[] = [...ALL_ASSET_KEYS]
 
 /**
@@ -27,16 +31,15 @@ export const DEFAULT_ASSET_KEYS: AssetKey[] = [...ALL_ASSET_KEYS]
  * 产出」：转写照常下载、视频音频永远匹配不上，最后按 deadline 静默放弃。
  * 名字误导了推断，所以连名字一起改。
  *
- * `ai_minutes` 与 `chapters` 来自腾讯智能接口（`src/tencent/smart.ts`），不
- * 经 STS 下载，落盘文件是网关生成的 `minutes.md` / `chapters.json`。
+ * `ai_minutes` 与 `chapters` 来自腾讯智能接口（`src/tencent/smart.ts`），
+ * 落盘文件是网关生成的 `minutes.md` / `chapters.json`。
  *
  * 「字段驱动、不硬编码封闭联合」的原始意图仍然成立：网关将来新增纪要引擎时
  * 会 emit 新的 asset_type，`asset_type` 列照存不误。
  */
 export const ASSET_KEY_TO_GATEWAY_TYPE: Record<AssetKey, string> = {
   video: 'video', audio: 'audio', transcript: 'meeting_summary',
-  ai_transcript: 'ai_meeting_transcripts', ai_minutes: 'ai_minutes',
-  chapters: 'chapters',
+  ai_minutes: 'ai_minutes', chapters: 'chapters',
 }
 export const GATEWAY_TYPE_TO_ASSET_KEY: Record<string, AssetKey> = Object.fromEntries(
   (Object.entries(ASSET_KEY_TO_GATEWAY_TYPE) as [AssetKey, string][]).map(([k, t]) => [t, k]),
@@ -60,7 +63,7 @@ const H6 = 6 * 3600
 const H48 = 48 * 3600
 export const ASSET_WAIT_CAP_SEC: Record<AssetKey, number> = {
   video: H6, audio: H6, transcript: H6,
-  ai_transcript: H48, ai_minutes: H48, chapters: H48,
+  ai_minutes: H48, chapters: H48,
 }
 
 export class UnknownAssetKeyError extends Error {
@@ -85,13 +88,13 @@ export function parseAssetKeys(csv: string): AssetKey[] {
 /** 文件名基（不含扩展名派生规则见 §11）：video/audio 用 remoteId，文本类固定名 */
 const FILENAME_BASE: Record<AssetKey, (remoteId: string) => string> = {
   video: (r) => `recording_${r}`, audio: (r) => `recording_${r}`,
-  transcript: () => 'transcript', ai_transcript: () => 'ai_transcript',
+  transcript: () => 'transcript',
   ai_minutes: () => 'minutes', chapters: () => 'chapters',
 }
 /** 文件名是否已含 remoteId：含则同类多段天然不碰撞，无需序号消歧 */
 const FILENAME_HAS_REMOTE_ID: Record<AssetKey, boolean> = {
   video: true, audio: true,
-  transcript: false, ai_transcript: false, ai_minutes: false, chapters: false,
+  transcript: false, ai_minutes: false, chapters: false,
 }
 /**
  * 资产文件名。`ordinal` 是该资产在同 (meeting, sub_meeting, asset_type) 兄弟中的

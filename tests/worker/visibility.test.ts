@@ -218,7 +218,6 @@ test('三个条件齐备时会议进清单，assetTypes 是求交后的实际结
     'video',
     'audio',
     'transcript',
-    'ai_transcript',
     'ai_minutes',
     'chapters',
   ])

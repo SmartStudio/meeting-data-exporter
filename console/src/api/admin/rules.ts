@@ -94,7 +94,7 @@ export interface Rule {
   subjectType: string | null
   /** allow 栈对应 `service_accounts.id`。 */
   subjectValue: string | null
-  /** `['*']` 表示全部六类。 */
+  /** `['*']` 表示全部五类。 */
   assetTypes: string[]
   /** 取值随 kind：fetch 是 all/skip，allow 是 allow/deny，archive 是目录模板。 */
   effect: string

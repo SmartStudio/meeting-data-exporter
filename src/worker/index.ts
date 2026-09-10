@@ -21,11 +21,7 @@ import type { Stats } from 'node:fs'
 import { loadConfig } from '../config'
 import { createCatalog } from '../catalog/index'
 import { POOL_CONNECTION_LIMIT, closePool, createPool, runMigrations } from '../store/db'
-import { createStsStore } from '../store/sts'
 import { createMeetingCacheStore } from '../store/meetings'
-import { createStsManager } from '../sts/manager'
-import { createTokenCipher } from '../sts/cipher'
-import { decryptCheckStr, decryptEvent, verifySignature } from '../sts/crypto'
 import { createAddressesApi } from '../tencent/addresses'
 import { createSmartApi } from '../tencent/smart'
 import { createTencentClient } from '../tencent/client'
@@ -565,7 +561,7 @@ export async function assertArchiveRootUsable(
 async function main(): Promise<number> {
   // 先把配置与参数校验完再开任何资源：配错时不该留下半开的连接池。
   // 复用网关的 loadConfig 而不是另建一套——worker 与网关同机同 .env 部署，
-  // 共享腾讯凭据、DATABASE_URL 与 STS_ENC_KEY（STS-Token 就存在同一张表里）。
+  // 共享腾讯凭据与 DATABASE_URL。
   const config = loadConfig(process.env)
   // 空串必须与未设置等价：.env.example 里这类可选项写作 `MDE_WORKER_CONCURRENCY=`，
   // 而 Bun 把它读成空串而不是 undefined，`?? DEFAULT` 只挡 undefined，
@@ -628,26 +624,8 @@ async function main(): Promise<number> {
     const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
     const smartApi = createSmartApi(tencentClient, config.tencent.operatorId)
 
-    // STS-Token 的**续期是网关的活**：平台异步回调，落点是网关的 webhook 路由。
-    // worker 只读同一张表里当前有效的那一枚（getToken 内部解密），不调 ensureFresh
-    // ——它发出的申请只有网关能收到回调，worker 自己等不到。因此 worker 依赖
-    // 网关进程在跑；表里没有有效 token 时下载会以 StsTokenUnavailableError 显式
-    // 失败，而不是静默跳过——但**只影响优化版逐字稿（ai_meeting_transcripts）**：
-    // 纪要与时间轴走智能接口（AK/SK 直调），不依赖 STS。
-    const tokenCipher = createTokenCipher(config.stsEncKey)
-    const stsManager = createStsManager({
-      store: createStsStore(pool),
-      client: tencentClient,
-      operatorId: config.tencent.operatorId,
-      webhookToken: config.webhook.token,
-      aesKey: config.webhook.aesKey,
-      encrypt: tokenCipher.encrypt,
-      decrypt: tokenCipher.decrypt,
-      verify: verifySignature,
-      decryptEvent,
-      decryptCheckStr,
-    })
-    const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
+    // 五类资产全部 AK/SK 直调（批量 addresses + 智能接口），worker 不依赖网关进程在跑。
+    const catalog = createCatalog({ addressesApi, smartApi, now })
 
     const source = createInProcSource({ recordsApi, catalog, now })
     const storage = createLocalStorage(archiveRoot)

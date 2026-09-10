@@ -47,7 +47,6 @@ export function buildAuthHeaders(
   method: 'GET' | 'POST',
   built: BuiltUrl,
   body: string,
-  stsToken?: string,
 ): Record<string, string> {
   const timestamp = String(Math.floor(Date.now() / 1000))
   const nonce = String(randomInt(1, 2 ** 31 - 1))
@@ -71,9 +70,6 @@ export function buildAuthHeaders(
     AppId: cfg.appId,
     SdkId: cfg.sdkId,
     'X-TC-Registered': '1',
-  }
-  if (stsToken !== undefined) {
-    headers['STS-Token'] = stsToken
   }
   return headers
 }

@@ -221,7 +221,6 @@ export const ASSET_LABEL: Record<AssetKey, string> = {
   video: '录像',
   audio: '音频',
   transcript: '逐字稿',
-  ai_transcript: '逐字稿（智能优化版）',
   ai_minutes: '纪要',
   chapters: '时间轴',
 }
@@ -417,7 +416,7 @@ function readIndex(endpoint: string, raw: unknown): ContentIndex {
 /**
  * `GET /api/v1/admin/meetings/:meetingId/content`（不带 `type`）。
  *
- * 只要索引：六类资产的格式/体积/可得性、采集判定、本地与 NAS 去向、录像的去向。
+ * 只要索引：五类资产的格式/体积/可得性、采集判定、本地与 NAS 去向、录像的去向。
  * `selected` 恒为 null——**不要顺手带上一个 `type` 去"顺便"把正文也取回来**，
  * 那会让每次进页面都多读一份可能有几 MB 的正文。
  */

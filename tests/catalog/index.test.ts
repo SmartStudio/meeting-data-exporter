@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test'
 import { AssetUrlMissingError, createCatalog } from '../../src/catalog/index'
-import { StsTokenUnavailableError } from '../../src/sts/manager'
 import type { SmartApi } from '../../src/tencent/smart'
 
 const NO_SMART: SmartApi = { getMinutes: async () => null, getChapters: async () => null }
@@ -25,23 +24,21 @@ test('平台数组顺序变化时，同一 assetId 仍解析到同一个文件',
   let call = 0
   const catalog = createCatalog({
     addressesApi: {
-      listByRecordId: async () => [],
       // 每次调用返回不同的数组顺序，模拟平台的真实行为
-      detailByFileId: async () => ({
+      listByRecordId: async () => [{
         record_file_id: 'f1',
-        ai_meeting_transcripts: call++ % 2 === 0 ? entries : [...entries].reverse(),
-      }),
+        meeting_summary: call++ % 2 === 0 ? entries : [...entries].reverse(),
+      }],
     } as never,
     smartApi: NO_SMART,
-    stsManager: { getToken: async () => 'sts' } as never,
     now: () => 1_700_000_000,
   })
 
   const asset = {
-    assetId: 'rec1:f1:ai_meeting_transcripts:pdf',
+    assetId: 'rec1:f1:meeting_summary:pdf',
     meetingId: 'm1',
     subMeetingId: '',
-    assetType: 'ai_meeting_transcripts' as const,
+    assetType: 'meeting_summary' as const,
     recordFileId: 'f1',
     fileType: 'pdf',
     bytesExpected: null,
@@ -57,19 +54,17 @@ test('平台数组顺序变化时，同一 assetId 仍解析到同一个文件',
 test('历史 assetId（纯数字末段）仍按下标解析，保持兼容', async () => {
   const catalog = createCatalog({
     addressesApi: {
-      listByRecordId: async () => [],
-      detailByFileId: async () => ({
+      listByRecordId: async () => [{
         record_file_id: 'f1',
-        ai_meeting_transcripts: [{ download_address: 'https://cos/a', file_type: 'txt' }, { download_address: 'https://cos/b', file_type: 'pdf' }],
-      }),
+        meeting_summary: [{ download_address: 'https://cos/a', file_type: 'txt' }, { download_address: 'https://cos/b', file_type: 'pdf' }],
+      }],
     } as never,
     smartApi: NO_SMART,
-    stsManager: { getToken: async () => 'sts' } as never,
     now: () => 1_700_000_000,
   })
   const res = await catalog.resolveDownloadUrl({
-    assetId: 'rec1:f1:ai_meeting_transcripts:1', meetingId: 'm1', subMeetingId: '',
-    assetType: 'ai_meeting_transcripts' as const, recordFileId: 'f1', fileType: null,
+    assetId: 'rec1:f1:meeting_summary:1', meetingId: 'm1', subMeetingId: '',
+    assetType: 'meeting_summary' as const, recordFileId: 'f1', fileType: null,
     bytesExpected: null, allowDownload: true,
   })
   expect(res.url).toBe('https://cos/b')
@@ -80,13 +75,11 @@ test('listAssets：allow_download 时探测 smart 两类，探测结果决定是
   const catalog = createCatalog({
     addressesApi: {
       listByRecordId: async () => [{ record_file_id: 'f1', download_address: 'https://cos/v.mp4', download_address_file_type: 'mp4', allow_download: true }],
-      detailByFileId: async () => ({ record_file_id: 'f1' }),
     } as never,
     smartApi: {
       getMinutes: async (id) => { calls.push(`minutes:${id}`); return '# 纪要\n' },
       getChapters: async (id) => { calls.push(`chapters:${id}`); return null },
     },
-    stsManager: { getToken: async () => { throw new StsTokenUnavailableError() } } as never,
     now: () => 1_700_000_000,
   })
   const assets = await catalog.listAssets({ meetingId: 'm1', subMeetingId: '', meetingRecordId: 'rec1' } as never)
@@ -99,10 +92,8 @@ test('listAssets：allow_download=false 时不探测 smart', async () => {
   const catalog = createCatalog({
     addressesApi: {
       listByRecordId: async () => [{ record_file_id: 'f1', download_address: 'https://cos/v.mp4', allow_download: false }],
-      detailByFileId: async () => ({ record_file_id: 'f1' }),
     } as never,
     smartApi: { getMinutes: async () => { called++; return 'x' }, getChapters: async () => { called++; return null } },
-    stsManager: { getToken: async () => { throw new StsTokenUnavailableError() } } as never,
     now: () => 1_700_000_000,
   })
   const assets = await catalog.listAssets({ meetingId: 'm1', subMeetingId: '', meetingRecordId: 'rec1' } as never)
@@ -112,9 +103,8 @@ test('listAssets：allow_download=false 时不探测 smart', async () => {
 
 test('resolveDownloadUrl：纪要返回 data: URL，正文 base64 可还原', async () => {
   const catalog = createCatalog({
-    addressesApi: { listByRecordId: async () => [], detailByFileId: async () => ({ record_file_id: 'f1' }) } as never,
+    addressesApi: { listByRecordId: async () => [] } as never,
     smartApi: { getMinutes: async () => '## 会议摘要\n\n正文\n', getChapters: async () => null },
-    stsManager: { getToken: async () => { throw new StsTokenUnavailableError() } } as never,
     now: () => 1_700_000_000,
   })
   const { url, expiresAt } = await catalog.resolveDownloadUrl({
@@ -128,9 +118,8 @@ test('resolveDownloadUrl：纪要返回 data: URL，正文 base64 可还原', as
 
 test('resolveDownloadUrl：时间轴返回 chapters.json 的 data: URL', async () => {
   const catalog = createCatalog({
-    addressesApi: { listByRecordId: async () => [], detailByFileId: async () => ({ record_file_id: 'f1' }) } as never,
+    addressesApi: { listByRecordId: async () => [] } as never,
     smartApi: { getMinutes: async () => null, getChapters: async () => [{ chapterId: 'C1', name: '开场', startMs: 7837 }] },
-    stsManager: { getToken: async () => { throw new StsTokenUnavailableError() } } as never,
     now: () => 1_700_000_000,
   })
   const { url } = await catalog.resolveDownloadUrl({
@@ -141,17 +130,14 @@ test('resolveDownloadUrl：时间轴返回 chapters.json 的 data: URL', async (
   expect(JSON.parse(await (await fetch(url)).text())).toEqual({ schemaVersion: 1, recordFileId: 'f1', chapters: [{ chapterId: 'C1', name: '开场', startMs: 7837 }] })
 })
 
-test('resolveDownloadUrl：smart 说没有时抛 AssetUrlMissingError，不碰 STS', async () => {
-  let sts = 0
+test('resolveDownloadUrl：smart 说没有时抛 AssetUrlMissingError', async () => {
   const catalog = createCatalog({
-    addressesApi: { listByRecordId: async () => [], detailByFileId: async () => ({ record_file_id: 'f1' }) } as never,
+    addressesApi: { listByRecordId: async () => [] } as never,
     smartApi: { getMinutes: async () => null, getChapters: async () => null },
-    stsManager: { getToken: async () => { sts++; return 't' } } as never,
     now: () => 1_700_000_000,
   })
   await expect(catalog.resolveDownloadUrl({
     assetId: 'rec1:f1:ai_minutes:md', meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes',
     recordFileId: 'f1', fileType: 'md', bytesExpected: null, allowDownload: true,
   })).rejects.toBeInstanceOf(AssetUrlMissingError)
-  expect(sts).toBe(0)
 })

@@ -104,18 +104,17 @@ mde execute --out ./export   # 紧接着排空
 
 ## 资产类型与 `--assets`
 
-不传 `--assets` 时默认取**全部六类**（纪要与时间轴走 `/v1/smart/*`，不再依赖 STS）。
+不传 `--assets` 时默认取**全部五类**（纪要与时间轴走 `/v1/smart/*`，不依赖 STS）。
 
 | key | 对应平台字段 | 说明 |
 |---|---|---|
 | `video` | `download_address` | 录像，文件名 `recording_<remoteId>.<ext>` |
 | `audio` | `audio_address` | 录音，文件名 `recording_<remoteId>.<ext>` |
 | `transcript` | `meeting_summary` | 逐字稿 |
-| `ai_transcript` | `ai_meeting_transcripts` | 逐字稿（智能优化版） |
 | `ai_minutes` | `ai_minutes` | 纪要 |
 | `chapters` | `chapters` | 时间轴 |
 
-`--assets` 接受逗号分隔的 key 列表，或特殊值 `all`（等价全部 6 类）：
+`--assets` 接受逗号分隔的 key 列表，或特殊值 `all`（等价全部 5 类）：
 
 ```bash
 mde run --from 2026-07-01 --to 2026-07-31 --out ./export --assets all
@@ -129,14 +128,13 @@ mde run --from 2026-07-01 --to 2026-07-31 --out ./export --assets video,ai_minut
   recording_<remoteId>.mp4
   recording_<remoteId>.m4a
   transcript.txt
-  ai_transcript.txt
   ai_minutes.txt
 <out>/.mde/queue.sqlite     # 本地任务队列/状态库
 ```
 
 ## 延迟资产（AI 智能纪要）与探测机制
 
-录像/录音/文字记录通常在会议结束后很快生成，最多等 6 小时；智能类资产（`ai_transcript`/`ai_minutes`/`chapters`）生成较慢，最多等 48 小时。发现阶段如果这些资产还不存在或未就绪，会进入「探测」状态而不是直接失败；此后每次 `execute`（`run`/`get` 内部也会先跑一次探测）都会重查到期的探测——一旦网关侧就绪就自动补建下载任务并完成下载，超过等待上限则放弃（记为 abandoned，不会无限空等，也不会崩溃）。
+录像/录音/文字记录通常在会议结束后很快生成，最多等 6 小时；智能类资产（`ai_minutes`/`chapters`）生成较慢，最多等 48 小时。发现阶段如果这些资产还不存在或未就绪，会进入「探测」状态而不是直接失败；此后每次 `execute`（`run`/`get` 内部也会先跑一次探测）都会重查到期的探测——一旦网关侧就绪就自动补建下载任务并完成下载，超过等待上限则放弃（记为 abandoned，不会无限空等，也不会崩溃）。
 
 因此对同一批会议**反复调用 `execute`（或再次 `run` 覆盖同一时间范围）就能自动追上延迟出现的 AI 纪要**，无需手动重跑。典型做法是配 cron 周期性执行：
 

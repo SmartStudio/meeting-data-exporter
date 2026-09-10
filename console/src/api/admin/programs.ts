@@ -30,7 +30,7 @@ import type { AssetKey } from '../types'
 import { ApiError } from '../client'
 import type { CreateProgramInput, InventoryItem, ProgramInventory, ServiceProgram } from './grants'
 
-/* ── 六类资产的中文名 ─────────────────────────────────────────── */
+/* ── 五类资产的中文名 ─────────────────────────────────────────── */
 
 /**
  * 与网关那份（`src/http/handlers/console/meetings.ts` 的 `ASSET_LABEL`）逐字一致。
@@ -41,13 +41,12 @@ export const ASSET_LABEL: Record<AssetKey, string> = {
   video: '录像',
   audio: '音频',
   transcript: '逐字稿',
-  ai_transcript: '逐字稿（智能优化版）',
   ai_minutes: '纪要',
   chapters: '时间轴',
 }
 
 /**
- * 后端加了第七类资产时**原样显示那个键**，不折成"其他"、更不丢掉——
+ * 后端加了第六类资产时**原样显示那个键**，不折成"其他"、更不丢掉——
  * 这一页回答的问题是"这个程序实际能取到什么"，少列一类就是答错。
  */
 export function assetLabel(key: string): string {

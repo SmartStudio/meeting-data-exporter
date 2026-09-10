@@ -2,7 +2,6 @@ import type { AuthStore } from '../store/auth'
 import type { MeetingCacheStore } from '../store/meetings'
 import type { RecordsApi } from '../tencent/records'
 import type { Catalog } from '../catalog/index'
-import type { StsManager } from '../sts/manager'
 import type { AccessGate, MeetingMeta } from '../policy/access'
 import type { ArchivesStore } from '../store/archives'
 import type { AuditRecorder } from '../audit/recorder'
@@ -16,7 +15,6 @@ import { internalError, json } from './respond'
 import * as authHandlers from './handlers/auth'
 import * as deviceHandlers from './handlers/device'
 import * as meetingsHandlers from './handlers/meetings'
-import * as webhookHandlers from './handlers/webhook'
 import * as consoleAuthHandlers from './handlers/console/auth'
 import * as consoleStorageHandlers from './handlers/console/storage'
 import type { StorageDeps } from './handlers/console/storage'
@@ -73,7 +71,6 @@ export interface AppDeps {
   identityMapper: IdentityMapper
   serviceAuth: ServiceAuth
   authStore: AuthStore
-  stsManager: StsManager
   meetingsCache: MeetingCacheStore
   /** 登录端点限流器（IP 维度 + handler 内的账号维度共用同一个实例，见 ratelimit.ts） */
   loginRateLimiter: RateLimiter
@@ -254,11 +251,6 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/meetings/:meetingId/assets', meetingsHandlers.listAssets),
   compile('POST', '/api/v1/assets/:assetId/download-url', meetingsHandlers.downloadUrl),
 
-  // 同一路径两个方法：GET 是事件订阅配置时的 URL 有效性校验（腾讯要求回调服务
-  // 必须同时支持 GET 与 POST），POST 才是事件推送。缺 GET 则后台连保存都保存不上。
-  compile('GET', '/webhook/tencent-meeting', webhookHandlers.handleWebhookVerify),
-  compile('POST', '/webhook/tencent-meeting', webhookHandlers.handleWebhook),
-
   compile('GET', '/healthz', async () => json(200, { status: 'ok' })),
 
   // 管理员会话与账号管理（Task 3，A1）——与上面企微/服务账号认证线完全独立，
@@ -385,7 +377,7 @@ const WECOM_ROUTES = new Set([
   'GET /device',
 ])
 
-/** 仅对写型登录端点限流（webhook 是腾讯侧调用、GET /device 是浏览器页，均不在此列） */
+/** 仅对写型登录端点限流（GET /device 是浏览器页，不在此列） */
 const RATE_LIMITED = new Set([
   'POST /api/v1/auth/device/code',
   'POST /api/v1/auth/device/token',

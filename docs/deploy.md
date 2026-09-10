@@ -35,8 +35,8 @@
   这一点，但越早人工确认越好。
 - 有一台可以运行 Docker 容器、且能出公网访问 `api.meeting.qq.com` 与
   `qyapi.weixin.qq.com` 的服务器（阿里云 ECS / 容器服务均可）。
-- 有一个公网可访问、配有 HTTPS 证书的域名，作为 `GATEWAY_BASE_URL`。腾讯会议的
-  Webhook 回调与企业微信的登录跳转都要求 HTTPS，自签名证书不可用。
+- 有一个公网可访问、配有 HTTPS 证书的域名，作为 `GATEWAY_BASE_URL`。企业微信的
+  登录跳转要求 HTTPS，自签名证书不可用。
 - 有一个 MySQL 实例（自建或阿里云 RDS），版本 ≥ 8.0。
 - 有腾讯会议企业管理后台的管理员权限，能创建企业自建应用。
 - 有企业微信管理后台的管理员权限，能创建自建应用。
@@ -110,25 +110,13 @@ DATABASE_URL=mysql://gateway:<强密码>@<host>:3306/meeting_gateway?charset=utf
    - SDK ID → `TM_SDK_ID`（如未分配 SdkId，见下方错误码 190303 的说明）
    - Secret ID → `TM_SECRET_ID`
    - Secret Key → `TM_SECRET_KEY`
-2. **回调配置 -> 事件订阅**：
-   - URL 填 `https://<GATEWAY_BASE_URL 的域名>/webhook/tencent-meeting`
-   - Token：固定 25 位字符串，自行生成一个随机值 → `TM_WEBHOOK_TOKEN`
-   - EncodingAESKey：固定 43 位字符串，自行生成一个随机值 →
-     `TM_WEBHOOK_AES_KEY`
-   - **勾选「STS Token 生成」事件**——这是 AI 分钟数（转写/纪要）功能依赖的
-     STS-Token 异步下发通道，不勾选的话 preflight 第 7 项会一直等不到回调。
-3. **成员管理 -> 选定一个 operator 账号**，作为网关调用 API 时固定使用的
+2. **成员管理 -> 选定一个 operator 账号**，作为网关调用 API 时固定使用的
    `operator_id`（`TM_OPERATOR_ID`）：
    - 该账号需要是超级管理员/管理员，或至少具备「管理企业录制」「查看企业录制」
      权限。
    - **强烈建议使用专设的服务账号，而不是某位在职管理员的个人账号**——一旦这
      个账号离职或被删除，网关的全部导出能力会立即中断，且故障现象会是一堆
      `500014`（账号无权限）错误，排查成本很高。
-
-关于事件订阅的具体线路格式（Token/签名/密文在 query 还是 body 里、字段名是否
-与本网关的实现完全一致），本仓库的实现是参照企业微信回调的通行做法自行设计的
-约定，**未经过腾讯会议官方文档逐字核实**，属于上线前必须确认的技术债，详见
-第 11 节。
 
 ---
 
@@ -154,12 +142,9 @@ DATABASE_URL=mysql://gateway:<强密码>@<host>:3306/meeting_gateway?charset=utf
 
 | 变量 | 易错点 |
 | --- | --- |
-| `TM_WEBHOOK_TOKEN` | 代码里做了强校验，**必须恰好 25 个字符**，多一位少一位 `loadConfig` 会直接拒绝启动。 |
-| `TM_WEBHOOK_AES_KEY` | 企微/腾讯的惯例是 43 位，但 `loadConfig` 本身没有做长度校验（只要求非空），填错长度不会在启动时报错，而是会在真正收到 Webhook 回调、解密失败时才暴露——建议部署前手动核对长度。 |
 | `DATABASE_URL` | 格式 `mysql://user:pass@host:3306/db?charset=utf8mb4`；密码含 `@` `:` `!` 等特殊字符时必须做 URL 编码，否则会被解析成错误的 host/path。 |
-| `JWT_SECRET` | 必须 ≥ 32 位随机字符串（例如 `openssl rand -base64 32`），`loadConfig` 会在启动期强制校验长度。仅用于签发/校验用户会话 JWT，不要用弱口令，且不得与 `STS_ENC_KEY` 相同。 |
-| `STS_ENC_KEY` | 必须 ≥ 32 位随机字符串（例如 `openssl rand -base64 32`），且必须与 `JWT_SECRET` 不同——`loadConfig` 会在启动期校验长度与「不得等于 JWT_SECRET」。这是 STS-Token 落库前对称加密（见第 11 节技术债）用的独立密钥，与 `JWT_SECRET` 分属两个信任域，任一泄露不牵连另一个。 |
-| `GATEWAY_BASE_URL` | 必须是公网可达的 HTTPS 域名，Webhook 回调地址、企微登录跳转都由它拼出来；本地联调可以先用内网穿透工具（如 `ngrok`）临时获得一个公网 HTTPS 地址。 |
+| `JWT_SECRET` | 必须 ≥ 32 位随机字符串（例如 `openssl rand -base64 32`），`loadConfig` 会在启动期强制校验长度。仅用于签发/校验用户会话 JWT，不要用弱口令。 |
+| `GATEWAY_BASE_URL` | 必须是公网可达的 HTTPS 域名，企微登录跳转由它拼出来；本地联调可以先用内网穿透工具（如 `ngrok`）临时获得一个公网 HTTPS 地址。 |
 | `IDENTITY_STRATEGY` | 见第 6 节，选错会导致所有用户登录后都拿不到正确的腾讯会议身份。 |
 | `TM_QPS` | 默认 5，多个客户端共用同一个网关时不要盲目调高——腾讯侧限流触发 `190310` 后网关会自动收敛速率，但仍会拖慢所有客户端的响应。 |
 | `TRUSTED_PROXY_HOPS` | 可选，默认 1。登录端点限流按客户端 IP 分桶，取值必须精确等于网关前方会追加 X-Forwarded-For 的可信代理层数——配错会导致限流按错误的 IP 生效（填多了会取到客户端可伪造的 XFF 前缀段，限流可被绕过，是安全问题；填少了会把共享同一出口 IP 的不同客户端误伤合并进同一个桶，是可用性问题）。不确定时宁可偏小，不要偏大。 |
@@ -287,7 +272,7 @@ VALUES
   ('allow', 100, 'and',
    JSON_ARRAY(),            -- 空条件 = 匹配全部会议，不做任何范围限制
    'program', '<MDE_CLIENT_ID>',
-   JSON_ARRAY('*'),         -- 全部八类资产
+   JSON_ARRAY('*'),         -- 全部五类资产
    'allow', '放行主采集程序', 1, UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
 ```
 
@@ -346,10 +331,10 @@ VALUES
 优先级的「放行全部」在视频上顶掉。
 
 `asset_types` 用的是客户端资产键（`video` / `audio` / `transcript` /
-`ai_transcript` / `ai_minutes` / `ai_topic_minutes` / `ai_speaker_minutes` /
-`ai_ds_minutes`），`'*'` 表示全部八类。注意 `transcript` 与 `ai_transcript` 在
-网关 API 的 `asset_type` 字段里叫 `meeting_summary` 与 `ai_meeting_transcripts`
-——换算由网关负责（`src/policy/access.ts`），规则里一律写前者。
+`ai_minutes` / `chapters`，事实源见 `packages/engine/src/domain/types.ts` 的
+`ALL_ASSET_KEYS`），`'*'` 表示全部五类。注意 `transcript` 在网关 API 的
+`asset_type` 字段里叫 `meeting_summary`（其余四类客户端键与网关字段同名）
+——换算由网关负责（`src/policy/access.ts`），规则里一律写客户端键。
 
 ### 从旧版本升级：现有规则会被搬走
 
@@ -411,8 +396,8 @@ VALUES
 
 5. **配置反向代理 + HTTPS**：网关本身只监听 HTTP（默认 3000 端口），需要在
    前面挂一层 Nginx / 阿里云 SLB / ALB 做 TLS 终止，把 `GATEWAY_BASE_URL`
-   对应的域名解析到这一层。腾讯会议 Webhook 回调、企业微信登录跳转都要求
-   HTTPS，直接暴露 HTTP 端口无法满足这两者。
+   对应的域名解析到这一层。企业微信登录跳转要求 HTTPS，直接暴露 HTTP 端口
+   无法满足。
 
    网关登录端点的限流（`/api/v1/auth/*`）依赖 X-Forwarded-For 判断客户端 IP，
    因此**这一层反向代理必须追加或覆盖 X-Forwarded-For**（Nginx 默认行为即是
@@ -448,7 +433,7 @@ bun scripts/preflight.ts
 # 或
 bun run preflight
 
-# 完整用法：连身份映射策略与 STS-Token Webhook 可达性也一起验证
+# 完整用法：身份映射策略也一起验证
 bun scripts/preflight.ts \
   --sample-user <一个真实的企微 userid> \
   --sample-email <该用户的邮箱>   # 仅 IDENTITY_STRATEGY=email 时需要
@@ -458,23 +443,15 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
   meeting-export-gateway:<version> bun scripts/preflight.ts --sample-user <真实企微 userid>
 ```
 
-其他参数：
-
-- `--skip-webhook-check`：跳过第 7 项（该项会向腾讯会议发起一次**真实的**
-  STS-Token 生成请求，不是空跑；重复测试时如果不想反复触发真实请求可以加这个
-  参数）。
-- `--webhook-timeout-ms <毫秒数>`：第 7 项等待 Webhook 回调的超时时间，默认
-  30000（即 30 秒）。
-
-脚本会依次打印 9 个检查项（1、2、2b、2c、3、4、5、6、7）的结果，每项标注
-`[PASS]` / `[FAIL]` / `[SKIP]`：
+脚本会依次打印检查项（1、2、2b、2c、3、4、5、6，共 6 个主项，2b/2c 是 2 的
+子项）的结果，每项标注 `[PASS]` / `[FAIL]` / `[SKIP]`：
 
 - `PASS`：已被真实验证为符合要求。
 - `FAIL`：已经联系到目标系统（数据库/腾讯会议/企业微信），但收到的是一个明确
   的错误，脚本会给出具体的修复指引，照着改。
 - `SKIP`：受限于当前运行环境（没有出网权限、缺少必要参数、或依赖的前置步骤未
   通过）而**无法**完成验证——不等于"已确认没问题"，只是这一次没条件测。最典型
-  的场景是在没有公网出口的本地开发机上跑这个脚本，第 3/5/7 项会因为连不上
+  的场景是在没有公网出口的本地开发机上跑这个脚本，第 3/5 项会因为连不上
   `api.meeting.qq.com` / `qyapi.weixin.qq.com` 而被跳过；这种情况下必须在真正
   的部署环境里重新跑一遍，把这些项也确认为 `PASS`，才能认为已经完成校验。
 
@@ -537,44 +514,31 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
 按风险从高到低排列：
 
 > **M1 网关加固已清掉的项**（2026-07-22 合并 master）：下方 **#4 登录端点限流**（IP + 账号
-> 双维度 + 服务账号恒定时间 + 限流器有界内存）、**#9 `/device` 验证页面**（网关已自带）已实现；
-> **#3** 的密钥复用问题已解决（STS 加密密钥已与 JWT_SECRET 分离），仅 KMS 托管仍为后续项。
+> 双维度 + 服务账号恒定时间 + 限流器有界内存）、**#9 `/device` 验证页面**（网关已自带）已实现。
 >
-> **M3.5 联调清掉的项**（2026-08-21，`cc02f13`）：**#1 webhook 线路格式**与
-> **#2 事件加解密**已对照腾讯官方文档 1095/51608《回调服务要求》· 51612《签名校验》·
-> 54658《事件加解密》逐条核实并改正，两项**共查出 5 处不符**（详见下方）。
+> **STS 链路已于 2026-09-10 整体移除**：连同 `ai_transcript` 资产类型、
+> `/webhook/tencent-meeting` 路由、`STS_ENC_KEY` / `TM_WEBHOOK_TOKEN` /
+> `TM_WEBHOOK_AES_KEY` 三个环境变量一并下线。下方 **#1 webhook 线路格式**、
+> **#2 事件加解密**（2026-08-21，`cc02f13` 曾对照腾讯官方文档核实并改正，
+> 查出 5 处不符）、**#3 STS-Token 加密的 KMS 托管**三项均随之作废，仅保留
+> 编号与简述供历史追溯，不再是上线阻塞项。
 >
 > 其余各项（meeting_cache TTL、addresses 字段名等）仍为待确认项。
 
-1. ~~**Webhook 回调的线路格式未经腾讯官方文档核实**~~ →
-   **✅ 已核实并改正（2026-08-21，`cc02f13`）。** 原实现是参照企业微信回调惯例自行设计的，
-   对照官方文档查出 **5 处不符**，一处不改就整条 STS 链路无从谈起：
-
-   | # | 原实现 | 官方契约 |
-   | --- | --- | --- |
-   | 1 | 无 GET 端点 | 保存事件订阅时腾讯先发 **GET 验证 URL**，须验签 + 解密 `check_str` 并在 **3 秒内纯文本回显明文**；没有它后台连订阅都保存不上 |
-   | 2 | 从 query 读 `timestamp`/`nonce`/`signature` | 在 **HTTP Header** 里 |
-   | 3 | 密文字段 `encrypt` | body 的 **`data`** |
-   | 4 | 响应 `{"ok":true}` | 必须是 **200 + 纯文本** `successfully received callback`，否则腾讯判失败并在 1/3/6 分钟后重试三次 |
-   | 5 | 按企微的「16 随机字节 + 4 字节长度头」解析明文 | 明文结构是 **`msg + $key`**，按企微结构解必然失败 |
-
-   另外实测发现腾讯**对同一回调会重试三次**，重复投递不能误判为未知 `req_id`（`584359d`）。
+1. ~~**Webhook 回调的线路格式未经腾讯官方文档核实**~~ → 2026-08-21（`cc02f13`）
+   曾对照腾讯官方文档 1095/51608/51612/54658 逐条核实并改正，查出 5 处不符
+   （GET 验证端点、Header vs query、`data` vs `encrypt` 字段名、响应格式、
+   明文结构）。**STS 链路已于 2026-09-10 整体移除**（连同 webhook 路由本身），
+   本项随之作废，不再适用。
 
 2. ~~**事件加解密算法细节是通用企业回调惯例，非腾讯官方文档确认**~~ →
-   **✅ 已核实（2026-08-21）。** 签名算法**逐字节吻合官方**——用官方样例实算得
-   `b11e507817336a91d7df0c8536ee2aca18bbbae8`，与文档一致，已固化为
-   `tests/sts/crypto.test.ts` 的官方样例回归测试。`decryptEvent` 的明文结构按上表第 5 条改正。
+   2026-08-21 曾核实签名算法与官方样例逐字节吻合。**STS 链路已于 2026-09-10
+   整体移除**，本项随之作废，不再适用。
 
-   > **仍存的一处官方文档自相矛盾**（`src/sts/crypto.ts` 注释里记着）：《签名校验》给出的样例中
-   > `data` base64 解码后**直接就是明文 JSON**（未加密），与《事件加解密》的描述不一致。
-   > 代码对两种都能处理，但**哪一种是生产环境的真实行为，只有真回调能证明**。
-
-3. **STS-Token 落库前的加密不是真正的 KMS 托管**（`src/index.ts` 的
-   `createTokenCipher`）。当前用 `AES-256-GCM`，密钥由独立的 `STS_ENC_KEY`
-   派生，已与 `JWT_SECRET` 分离（两者分属不同信任域，`loadConfig` 会在启动期
-   校验二者长度均 ≥32 位且不得相同），是一个明确标注的"最小可用实现"。设计
-   文档要求"使用阿里云 KMS 托管或等效的密文存储"——仍建议上线后替换为真正的
-   KMS 密钥托管。
+3. **STS-Token 落库前的加密不是真正的 KMS 托管**（原 `src/index.ts` 的
+   `createTokenCipher`，密钥来自独立的 `STS_ENC_KEY`）。**STS 链路已于
+   2026-09-10 整体移除**（连同 `STS_ENC_KEY` 环境变量），本项随之作废，
+   不再适用。
 
 4. **登录端点限流已实现，但为进程内内存桶**（`src/http/ratelimit.ts`、
    `src/http/router.ts`、`src/http/handlers/auth.ts`）。写型登录端点

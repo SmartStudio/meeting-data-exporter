@@ -1,12 +1,13 @@
-import type { RawDetail, RawFileEntry } from '../catalog/assets'
+import type { RawFileEntry } from '../catalog/assets'
 import type { TencentClient } from './client'
 
 /** 平台上限；批量接口默认/最大 50，与 /v1/corp/records 的 20 不同 */
 const LIST_PAGE_SIZE = 50
 
 /**
- * GET /v1/addresses 单条记录：不含 ai_* 字段——那五类纪要仅 51180（detailByFileId）返回。
- * 免 STS-Token，链接时效 6 小时。
+ * GET /v1/addresses 单条记录。免 STS-Token，链接时效 6 小时。
+ * 平台的详情接口 /v1/addresses/{record_file_id}（要 STS-Token）只多给「逐字稿智能优化版」
+ * 一类，该类已移除，本项目不再调用详情接口。
  */
 export interface RawAddressFile {
   record_file_id: string
@@ -15,7 +16,7 @@ export interface RawAddressFile {
   audio_address?: string
   audio_address_file_type?: string
   meeting_summary?: RawFileEntry[]
-  /** false 时 ai_* 全部返回空；由调用方转交给 extractAssets 的 allowDownload 参数 */
+  /** false 时平台不允许下载智能类产物；由调用方转交给 extractAssets 的 allowDownload 参数 */
   allow_download?: boolean
 }
 
@@ -27,8 +28,6 @@ interface RawListResponse {
 export interface AddressesApi {
   /** GET /v1/addresses：按 meeting_record_id 批量取地址，不需要 STS-Token，链接 6 小时 */
   listByRecordId(meetingRecordId: string): Promise<RawAddressFile[]>
-  /** GET /v1/addresses/{record_file_id}：单文件详情，需 STS-Token，链接仅 5 分钟 */
-  detailByFileId(recordFileId: string, stsToken: string): Promise<RawDetail>
 }
 
 export function createAddressesApi(client: TencentClient, operatorId: string): AddressesApi {
@@ -52,17 +51,6 @@ export function createAddressesApi(client: TencentClient, operatorId: string): A
       } while (page <= totalPage)
 
       return out
-    },
-
-    async detailByFileId(recordFileId, stsToken) {
-      return client.get<RawDetail>(
-        `/v1/addresses/${recordFileId}`,
-        {
-          operator_id: operatorId,
-          operator_id_type: 1,
-        },
-        { stsToken },
-      )
     },
   }
 }

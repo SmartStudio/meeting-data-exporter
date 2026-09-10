@@ -275,19 +275,12 @@ test('allowsAsset 把网关的 asset_type 换算成 AssetKey：meeting_summary �
   expect(allowsAsset(d, 'video').allowed).toBe(false)
 })
 
-test('allowsAsset：ai_meeting_transcripts 对应 ai_transcript', async () => {
-  const d = await gateOf([rule({ assetTypes: ['ai_transcript'] })]).decide({
-    actor: program, meeting, archived: false, now: NOW,
-  })
-  expect(allowsAsset(d, 'ai_meeting_transcripts').allowed).toBe(true)
-})
-
-test('allowsAsset：["*"] 展开成全部六类', async () => {
+test('allowsAsset：["*"] 展开成全部五类', async () => {
   const d = await gateOf([rule({ assetTypes: ['*'] })]).decide({
     actor: program, meeting, archived: false, now: NOW,
   })
   for (const t of [
-    'video', 'audio', 'meeting_summary', 'ai_meeting_transcripts',
+    'video', 'audio', 'meeting_summary',
     'ai_minutes', 'chapters',
   ] as const) {
     expect(allowsAsset(d, t).allowed).toBe(true)
@@ -569,7 +562,7 @@ test('授权：assetTypes 为 null 的授权行「不额外限制」，判定与
   expect(d.effect).toBe('allow')
   expect(d.source).toBe('rule')
   expect(d.ruleId).toBe(1)
-  expect(d.assetTypes).toHaveLength(6) // ['*'] 展开后的全部六类，一类都没被收窄
+  expect(d.assetTypes).toHaveLength(5) // ['*'] 展开后的全部五类，一类都没被收窄
   // 连理由都不加一句：每条判定后面都挂着「授权没有额外限制」，真正有限制的那几条反而淹了
   expect(d.reason).not.toContain('授权行')
 })

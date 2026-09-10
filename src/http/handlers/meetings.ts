@@ -5,7 +5,6 @@ import type { AllowDecision } from '../../policy/stacks'
 import { archiveStateKey } from '../../store/archives'
 import { MeetingNotFoundInRangeError } from '../../tencent/records'
 import { AssetUrlMissingError, InvalidAssetIdError } from '../../catalog/index'
-import { StsTokenUnavailableError } from '../../sts/manager'
 import { DEFAULT_WINDOW_SEC } from '../../tencent/window'
 import { clientKindOf, requireAuth } from '../middleware'
 import { json } from '../respond'
@@ -229,9 +228,8 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
  * 场次的挑选与 `getMeeting` 同一口径（`pickMeeting`）：`sub_meeting_id` 给了就
  * 取那一条录制记录，不给取最新一条，点不中回 404 meeting_not_found_in_range。
  *
- * STS-Token 不可用时，catalog.listAssets 已经在更底层把 ai_* 资产直接排除
- * （字段缺失即不产生该资产，见 catalog/index.ts），video/audio/meeting_summary
- * 不受影响——这里无需任何额外处理即可满足该约束。
+ * 五类资产没有一类依赖 STS-Token（批量 addresses + 智能接口，见 catalog/index.ts），
+ * 这里不需要任何降级分支。
  */
 export async function listAssets(req: Request, ctx: RouteCtx): Promise<Response> {
   const now = ctx.deps.now()
@@ -371,9 +369,6 @@ export async function downloadUrl(req: Request, ctx: RouteCtx): Promise<Response
   } catch (err) {
     if (err instanceof AssetUrlMissingError) return json(404, { error: 'asset_not_found' })
     if (err instanceof InvalidAssetIdError) return json(400, { error: 'invalid_asset_id' })
-    if (err instanceof StsTokenUnavailableError) {
-      return json(503, { error: 'sts_token_unavailable' })
-    }
     throw err
   }
 }

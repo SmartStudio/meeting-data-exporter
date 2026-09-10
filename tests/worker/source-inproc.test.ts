@@ -194,9 +194,10 @@ describe('createInProcSource', () => {
  * 「打桩被调用了」这件事。
  *
  * 场景取自 catalog/index.ts 与 tests/catalog/index.test.ts 里同样描述过的真实
- * 故障：同一个 record_file 下的六类文本资产各自是数组，腾讯返回的数组顺序
- * 每次调用都可能不同，assetId 末段必须按 file_type 定位，而不是数组下标——
- * 否则用户会拿到文件名与内容不符的下载结果（例如 transcript.pdf 里装着 docx）。
+ * 故障：同一个 record_file 下 meeting_summary 这类文本资产是数组，腾讯返回的
+ * 数组顺序每次调用都可能不同，assetId 末段必须按 file_type 定位，而不是数组
+ * 下标——否则用户会拿到文件名与内容不符的下载结果（例如 transcript.pdf 里装
+ * 着 docx）。
  */
 describe('createInProcSource + 真实 catalog：多格式资产按 file_type 定位', () => {
   /** 智能接口默认「这一类不存在」——多格式定位那两条用例不该被它影响 */
@@ -205,19 +206,16 @@ describe('createInProcSource + 真实 catalog：多格式资产按 file_type 定
   function buildRealSource() {
     const catalog = createCatalog({
       addressesApi: {
-        listByRecordId: async () => [],
-        detailByFileId: async () => ({
+        listByRecordId: async () => [{
           record_file_id: 'f1',
-          // 详情接口（要 STS）下唯一还是多格式数组的那一类：优化版逐字稿。
-          // 纪要与时间轴已改走智能接口，不再从这里来。
-          ai_meeting_transcripts: [
+          // 还是多格式数组的那一类：转写。纪要与时间轴走智能接口，不从这里来。
+          meeting_summary: [
             { download_address: 'https://cos/m.docx', file_type: 'docx' },
             { download_address: 'https://cos/m.pdf', file_type: 'pdf' },
           ],
-        }),
+        }],
       } as any,
       smartApi: NO_SMART,
-      stsManager: { getToken: async () => 'sts-token' } as any,
       now: () => 1_700_000_000,
     })
     return createInProcSource({
@@ -235,10 +233,8 @@ describe('createInProcSource + 真实 catalog：多格式资产按 file_type 定
     const catalog = createCatalog({
       addressesApi: {
         listByRecordId: async () => [{ record_file_id: 'f1', allow_download: true }],
-        detailByFileId: async () => ({ record_file_id: 'f1' }),
       } as any,
       smartApi: smart,
-      stsManager: { getToken: async () => 'sts-token' } as any,
       now: () => 1_700_000_000,
     })
     return createInProcSource({
@@ -250,8 +246,8 @@ describe('createInProcSource + 真实 catalog：多格式资产按 file_type 定
 
   test('同一 recordFileId 下不同 file_type 的 assetId 解析到各自正确的下载地址', async () => {
     const src = buildRealSource()
-    const docx = await src.getDownloadUrl('rec1:f1:ai_meeting_transcripts:docx')
-    const pdf = await src.getDownloadUrl('rec1:f1:ai_meeting_transcripts:pdf')
+    const docx = await src.getDownloadUrl('rec1:f1:meeting_summary:docx')
+    const pdf = await src.getDownloadUrl('rec1:f1:meeting_summary:pdf')
     expect(docx.url).toBe('https://cos/m.docx')
     expect(pdf.url).toBe('https://cos/m.pdf')
   })

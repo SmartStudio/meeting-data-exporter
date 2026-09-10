@@ -24,8 +24,8 @@ import { MOCK_SUB_MEETING_ID } from './meetings'
  * 是从 `api/mock/meetings.ts` 那一份世界推出来的。
  */
 
-/** 六类里做文本的三类。录像与音频只给去向不给内容（走 `media`），时间轴走 chapters 端点。 */
-const TEXT_TYPES: AssetKey[] = ['transcript', 'ai_transcript', 'ai_minutes']
+/** 五类里做文本的两类。录像与音频只给去向不给内容（走 `media`），时间轴走 chapters 端点。 */
+const TEXT_TYPES: AssetKey[] = ['transcript', 'ai_minutes']
 
 interface FilePlan {
   fileType: string
@@ -44,7 +44,6 @@ const PLAN: Record<string, FilePlan[]> = {
     { fileType: 'docx', availability: 'unsupported_format' },
     { fileType: 'pdf', availability: 'too_large' },
   ],
-  ai_transcript: [{ fileType: 'txt', availability: 'not_ingested' }],
   ai_minutes: [
     { fileType: 'txt', availability: 'parsed', body: (m) => minutesBody(m) },
     { fileType: 'docx', availability: 'unsupported_format' },

@@ -1,5 +1,5 @@
 /**
- * 六类资产的中文名。**全项目唯一一份**（阶段 5 · A9 收拢）。
+ * 五类资产的中文名。**全项目唯一一份**（阶段 5 · A9 收拢）。
  *
  * 来源是 spec §6.2 那张表。键用契约的 `AssetKey`，不是网关的 `asset_type`——
  * 原型 HTML 里那套短名（`summary` / `aitr` / `digest`）一个字都不许进代码，
@@ -20,7 +20,6 @@ export const ASSET_LABEL: Record<AssetKey, string> = {
   video: '录像',
   audio: '音频',
   transcript: '逐字稿',
-  ai_transcript: '逐字稿（智能优化版）',
   ai_minutes: '纪要',
   chapters: '时间轴',
 }

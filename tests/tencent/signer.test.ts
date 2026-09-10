@@ -64,13 +64,6 @@ test('buildAuthHeaders 含全部必需头，X-TC-Registered 固定为 1', () => 
   expect(h.AppId).toBe('corp')
   expect(h.SdkId).toBe('sdk')
   expect(h['X-TC-Signature']).toBeTruthy()
-  expect(h['STS-Token']).toBeUndefined()
-})
-
-test('传入 stsToken 时附加 STS-Token 头', () => {
-  const built = buildUrl('https://x', '/v1/addresses/1', {})
-  const h = buildAuthHeaders(authCfg, 'GET', built, '', 'tok-123')
-  expect(h['STS-Token']).toBe('tok-123')
 })
 
 test('两次调用产生不同的 nonce（保证重试时签名不重放）', () => {

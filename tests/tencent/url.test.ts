@@ -42,7 +42,7 @@ test('参数按字典序排列，保证同一组参数产出稳定字符串', ()
 })
 
 test('无查询参数时不产生问号', () => {
-  const b = buildUrl('https://x', '/v1/app/sts-token', {})
-  expect(b.uriForSigning).toBe('/v1/app/sts-token')
-  expect(b.url).toBe('https://x/v1/app/sts-token')
+  const b = buildUrl('https://x', '/v1/smart/chapters', {})
+  expect(b.uriForSigning).toBe('/v1/smart/chapters')
+  expect(b.url).toBe('https://x/v1/smart/chapters')
 })

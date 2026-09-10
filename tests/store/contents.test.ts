@@ -95,16 +95,15 @@ function sha256(data: string | Buffer): string {
 }
 
 // ---------------------------------------------------------------------------
-// 入库范围：四类纪要 + 转写，录像与音频不入库
+// 入库范围：三类纪要 + 转写，录像与音频不入库
 // ---------------------------------------------------------------------------
 
-test('TEXT_GATEWAY_ASSET_TYPES 恰是四类纪要+转写，且是从引擎的 ALL_ASSET_KEYS 派生的（不是抄的短名）', () => {
+test('TEXT_GATEWAY_ASSET_TYPES 恰是三类纪要+转写，且是从引擎的 ALL_ASSET_KEYS 派生的（不是抄的短名）', () => {
   // 值是**网关的 asset_type**，不是客户端的 AssetKey——库里 asset_type 列存的是前者，
-  // 两者只有 transcript / ai_transcript 两项不同名（见引擎的 ASSET_KEY_TO_GATEWAY_TYPE）
+  // 两者只有 transcript 一项不同名（见引擎的 ASSET_KEY_TO_GATEWAY_TYPE）
   expect([...TEXT_GATEWAY_ASSET_TYPES].sort()).toEqual(
     [
       'meeting_summary',
-      'ai_meeting_transcripts',
       'ai_minutes',
       'chapters',
     ].sort(),
@@ -436,7 +435,7 @@ test('buildAssetContent：NAS 上的文件不见了 → 失败，不产出行（
   })
 })
 
-test('buildAssetContent：录像/音频进来一律拒绝产出行——入库范围只有四类纪要+转写', async () => {
+test('buildAssetContent：录像/音频进来一律拒绝产出行——入库范围只有三类纪要+转写', async () => {
   await withFiles(async (dir) => {
     const path = join(dir, 'recording.txt')
     await writeFile(path, 'not really a video')

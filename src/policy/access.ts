@@ -12,9 +12,8 @@
  *    没有机械对应关系，所以 `ActorIdentity` 带上了 `programId`，认证链路填它。
  * 2. **`Meeting` → `MeetingFacts`。** 求值器只认事实，不认领域对象。
  *    结束时间的回落路径要在这里识别出来，见 `meetingFacts`。
- * 3. **资产类型的两套词汇。** 网关 emit 的是 `AssetType`（`meeting_summary` /
- *    `ai_meeting_transcripts`），规则里存的是 `AssetKey`（`transcript` /
- *    `ai_transcript`）。同一批资产已经有过三套叫法，M3.5 为此吃过一次亏
+ * 3. **资产类型的两套词汇。** 网关 emit 的是 `AssetType`（`meeting_summary`），
+ *    规则里存的是 `AssetKey`（`transcript`）。同一批资产已经有过三套叫法，M3.5 为此吃过一次亏
  *    （见 `packages/engine/src/domain/types.ts` 的 `ASSET_KEY_TO_GATEWAY_TYPE`），
  *    所以换算只走那份唯一的映射表，这里不另抄一份。
  *

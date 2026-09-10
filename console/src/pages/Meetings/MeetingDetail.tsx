@@ -59,12 +59,11 @@ import styles from './MeetingDetail.module.css'
  * 「我现在要做什么」，缺口的账本是 §11 那张表。
  */
 
-/** 六类资产的中文名。**来源是 spec §6.2 那张表**，与后端 `ASSET_LABEL` 逐字一致。 */
+/** 五类资产的中文名。**来源是 spec §6.2 那张表**，与后端 `ASSET_LABEL` 逐字一致。 */
 const ASSET_LABEL: Record<string, string> = {
   video: '录像',
   audio: '音频',
   transcript: '逐字稿',
-  ai_transcript: '逐字稿（智能优化版）',
   ai_minutes: '纪要',
   chapters: '时间轴',
 }
@@ -261,16 +260,16 @@ function StageSection({
   )
 }
 
-/* ── 拉取段：六类资产 ─────────────────────────────────────────── */
+/* ── 拉取段：五类资产 ─────────────────────────────────────────── */
 
 /** 表头那一句口径。它是**列头的脚注**，不是正文——所以住在 `title` 里。 */
-const ASSET_SCOPE_TITLE = '六类资产各自的格式数。不适用的类不出现在这张表里。'
+const ASSET_SCOPE_TITLE = '五类资产各自的格式数。不适用的类不出现在这张表里。'
 
 /** 合计体积算不出来时那句区分的全文。正文只留「算不出来 · 不是 0 字节」。 */
 const SIZE_UNKNOWN_TITLE = '一个资产都没有声明大小，所以合计体积算不出来。这不等于这场会议占 0 字节。'
 
 /**
- * 六类资产各自的格式数。
+ * 五类资产各自的格式数。
  *
  * spec §4.3 还要「各自的体积」——**后端只下发一个合计** `sizeBytes`
  * （`ConsoleMeetingRow.sizeBytes` 是所有已完成资产 `bytes_expected` 之和），
@@ -330,7 +329,7 @@ function AssetTable({ m }: { m: AdminMeeting }) {
       {m.unknownAssetTypes.length > 0 && (
         <p className={styles.text} data-testid="unknown-assets">
           另有 {m.unknownAssetTypes.length} 类认不出的资产类型（{m.unknownAssetTypes.join('、')}
-          ）：已计入上面的数，但不属于契约的六类。
+          ）：已计入上面的数，但不属于契约的五类。
         </p>
       )}
     </>

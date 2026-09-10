@@ -57,7 +57,7 @@ export interface ServiceProgram {
   autoGrant: boolean
   /**
    * 自动授权的资产范围。`null` = 不额外限制（以规则判定为准）；非空数组 =
-   * 白名单，取值是六类资产键。**`[]` 存不进去**——「什么都不授权的自动授权」
+   * 白名单，取值是五类资产键。**`[]` 存不进去**——「什么都不授权的自动授权」
    * 没有意义，后端回 400 `invalid_auto_grant_asset_types`。
    */
   autoGrantAssetTypes: string[] | null

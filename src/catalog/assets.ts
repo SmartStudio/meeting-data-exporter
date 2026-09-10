@@ -12,7 +12,6 @@ export interface RawDetail {
   audio_address?: string
   audio_address_file_type?: string
   meeting_summary?: RawFileEntry[]
-  ai_meeting_transcripts?: RawFileEntry[]
 }
 
 /** 智能接口的探测结果：这个 record_file 有没有纪要 / 章节（catalog/index.ts 调 smartApi 得出） */
@@ -24,7 +23,6 @@ export interface SmartPresence {
 /** 数组型字段 → 资产类型。纪要与时间轴不在这里——它们来自 /v1/smart/*，见下面 SMART_ASSETS */
 const ARRAY_FIELDS: Array<[keyof RawDetail, AssetType]> = [
   ['meeting_summary', 'meeting_summary'],
-  ['ai_meeting_transcripts', 'ai_meeting_transcripts'],
 ]
 
 /**
@@ -92,9 +90,7 @@ export function extractAssets(
     if (!Array.isArray(entries)) continue
     entries.forEach((e, i) => {
       if (!e.download_address) return
-      // ai_meeting_transcripts 在 allow_download=false 时平台返回空，此处显式标记
-      const allowed = assetType === 'ai_meeting_transcripts' ? allowDownload : true
-      push(assetType, e.file_type ?? `idx${i}`, e.file_type ?? null, allowed)
+      push(assetType, e.file_type ?? `idx${i}`, e.file_type ?? null, true)
     })
   }
 

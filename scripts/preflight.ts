@@ -4,7 +4,6 @@
  *
  * 用法：
  *   bun scripts/preflight.ts [--sample-user <企微 userid>] [--sample-email <邮箱>]
- *                             [--skip-webhook-check] [--webhook-timeout-ms <毫秒数>]
  *
  * 依次检查：
  *   1   配置完整性        loadConfig 不抛错
@@ -15,7 +14,6 @@
  *   4   账号版本          由第 3 步的成败推出（免费版/专业版会在第 3 步失败）
  *   5   企微凭证          调 gettoken
  *   6   身份映射策略      用 --sample-user 实测能否解析出腾讯会议 userid
- *   7   STS-Token 可达性  发起一次真实申请，等待 Webhook 回调完成配对
  *
  * 对应用户故事 US-1.1（确认接入条件）与 US-1.4（确认身份映射可用）。详见
  * docs/deploy.md。
@@ -38,7 +36,6 @@ import { loadConfig, type AppConfig, type IdentityStrategy } from '../src/config
 import { createPool, type Pool } from '../src/store/db'
 import { createTencentClient } from '../src/tencent/client'
 import { createCorpRecordsApi } from '../src/tencent/records'
-import { createStsStore } from '../src/store/sts'
 import { createAuthStore } from '../src/store/auth'
 import { createIdentityMapper } from '../src/auth/identity'
 import { TencentApiError } from '../src/tencent/errors'
@@ -76,22 +73,16 @@ function skipStep(id: string, title: string, reason: string): void {
 interface Args {
   sampleUser: string | null
   sampleEmail: string | null
-  skipWebhook: boolean
-  webhookTimeoutMs: number
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { sampleUser: null, sampleEmail: null, skipWebhook: false, webhookTimeoutMs: 30_000 }
+  const args: Args = { sampleUser: null, sampleEmail: null }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--sample-user') {
       args.sampleUser = argv[++i] ?? null
     } else if (arg === '--sample-email') {
       args.sampleEmail = argv[++i] ?? null
-    } else if (arg === '--skip-webhook-check') {
-      args.skipWebhook = true
-    } else if (arg === '--webhook-timeout-ms') {
-      args.webhookTimeoutMs = Number(argv[++i] ?? '30000')
     } else if (arg === '--help' || arg === '-h') {
       printHelp()
       process.exit(0)
@@ -106,8 +97,6 @@ function printHelp(): void {
 选项:
   --sample-user <企微 userid>    用一个真实的企微 userid 实测身份映射策略（第 6 项）
   --sample-email <邮箱>          IDENTITY_STRATEGY=email 时，配合 --sample-user 一起提供
-  --skip-webhook-check           跳过第 7 项（该项会向腾讯会议发起一次真实的 STS-Token 申请）
-  --webhook-timeout-ms <毫秒数>  第 7 项等待 Webhook 回调的超时时间，默认 30000
   -h, --help                     显示本帮助信息
 
 所需环境变量见 .env.example；使用说明与常见错误码见 docs/deploy.md。`)
@@ -150,7 +139,7 @@ function stepConfig(): AppConfig | null {
       'fail',
       `loadConfig 抛出异常: ${errMessage(err)}`,
       '对照 .env.example 逐项核对：缺失字段会在错误信息里明确指出字段名；' +
-        'TM_WEBHOOK_TOKEN 必须恰好 25 位；IDENTITY_STRATEGY 必须是 direct / email / table 三者之一。',
+        'IDENTITY_STRATEGY 必须是 direct / email / table 三者之一。',
     )
     return null
   }
@@ -488,97 +477,6 @@ async function stepIdentity(
 }
 
 // ---------------------------------------------------------------------------
-// 第 7 项：STS-Token 可达性（Webhook）
-// ---------------------------------------------------------------------------
-
-interface StsRequestRow extends RowDataPacket {
-  state: string
-}
-
-async function stepWebhook(
-  cfg: AppConfig,
-  pool: Pool | null,
-  tencentOk: boolean,
-  skip: boolean,
-  timeoutMs: number,
-): Promise<void> {
-  if (skip) {
-    record(
-      '7',
-      'STS-Token 可达性',
-      'skip',
-      '已通过 --skip-webhook-check 跳过（该检查会向腾讯会议发起一次真实的 STS-Token 生成请求）。',
-    )
-    return
-  }
-  if (!pool) {
-    record('7', 'STS-Token 可达性', 'skip', '依赖第 2 项数据库连通性，未执行。')
-    return
-  }
-  if (!tencentOk) {
-    record('7', 'STS-Token 可达性', 'skip', '依赖第 3 项腾讯凭证与签名，未执行（该项需要一个可用的腾讯会议客户端）。')
-    return
-  }
-
-  const client = createTencentClient(cfg.tencent, {
-    fetch: withTimeout(fetch, 10_000),
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    nowMs: Date.now,
-  })
-  const stsStore = createStsStore(pool)
-  const now = Math.floor(Date.now() / 1000)
-
-  try {
-    const res = await client.post<{ req_id: string }>('/v1/app/sts-token', {
-      operator_id: cfg.tencent.operatorId,
-      operator_id_type: 1,
-      valid_time: 24,
-    })
-    await stsStore.createRequest(res.req_id, now)
-
-    const pollIntervalMs = 2000
-    const deadline = Date.now() + timeoutMs
-    let fulfilled = false
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
-      const [rows] = await pool.execute<StsRequestRow[]>(
-        'SELECT state FROM sts_token_requests WHERE req_id = ?',
-        [res.req_id],
-      )
-      if (rows[0]?.state === 'fulfilled') {
-        fulfilled = true
-        break
-      }
-    }
-
-    if (fulfilled) {
-      record(
-        '7',
-        'STS-Token 可达性',
-        'pass',
-        `已发起 STS-Token 申请（req_id=${res.req_id}），并在 ${timeoutMs / 1000} 秒内收到 Webhook 回调完成配对。`,
-      )
-    } else {
-      record(
-        '7',
-        'STS-Token 可达性',
-        'fail',
-        `已发起 STS-Token 申请（req_id=${res.req_id}），但 ${timeoutMs / 1000} 秒内未收到 Webhook 回调。`,
-        '依次检查：' +
-          '1) GATEWAY_BASE_URL 是否为公网可达的 HTTPS 域名；' +
-          '2) 腾讯会议企管后台的事件订阅 URL / Token / EncodingAESKey 是否与部署环境的 ' +
-          'TM_WEBHOOK_TOKEN / TM_WEBHOOK_AES_KEY 完全一致；' +
-          '3) 是否已在企管后台勾选「STS Token 生成」事件订阅；' +
-          '4) 网关服务本身是否正在运行并监听 /webhook/tencent-meeting；' +
-          '5) 安全组/防火墙是否放行腾讯会议服务器发起的入站请求。',
-      )
-    }
-  } catch (err) {
-    record('7', 'STS-Token 可达性', 'fail', `发起 STS-Token 申请失败: ${errMessage(err)}`)
-  }
-}
-
-// ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 
@@ -603,7 +501,7 @@ function finish(): void {
 }
 
 async function main(): Promise<void> {
-  const { sampleUser, sampleEmail, skipWebhook, webhookTimeoutMs } = parseArgs(process.argv.slice(2))
+  const { sampleUser, sampleEmail } = parseArgs(process.argv.slice(2))
 
   console.log('腾讯会议导出网关 —— 部署前自检\n')
 
@@ -617,7 +515,6 @@ async function main(): Promise<void> {
       ['4', '账号版本'],
       ['5', '企微凭证'],
       ['6', '身份映射策略'],
-      ['7', 'STS-Token 可达性'],
     ]
     for (const [id, title] of remaining) {
       skipStep(id, title, '依赖第 1 项配置完整性，未执行。')
@@ -627,10 +524,9 @@ async function main(): Promise<void> {
   }
 
   const pool = await stepDatabase(cfg)
-  const tencentOk = await stepTencent(cfg)
+  await stepTencent(cfg)
   await stepWecom(cfg)
   await stepIdentity(cfg, pool, sampleUser, sampleEmail)
-  await stepWebhook(cfg, pool, tencentOk, skipWebhook, webhookTimeoutMs)
 
   if (pool) await pool.end()
   finish()

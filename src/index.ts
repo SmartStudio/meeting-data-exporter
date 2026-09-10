@@ -3,7 +3,6 @@ import { createPool, runMigrations } from './store/db'
 import { resolve } from 'node:path'
 import { stat } from 'node:fs/promises'
 import { createConsoleStatic } from './http/static'
-import { createStsStore } from './store/sts'
 import { createGrantsStore } from './store/grants'
 import { createPolicyStore } from './store/policy'
 import { createAuthStore } from './store/auth'
@@ -17,9 +16,6 @@ import { createRecordsApi } from './tencent/records'
 import { createAddressesApi } from './tencent/addresses'
 import { createSmartApi } from './tencent/smart'
 import { createCatalog } from './catalog/index'
-import { createStsManager } from './sts/manager'
-import { createTokenCipher } from './sts/cipher'
-import { verifySignature, decryptEvent, decryptCheckStr } from './sts/crypto'
 import { createAccessGate } from './policy/access'
 import { createArchivesStore } from './store/archives'
 import { createAuditRecorder } from './audit/recorder'
@@ -43,9 +39,6 @@ import { previewCleanup, executeCleanup } from './worker/retention'
 import type { StorageDeps } from './http/handlers/console/storage'
 import type { VisibilityDeps } from './worker/visibility'
 
-/** STS-Token 续期检查间隔：剩余有效期低于 1/3 时才会真正发起申请（见 sts/manager.ts） */
-const STS_RENEW_CHECK_INTERVAL_MS = 5 * 60 * 1000
-
 async function main(): Promise<void> {
   const config = loadConfig(process.env)
   const pool = createPool(config.databaseUrl)
@@ -66,25 +59,10 @@ async function main(): Promise<void> {
   const meetingsCache = createMeetingCacheStore(pool)
   const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
   const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
-  // 智能纪要与智能章节：AK/SK 直调，**不走 STS**（见 tencent/smart.ts 的文件头）
+  // 智能纪要与智能章节：AK/SK 直调（见 tencent/smart.ts 的文件头）
   const smartApi = createSmartApi(tencentClient, config.tencent.operatorId)
 
-  const stsStore = createStsStore(pool)
-  const tokenCipher = createTokenCipher(config.stsEncKey)
-  const stsManager = createStsManager({
-    store: stsStore,
-    client: tencentClient,
-    operatorId: config.tencent.operatorId,
-    webhookToken: config.webhook.token,
-    aesKey: config.webhook.aesKey,
-    encrypt: tokenCipher.encrypt,
-    decrypt: tokenCipher.decrypt,
-    verify: verifySignature,
-    decryptEvent,
-    decryptCheckStr,
-  })
-
-  const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
+  const catalog = createCatalog({ addressesApi, smartApi, now })
 
   const policyStore = createPolicyStore(pool)
   // 网关这边只读授权与改写，不写。写侧在控制台的管理端点里（阶段 4）
@@ -251,7 +229,6 @@ async function main(): Promise<void> {
     identityMapper,
     serviceAuth,
     authStore,
-    stsManager,
     meetingsCache,
     loginRateLimiter,
     trustedProxyHops: config.trustedProxyHops,
@@ -324,22 +301,6 @@ async function main(): Promise<void> {
   const hostname = process.env.HOST || '0.0.0.0'
   const server = Bun.serve({ port, hostname, fetch: app })
   console.log(`meeting-export-gateway listening on ${hostname}:${server.port}`)
-
-  // 回调是异步的——不能等到过期才申请（design doc §5.3）。启动时先跑一次，
-  // 随后每 5 分钟检查一次剩余有效期，真正发起续期申请的频率由 ensureFresh
-  // 内部的 1/3 阈值判断决定，这里只负责定期"问一下要不要续"。
-  const renewLoop = (): void => {
-    const t = now()
-    stsManager.ensureFresh(t).catch((err: unknown) => {
-      console.error('sts ensureFresh failed', err)
-    })
-    // 看门狗另一半：清理超时未回调的 pending，防止其无界增长
-    stsManager.pruneStale(t).catch((err: unknown) => {
-      console.error('sts pruneStale failed', err)
-    })
-  }
-  renewLoop()
-  setInterval(renewLoop, STS_RENEW_CHECK_INTERVAL_MS)
 }
 
 main().catch((err: unknown) => {

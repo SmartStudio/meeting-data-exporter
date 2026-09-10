@@ -1,6 +1,5 @@
 import { sign } from '../../src/tencent/signer'
 import type { RawAddressFile } from '../../src/tencent/addresses'
-import type { RawDetail } from '../../src/catalog/assets'
 
 /**
  * fixture 的规范形状。主持人字段沿用 `host_user_id` 只是 fixture 自己的命名，
@@ -35,23 +34,18 @@ export interface FakeTencentCredentials {
 export interface FakeTencentState {
   records: FakeRecordMeeting[]
   addressesByRecordId: Map<string, RawAddressFile[]>
-  addressDetailByFileId: Map<string, RawDetail>
   /** GET /v1/smart/minutes/:id 的 markdown；没登记的文件回 500182 */
   smartMinutesByFileId: Map<string, string>
   /** GET /v1/smart/chapters?record_file_id= 的原始章节；没登记的文件回 500182 */
   smartChaptersByFileId: Map<string, Array<{ chapter_id: string; chapter_name: string; start_time: string; pic_url?: string }>>
-  /** POST /v1/app/sts-token 的固定返回值——真实平台是异步下发，这里的 req_id 由用例自行选定 */
-  stsReqId: string
 }
 
 export function createFakeTencentState(): FakeTencentState {
   return {
     records: [],
     addressesByRecordId: new Map(),
-    addressDetailByFileId: new Map(),
     smartMinutesByFileId: new Map(),
     smartChaptersByFileId: new Map(),
-    stsReqId: 'req-fake-default',
   }
 }
 
@@ -87,9 +81,9 @@ function toCorpShape(r: FakeRecordMeeting): Record<string, unknown> {
 }
 
 /**
- * 假腾讯会议服务：只实现网关实际会用到的四个端点——`/v1/corp/records`、
- * `/v1/addresses`、`/v1/addresses/:id`、`/v1/app/sts-token`——返回固定 fixture，
- * 但对每一个到达的请求都用 src/tencent/signer.ts 的同一套算法重新计算一遍
+ * 假腾讯会议服务：只实现网关实际会用到的端点——`/v1/corp/records`、
+ * `/v1/addresses`、`/v1/smart/minutes/:id`、`/v1/smart/chapters`——返回固定
+ * fixture，但对每一个到达的请求都用 src/tencent/signer.ts 的同一套算法重新计算一遍
  * 签名，不匹配就返回 9042（与真实平台在 src/tencent/errors.ts 里的 FATAL
  * 分类一致：配置/签名问题重试无意义，应立即失败）。
  *
@@ -191,12 +185,6 @@ export function startFakeTencentServer(
         return Response.json({ total_page: 1, record_files: files })
       }
 
-      if (req.method === 'GET' && url.pathname.startsWith('/v1/addresses/')) {
-        const fileId = decodeURIComponent(url.pathname.slice('/v1/addresses/'.length))
-        const detail: RawDetail = state.addressDetailByFileId.get(fileId) ?? { record_file_id: fileId }
-        return Response.json(detail)
-      }
-
       // 智能录制管理两个接口。**没登记的文件一律 500182**，与真平台一致：
       // 「该文件未打开智能录制开关」是常态，不是故障——catalog 把它当成
       // 「这一类不存在」，而不是让整轮 listAssets 失败。
@@ -212,10 +200,6 @@ export function startFakeTencentServer(
         const list = state.smartChaptersByFileId.get(fileId)
         if (list === undefined) return Response.json(errorEnvelope(500182, '该文件未打开智能录制开关，请联系文件所有者'), { status: 400 })
         return Response.json({ chapter_list: list })
-      }
-
-      if (req.method === 'POST' && url.pathname === '/v1/app/sts-token') {
-        return Response.json({ req_id: state.stsReqId })
       }
 
       return Response.json(errorEnvelope(-1, `fake-tencent: unhandled endpoint ${url.pathname}`), { status: 404 })

@@ -37,14 +37,13 @@ function expiresAfter(archivedAtSec: number, extended: number, keepDays = 30): n
 }
 
 /**
- * 一场"资产全部拿到"的会议的资产分布：逐字稿 / 逐字稿（智能优化版）/ 纪要
+ * 一场"资产全部拿到"的会议的资产分布：逐字稿 / 纪要
  * 各出 txt·docx·pdf 三种格式（3 个文件），录像 1 个、时间轴 1 个。
  * 音频（`audio`）这批会议没有单独导出，属于"该类不适用"，键直接不出现。
  */
 const FULL_ASSETS: Meeting['assets'] = {
   video: { got: 1, total: 1 },
   transcript: { got: 3, total: 3 },
-  ai_transcript: { got: 3, total: 3 },
   ai_minutes: { got: 3, total: 3 },
   chapters: { got: 1, total: 1 },
 }
@@ -53,7 +52,6 @@ const FULL_ASSETS: Meeting['assets'] = {
 const PENDING_ASSETS: Meeting['assets'] = {
   video: { got: 0, total: 1 },
   transcript: { got: 0, total: 3 },
-  ai_transcript: { got: 0, total: 3 },
   ai_minutes: { got: 0, total: 3 },
   chapters: { got: 0, total: 1 },
 }
@@ -93,7 +91,7 @@ export const MEETINGS: Meeting[] = [
     nasPath: '/nas/meetings/2026/08/88112340-产品周会/',
     sizeBytes: 23907140, // 22.8 MB
     why: {
-      fetch: { by: 'rule', text: '拉取规则 #100「录制结束在近 90 天内 → 拉取全部六类资产」' },
+      fetch: { by: 'rule', text: '拉取规则 #100「录制结束在近 90 天内 → 拉取全部五类资产」' },
       archive: { by: 'rule', text: '归档规则 #210，已成功写入 NAS 并校验哈希' },
       allow: { by: 'rule', text: '权限规则 #300「标题含「周会」且已归档 → 准许采集」' },
     },
@@ -230,11 +228,10 @@ export const MEETINGS: Meeting[] = [
     startAt: ts(2026, 8, 23, 9, 30),
     durationSec: 7980, // 2:13
     host: '李销售',
-    // 7/19：录像、逐字稿、逐字稿（智能优化版）已拿到，纪要与时间轴仍在生成中。
+    // 7/19：录像、逐字稿已拿到，纪要与时间轴仍在生成中。
     assets: {
       video: { got: 1, total: 1 },
       transcript: { got: 3, total: 3 },
-      ai_transcript: { got: 3, total: 3 },
       ai_minutes: { got: 0, total: 3 },
       chapters: { got: 0, total: 1 },
     },
@@ -326,7 +323,7 @@ export const MEETINGS: Meeting[] = [
     startAt: ts(2026, 8, 23, 9, 0),
     durationSec: 720, // 0:12
     host: '李销售',
-    // 没有产生录制，六类资产都不适用——空对象。
+    // 没有产生录制，五类资产都不适用——空对象。
     assets: {},
     fetch: 'none',
     // 没有录制、无从归档，用 'none'——跟 'off'（归档规则不执行，是规则做出的决定）

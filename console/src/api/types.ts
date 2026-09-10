@@ -15,7 +15,6 @@ export type AssetKey =
   | 'video'
   | 'audio'
   | 'transcript'
-  | 'ai_transcript'
   | 'ai_minutes'
   | 'chapters'
 

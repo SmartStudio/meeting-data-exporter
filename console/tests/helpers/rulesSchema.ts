@@ -202,12 +202,9 @@ export const RULES_SCHEMA_BODY = {
   assetTypes: [
     { value: 'video', label: '录像' },
     { value: 'audio', label: '音频' },
-    { value: 'transcript', label: '完整转写' },
-    { value: 'ai_transcript', label: 'AI 转写' },
-    { value: 'ai_minutes', label: 'AI 纪要' },
-    { value: 'ai_topic_minutes', label: '话题纪要' },
-    { value: 'ai_speaker_minutes', label: '发言人纪要' },
-    { value: 'ai_ds_minutes', label: '会议摘要' },
+    { value: 'transcript', label: '逐字稿' },
+    { value: 'ai_minutes', label: '纪要' },
+    { value: 'chapters', label: '时间轴' },
   ],
   assetAll: '*',
 }

@@ -24,9 +24,6 @@ import { createAdminStore } from '../../src/store/admin'
 import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
-import { createStsStore } from '../../src/store/sts'
-import { createStsManager } from '../../src/sts/manager'
-import { verifySignature, decryptEvent, decryptCheckStr } from '../../src/sts/crypto'
 import { createRecordsApi } from '../../src/tencent/records'
 import { createAddressesApi } from '../../src/tencent/addresses'
 import { createSmartApi } from '../../src/tencent/smart'
@@ -46,17 +43,7 @@ import { createMysqlStore } from '../../src/worker/store-mysql'
 import type { VisibilityDeps } from '../../src/worker/visibility'
 
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
-export const WEBHOOK_TOKEN = 'a'.repeat(25)
 export const OPERATOR_ID = 'operator-1'
-
-/**
- * 43 字符合法 EncodingAESKey：32 随机字节 base64 后恰好 44 字符（末尾 1 个 '='
- * padding），去掉该 padding 得 43 字符——与 decryptEvent 的还原方式对应
- * （复刻 tests/sts/crypto.test.ts 的 makeAesKey，webhook 测试需要用同一把
- * 密钥加密测试载荷，因此在这里固定导出，而不是每次随机生成）。
- */
-export const WEBHOOK_AES_KEY = Buffer.alloc(32, 7).toString('base64').slice(0, -1)
-
 
 export function stubTencentClient(handlers: {
   get?: (path: string, query: QueryParams, opts?: RequestOptions) => unknown
@@ -108,21 +95,7 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   // 的用例会拿到空对象，getMinutes/getChapters 于是返回 null（「这一类不存在」）
   const smartApi = createSmartApi(tencentClient, OPERATOR_ID)
 
-  const stsStore = createStsStore(pool)
-  const stsManager = createStsManager({
-    store: stsStore,
-    client: tencentClient,
-    operatorId: OPERATOR_ID,
-    webhookToken: WEBHOOK_TOKEN,
-    aesKey: WEBHOOK_AES_KEY,
-    encrypt: (s) => `enc(${s})`,
-    decrypt: (s) => s.replace(/^enc\(/, '').replace(/\)$/, ''),
-    verify: verifySignature,
-    decryptEvent,
-    decryptCheckStr,
-  })
-
-  const catalog = createCatalog({ addressesApi, smartApi, stsManager, now })
+  const catalog = createCatalog({ addressesApi, smartApi, now })
 
   const policyStore = createPolicyStore(pool)
   // 会议查询 store（T1）。getMeetings 与规则页的影响预览用的是同一个实例，
@@ -187,7 +160,6 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     identityMapper,
     serviceAuth,
     authStore,
-    stsManager,
     meetingsCache,
     // 每个测试 app 一个独立桶（不跨测试共享），保持测试间隔离
     loginRateLimiter: createLoginRateLimiter(),
@@ -341,9 +313,8 @@ export async function insertGrant(
  * （比如验证旧的 `subject_type='user'` 已经不生效），显式传 subjectType /
  * subjectValue 覆盖即可。
  *
- * `assetTypes` 用 `AssetKey` 词汇（`transcript` / `ai_transcript`），不是网关的
- * `asset_type`（`meeting_summary` / `ai_meeting_transcripts`）——两套词汇的换算在
- * `policy/access.ts`。
+ * `assetTypes` 用 `AssetKey` 词汇（`transcript`），不是网关的
+ * `asset_type`（`meeting_summary`）——两套词汇的换算在 `policy/access.ts`。
  */
 export async function insertPolicyRule(
   pool: Pool,
