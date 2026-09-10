@@ -1,5 +1,7 @@
 export * from './domain/types'
 export { judgeReadiness } from './domain/readiness'
+export { isSiblingAbsent } from './domain/sibling'
+export type { SiblingAsset } from './domain/sibling'
 export { cleanDirName, cleanSubjectSegment, meetingDirPath } from './domain/filename'
 export type { MeetingDirInfo } from './domain/filename'
 export { assignDirOrdinals } from './domain/dir-ordinal'

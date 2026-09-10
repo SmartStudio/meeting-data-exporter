@@ -508,6 +508,7 @@ const EMPTY_FETCH_ROUND: FetchRound = {
   completed: 0,
   failed: 0,
   skipped: 0,
+  lost: 0,
   manifests: { written: 0, unchanged: 0, skipped: 0, failed: 0 },
 }
 
@@ -683,6 +684,7 @@ test('任务一把发现数与下载数一起写进摘要', async () => {
       completed: 9,
       failed: 1,
       skipped: 1,
+      lost: 0,
       manifests: { written: 4, unchanged: 0, skipped: 0, failed: 0 },
     }),
   })

@@ -62,12 +62,28 @@ export interface Store {
    */
   claimNext(now: number, leaseSec: number): Promise<AssetRow | null>
   /**
+   * ## 写回前的栅栏：下面五个方法都要的 `claimedAttempts`
+   *
+   * 传 `claimNext` 那一次拿回来的 `row.attempts`。SQL 会带上
+   * `AND status='running' AND attempts=?`，**返回 false 就是「这次领取的租约已经不在
+   * 自己手里」**——租约过期后行被别人重新领走了（`claimNext` 每次领取都 attempts+1）。
+   * 调用方拿到 false **不得再碰这一行**：它现在属于另一个执行体，写它就是覆盖别人。
+   *
+   * 为什么要有这道栅栏（2026-09-10 本机实测）：一条下载连接静默挂住 40 分钟，租约
+   * （900 秒）过期后**同一个进程**的另一个并发槽把同一行又领了一次，两个槽同时写
+   * 同一个 `.part`；先完成的把 `.mp4` finalize 了，后完成的报 ENOENT 又把行改回
+   * failed——磁盘上文件其实是完整的，库里却说它失败了。有了栅栏，迟到的那次写回
+   * 落空而不是覆盖。
+   *
+   * 不必新加一列：`attempts` 本来就随每次领取单调 +1，它就是这次领取的令牌。
+   */
+  /**
    * 收尾一条下载完成的资产。`bytesWritten` 是 downloader 报回的**真实文件大小**
    * （逐 chunk 累加、且过了尺寸校验那道关），它会覆盖 `touchProgress` 一路写下的
    * 进度检查点——**一个 completed 行的 `bytes_written` 从此就是文件大小**。
    * 语义边界与它为什么值得信，见 domain/manifest.ts 里 `bytes` 字段的注释。
    */
-  markCompleted(id: number, contentHash: string | null, bytesWritten: number, now: number): Promise<void>
+  markCompleted(id: number, contentHash: string | null, bytesWritten: number, now: number, claimedAttempts: number): Promise<boolean>
   /**
    * 一次下载没成，但还没到放弃的时候。
    *
@@ -86,11 +102,12 @@ export interface Store {
    * 退避曲线由调用方算好传进来（executor 的 `downloadBackoff`），store 只负责写：
    * 「隔多久重试」是执行策略，不是存储的事，而两个宿主必须用同一条曲线。
    */
-  markFailed(id: number, err: string, now: number, retryAt: number): Promise<void>
-  markSkipped(id: number, reason: string, now: number): Promise<void>
+  markFailed(id: number, err: string, now: number, retryAt: number, claimedAttempts: number): Promise<boolean>
+  markSkipped(id: number, reason: string, now: number, claimedAttempts: number): Promise<boolean>
+  /** 按 (会议, 场次, 资产类型) 批量跳过，不针对某一次领取，故没有栅栏参数 */
   markSkippedByKey(k: ProbeKey, reason: string, now: number): Promise<void>
-  markDead(id: number, err: string, now: number): Promise<void>
-  touchProgress(id: number, bytesWritten: number, now: number, leaseSec: number): Promise<void>
+  markDead(id: number, err: string, now: number, claimedAttempts: number): Promise<boolean>
+  touchProgress(id: number, bytesWritten: number, now: number, leaseSec: number, claimedAttempts: number): Promise<boolean>
   setTargetPath(id: number, path: string, fileType: string | null, now: number): Promise<void>
   /**
    * 该资产在同 (meeting, sub_meeting, asset_type, **file_type**) 兄弟中的 1-based
@@ -106,6 +123,16 @@ export interface Store {
   dueProbes(now: number): Promise<ProbeRow[]>
   resolveProbe(k: ProbeKey): Promise<void>
   abandonProbe(k: ProbeKey, reason: string): Promise<void>
+  /**
+   * 只放弃**还在 probing** 的探测行；没有这一行、或它已 resolved/abandoned 时什么都不做。
+   *
+   * 与 `abandonProbe` 的区别就是那个 `WHERE state='probing'`，而它是必需的：调用方
+   * （discovery 的「同源产物」分支，见 domain/sibling.ts）每一轮都会对同一批 audio
+   * 重新判一次，用无条件的 `abandonProbe` 会把一条早已 resolved 的探测倒回 abandoned。
+   * 「没有行就什么都不做」也是语义的一部分——不许先 upsertProbe 再 abandon 去凑出一行，
+   * 那正是这次要消灭的噪音。
+   */
+  abandonProbeIfProbing(k: ProbeKey, reason: string): Promise<void>
   bumpProbe(k: ProbeKey, probeAfter: number): Promise<void>
   counts(): Promise<Record<AssetStatus, number>>
   failures(): Promise<AssetRow[]>
@@ -229,19 +256,22 @@ export function createStore(db: Database): Store {
         .run(a.meetingId, a.subMeetingId, a.assetType, a.remoteId, a.assetId ?? null, a.bytesExpected ?? null, a.fileType ?? '', now, now)
     },
     async claimNext(now, leaseSec) { return claimStmt.get(now + leaseSec, now, now) ?? null },
-    async markCompleted(id, h, bytes, now) { db.query(`UPDATE assets SET status='completed', content_hash=?, bytes_written=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(h, bytes, now, now, id) },
+    // 五个写回都带 `AND status='running' AND attempts=?` 的栅栏（语义见 Store 里
+    // `claimedAttempts` 那段）：租约过期后行被别人重领，这次写回必须落空而不是覆盖。
+    // MySQL 版逐字同样，别只改一处。
+    async markCompleted(id, h, bytes, now, claimed) { return db.query(`UPDATE assets SET status='completed', content_hash=?, bytes_written=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=? AND status='running' AND attempts=?`).run(h, bytes, now, now, id, claimed).changes > 0 },
     // lease_expires_at 在这里写的是**最早可再领取时间**（不是租约），语义见
     // Store.markFailed。MySQL 版逐字同样，别只改一处：只改一边的话，
     // 两个宿主一边会重试一边永远卡死，而且都不报错。
-    async markFailed(id, e, now, retryAt) { db.query(`UPDATE assets SET status='failed', last_error=?, lease_expires_at=?, updated_at=? WHERE id=?`).run(e, retryAt, now, id) },
-    async markSkipped(id, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(r, now, id) },
+    async markFailed(id, e, now, retryAt, claimed) { return db.query(`UPDATE assets SET status='failed', last_error=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running' AND attempts=?`).run(e, retryAt, now, id, claimed).changes > 0 },
+    async markSkipped(id, r, now, claimed) { return db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=? AND status='running' AND attempts=?`).run(r, now, id, claimed).changes > 0 },
     async markSkippedByKey(k, r, now) { db.query(`UPDATE assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=? AND status NOT IN ('completed','running')`).run(r, now, k.meetingId, k.subMeetingId, k.assetType) }, // 不回退已完成的下载、不中断执行中的任务
-    async markDead(id, e, now) { db.query(`UPDATE assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`).run(e, now, id) },
+    async markDead(id, e, now, claimed) { return db.query(`UPDATE assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=? AND status='running' AND attempts=?`).run(e, now, id, claimed).changes > 0 },
     // `AND status='running'`：进度回写在 executor 里是**不 await 的**，一次慢的写库
     // 可以落在 markCompleted 之后。终态行不接受进度回写，否则一个迟到的 8MB 检查点
     // 会盖掉 markCompleted 刚写下的真实文件大小——而那个值会被写进永久留在 NAS 上的
     // 清单（见 domain/manifest.ts 的 bytes 字段注释）。MySQL 版逐字同样，别只改一处。
-    async touchProgress(id, bytes, now, leaseSec) { db.query(`UPDATE assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running'`).run(bytes, now + leaseSec, now, id) },
+    async touchProgress(id, bytes, now, leaseSec, claimed) { return db.query(`UPDATE assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running' AND attempts=?`).run(bytes, now + leaseSec, now, id, claimed).changes > 0 },
     async setTargetPath(id, p, ft, now) { db.query(`UPDATE assets SET target_path=?, file_type=COALESCE(?,file_type), updated_at=? WHERE id=?`).run(p, ft, now, id) },
     async siblingRank(row) {
       const r = db.query<{ total: number; ordinal: number }, [string, string, string, string, number]>(
@@ -260,6 +290,7 @@ export function createStore(db: Database): Store {
     async dueProbes(now) { return db.query<ProbeRow, [number]>(`SELECT * FROM asset_probes WHERE state='probing' AND probe_after <= ?`).all(now) },
     async resolveProbe(k) { db.query(`UPDATE asset_probes SET state='resolved' WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=?`).run(k.meetingId, k.subMeetingId, k.assetType) },
     async abandonProbe(k, r) { db.query(`UPDATE asset_probes SET state='abandoned', last_reason=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=?`).run(r, k.meetingId, k.subMeetingId, k.assetType) },
+    async abandonProbeIfProbing(k, r) { db.query(`UPDATE asset_probes SET state='abandoned', last_reason=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=? AND state='probing'`).run(r, k.meetingId, k.subMeetingId, k.assetType) },
     async bumpProbe(k, after) { db.query(`UPDATE asset_probes SET attempts=attempts+1, probe_after=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=?`).run(after, k.meetingId, k.subMeetingId, k.assetType) },
     async counts() {
       const rows = db.query<{ status: AssetStatus; n: number }, []>(`SELECT status, COUNT(*) n FROM assets GROUP BY status`).all()

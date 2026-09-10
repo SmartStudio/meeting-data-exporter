@@ -148,20 +148,21 @@ test('会议在库里不存在 → skipped，不写文件', async () => {
 
 test('没取到的资产进 missing 并带原因——skipped / dead 是终态，failed 是「还在重试」，pending 什么都不写', async () => {
   const store = await seeded()
+  await downloadAll(store)                              // 两个种子资产 completed
+  // 再加三个 AI 纪要，各打到一个"没取到"的状态：skipped（平台明说不给）、
+  // dead（重试用尽）、failed（这一轮没成，下一轮还会重试）。三条同 asset_type、
+  // 不同 remote_id——同一类文本资产的多段场景，靠 remote_id 而不是 asset_type 区分。
+  // 各自先 claimNext 领一次再写回：写回带租约栅栏（见 Store 的 claimedAttempts），
+  // 只有「领过且还持着租约」的行才写得动，这里照执行器的真实次序走一遍。
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'f-ai-1', fileType: 'docx' }, 1)
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'f-ai-2', fileType: 'docx' }, 1)
   await store.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'ai_minutes', remoteId: 'f-ai-3', fileType: 'docx' }, 1)
-  await downloadAll(store)                              // 五个都 completed
-  // 再把三个 AI 纪要各打到一个"没取到"的状态：skipped（平台明说不给）、
-  // dead（重试用尽）、failed（这一轮没成，下一轮还会重试）。三条同 asset_type、
-  // 不同 remote_id——同一类文本资产的多段场景，靠 remote_id 而不是 asset_type 区分。
-  const rows = await store.assetsForMeeting('m1', '')
-  const ai1 = rows.find((r) => r.remote_id === 'f-ai-1')!
-  const ai2 = rows.find((r) => r.remote_id === 'f-ai-2')!
-  const ai3 = rows.find((r) => r.remote_id === 'f-ai-3')!
-  await store.markSkipped(ai1.id, 'download_not_allowed', 2000)
-  await store.markDead(ai2.id, 'http 500', 2000)
-  await store.markFailed(ai3.id, 'ECONNRESET', 2000, 2300)
+  const ai1 = (await store.claimNext(2000, 300))!       // 按 id 升序：f-ai-1 / f-ai-2 / f-ai-3
+  const ai2 = (await store.claimNext(2000, 300))!
+  const ai3 = (await store.claimNext(2000, 300))!
+  await store.markSkipped(ai1.id, 'download_not_allowed', 2000, ai1.attempts)
+  await store.markDead(ai2.id, 'http 500', 2000, ai2.attempts)
+  await store.markFailed(ai3.id, 'ECONNRESET', 2000, 2300, ai3.attempts)
   const storage = fakeStorage()
 
   await writeMeetingManifest({ store, storage, generatedBy: 'mde-engine' }, { meetingId: 'm1', subMeetingId: '', dirOrdinal: 1 }, 5000)

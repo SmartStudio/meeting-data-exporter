@@ -145,7 +145,7 @@ function rig(opts: {
     },
   }
 
-  // discover 在 keys 非空时只碰这五个写法，其余方法一律不该被调到——
+  // discover 在 keys 非空时只碰这六个写法，其余方法一律不该被调到——
   // 被调到就说明接线的形状变了，抛出来比静默返回 undefined 强
   const store = {
     async upsertMeeting(m: EngineMeeting) {
@@ -159,6 +159,10 @@ function rig(opts: {
       state.probes.push({ meetingId: p.meetingId, assetType: p.assetType })
     },
     async abandonProbe() {},
+    // 「同源产物」分支会调它（video 就绪而 audio 缺席时，见 packages/engine/src/domain/sibling.ts）：
+    // BOTH_ASSETS 里就有一段就绪的 video，哪天有用例把 audio 放进 wantedKeys，缺这一行就是
+    // 「abandonProbeIfProbing is not a function」，而不是一句说得清的断言失败
+    async abandonProbeIfProbing() {},
   } as unknown as Store
 
   const archivedSet = new Set((opts.archived ?? []).map((id) => archiveStateKey(id, '')))

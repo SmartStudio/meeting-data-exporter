@@ -159,28 +159,34 @@ export function createMysqlStore(pool: Pool): MysqlStore {
     // bytes_written 写的是 downloader 报回的真实文件大小，覆盖掉 touchProgress 留下的
     // 进度检查点——与 SQLite 版逐字一致。**两处必须一起改**：只改一处的话服务端会
     // 静默失效（下载照常成功、清单照常写出，只是 bytes 永远是 null，没有任何报错）。
-    async markCompleted(id, h, bytes, now) {
-      await pool.query(
-        `UPDATE meeting_assets SET status='completed', content_hash=?, bytes_written=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
-        [h, bytes, now, now, id],
+    // 五个写回都带 `AND status='running' AND attempts=?` 的栅栏（语义见引擎侧 Store
+    // 里 `claimedAttempts` 那一段，返回 false = 租约已被别人重领）。**两处必须一起改**：
+    // 只改一边的话服务端照样会被「同一行领两次」互相覆盖，而且不报错。
+    async markCompleted(id, h, bytes, now, claimed) {
+      const [res] = await pool.query<ResultSetHeader>(
+        `UPDATE meeting_assets SET status='completed', content_hash=?, bytes_written=?, completed_at=?, lease_expires_at=NULL, updated_at=? WHERE id=? AND status='running' AND attempts=?`,
+        [h, bytes, now, now, id, claimed],
       )
+      return res.affectedRows > 0
     },
     // lease_expires_at 写的是**最早可再领取时间**，不是租约——同一列在 running /
     // failed / 终态三种状态下三种读法，完整语义见引擎侧 `Store.markFailed` 的注释。
     // 退避曲线在 executor 的 `downloadBackoff` 里算好传进来，这里只负责写。
     // **两处必须一起改**（SQLite 版逐字同样）：只改一边的话，一个宿主会重试、
     // 另一个宿主的 failed 行永远卡死，而两边都不报错。
-    async markFailed(id, e, now, retryAt) {
-      await pool.query(
-        `UPDATE meeting_assets SET status='failed', last_error=?, lease_expires_at=?, updated_at=? WHERE id=?`,
-        [e, retryAt, now, id],
+    async markFailed(id, e, now, retryAt, claimed) {
+      const [res] = await pool.query<ResultSetHeader>(
+        `UPDATE meeting_assets SET status='failed', last_error=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running' AND attempts=?`,
+        [e, retryAt, now, id, claimed],
       )
+      return res.affectedRows > 0
     },
-    async markSkipped(id, r, now) {
-      await pool.query(
-        `UPDATE meeting_assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
-        [r, now, id],
+    async markSkipped(id, r, now, claimed) {
+      const [res] = await pool.query<ResultSetHeader>(
+        `UPDATE meeting_assets SET status='skipped', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=? AND status='running' AND attempts=?`,
+        [r, now, id, claimed],
       )
+      return res.affectedRows > 0
     },
     // 不回退已完成的下载、不中断执行中的任务——与 SQLite 版逐字一致
     async markSkippedByKey(k, r, now) {
@@ -190,11 +196,12 @@ export function createMysqlStore(pool: Pool): MysqlStore {
         [r, now, k.meetingId, k.subMeetingId, k.assetType],
       )
     },
-    async markDead(id, e, now) {
-      await pool.query(
-        `UPDATE meeting_assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=?`,
-        [e, now, id],
+    async markDead(id, e, now, claimed) {
+      const [res] = await pool.query<ResultSetHeader>(
+        `UPDATE meeting_assets SET status='dead', last_error=?, lease_expires_at=NULL, updated_at=? WHERE id=? AND status='running' AND attempts=?`,
+        [e, now, id, claimed],
       )
+      return res.affectedRows > 0
     },
     // `AND status='running'`：**两个宿主一起加的**，不是这一侧的分叉（SQLite 版
     // 同一条判定，见 packages/engine/src/store/index.ts）。这里曾经刻意不加，代价
@@ -203,11 +210,18 @@ export function createMysqlStore(pool: Pool): MysqlStore {
     // 不给 bytes_expected 时（真实环境的常态）就取它，还会写进永久留在 NAS 上的那份。
     // 进度回写在 executor 里不 await，池化连接上一次慢的 UPDATE 完全可以落在
     // markCompleted 之后——那时脏数据就变成了一份撒谎的清单。终态行不再接受回写。
-    async touchProgress(id, bytes, now, leaseSec) {
-      await pool.query(
-        `UPDATE meeting_assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running'`,
-        [bytes, now + leaseSec, now, id],
+    // `AND attempts=?` 同理（栅栏）：租约过期被别人重领之后，这一次的进度回写就是
+    // 在给别人的下载续租，续到的还是自己那份早就作废的进度。返回值只是「写没写进去」，
+    // 调用方本来就是尽力而为，不据此中断下载。
+    // ⚠️ MySQL 的 affectedRows 是**实际改动的行数**：同一个 now/bytes 连写两次，
+    // 第二次会返回 false 而行其实是匹配上的。进度回写不看这个返回值，无碍；
+    // 若将来有人据此判定「租约还在不在」，要么改看 changedRows 语义，要么换条件。
+    async touchProgress(id, bytes, now, leaseSec, claimed) {
+      const [res] = await pool.query<ResultSetHeader>(
+        `UPDATE meeting_assets SET bytes_written=?, lease_expires_at=?, updated_at=? WHERE id=? AND status='running' AND attempts=?`,
+        [bytes, now + leaseSec, now, id, claimed],
       )
+      return res.affectedRows > 0
     },
     async setTargetPath(id, p, ft, now) {
       await pool.query(
@@ -251,6 +265,13 @@ export function createMysqlStore(pool: Pool): MysqlStore {
     async abandonProbe(k, r) {
       await pool.query(
         `UPDATE meeting_asset_probes SET state='abandoned', last_reason=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=?`,
+        [r, k.meetingId, k.subMeetingId, k.assetType],
+      )
+    },
+    // 只动 probing 行：语义与那个 WHERE 的理由写在 Store 接口上（packages/engine/src/store/index.ts）
+    async abandonProbeIfProbing(k, r) {
+      await pool.query(
+        `UPDATE meeting_asset_probes SET state='abandoned', last_reason=? WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=? AND state='probing'`,
         [r, k.meetingId, k.subMeetingId, k.assetType],
       )
     },

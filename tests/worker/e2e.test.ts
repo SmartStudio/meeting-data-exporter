@@ -353,6 +353,7 @@ describe('runWorkerOnce', () => {
         completed: 2,
         failed: 0,
         skipped: 0,
+        lost: 0,     // 没有任何一次写回撞上「租约已被别人重领」（见引擎 Store 的 claimedAttempts）
         // 一轮收尾给这场会议写出 meeting.json / _manifest.json
         manifests: { written: 1, unchanged: 0, skipped: 0, failed: 0 },
         // 归档流水线（P2）接入 runWorkerOnce 之后：两个资产都下载完成，

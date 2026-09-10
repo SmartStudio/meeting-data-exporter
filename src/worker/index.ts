@@ -112,6 +112,11 @@ export interface FetchRound {
   failed: number
   /** 本轮跳过的资产条数（会议元数据不全、磁盘不够）。与 failed 分开数，两者要办的事不同 */
   skipped: number
+  /** 本轮写回时发现**租约已不在自己手里**的资产条数（行在下载期间被别人重新领走了，
+   *  见引擎 `Store` 的 `claimedAttempts`）。既不算完成也不算失败：这一轮对那条资产
+   *  什么都没写成，结论归重领它的那一次。稳态恒为 0；不为 0 说明有执行体卡到租约过期
+   *  （2026-09-10 实测：下载连接静默挂住 40 分钟），顺着 `lease lost` 那条日志查。 */
+  lost: number
   /** 本轮 sidecar（meeting.json / _manifest.json）收尾的汇总。failed 是写入抛出的场次数——
    *  它**不进退出码**：资产已经落盘了，一份没写出来的清单不该把一轮成功的下载判成失败。
    *  但每一次都会 console.warn，不是静默吞掉。
@@ -643,7 +648,9 @@ async function main(): Promise<number> {
     console.log(
       `probes resolved=${res.probes.resolved} abandoned=${res.probes.abandoned} new=${res.probes.newTasks}`,
     )
-    console.log(`completed=${res.completed} failed=${res.failed} skipped=${res.skipped}`)
+    // lost：写回时发现租约已被别人重领的次数（引擎 Store 的 claimedAttempts）。
+    // 稳态恒为 0，不为 0 就是有执行体卡到租约过期，值得顺着 `lease lost` 日志去看。
+    console.log(`completed=${res.completed} failed=${res.failed} skipped=${res.skipped} lost=${res.lost}`)
     console.log(
       `manifests written=${res.manifests.written} unchanged=${res.manifests.unchanged} ` +
         `skipped=${res.manifests.skipped} failed=${res.manifests.failed}`,

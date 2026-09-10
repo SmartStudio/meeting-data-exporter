@@ -142,3 +142,49 @@ test('404 之后换链成功：旧的 .part 被丢弃，落盘是完整文件而
   if (r.status === 'completed') expect(r.bytesWritten).toBe(BODY.length)   // 1000，不是 1400
   server.stop(); await rm(root, { recursive: true, force: true })
 })
+
+// ---------------------------------------------------------------------------
+// 读空闲超时（2026-09-10 本机实测的故障）：经代理的 TCP 连接静默挂住 40 分钟，
+// `.part` 不再增长、连接仍 ESTABLISHED、`reader.read()` 永不返回。租约过期后同一行
+// 被另一个并发槽重新领走，两个槽同时写同一个 `.part`。卡死的那一侧自己不会醒。
+// ---------------------------------------------------------------------------
+
+test('上游发了几个字节就再也不发 → 空闲超时返回可辨认的 stalled，已收到的字节留在 .part 里', async () => {
+  const root = await tmp(); const storage = createLocalStorage(root)
+  const server = Bun.serve({ port: 0, fetch() {
+    return new Response(new ReadableStream({
+      start(c) { c.enqueue(BODY.slice(0, 10)) },
+      pull() { return new Promise<void>(() => { /* 永不 resolve：连接还活着，但一个字节都不再来 */ }) },
+    }), { status: 200 })
+  } })
+  const gw = { getDownloadUrl: async () => ({ url: `http://localhost:${server.port}/f`, expiresAt: 9e9, fileType: 'mp4', bytesExpected: null }) } as any
+  const started = Date.now()
+  const r = await downloadAsset({ storage, gw, idleTimeoutMs: 100 }, { assetId: 'a', relPath: 'f.mp4', bytesExpected: null, isText: false }, () => 1)
+  expect(r.status).toBe('failed')
+  if (r.status === 'failed') { expect(r.error).toContain('stalled'); expect(r.permanent).toBeUndefined() }   // 不是永久缺失，下次还要重试
+  expect(Date.now() - started).toBeLessThan(5_000)          // 真的是被表打断的，不是等到天荒地老
+  expect(await storage.writtenSize('f.mp4')).toBe(10)       // .part 保留，下一轮按 Range 续上
+  server.stop(true); await rm(root, { recursive: true, force: true })
+})
+
+// 掐的是**空闲**，不是总时长：几 GB 的录像合法地要下几十分钟，掐总时长等于腰斩大文件。
+test('每 30ms 来一块、总耗时远超 idleTimeoutMs → 仍然 completed', async () => {
+  const root = await tmp(); const storage = createLocalStorage(root)
+  const server = Bun.serve({ port: 0, fetch() {
+    let sent = 0
+    return new Response(new ReadableStream({
+      async pull(c) {
+        if (sent >= BODY.length) { c.close(); return }
+        await Bun.sleep(30)
+        c.enqueue(BODY.slice(sent, sent + 100)); sent += 100
+      },
+    }), { status: 200 })
+  } })
+  const gw = { getDownloadUrl: async () => ({ url: `http://localhost:${server.port}/f`, expiresAt: 9e9, fileType: 'mp4', bytesExpected: BODY.length }) } as any
+  const started = Date.now()
+  const r = await downloadAsset({ storage, gw, idleTimeoutMs: 100 }, { assetId: 'a', relPath: 'f.mp4', bytesExpected: BODY.length, isText: false }, () => 1)
+  expect(r.status).toBe('completed')
+  expect(Date.now() - started).toBeGreaterThan(100)         // 总时长确实越过了 idleTimeoutMs
+  expect((await Bun.file(join(root, 'f.mp4')).arrayBuffer()).byteLength).toBe(BODY.length)
+  server.stop(true); await rm(root, { recursive: true, force: true })
+})

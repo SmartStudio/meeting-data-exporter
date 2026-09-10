@@ -45,7 +45,7 @@ test('markSkippedByKey 不回退已完成的同类资产，只跳过未完成的
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'seg1', bytesExpected: 1 }, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'seg2', bytesExpected: 1 }, 1)
   const c1 = (await s.claimNext(100, 300))!          // 领到 seg1（id 最小）
-  await s.markCompleted(c1.id, 'hash', 1, 100)     // seg1 → completed
+  await s.markCompleted(c1.id, 'hash', 1, 100, c1.attempts)     // seg1 → completed
   await s.markSkippedByKey({ meetingId: 'm1', subMeetingId: '', assetType: 'video' }, 'download_not_allowed', 200)
   const cnt = await s.counts()
   expect(cnt.completed).toBe(1)              // seg1 未被回退
@@ -219,7 +219,7 @@ test('assetsForMeeting 只给本场次的行、按 id 升序，各状态一并�
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: 'sub2', assetType: 'video', remoteId: 'r3' }, 1)
   await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r4' }, 1)
   const first = (await s.claimNext(100, 300))!
-  await s.markCompleted(first.id, 'h', 11, 100)
+  await s.markCompleted(first.id, 'h', 11, 100, first.attempts)
 
   const rows = await s.assetsForMeeting('m1', '')
   expect(rows.map((r) => r.remote_id)).toEqual(['r1', 'r2'])            // 兄弟场次与别的会议都不在内
@@ -235,8 +235,8 @@ test('touchProgress 不回写终态的行：迟到的检查点不许盖掉真实
   const s = fresh(); await s.upsertMeeting(M, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
   const row = (await s.claimNext(100, 300))!
-  await s.markCompleted(row.id, 'h', 12_345, 120)
-  await s.touchProgress(row.id, 8 * 1024 * 1024, 130, 300)    // 迟到的那一次
+  await s.markCompleted(row.id, 'h', 12_345, 120, row.attempts)
+  await s.touchProgress(row.id, 8 * 1024 * 1024, 130, 300, row.attempts)    // 迟到的那一次
 
   const done = (await s.assetsForMeeting('m1', ''))[0]!
   expect(done.bytes_written).toBe(12_345)
@@ -248,8 +248,8 @@ test('markCompleted 用真实文件大小覆盖 touchProgress 留下的进度检
   const s = fresh(); await s.upsertMeeting(M, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
   const row = (await s.claimNext(100, 300))!
-  await s.touchProgress(row.id, 8 * 1024 * 1024, 110, 300)   // 最后一次 8MB 检查点
-  await s.markCompleted(row.id, 'h', 8 * 1024 * 1024 + 4242, 120)
+  await s.touchProgress(row.id, 8 * 1024 * 1024, 110, 300, row.attempts)   // 最后一次 8MB 检查点
+  await s.markCompleted(row.id, 'h', 8 * 1024 * 1024 + 4242, 120, row.attempts)
 
   const done = (await s.assetsForMeeting('m1', ''))[0]!
   expect(done.status).toBe('completed')
@@ -269,7 +269,7 @@ test('markFailed 写下最早可再领取时间：没到点领不到，到点了
   expect(first.attempts).toBe(1)
 
   const retryAt = 100 + 300                                   // executor 的 downloadBackoff(1)
-  await s.markFailed(first.id, 'HTTP 500', 110, retryAt)
+  await s.markFailed(first.id, 'HTTP 500', 110, retryAt, first.attempts)
   expect((await s.assetsForMeeting('m1', ''))[0]!.lease_expires_at).toBe(retryAt)
 
   expect(await s.claimNext(retryAt - 1, 300)).toBeNull()       // 还在退避里
@@ -288,7 +288,7 @@ test('领取顺序仍是"全局 id 最小"：到点的 failed 排在 id 更大�
   const s = fresh(); await s.upsertMeeting(M, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'old' }, 1)
   const old = (await s.claimNext(100, 300))!
-  await s.markFailed(old.id, 'boom', 110, 400)
+  await s.markFailed(old.id, 'boom', 110, 400, old.attempts)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'new' }, 200)  // id 更大
 
   const got = (await s.claimNext(401, 300))!
@@ -300,7 +300,7 @@ test('resetFailed 把 failed/dead 打回 pending，并清掉那个"最早可再�
   const s = fresh(); await s.upsertMeeting(M, 1)
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
   const row = (await s.claimNext(100, 300))!
-  await s.markFailed(row.id, 'boom', 110, 9_999_999)          // 退避到很久以后
+  await s.markFailed(row.id, 'boom', 110, 9_999_999, row.attempts)          // 退避到很久以后
 
   expect(await s.resetFailed(120)).toBe(1)
   const back = (await s.assetsForMeeting('m1', ''))[0]!
@@ -327,9 +327,9 @@ test('retryMeetingAssets 只动这一场的 failed/dead，清零 attempts 与那
   const a1 = (await s.claimNext(100, 300))!      // m1/video
   const a2 = (await s.claimNext(100, 300))!      // m1/audio
   const b1 = (await s.claimNext(100, 300))!      // m2/video
-  await s.markDead(a1.id, 'http 404', 110)
-  await s.markFailed(a2.id, 'boom', 110, 9_999_999)
-  await s.markDead(b1.id, 'http 404', 110)
+  await s.markDead(a1.id, 'http 404', 110, a1.attempts)
+  await s.markFailed(a2.id, 'boom', 110, 9_999_999, a2.attempts)
+  await s.markDead(b1.id, 'http 404', 110, b1.attempts)
 
   expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: '' }, 200)).toBe(2)
 
@@ -350,8 +350,8 @@ test('retryMeetingAssets 不碰 completed / skipped / running', async () => {
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 1)
   const a1 = (await s.claimNext(100, 300))!
   const a2 = (await s.claimNext(100, 300))!
-  await s.markCompleted(a1.id, null, 10, 110)
-  await s.markSkipped(a2.id, 'upstream_missing', 110)
+  await s.markCompleted(a1.id, null, 10, 110, a1.attempts)
+  await s.markSkipped(a2.id, 'upstream_missing', 110, a2.attempts)
   expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: '' }, 200)).toBe(0)
   expect((await s.assetsForMeeting('m1', '')).map((r) => r.status).sort()).toEqual(['completed', 'skipped'])
 })
@@ -362,8 +362,8 @@ test('ignoreDeadAssets 只把 dead 转 skipped(ignored_by_admin)，failed 不动
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 1)
   const a1 = (await s.claimNext(100, 300))!
   const a2 = (await s.claimNext(100, 300))!
-  await s.markDead(a1.id, 'http 404', 110)
-  await s.markFailed(a2.id, 'boom', 110, 9_999_999)   // 还在自动重试中，不该被"忽略"顺手关掉
+  await s.markDead(a1.id, 'http 404', 110, a1.attempts)
+  await s.markFailed(a2.id, 'boom', 110, 9_999_999, a2.attempts)   // 还在自动重试中，不该被"忽略"顺手关掉
 
   expect(await s.ignoreDeadAssets({ meetingId: 'm1', subMeetingId: '' }, 200)).toBe(1)
   const rows = await s.assetsForMeeting('m1', '')
@@ -383,8 +383,8 @@ test('两个写法都按精确的 (meeting_id, sub_meeting_id) 筛，不串场�
   await s.upsertAsset({ meetingId: 'm1', subMeetingId: 's2', assetType: 'video', remoteId: 'r2' }, 1)
   const x = (await s.claimNext(100, 300))!
   const y = (await s.claimNext(100, 300))!
-  await s.markDead(x.id, 'e', 110)
-  await s.markDead(y.id, 'e', 110)
+  await s.markDead(x.id, 'e', 110, x.attempts)
+  await s.markDead(y.id, 'e', 110, y.attempts)
   expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: 's1' }, 200)).toBe(1)
   expect((await s.assetsForMeeting('m1', 's2'))[0]!.status).toBe('dead')
 })
@@ -396,4 +396,49 @@ test('upsertMeeting 存 recordType，getMeeting 原样取回；不带时按 0（
   await s.upsertMeeting({ ...withoutType, subMeetingId: 'plain' }, 1)
   expect((await s.getMeeting('m1', 'zx'))!.recordType).toBe(3)
   expect((await s.getMeeting('m1', 'plain'))!.recordType).toBe(0)
+})
+
+// ── 写回前的栅栏：租约过期被重领之后，旧的那一次写回必须落空 ────────────
+// 2026-09-10 本机实测：一条下载连接静默挂住 40 分钟，租约过期后**同一个进程**的另一个
+// 并发槽把同一行又领了一次，两个槽同时写同一个 .part；先完成的 finalize 了 .mp4，
+// 后完成的报 ENOENT 并把行改回 failed——盘上文件是完整的，库里却说它失败了。
+test('markCompleted 认租约：拿旧的 attempts 写不动被重领的行，拿新的才写得动', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const first = (await s.claimNext(100, 300))!
+  expect(first.attempts).toBe(1)
+  const second = (await s.claimNext(500, 300))!            // 租约（100+300）已过期，被重领
+  expect(second.id).toBe(first.id)
+  expect(second.attempts).toBe(2)
+
+  expect(await s.markCompleted(first.id, 'h', 12, 510, first.attempts)).toBe(false)
+  const still = (await s.assetsForMeeting('m1', ''))[0]!
+  expect(still.status).toBe('running')                     // 迟到的写回什么都没改
+  expect(still.attempts).toBe(2)
+  expect(still.content_hash).toBeNull()
+
+  expect(await s.markCompleted(second.id, 'h', 12, 520, second.attempts)).toBe(true)
+  expect((await s.assetsForMeeting('m1', ''))[0]!.status).toBe('completed')
+})
+
+test('markFailed / markSkipped / markDead / touchProgress 同一道栅栏：旧租约一律写不动', async () => {
+  const s = fresh(); await s.upsertMeeting(M, 1)
+  await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1' }, 1)
+  const first = (await s.claimNext(100, 300))!
+  const second = (await s.claimNext(500, 300))!
+  const stale = first.attempts                             // 1，而行上现在是 2
+
+  expect(await s.markFailed(first.id, 'boom', 510, 9_999, stale)).toBe(false)
+  expect(await s.markSkipped(first.id, 'upstream_missing', 510, stale)).toBe(false)
+  expect(await s.markDead(first.id, 'boom', 510, stale)).toBe(false)
+  expect(await s.touchProgress(first.id, 4096, 510, 300, stale)).toBe(false)
+  const row = (await s.assetsForMeeting('m1', ''))[0]!
+  expect(row.status).toBe('running')
+  expect(row.bytes_written).toBe(0)                        // 连进度都没被旧租约续上
+  expect(row.last_error).toBeNull()
+  expect(row.lease_expires_at).toBe(800)                   // 还是 second 那次领取写的租约
+
+  expect(await s.touchProgress(second.id, 4096, 520, 300, second.attempts)).toBe(true)
+  expect(await s.markFailed(second.id, 'boom', 530, 900, second.attempts)).toBe(true)
+  expect((await s.assetsForMeeting('m1', ''))[0]!.status).toBe('failed')
 })

@@ -261,7 +261,7 @@ describe('createMysqlStore', () => {
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'b', fileType: 'mp4' }, 100)
       const done = (await s.claimNext(200, 60))!
-      await s.markCompleted(done.id, 'hash', 12, 210)
+      await s.markCompleted(done.id, 'hash', 12, 210, done.attempts)
       await s.markSkippedByKey({ meetingId: 'm1', subMeetingId: '', assetType: 'video' }, 'no', 220)
       const c = await s.counts()
       expect(c.completed).toBe(1)
@@ -293,9 +293,9 @@ describe('createMysqlStore', () => {
       const a = (await s.claimNext(200, 60))!
       const b = (await s.claimNext(200, 60))!
       const c = (await s.claimNext(200, 60))!
-      await s.markFailed(a.id, 'boom', 210, 510)
-      await s.markDead(b.id, 'gave up', 210)
-      await s.markSkipped(c.id, 'not allowed', 210)
+      await s.markFailed(a.id, 'boom', 210, 510, a.attempts)
+      await s.markDead(b.id, 'gave up', 210, b.attempts)
+      await s.markSkipped(c.id, 'not allowed', 210, c.attempts)
 
       const f = await s.failures()
       expect(f.map((r) => r.id)).toEqual([a.id, b.id]) // ORDER BY id；skipped 不算失败
@@ -336,7 +336,7 @@ describe('createMysqlStore', () => {
       const first = (await s.claimNext(200, 60))!
       expect(first.attempts).toBe(1)
       const retryAt = 200 + 300 // executor 的 downloadBackoff(1) = 5 分钟
-      await s.markFailed(first.id, 'HTTP 500', 210, retryAt)
+      await s.markFailed(first.id, 'HTTP 500', 210, retryAt, first.attempts)
 
       expect(await s.claimNext(retryAt - 1, 60)).toBeNull() // 没到点，领不到
       // 边界与租约那条**严格同款**：`lease_expires_at < now` 才算可领，所以卡在
@@ -357,7 +357,7 @@ describe('createMysqlStore', () => {
       await s.upsertMeeting(M, 100)
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'old', fileType: 'mp4' }, 100)
       const old = (await s.claimNext(200, 60))!
-      await s.markFailed(old.id, 'boom', 210, 500)
+      await s.markFailed(old.id, 'boom', 210, 500, old.attempts)
       // 失败之后才发现的新资产，id 更大
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'new', fileType: 'mp4' }, 300)
 
@@ -396,9 +396,9 @@ describe('createMysqlStore', () => {
         await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: type, remoteId: rid, fileType: 'mp4' }, 100)
       }
       const [a, b, c] = [(await s.claimNext(200, 60))!, (await s.claimNext(200, 60))!, (await s.claimNext(200, 60))!]
-      await s.markDead(a.id, '上一轮就放弃了', 500)
-      await s.markDead(b.id, 'HTTP 404', 1000)
-      await s.markFailed(c.id, '还在重试', 1000, 1300) // failed 是会自动重试的中间态，不该惊动运维
+      await s.markDead(a.id, '上一轮就放弃了', 500, a.attempts)
+      await s.markDead(b.id, 'HTTP 404', 1000, b.attempts)
+      await s.markFailed(c.id, '还在重试', 1000, 1300, c.attempts) // failed 是会自动重试的中间态，不该惊动运维
 
       // 不带时间窗：失败项是「资产此刻是否 dead」的镜像，上一轮放弃的只要还 dead 就要在
       const got = await s.deadAssets()
@@ -419,7 +419,7 @@ describe('createMysqlStore', () => {
       await s.upsertMeeting(M, 100)
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r-9', fileType: 'mp4' }, 100)
       const row = (await s.claimNext(200, 60))!
-      await s.markDead(row.id, 'http 404', 300)
+      await s.markDead(row.id, 'http 404', 300, row.attempts)
       expect(await s.deadAssets()).toEqual([
         { meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r-9', fileType: 'mp4', lastError: 'http 404', attempts: 1 },
       ])
@@ -432,7 +432,7 @@ describe('createMysqlStore', () => {
       await s.upsertMeeting(M, 100)
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: '' }, 100)
       const row = (await s.claimNext(200, 60))!
-      await s.touchProgress(row.id, 4096, 230, 60)
+      await s.touchProgress(row.id, 4096, 230, 60, row.attempts)
       await s.setTargetPath(row.id, 'a/b/video.mp4', 'mp4', 230)
       await s.setTargetPath(row.id, 'a/b/video.mp4', null, 240)
 
@@ -452,8 +452,8 @@ describe('createMysqlStore', () => {
       await s.upsertMeeting(M, 100)
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
       const row = (await s.claimNext(200, 60))!
-      await s.markCompleted(row.id, 'h', 12_345, 210)
-      await s.touchProgress(row.id, 8 * 1024 * 1024, 220, 60)   // 迟到的那一次
+      await s.markCompleted(row.id, 'h', 12_345, 210, row.attempts)
+      await s.touchProgress(row.id, 8 * 1024 * 1024, 220, 60, row.attempts)   // 迟到的那一次
 
       const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM meeting_assets WHERE id=?', [row.id])
       expect(Number(rows[0]!.bytes_written)).toBe(12_345)
@@ -471,8 +471,8 @@ describe('createMysqlStore', () => {
       await s.upsertMeeting(M, 100)
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'a', fileType: 'mp4' }, 100)
       const row = (await s.claimNext(200, 60))!
-      await s.touchProgress(row.id, 8 * 1024 * 1024, 210, 60)      // 最后一次 8MB 检查点
-      await s.markCompleted(row.id, 'h', 8 * 1024 * 1024 + 4242, 220)
+      await s.touchProgress(row.id, 8 * 1024 * 1024, 210, 60, row.attempts)      // 最后一次 8MB 检查点
+      await s.markCompleted(row.id, 'h', 8 * 1024 * 1024 + 4242, 220, row.attempts)
 
       const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM meeting_assets WHERE id=?', [row.id])
       expect(rows[0]!.status).toBe('completed')
@@ -509,6 +509,44 @@ describe('createMysqlStore', () => {
       await s.upsertProbe({ ...k2, deadlineAt: 5000, probeAfter: 0 })
       await s.abandonProbe(k2, '超时')
       expect((await s.dueProbes(9999)).length).toBe(0)
+    })
+  })
+
+  /**
+   * `abandonProbeIfProbing`：discovery 的「同源产物」分支每一轮都会对同一批 audio
+   * 重新判一次（见 packages/engine/src/domain/sibling.ts），所以它必须对不存在的行
+   * 与已终态的行都是空操作——否则一条早已 resolved 的探测会被倒回 abandoned。
+   */
+  test('abandonProbeIfProbing 只动 probing 行：不存在的键与已 resolved 的行都不受影响', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      const probing = { meetingId: 'm1', subMeetingId: '', assetType: 'audio' }
+      await s.upsertProbe({ ...probing, deadlineAt: 5000, probeAfter: 0 })
+      await s.abandonProbeIfProbing(probing, 'not_generated')
+      const [rows] = await pool.query<RowDataPacket[]>(
+        'SELECT state, last_reason FROM meeting_asset_probes WHERE meeting_id=? AND sub_meeting_id=? AND asset_type=?',
+        [probing.meetingId, probing.subMeetingId, probing.assetType],
+      )
+      expect(rows[0]!.state).toBe('abandoned')
+      expect(rows[0]!.last_reason).toBe('not_generated')
+
+      // 已 resolved 的行不许倒回 abandoned
+      const resolved = { meetingId: 'm2', subMeetingId: '', assetType: 'audio' }
+      await s.upsertProbe({ ...resolved, deadlineAt: 5000, probeAfter: 0 })
+      await s.resolveProbe(resolved)
+      await s.abandonProbeIfProbing(resolved, 'not_generated')
+      const [rows2] = await pool.query<RowDataPacket[]>(
+        'SELECT state, last_reason FROM meeting_asset_probes WHERE meeting_id=?', [resolved.meetingId],
+      )
+      expect(rows2[0]!.state).toBe('resolved')
+      expect(rows2[0]!.last_reason).toBeNull()
+
+      // 没有探测行时是空操作：不建行、不抛
+      await s.abandonProbeIfProbing({ meetingId: 'm-none', subMeetingId: '', assetType: 'audio' }, 'not_generated')
+      const [rows3] = await pool.query<RowDataPacket[]>(
+        'SELECT COUNT(*) n FROM meeting_asset_probes WHERE meeting_id=?', ['m-none'],
+      )
+      expect(Number(rows3[0]!.n)).toBe(0)
     })
   })
 
@@ -681,7 +719,7 @@ describe('createMysqlStore', () => {
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: 's1', assetType: 'video', remoteId: 'r3' }, 100)
       await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r4' }, 100)
       const first = (await s.claimNext(200, 60))!
-      await s.markCompleted(first.id, 'h', 12, 200)
+      await s.markCompleted(first.id, 'h', 12, 200, first.attempts)
 
       const rows = await s.assetsForMeeting('m1', '')
       expect(rows.map((r) => r.remote_id)).toEqual(['r1', 'r2'])
@@ -703,8 +741,8 @@ describe('createMysqlStore', () => {
       await s.upsertAsset({ meetingId: 'm2', subMeetingId: '', assetType: 'video', remoteId: 'r3' }, 100)
       const a = (await s.claimNext(200, 60))!
       const b = (await s.claimNext(200, 60))!
-      await s.markDead(a.id, 'http 404', 300)
-      await s.markDead(b.id, 'http 404', 300)
+      await s.markDead(a.id, 'http 404', 300, a.attempts)
+      await s.markDead(b.id, 'http 404', 300, b.attempts)
 
       expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: '' }, 400)).toBe(1)
       const back = (await s.assetsForMeeting('m1', ''))[0]!
@@ -726,14 +764,48 @@ describe('createMysqlStore', () => {
       await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', remoteId: 'r2' }, 100)
       const a = (await s.claimNext(200, 60))!
       const b = (await s.claimNext(200, 60))!
-      await s.markDead(a.id, 'http 404', 300)
-      await s.markFailed(b.id, 'boom', 300, 9_999_999)
+      await s.markDead(a.id, 'http 404', 300, a.attempts)
+      await s.markFailed(b.id, 'boom', 300, 9_999_999, b.attempts)
 
       expect(await s.ignoreDeadAssets({ meetingId: 'm1', subMeetingId: '' }, 400)).toBe(1)
       const rows = await s.assetsForMeeting('m1', '')
       expect(rows.find((r) => r.id === a.id)!.status).toBe('skipped')
       expect(rows.find((r) => r.id === a.id)!.last_error).toBe('ignored_by_admin')
       expect(rows.find((r) => r.id === b.id)!.status).toBe('failed')
+    })
+  })
+
+  // ── 写回前的栅栏：与 SQLite 版配对的那一组（packages/engine/tests/store/index.test.ts）
+  // 两个宿主各有一份实现，只改一处的话服务端照样会被「同一行领两次」互相覆盖，
+  // 而且不报错：下载看着成功、库里的行却归了别人。2026-09-10 本机实测的就是这一幕。
+  test('写回认租约：租约过期被重领之后，旧的 attempts 一律写不动', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting(M, 100)
+      await s.upsertAsset({ meetingId: 'm1', subMeetingId: '', assetType: 'video', remoteId: 'r1', fileType: 'mp4' }, 100)
+      const first = (await s.claimNext(200, 60))!
+      expect(first.attempts).toBe(1)
+      const second = (await s.claimNext(500, 60))!          // 租约（200+60）已过期，被重领
+      expect(second.id).toBe(first.id)
+      expect(second.attempts).toBe(2)
+
+      const stale = first.attempts
+      expect(await s.markCompleted(first.id, 'h', 12, 510, stale)).toBe(false)
+      expect(await s.markFailed(first.id, 'boom', 510, 9_999, stale)).toBe(false)
+      expect(await s.markSkipped(first.id, 'upstream_missing', 510, stale)).toBe(false)
+      expect(await s.markDead(first.id, 'boom', 510, stale)).toBe(false)
+      expect(await s.touchProgress(first.id, 4096, 510, 60, stale)).toBe(false)
+
+      const row = (await s.assetsForMeeting('m1', ''))[0]!
+      expect(row.status).toBe('running')                    // 迟到的写回一个字段都没改
+      expect(row.attempts).toBe(2)
+      expect(row.bytes_written).toBe(0)
+      expect(row.last_error).toBeNull()
+      expect(row.lease_expires_at).toBe(560)                // 还是 second 那次领取写的租约
+
+      // 持着当前租约的那一次照常写得动
+      expect(await s.markCompleted(second.id, 'h', 12, 520, second.attempts)).toBe(true)
+      expect((await s.assetsForMeeting('m1', ''))[0]!.status).toBe('completed')
     })
   })
 })

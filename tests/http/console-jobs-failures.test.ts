@@ -106,7 +106,7 @@ async function seedDeadMeeting(
     meetingId: o.meetingId, subMeetingId, assetType: 'video', remoteId: `r-${o.meetingId}`, fileType: 'mp4',
   }, NOW - 9000)
   const row = (await rig.store.claimNext(NOW - 8000, 60))!
-  await rig.store.markDead(row.id, 'http 404', NOW - 7000)
+  await rig.store.markDead(row.id, 'http 404', NOW - 7000, row.attempts)
   await rig.jobs.recordFailure({
     jobName: o.jobName ?? 'fetch_recordings',
     target: jobFailureTarget(o.meetingId, subMeetingId),

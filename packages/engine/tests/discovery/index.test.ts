@@ -104,3 +104,49 @@ test('recordType 缺省（老网关）按普通云录制：五类照旧', async 
   await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'audio', 'transcript', 'ai_minutes', 'chapters'], 1000)
   expect((await store.dueProbes(1000)).length).toBe(5)
 })
+
+// ---------------------------------------------------------------------------
+// 同源产物（src/domain/sibling.ts）：腾讯把 video 与 audio 放在同一份 record_file
+// 里一起发布。租户没开「同时生成音频」时，video 就绪那一刻就已经能断定音频不会有了
+// ——再建探测只会白探三次、六小时后落一个假的 upstream_timeout。
+// ---------------------------------------------------------------------------
+test('video 就绪而 audio 缺席 → 不建 audio 探测（video 照样建任务）', async () => {
+  const store = createStore(openDb(':memory:'))
+  const gw = fakeGw({ m1: [
+    { assetId: 'm1:rf1:video:0', assetType: 'video', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
+  ] })
+  await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'audio', 'ai_minutes'], 1000)
+  expect((await store.counts()).pending).toBe(1)                                  // video 建了任务
+  const probes = (await store.dueProbes(1000)).map((p) => p.asset_type)
+  expect(probes).toEqual(['ai_minutes'])                                          // 智能产物照旧探测，audio 一条都没有
+})
+
+test('存量 probing 的 audio 探测行：再 discover 一次 → abandoned/not_generated', async () => {
+  const db = openDb(':memory:')
+  const store = createStore(db)
+  const gw = fakeGw({ m1: [
+    { assetId: 'm1:rf1:video:0', assetType: 'video', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 100, fileType: 'mp4' },
+  ] })
+  await store.upsertProbe({ meetingId: 'm1', subMeetingId: '', assetType: 'audio', deadlineAt: 99999, probeAfter: 0 })
+  await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'audio'], 1000)
+  expect((await store.dueProbes(1000)).length).toBe(0)                            // 不再到期重探
+  const row = db.query(`SELECT state, last_reason FROM asset_probes WHERE asset_type='audio'`).get() as any
+  expect(row.state).toBe('abandoned')
+  expect(row.last_reason).toBe('not_generated')                                   // 不是假的 upstream_timeout
+})
+
+test('video 也不在清单 → audio 照旧建探测（回归：两个都可能晚点一起出来）', async () => {
+  const store = createStore(openDb(':memory:'))
+  const gw = fakeGw({ m1: [] })
+  await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'audio'], 1000)
+  expect((await store.dueProbes(1000)).map((p) => p.asset_type).sort()).toEqual(['audio', 'video'])
+})
+
+test('video 还在转码（state 1）→ audio 照旧建探测', async () => {
+  const store = createStore(openDb(':memory:'))
+  const gw = fakeGw({ m1: [
+    { assetId: 'm1:rf1:video:0', assetType: 'video', remoteId: 'rf1', state: 1, allowDownload: true },
+  ] })
+  await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'audio'], 1000)
+  expect((await store.dueProbes(1000)).map((p) => p.asset_type).sort()).toEqual(['audio', 'video'])
+})

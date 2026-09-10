@@ -287,7 +287,7 @@ test('下载器报 permanent：转 skipped(upstream_missing)，不进 failed 也
     meetingsByPathKey: new Map([[meetingPathKey('m1', ''), { meetingId: 'm1', subMeetingId: '', subject: 's', startTime: 100, meetingCode: null, endTime: null }]]),
   }
   const r = await runExecutor(deps, { concurrency: 1, leaseSec: 300 }, () => 1000)
-  expect(r).toEqual({ completed: 0, failed: 0, skipped: 1 })
+  expect(r).toEqual({ completed: 0, failed: 0, skipped: 1, lost: 0 })   // lost=0：租约全程在自己手里
 
   const row = (await store.assetsForMeeting('m1', ''))[0]!
   expect(row.status).toBe('skipped')

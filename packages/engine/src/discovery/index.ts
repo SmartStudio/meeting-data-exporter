@@ -3,6 +3,7 @@ import type { Store } from '../store'
 import type { AssetKey, MeetingSelector } from '../domain/types'
 import { ASSET_KEY_TO_GATEWAY_TYPE, ASSET_WAIT_CAP_SEC, expectedAssetKeys } from '../domain/types'
 import { judgeReadiness } from '../domain/readiness'
+import { isSiblingAbsent } from '../domain/sibling'
 import { splitWindow } from '../domain/window'
 
 export interface DiscoveryDeps { gw: AssetSource; store: Store }
@@ -20,6 +21,13 @@ export async function discover(
     const wantedFields = new Map(expectedAssetKeys(m.recordType, wantedKeys).map((k) => [ASSET_KEY_TO_GATEWAY_TYPE[k], k]))
     for (const [field, key] of wantedFields) {
       const present = assets.filter((a) => a.assetType === field)
+      // 同源产物：video 已就绪而 audio 缺席 —— 这场的音频不是「还没出来」，是根本没生成，
+      // 探测等的是一个不会到来的答案（见 domain/sibling.ts）。所以不建探测；存量那条
+      // probing 行就地放弃。这里刻意不 upsertProbe 再 abandon——不留没人要看的一行。
+      if (isSiblingAbsent(field, assets)) {
+        await deps.store.abandonProbeIfProbing({ meetingId: m.meetingId, subMeetingId: m.subMeetingId, assetType: field }, 'not_generated')
+        continue
+      }
       const rep = present[0]  // 同一 meeting 的同类多段共享 allow_download/state，取代表判定类型级就绪
       const deadlineAt = (m.endTime ?? now) + ASSET_WAIT_CAP_SEC[key]
       const verdict = judgeReadiness({ present: present.length > 0, state: rep?.state, allowDownload: rep?.allowDownload, now, deadlineAt })
