@@ -1,7 +1,7 @@
 import type { AssetSource } from '../source/types'
 import type { Store } from '../store'
 import type { AssetKey, MeetingSelector } from '../domain/types'
-import { ASSET_KEY_TO_GATEWAY_TYPE, ASSET_WAIT_CAP_SEC } from '../domain/types'
+import { ASSET_KEY_TO_GATEWAY_TYPE, ASSET_WAIT_CAP_SEC, expectedAssetKeys } from '../domain/types'
 import { judgeReadiness } from '../domain/readiness'
 import { splitWindow } from '../domain/window'
 
@@ -12,10 +12,12 @@ export async function discover(
 ): Promise<{ meetings: number; tasks: number }> {
   const meetings = await collectMeetings(deps.gw, sel)
   let tasks = 0
-  const wantedFields = new Map(wantedKeys.map((k) => [ASSET_KEY_TO_GATEWAY_TYPE[k], k]))
   for (const m of meetings) {
     await deps.store.upsertMeeting(m, now)
     const assets = await deps.gw.listAssets(m.meetingId, m.subMeetingId, sel.kind !== 'range' ? sel.from : undefined, sel.kind !== 'range' ? sel.to : undefined)
+    // 按录制类型裁剪：转写记录只可能有逐字稿与纪要，其余类型既不建任务也不建探测
+    // （见 domain/types.ts 的 expectedAssetKeys）。
+    const wantedFields = new Map(expectedAssetKeys(m.recordType, wantedKeys).map((k) => [ASSET_KEY_TO_GATEWAY_TYPE[k], k]))
     for (const [field, key] of wantedFields) {
       const present = assets.filter((a) => a.assetType === field)
       const rep = present[0]  // 同一 meeting 的同类多段共享 allow_download/state，取代表判定类型级就绪

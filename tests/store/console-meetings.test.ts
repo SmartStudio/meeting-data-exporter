@@ -1554,6 +1554,7 @@ test('getMeetings 的 NULL 列按仓库既有口径补齐（文本空串、时�
       meetingId: 'm-null',
       subMeetingId: '',
       meetingRecordId: '',
+      recordType: 0,
       meetingCode: '',
       subject: '',
       hostUserId: '',

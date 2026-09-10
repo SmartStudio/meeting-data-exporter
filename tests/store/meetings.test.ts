@@ -19,6 +19,7 @@ const meeting = (o: Partial<Meeting> = {}): Meeting => ({
   meetingId: 'm-1',
   subMeetingId: '',
   meetingRecordId: 'rec-1',
+  recordType: 0,
   meetingCode: '881',
   subject: '评审',
   hostUserId: 'tm-alice',
@@ -160,4 +161,13 @@ test('state 在缓存里往返不变形——corp 响应的 state 与网关语�
   )
   expect((await store.listByMeetingId('m-state'))[0]!.state).toBe('transcoding')
   expect((await store.getByRecordId('rec-s-1'))?.state).toBe('transcoding')
+})
+
+test('record_type 往返：转写记录存 3，查回仍是 3', async () => {
+  const store = createMeetingCacheStore(pool)
+  await store.upsertMany([meeting({ meetingRecordId: 'rec-zx', subject: '转写_评审', recordType: 3 })], 1000)
+  expect((await store.getByRecordId('rec-zx'))?.recordType).toBe(3)
+  // 同一条再以普通类型写入会被更新（列在 ON DUPLICATE KEY UPDATE 里）
+  await store.upsertMany([meeting({ meetingRecordId: 'rec-zx', subject: '转写_评审', recordType: 0 })], 2000)
+  expect((await store.getByRecordId('rec-zx'))?.recordType).toBe(0)
 })

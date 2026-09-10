@@ -75,6 +75,7 @@ function meta(over: Partial<MeetingMeta> = {}): MeetingMeta {
     meetingId: KEY.meetingId,
     subMeetingId: KEY.subMeetingId,
     meetingRecordId: '',
+    recordType: 0,
     meetingCode: '881-123-40',
     subject: '产品周会',
     hostUserId: 'zouyanjian',

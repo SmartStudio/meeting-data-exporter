@@ -15,12 +15,29 @@ export type AssetType = (typeof ASSET_TYPES)[number]
 /** 平台 state：1 录制中 / 2 转码中 / 3 转码完成 */
 export type RecordState = 'recording' | 'transcoding' | 'completed'
 
+/**
+ * 腾讯 `/v1/corp/records` 的 `record_type`。文档只写了 0 云录制 / 2 上传 / 4 视频录制 /
+ * 5 录音；**3 是文档没写、线上实际返回的「转写记录」**（2026-09-10 实测 121 条）：
+ * 平台把一场开了实时转写的会议**另拆一条 record**，主题由平台加前缀 `转写_`，
+ * `record_size` 为 0。它只有 meeting_summary（逐字稿）与 ai_minutes 两类产物——
+ * `/v1/addresses` 照样给出 `download_address` 的 mp4 链接，但对象存储对它一律
+ * 404 NoSuchKey；音频、章节从未出现过。
+ */
+export const RECORD_TYPE_TRANSCRIPT = 3
+
+/** 转写记录（record_type 3）没有录像/音频/章节，目录层与引擎发现层都按此裁剪 */
+export function isTranscriptRecord(recordType: number | null | undefined): boolean {
+  return recordType === RECORD_TYPE_TRANSCRIPT
+}
+
 export interface Meeting {
   meetingId: string
   subMeetingId: string
   meetingRecordId: string
   meetingCode: string
   subject: string
+  /** 见 `RECORD_TYPE_TRANSCRIPT`。平台没给时为 0（云录制） */
+  recordType: number
   /**
    * 主持人（会议创建者）的企业成员 id。
    *

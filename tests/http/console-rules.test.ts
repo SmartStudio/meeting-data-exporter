@@ -178,6 +178,7 @@ function specMeeting(s: MeetingSpec): Meeting {
     meetingId: s.meetingId,
     subMeetingId: sub,
     meetingRecordId: `rec-${s.meetingId}`,
+    recordType: 0,
     meetingCode: '12345678',
     subject: s.title,
     hostUserId: s.host ?? 'host-1',

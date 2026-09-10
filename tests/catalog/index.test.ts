@@ -87,6 +87,31 @@ test('listAssets：allow_download 时探测 smart 两类，探测结果决定是
   expect(assets.map((a) => a.assetType).sort()).toEqual(['ai_minutes', 'video'])
 })
 
+/**
+ * 转写记录（record_type 3）：平台在 /v1/addresses 里照样给 download_address 的 mp4，
+ * 但对象存储对它一律 404 NoSuchKey（2026-09-10 实测 105 条无一例外），audio 从未出现。
+ * 目录层把这两个字段抹掉，只留逐字稿与智能产物。
+ */
+test('listAssets：转写记录丢掉 video / audio，只列逐字稿与智能产物', async () => {
+  const file = {
+    record_file_id: 'f1',
+    download_address: 'https://cos/v.mp4', download_address_file_type: 'mp4',
+    audio_address: 'https://cos/a.m4a', audio_address_file_type: 'm4a',
+    meeting_summary: [{ download_address: 'https://cos/t.txt', file_type: 'txt' }],
+    allow_download: true,
+  }
+  const catalog = createCatalog({
+    addressesApi: { listByRecordId: async () => [file] } as never,
+    smartApi: { getMinutes: async () => '# 纪要', getChapters: async () => null },
+    now: () => 1_700_000_000,
+  })
+  const zx = await catalog.listAssets({ meetingId: 'm1', subMeetingId: 'r1', meetingRecordId: 'r1', recordType: 3 } as never)
+  expect(zx.map((a) => a.assetType).sort()).toEqual(['ai_minutes', 'meeting_summary'])
+  // 对照：普通云录制同一份响应照常列出 video / audio
+  const plain = await catalog.listAssets({ meetingId: 'm1', subMeetingId: 'r2', meetingRecordId: 'r2', recordType: 0 } as never)
+  expect(plain.map((a) => a.assetType).sort()).toEqual(['ai_minutes', 'audio', 'meeting_summary', 'video'])
+})
+
 test('listAssets：allow_download=false 时不探测 smart', async () => {
   let called = 0
   const catalog = createCatalog({

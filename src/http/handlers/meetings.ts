@@ -19,6 +19,7 @@ function meetingToJson(m: Meeting): Record<string, unknown> {
     sub_meeting_id: m.subMeetingId,
     meeting_code: m.meetingCode,
     subject: m.subject,
+    record_type: m.recordType,
     host_user_id: m.hostUserId,
     start_time: m.startTime,
     end_time: m.endTime,

@@ -208,12 +208,12 @@ export function createStore(db: Database): Store {
     RETURNING *`)
   return {
     async upsertMeeting(m, now) {
-      db.query(`INSERT INTO meetings (meeting_id,sub_meeting_id,meeting_code,subject,host_userid,start_time,end_time,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
+      db.query(`INSERT INTO meetings (meeting_id,sub_meeting_id,meeting_code,subject,record_type,host_userid,start_time,end_time,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(meeting_id,sub_meeting_id) DO UPDATE SET
-          meeting_code=excluded.meeting_code, subject=excluded.subject, host_userid=excluded.host_userid,
+          meeting_code=excluded.meeting_code, subject=excluded.subject, record_type=excluded.record_type, host_userid=excluded.host_userid,
           start_time=excluded.start_time, end_time=excluded.end_time, updated_at=excluded.updated_at`)
-        .run(m.meetingId, m.subMeetingId, m.meetingCode, m.subject, m.hostUserId, m.startTime, m.endTime, now, now)
+        .run(m.meetingId, m.subMeetingId, m.meetingCode, m.subject, m.recordType ?? 0, m.hostUserId, m.startTime, m.endTime, now, now)
     },
     async upsertAsset(a, now) {
       // file_type 进唯一键（见 db.ts 的 SCHEMA_VERSION 说明）：同一份录制的多种
@@ -304,15 +304,15 @@ export function createStore(db: Database): Store {
     },
     async getMeeting(meetingId, subMeetingId) {
       const r = db.query<{ meeting_id: string; sub_meeting_id: string; meeting_code: string | null;
-                           subject: string | null; host_userid: string | null;
+                           subject: string | null; record_type: number; host_userid: string | null;
                            start_time: number | null; end_time: number | null }, [string, string]>(
-        `SELECT meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time
+        `SELECT meeting_id, sub_meeting_id, meeting_code, subject, record_type, host_userid, start_time, end_time
            FROM meetings WHERE meeting_id=? AND sub_meeting_id=?`,
       ).get(meetingId, subMeetingId)
       if (!r) return null
       return {
         meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id, meetingCode: r.meeting_code,
-        subject: r.subject, hostUserId: r.host_userid, startTime: r.start_time, endTime: r.end_time,
+        subject: r.subject, recordType: r.record_type, hostUserId: r.host_userid, startTime: r.start_time, endTime: r.end_time,
       }
     },
     async assetsForMeeting(meetingId, subMeetingId) {

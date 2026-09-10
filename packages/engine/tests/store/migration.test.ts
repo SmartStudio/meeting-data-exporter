@@ -63,7 +63,63 @@ test('v1 老库被就地升级为 v2：唯一键含 file_type', async () => {
       }
     }
     expect(uniqueCols).toContain('file_type')
-    expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(2)
+    expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(3)
+  })
+})
+
+/**
+ * v2 → v3：meetings 补 record_type。
+ *
+ * 转写记录（腾讯 record_type 3，文档没写）只有逐字稿与纪要：录像链接照给但对象
+ * 存储一律 404，音频与章节从未出现。老库里这些会议名下留着 skipped 的 video 行与
+ * 空等到期的 audio / chapters 探测行，升级时按主题前缀「转写_」标成 3 并清掉它们。
+ */
+function makeV2Db(path: string): void {
+  openDb(path).close()   // 先按当前代码建库
+  const db = new Database(path)
+  db.exec(`
+    ALTER TABLE meetings DROP COLUMN record_type;
+    INSERT INTO meetings (meeting_id, sub_meeting_id, subject, created_at, updated_at)
+    VALUES ('m1', 'r1', '转写_周会', 1, 1),
+           ('m1', 'r2', '周会', 1, 1);
+    INSERT INTO assets (meeting_id, sub_meeting_id, asset_type, remote_id, status, last_error, created_at, updated_at)
+    VALUES ('m1', 'r1', 'video', 'rf1', 'skipped', 'upstream_missing', 1, 1),
+           ('m1', 'r1', 'meeting_summary', 'rf1', 'completed', NULL, 1, 1),
+           ('m1', 'r2', 'video', 'rf2', 'skipped', 'upstream_missing', 1, 1);
+    INSERT INTO asset_probes (meeting_id, sub_meeting_id, asset_type, state, deadline_at)
+    VALUES ('m1', 'r1', 'audio', 'abandoned', 9),
+           ('m1', 'r1', 'chapters', 'probing', 9),
+           ('m1', 'r1', 'ai_minutes', 'probing', 9),
+           ('m1', 'r2', 'audio', 'abandoned', 9);
+    PRAGMA user_version = 2;
+  `)
+  db.close()
+}
+
+test('v2 老库升级为 v3：转写记录按主题前缀标 3，名下 video/audio/chapters 的残留被清掉', async () => {
+  await withTmpDb((path) => {
+    makeV2Db(path)
+    const db = openDb(path)
+    const types = db.query<{ sub_meeting_id: string; record_type: number }, []>(
+      'SELECT sub_meeting_id, record_type FROM meetings ORDER BY sub_meeting_id').all()
+    expect(types).toEqual([{ sub_meeting_id: 'r1', record_type: 3 }, { sub_meeting_id: 'r2', record_type: 0 }])
+
+    const assets = db.query<{ sub_meeting_id: string; asset_type: string }, []>(
+      'SELECT sub_meeting_id, asset_type FROM assets ORDER BY sub_meeting_id, asset_type').all()
+    // 转写记录的 skipped video 被删，逐字稿保留；普通录制的 skipped video 不动
+    expect(assets).toEqual([
+      { sub_meeting_id: 'r1', asset_type: 'meeting_summary' },
+      { sub_meeting_id: 'r2', asset_type: 'video' },
+    ])
+
+    const probes = db.query<{ sub_meeting_id: string; asset_type: string }, []>(
+      'SELECT sub_meeting_id, asset_type FROM asset_probes ORDER BY sub_meeting_id, asset_type').all()
+    expect(probes).toEqual([
+      { sub_meeting_id: 'r1', asset_type: 'ai_minutes' },
+      { sub_meeting_id: 'r2', asset_type: 'audio' },
+    ])
+    expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(3)
+    db.close()
   })
 })
 
@@ -116,6 +172,7 @@ test('重复调用 openDb 幂等：已是 v2 的库不再重建表', async () =>
     openDb(path).close()
     const db = openDb(path)
     expect(db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM assets').get()?.n).toBe(2)
-    expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(2)
+    expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(3)
   })
 })
+

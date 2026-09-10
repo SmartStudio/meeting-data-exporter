@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import {
   DEFAULT_ASSET_KEYS, ALL_ASSET_KEYS, ASSET_KEY_TO_GATEWAY_TYPE, GATEWAY_TYPE_TO_ASSET_KEY, isTextAssetType, normalizeExtension,
   parseAssetKeys, UnknownAssetKeyError, assetKeyToFilename,
-} from '../../src/domain/types'
+ expectedAssetKeys } from '../../src/domain/types'
 
 test('默认集为全部五类', () => {
   expect(DEFAULT_ASSET_KEYS).toEqual(['video', 'audio', 'transcript', 'ai_minutes', 'chapters'])
@@ -98,4 +98,13 @@ test('assetKeyToFilename 应用归一化', () => {
   expect(assetKeyToFilename('ai_minutes', 'rf1', 'md')).toBe('minutes.md')
   expect(assetKeyToFilename('chapters', 'rf1', 'json')).toBe('chapters.json')
   expect(assetKeyToFilename('video', 'rf1', 'mp4')).toBe('recording_rf1.mp4')
+})
+
+test('expectedAssetKeys：转写记录（record_type 3）只剩逐字稿与纪要，其余类型原样', () => {
+  expect(expectedAssetKeys(3, ALL_ASSET_KEYS)).toEqual(['transcript', 'ai_minutes'])
+  expect(expectedAssetKeys(3, ['video', 'chapters'])).toEqual([])
+  expect(expectedAssetKeys(0, ALL_ASSET_KEYS)).toEqual(ALL_ASSET_KEYS)
+  // 老网关没透出 record_type：按普通云录制
+  expect(expectedAssetKeys(null, ['video'])).toEqual(['video'])
+  expect(expectedAssetKeys(undefined, ['video'])).toEqual(['video'])
 })

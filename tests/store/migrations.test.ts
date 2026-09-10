@@ -571,3 +571,74 @@ describe('015 下线 STS-Token 链路与 ai_transcript 资产', () => {
     }
   })
 })
+
+describe('016 录制类型 record_type 落库，转写记录清掉录像/音频/章节残留', () => {
+  test('新库：meetings 与 meeting_cache 都有 record_type，默认 0', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      const [rows] = await pool.query<any[]>(
+        `SELECT table_name, column_default FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND column_name = 'record_type' ORDER BY table_name`,
+      )
+      expect(rows.map((r) => [r.table_name ?? r.TABLE_NAME, String(r.column_default ?? r.COLUMN_DEFAULT)]))
+        .toEqual([['meeting_cache', '0'], ['meetings', '0']])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  test('老库补列时按主题前缀「转写_」回填 3，并清掉转写记录名下的 video/audio/chapters 残留', async () => {
+    const { pool, cleanup } = await withTestDb()
+    try {
+      // 造一个「016 之前」的库：把两列丢掉，再塞进升级前会有的那几种行
+      await pool.query(`ALTER TABLE meetings DROP COLUMN record_type`)
+      await pool.query(`ALTER TABLE meeting_cache DROP COLUMN record_type`)
+      await pool.query(
+        `INSERT INTO meetings (meeting_id, sub_meeting_id, subject, created_at, updated_at)
+         VALUES ('m1', 'r1', '转写_周会', 1, 1), ('m1', 'r2', '周会', 1, 1)`,
+      )
+      await pool.query(
+        `INSERT INTO meeting_cache (meeting_record_id, meeting_id, sub_meeting_id, meeting_code, subject,
+                                    host_user_id, start_time, end_time, state, updated_at)
+         VALUES ('r1', 'm1', 'r1', '881', '转写_周会', 'u', 1, 2, 'completed', 1),
+                ('r2', 'm1', 'r2', '881', '周会', 'u', 1, 2, 'completed', 1)`,
+      )
+      await pool.query(
+        `INSERT INTO meeting_assets (meeting_id, sub_meeting_id, asset_type, remote_id, status, last_error, created_at, updated_at)
+         VALUES ('m1', 'r1', 'video', 'rf1', 'skipped', 'upstream_missing', 1, 1),
+                ('m1', 'r1', 'meeting_summary', 'rf1', 'completed', NULL, 1, 1),
+                ('m1', 'r2', 'video', 'rf2', 'skipped', 'upstream_missing', 1, 1)`,
+      )
+      await pool.query(
+        `INSERT INTO meeting_asset_probes (meeting_id, sub_meeting_id, asset_type, state, deadline_at)
+         VALUES ('m1', 'r1', 'audio', 'abandoned', 9), ('m1', 'r1', 'chapters', 'probing', 9),
+                ('m1', 'r1', 'ai_minutes', 'probing', 9), ('m1', 'r2', 'audio', 'abandoned', 9)`,
+      )
+
+      const { runMigrations } = await import('../../src/store/db')
+      await runMigrations(pool)
+
+      const [types] = await pool.query<any[]>(`SELECT sub_meeting_id, record_type FROM meetings ORDER BY sub_meeting_id`)
+      expect(types.map((r) => [r.sub_meeting_id, Number(r.record_type)])).toEqual([['r1', 3], ['r2', 0]])
+      const [cache] = await pool.query<any[]>(`SELECT meeting_record_id, record_type FROM meeting_cache ORDER BY meeting_record_id`)
+      expect(cache.map((r) => [r.meeting_record_id, Number(r.record_type)])).toEqual([['r1', 3], ['r2', 0]])
+
+      const [assets] = await pool.query<any[]>(`SELECT sub_meeting_id, asset_type FROM meeting_assets ORDER BY sub_meeting_id, asset_type`)
+      // 转写记录的 skipped video 被删、逐字稿保留；普通录制的 skipped video 不动
+      expect(assets.map((r) => [r.sub_meeting_id, r.asset_type])).toEqual([['r1', 'meeting_summary'], ['r2', 'video']])
+      const [probes] = await pool.query<any[]>(`SELECT sub_meeting_id, asset_type FROM meeting_asset_probes ORDER BY sub_meeting_id, asset_type`)
+      expect(probes.map((r) => [r.sub_meeting_id, r.asset_type])).toEqual([['r1', 'ai_minutes'], ['r2', 'audio']])
+
+      // 回填只在补列那一次做：之后用户自己起名「转写_…」的普通录制不会被误标
+      await pool.query(
+        `INSERT INTO meetings (meeting_id, sub_meeting_id, subject, record_type, created_at, updated_at)
+         VALUES ('m1', 'r3', '转写_我自己起的名', 0, 1, 1)`,
+      )
+      await runMigrations(pool)
+      const [[r3]] = await pool.query<any[]>(`SELECT record_type FROM meetings WHERE sub_meeting_id = 'r3'`)
+      expect(Number(r3.record_type)).toBe(0)
+    } finally {
+      await cleanup()
+    }
+  })
+})

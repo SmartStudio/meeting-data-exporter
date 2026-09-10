@@ -70,6 +70,7 @@ function meeting(meetingId: string, over: Partial<Meeting> = {}): Meeting {
     meetingId,
     subMeetingId: '',
     meetingRecordId: `rec-${meetingId}`,
+    recordType: 0,
     meetingCode: '881-108-71',
     subject: `会议 ${meetingId}`,
     hostUserId: 'host-1',

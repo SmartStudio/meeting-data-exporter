@@ -142,6 +142,8 @@ interface RawCorpRecordMeeting {
   record_files?: RawRecordFile[]
   /** 会议创建者的企业成员 id。**空串是合法值**：设备账号发起的会议没有成员身份 */
   userid?: string
+  /** 见 domain/types.ts 的 RECORD_TYPE_TRANSCRIPT；文档没写的 3 = 转写记录 */
+  record_type?: number
 }
 
 interface RawListResponse<T> {
@@ -203,6 +205,8 @@ function toMeeting(r: RawCorpRecordMeeting): Meeting {
     meetingRecordId: r.meeting_record_id,
     meetingCode: r.meeting_code,
     subject: r.subject,
+    // 平台不给（或给了非数字）就按 0 云录制：只有 3（转写）会改变发现与目录的行为
+    recordType: typeof r.record_type === 'number' ? r.record_type : 0,
     hostUserId: r.userid,
     startTime: msToSec(r.media_start_time),
     endTime: meetingEndTime(r),

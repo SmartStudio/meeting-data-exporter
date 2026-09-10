@@ -1,5 +1,5 @@
 import { parseAssetId } from '../domain/assetid'
-import type { Asset, Meeting } from '../domain/types'
+import { isTranscriptRecord, type Asset, type Meeting } from '../domain/types'
 import type { AddressesApi } from '../tencent/addresses'
 import { serializeChapters, type SmartApi } from '../tencent/smart'
 import { extractAssets, type RawFileEntry, type SmartPresence } from './assets'
@@ -124,6 +124,10 @@ export function createCatalog(deps: CatalogDeps): Catalog {
     async listAssets(meeting) {
       const files = await deps.addressesApi.listByRecordId(meeting.meetingRecordId)
       const out: Asset[] = []
+      // 转写记录（record_type 3）：平台照样在 /v1/addresses 里给出 download_address
+      // 的 mp4 链接，但对象存储对它一律 404 NoSuchKey（2026-09-10 实测 105 条无一例外），
+      // 音频地址从未出现过。把这两个字段在这里抹掉，不让它们变成注定失败的资产。
+      const transcriptOnly = isTranscriptRecord(meeting.recordType)
 
       for (const file of files) {
         const allowDownload = file.allow_download ?? true
@@ -136,10 +140,10 @@ export function createCatalog(deps: CatalogDeps): Catalog {
             meeting.meetingRecordId,
             {
               record_file_id: file.record_file_id,
-              download_address: file.download_address,
-              download_address_file_type: file.download_address_file_type,
-              audio_address: file.audio_address,
-              audio_address_file_type: file.audio_address_file_type,
+              download_address: transcriptOnly ? undefined : file.download_address,
+              download_address_file_type: transcriptOnly ? undefined : file.download_address_file_type,
+              audio_address: transcriptOnly ? undefined : file.audio_address,
+              audio_address_file_type: transcriptOnly ? undefined : file.audio_address_file_type,
               meeting_summary: file.meeting_summary,
             },
             allowDownload,

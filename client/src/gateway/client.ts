@@ -86,8 +86,8 @@ export function createGatewayClient(
   }
 }
 
-interface RawMeeting { meeting_id: string; sub_meeting_id?: string; meeting_code?: string; subject?: string; host_user_id?: string; start_time?: number; end_time?: number }
+interface RawMeeting { meeting_id: string; sub_meeting_id?: string; meeting_code?: string; subject?: string; record_type?: number; host_user_id?: string; start_time?: number; end_time?: number }
 interface RawAsset { asset_id: string; asset_type: string; remote_id?: string; state?: number; allow_download?: boolean; file_type?: string | null; bytes_expected?: number | null }
 function toMeeting(r: RawMeeting): Meeting {
-  return { meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id ?? '', meetingCode: r.meeting_code ?? null, subject: r.subject ?? null, hostUserId: r.host_user_id ?? null, startTime: r.start_time ?? null, endTime: r.end_time ?? null }
+  return { meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id ?? '', meetingCode: r.meeting_code ?? null, subject: r.subject ?? null, recordType: r.record_type ?? null, hostUserId: r.host_user_id ?? null, startTime: r.start_time ?? null, endTime: r.end_time ?? null }
 }

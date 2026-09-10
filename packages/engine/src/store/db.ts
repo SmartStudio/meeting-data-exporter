@@ -11,8 +11,10 @@ import { dirname } from 'node:path'
  * v2：assets 的唯一键加入 file_type（M3.5）——腾讯对同一份录制会同时给出多种格式
  *     （txt/docx/pdf）且共享同一个 record_file_id，旧唯一键区分不了它们，三条记录
  *     折叠成一条；又因平台返回顺序不稳定，同一条命令重复执行会拿到不同格式的文件。
+ * v3：meetings 加 record_type（腾讯录制类型；3 = 转写记录，只有逐字稿与纪要，
+ *     见 domain/types.ts 的 RECORD_TYPE_TRANSCRIPT）。老库补列并按主题前缀回填。
  */
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 
 export function openDb(path: string): Database {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })  // 首次运行时 dbPath 父目录（如 <out>/.mde）尚不存在
@@ -28,6 +30,7 @@ function migrate(db: Database): void {
     CREATE TABLE IF NOT EXISTS meetings (
       meeting_id TEXT NOT NULL, sub_meeting_id TEXT NOT NULL DEFAULT '',
       meeting_code TEXT, subject TEXT, host_userid TEXT,
+      record_type INTEGER NOT NULL DEFAULT 0,
       start_time INTEGER, end_time INTEGER,
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
       PRIMARY KEY (meeting_id, sub_meeting_id)
@@ -65,7 +68,43 @@ function migrate(db: Database): void {
   `)
 
   upgrade(db)
+  upgradeToV3(db)
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
+}
+
+/**
+ * v2 → v3：meetings 补 record_type 列。判据同样看结构不看版本号。
+ *
+ * 回填：转写记录的主题是平台加的前缀 `转写_`（record_type 3 的唯一可见特征），
+ * 老库里这些行按前缀标成 3。同时清掉它们名下**注定失败**的历史痕迹——video 行
+ * 一律是 skipped/upstream_missing（对象存储 404），audio / chapters 从未出现过，
+ * 只留下空等到期的探测行。留着它们会让「资产 4/5」永远差一个。
+ */
+function upgradeToV3(db: Database): void {
+  const cols = db.query<{ name: string }, []>('PRAGMA table_info(meetings)').all()
+  if (cols.some((c) => c.name === 'record_type')) return
+  db.exec('BEGIN')
+  try {
+    db.exec(`
+      ALTER TABLE meetings ADD COLUMN record_type INTEGER NOT NULL DEFAULT 0;
+      UPDATE meetings SET record_type = 3 WHERE substr(subject, 1, 3) = '转写_';
+      DELETE FROM assets
+       WHERE asset_type IN ('video', 'audio', 'chapters')
+         AND status = 'skipped'
+         AND EXISTS (SELECT 1 FROM meetings m
+                      WHERE m.meeting_id = assets.meeting_id AND m.sub_meeting_id = assets.sub_meeting_id
+                        AND m.record_type = 3);
+      DELETE FROM asset_probes
+       WHERE asset_type IN ('video', 'audio', 'chapters')
+         AND EXISTS (SELECT 1 FROM meetings m
+                      WHERE m.meeting_id = asset_probes.meeting_id AND m.sub_meeting_id = asset_probes.sub_meeting_id
+                        AND m.record_type = 3);
+    `)
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
 }
 
 /**

@@ -31,6 +31,7 @@ const meeting: Meeting = {
   meetingId: 'm1',
   subMeetingId: '',
   meetingRecordId: 'rec1',
+  recordType: 0,
   meetingCode: '881',
   subject: '季度评审',
   hostUserId: 'tm-alice',

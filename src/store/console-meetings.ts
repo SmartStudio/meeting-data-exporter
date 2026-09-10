@@ -686,6 +686,8 @@ interface MeetingMetaColumns {
   sub_meeting_id: string
   meeting_code: string | null
   subject: string | null
+  /** 判定事实不读它，各处 SELECT 可以不带；缺省按 0（云录制） */
+  record_type?: number | null
   host_userid: string | null
   start_time: number | string | null
   end_time: number | string | null
@@ -960,6 +962,7 @@ function toDomainMeeting(r: MeetingMetaColumns): MeetingMeta {
     // `meetings` 表没有这一列，判定事实（`meetingFacts`）也不读它。
     // 与 `src/worker/archive.ts` 的 factsFor 同一裁定：填空串，不编一个 id。
     meetingRecordId: '',
+    recordType: r.record_type ?? 0,
     meetingCode: r.meeting_code ?? '',
     subject: r.subject ?? '',
     hostUserId: r.host_userid ?? '',

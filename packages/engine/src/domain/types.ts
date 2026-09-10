@@ -66,6 +66,26 @@ export const ASSET_WAIT_CAP_SEC: Record<AssetKey, number> = {
   ai_minutes: H48, chapters: H48,
 }
 
+/**
+ * 腾讯 `/v1/corp/records` 的 `record_type` 里**文档没写、线上实际返回**的取值：
+ * 转写记录。平台把一场开了实时转写的会议另拆一条 record（主题加前缀 `转写_`），
+ * 它只有逐字稿（transcript）与纪要（ai_minutes）两类产物——录像链接照给但对象
+ * 存储一律 404，音频与章节从未出现过（2026-09-10 实测 121 条）。
+ */
+export const RECORD_TYPE_TRANSCRIPT = 3
+
+const TRANSCRIPT_RECORD_KEYS: ReadonlySet<AssetKey> = new Set<AssetKey>(['transcript', 'ai_minutes'])
+
+/**
+ * 这种录制记录**可能产出**哪几类资产。发现层用它裁剪想要的类型：不裁的话转写记录
+ * 每一场都会建一条注定 404 的 video 任务、外加 audio / chapters 两条空等到期的探测。
+ * `recordType` 为 null / undefined（老网关没透出这个字段）按普通云录制处理。
+ */
+export function expectedAssetKeys(recordType: number | null | undefined, wanted: readonly AssetKey[]): AssetKey[] {
+  if (recordType !== RECORD_TYPE_TRANSCRIPT) return [...wanted]
+  return wanted.filter((k) => TRANSCRIPT_RECORD_KEYS.has(k))
+}
+
 export class UnknownAssetKeyError extends Error {
   constructor(readonly key: string) {
     super(`unknown asset key: ${key}. valid keys: ${ALL_ASSET_KEYS.join(',')} | all`)
@@ -137,6 +157,11 @@ export interface Meeting {
   subMeetingId: string
   meetingCode: string | null
   subject: string | null
+  /**
+   * 腾讯 `record_type`（见 RECORD_TYPE_TRANSCRIPT）。**可缺省**：老网关的 wire 格式
+   * 没有这个字段，缺省与 null 都按普通云录制处理——只有 3（转写）会改变发现的行为。
+   */
+  recordType?: number | null
   hostUserId: string | null
   startTime: number | null
   endTime: number | null

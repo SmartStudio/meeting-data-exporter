@@ -72,6 +72,7 @@ const cached = (o: Partial<Meeting> = {}): Meeting => {
     meetingId: 'm-1',
     subMeetingId: meetingRecordId,
     meetingRecordId,
+    recordType: 0,
     meetingCode: '88123456',
     subject: '评审',
     hostUserId: 'tm-alice',
@@ -104,6 +105,17 @@ test('毫秒时间戳被归一为秒', async () => {
   const api = createRecordsApi(client, 'admin', memCache())
   const [m] = await api.listMeetings({ kind: 'range', from: 0, to: 1000 }, NOW)
   expect(m!.startTime).toBe(1767225600)
+})
+
+test('record_type 原样透出为 recordType；平台没给时按 0（云录制）', async () => {
+  const { client } = stubClient([onePage([
+    { ...corpMeeting, meeting_record_id: 'rec-zx', subject: '转写_评审', record_type: 3 },
+    { ...corpMeeting, meeting_record_id: 'rec-plain', record_type: undefined },
+  ])])
+  const api = createRecordsApi(client, 'admin', memCache())
+  const ms = await api.listMeetings({ kind: 'range', from: 0, to: 1000 }, NOW)
+  expect(ms.find((m) => m.meetingRecordId === 'rec-zx')!.recordType).toBe(3)
+  expect(ms.find((m) => m.meetingRecordId === 'rec-plain')!.recordType).toBe(0)
 })
 
 test('state 数字映射为语义值', async () => {

@@ -66,12 +66,12 @@ export function createMysqlStore(pool: Pool): MysqlStore {
   return {
     async upsertMeeting(m, now) {
       await pool.query(
-        `INSERT INTO meetings (meeting_id,sub_meeting_id,meeting_code,subject,host_userid,start_time,end_time,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?) AS new
+        `INSERT INTO meetings (meeting_id,sub_meeting_id,meeting_code,subject,record_type,host_userid,start_time,end_time,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?) AS new
          ON DUPLICATE KEY UPDATE
-           meeting_code=new.meeting_code, subject=new.subject, host_userid=new.host_userid,
+           meeting_code=new.meeting_code, subject=new.subject, record_type=new.record_type, host_userid=new.host_userid,
            start_time=new.start_time, end_time=new.end_time, updated_at=new.updated_at`,
-        [m.meetingId, m.subMeetingId, m.meetingCode, m.subject, m.hostUserId, m.startTime, m.endTime, now, now],
+        [m.meetingId, m.subMeetingId, m.meetingCode, m.subject, m.recordType ?? 0, m.hostUserId, m.startTime, m.endTime, now, now],
       )
     },
 
@@ -370,7 +370,7 @@ export function createMysqlStore(pool: Pool): MysqlStore {
     // 与 SQLite 版同一条语句、同一组列。
     async getMeeting(meetingId, subMeetingId) {
       const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT meeting_id, sub_meeting_id, meeting_code, subject, host_userid, start_time, end_time
+        `SELECT meeting_id, sub_meeting_id, meeting_code, subject, record_type, host_userid, start_time, end_time
            FROM meetings WHERE meeting_id=? AND sub_meeting_id=?`,
         [meetingId, subMeetingId],
       )
@@ -384,6 +384,7 @@ export function createMysqlStore(pool: Pool): MysqlStore {
         subMeetingId: r.sub_meeting_id as string,
         meetingCode: (r.meeting_code ?? null) as string | null,
         subject: (r.subject ?? null) as string | null,
+        recordType: Number(r.record_type ?? 0),
         hostUserId: (r.host_userid ?? null) as string | null,
         startTime: r.start_time === null ? null : Number(r.start_time),
         endTime: r.end_time === null ? null : Number(r.end_time),

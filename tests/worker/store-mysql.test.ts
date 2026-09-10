@@ -7,7 +7,7 @@ import { withTestDb } from '../helpers/testdb'
 import { createMysqlStore } from '../../src/worker/store-mysql'
 
 const M: Meeting = {
-  meetingId: 'm1', subMeetingId: '', meetingCode: '881', subject: '周会',
+  meetingId: 'm1', subMeetingId: '', meetingCode: '881', subject: '周会', recordType: 0,
   hostUserId: 'u1', startTime: 1000, endTime: 2000,
 }
 
@@ -654,11 +654,21 @@ describe('createMysqlStore', () => {
         hostUserId: null, startTime: null, endTime: null,
       }, 100)
       expect(await s.getMeeting('m9', '')).toEqual({
-        meetingId: 'm9', subMeetingId: '', meetingCode: null, subject: null,
+        meetingId: 'm9', subMeetingId: '', meetingCode: null, subject: null, recordType: 0,
         hostUserId: null, startTime: null, endTime: null,
       })
       await s.upsertMeeting(M, 100)
       expect(typeof (await s.getMeeting('m1', ''))!.startTime).toBe('number')
+    })
+  })
+
+  test('upsertMeeting 存 recordType，getMeeting 取回；重复 upsert 会更新它', async () => {
+    await withDb(async (pool) => {
+      const s = createMysqlStore(pool)
+      await s.upsertMeeting({ ...M, subMeetingId: 'zx', subject: '转写_周会', recordType: 3 }, 100)
+      expect((await s.getMeeting('m1', 'zx'))!.recordType).toBe(3)
+      await s.upsertMeeting({ ...M, subMeetingId: 'zx', subject: '转写_周会', recordType: 0 }, 200)
+      expect((await s.getMeeting('m1', 'zx'))!.recordType).toBe(0)
     })
   })
 

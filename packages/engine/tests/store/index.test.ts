@@ -4,7 +4,7 @@ import { createStore } from '../../src/store'
 import { meetingPathKey } from '../../src/domain/types'
 
 function fresh() { return createStore(openDb(':memory:')) }
-const M = { meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', hostUserId: 'h', startTime: 100, endTime: 200 }
+const M = { meetingId: 'm1', subMeetingId: '', meetingCode: '88', subject: 's', recordType: 0, hostUserId: 'h', startTime: 100, endTime: 200 }
 
 test('upsertAsset 去重：同键第二次不新增行、更新字段', async () => {
   const s = fresh(); await s.upsertMeeting(M, 1)
@@ -387,4 +387,13 @@ test('两个写法都按精确的 (meeting_id, sub_meeting_id) 筛，不串场�
   await s.markDead(y.id, 'e', 110)
   expect(await s.retryMeetingAssets({ meetingId: 'm1', subMeetingId: 's1' }, 200)).toBe(1)
   expect((await s.assetsForMeeting('m1', 's2'))[0]!.status).toBe('dead')
+})
+
+test('upsertMeeting 存 recordType，getMeeting 原样取回；不带时按 0（云录制）', async () => {
+  const s = fresh()
+  await s.upsertMeeting({ ...M, subMeetingId: 'zx', subject: '转写_s', recordType: 3 }, 1)
+  const { recordType: _omit, ...withoutType } = M
+  await s.upsertMeeting({ ...withoutType, subMeetingId: 'plain' }, 1)
+  expect((await s.getMeeting('m1', 'zx'))!.recordType).toBe(3)
+  expect((await s.getMeeting('m1', 'plain'))!.recordType).toBe(0)
 })

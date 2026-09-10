@@ -70,3 +70,37 @@ test('同类型多段录制 → 每段各建一个任务（不塌缩为一个）
   await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video'], 1000)
   expect((await store.counts()).pending).toBe(2)   // 两段各一任务，不塌缩
 })
+
+/**
+ * 转写记录（腾讯 record_type 3）：平台照样在清单里给出 video（链接对象存储 404），
+ * 音频与章节从未出现。发现层按录制类型裁剪：video 不建任务，audio / chapters
+ * 不建探测——否则每场转写记录都留下一条 skipped 的 video 与两条空等到期的探测。
+ */
+test('转写记录只要逐字稿与纪要：清单里的 video 不建任务，audio/chapters 不建探测', async () => {
+  const store = createStore(openDb(':memory:'))
+  const gw: AssetSource = {
+    listMeetings: async () => ({ meetings: [
+      { meetingId: 'm1', subMeetingId: 'zx', meetingCode: '88', subject: '转写_s', recordType: 3, hostUserId: 'h', startTime: 100, endTime: 200 },
+    ], nextCursor: null }),
+    listAssets: async () => [
+      { assetId: 'm1:rf1:video:0', assetType: 'video', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 1, fileType: 'mp4' },
+      { assetId: 'm1:rf1:meeting_summary:txt', assetType: 'meeting_summary', remoteId: 'rf1', state: 3, allowDownload: true, bytesExpected: 1, fileType: 'txt' },
+    ],
+    getDownloadUrl: async () => ({ url: '', expiresAt: 0, fileType: null, bytesExpected: null }),
+  }
+  const r = await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'audio', 'transcript', 'ai_minutes', 'chapters'], 1000)
+  expect(r.tasks).toBe(1)
+  const row = (await store.claimNext(2000, 300))!
+  expect(row.asset_type).toBe('meeting_summary')            // 只有逐字稿建了任务
+  expect(await store.claimNext(2000, 300)).toBeNull()        // video 没建
+  const probes = (await store.dueProbes(1000)).map((p) => p.asset_type)
+  expect(probes).toEqual(['ai_minutes'])                     // 纪要照常探测，audio/chapters 没有
+  expect((await store.getMeeting('m1', 'zx'))!.recordType).toBe(3)
+})
+
+test('recordType 缺省（老网关）按普通云录制：五类照旧', async () => {
+  const store = createStore(openDb(':memory:'))
+  const gw = fakeGw({ m1: [] })
+  await discover({ gw, store }, { kind: 'range', from: 1, to: 2 }, ['video', 'audio', 'transcript', 'ai_minutes', 'chapters'], 1000)
+  expect((await store.dueProbes(1000)).length).toBe(5)
+})

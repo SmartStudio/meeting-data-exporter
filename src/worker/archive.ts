@@ -56,6 +56,7 @@ function factsFor(meeting: Meeting, archived: boolean): MeetingFacts {
       meetingId: meeting.meetingId,
       subMeetingId: meeting.subMeetingId,
       meetingRecordId: '',
+      recordType: meeting.recordType ?? 0,
       meetingCode: meeting.meetingCode ?? '',
       subject: meeting.subject ?? '',
       hostUserId: meeting.hostUserId ?? '',

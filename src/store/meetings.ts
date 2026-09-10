@@ -65,6 +65,7 @@ interface MeetingCacheRow extends RowDataPacket {
   sub_meeting_id: string
   meeting_code: string
   subject: string
+  record_type: number
   host_user_id: string
   start_time: number
   end_time: number
@@ -78,11 +79,11 @@ function toRecordState(v: string): RecordState {
 }
 
 const SELECT_COLUMNS =
-  `meeting_record_id, meeting_id, sub_meeting_id, meeting_code, subject,
+  `meeting_record_id, meeting_id, sub_meeting_id, meeting_code, subject, record_type,
    host_user_id, start_time, end_time, state`
 
 const INSERT_COLUMNS =
-  `(meeting_record_id, meeting_id, sub_meeting_id, meeting_code, subject,
+  `(meeting_record_id, meeting_id, sub_meeting_id, meeting_code, subject, record_type,
     host_user_id, start_time, end_time, state, updated_at)`
 
 const ON_DUPLICATE =
@@ -91,6 +92,7 @@ const ON_DUPLICATE =
      sub_meeting_id = VALUES(sub_meeting_id),
      meeting_code = VALUES(meeting_code),
      subject = VALUES(subject),
+     record_type = VALUES(record_type),
      host_user_id = VALUES(host_user_id),
      start_time = VALUES(start_time),
      end_time = VALUES(end_time),
@@ -100,7 +102,7 @@ const ON_DUPLICATE =
 /**
  * 一条语句最多写多少行。
  *
- * 每行 10 个占位符，200 行 = 2000 个，离 MySQL 的 65535 上限还很远；分块是为了
+ * 每行 11 个占位符，200 行 = 2200 个，离 MySQL 的 65535 上限还很远；分块是为了
  * 别把单条语句撑到 max_allowed_packet 的量级（subject 是 VARCHAR(512)）。
  */
 const UPSERT_CHUNK = 200
@@ -112,6 +114,7 @@ function rowValues(m: Meeting, now: number): (string | number)[] {
     m.subMeetingId,
     m.meetingCode,
     m.subject,
+    m.recordType,
     m.hostUserId,
     m.startTime,
     m.endTime,
@@ -127,6 +130,7 @@ function toMeeting(r: MeetingCacheRow): Meeting {
     subMeetingId: r.sub_meeting_id,
     meetingCode: r.meeting_code,
     subject: r.subject,
+    recordType: Number(r.record_type),
     hostUserId: r.host_user_id,
     startTime: Number(r.start_time),
     endTime: Number(r.end_time),
@@ -181,7 +185,7 @@ export function createMeetingCacheStore(pool: Pool): MeetingCacheStore {
 
       for (let i = 0; i < list.length; i += UPSERT_CHUNK) {
         const chunk = list.slice(i, i + UPSERT_CHUNK)
-        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
+        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
         await pool.query(
           `INSERT INTO meeting_cache ${INSERT_COLUMNS}
            VALUES ${placeholders}

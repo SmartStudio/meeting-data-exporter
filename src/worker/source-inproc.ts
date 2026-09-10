@@ -31,6 +31,7 @@ export function createInProcSource(deps: InProcSourceDeps): AssetSource {
       subMeetingId: m.subMeetingId,
       meetingCode: m.meetingCode,
       subject: m.subject,
+      recordType: m.recordType,
       hostUserId: m.hostUserId,
       startTime: m.startTime,
       endTime: m.endTime,
