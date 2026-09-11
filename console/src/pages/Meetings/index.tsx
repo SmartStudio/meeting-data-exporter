@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import type { OverrideKind, ServiceProgram } from '@/api/admin/grants'
 import { grantMeeting, putOverride, revokeGrant, revokeOverride } from '@/api/admin/grants'
 import type { AdminMeeting } from '@/api/admin/meetings'
@@ -20,6 +20,7 @@ import { GrantPicker } from './GrantPicker'
 import { MeetingDetail } from './MeetingDetail'
 import { emptyKind, MeetingTable } from './MeetingTable'
 import { OverrideSheet } from './OverrideSheet'
+import { parseQuery, serializeQuery } from './queryUrl'
 import { defOf, TriageBar, TRIAGE_DEFS, type TriageId } from './TriageBar'
 import { DEFAULT_QUERY, NO_PROGRAMS, NO_ROWS, useMeetingsData, type MeetingsQuery } from './useMeetings'
 import { batchSummary, tally, useWrites, wkey } from './writes'
@@ -95,9 +96,32 @@ function filterKey(q: MeetingsQuery): string {
 
 export default function MeetingsPage() {
   const navigate = useNavigate()
+  const location = useLocation()
 
-  const [query, setQuery] = useState<MeetingsQuery>(DEFAULT_QUERY)
-  const [searchText, setSearchText] = useState('')
+  // 查询条件（页码、筛选、搜索词）**住在 URL 里**，不住在 state 里：跳去预览页再
+  // 回来、刷新、后退，落的都是同一页。换算规则与理由见 `queryUrl.ts`。
+  // `query` 只在查询串**内容**变化时换新对象——`useMeetingsData` 拿它当重取依据，
+  // 同一个地址被 navigate 两次不该多取一次列表。
+  const [params, setParams] = useSearchParams()
+  const paramsKey = params.toString()
+  const query = useMemo(() => parseQuery(new URLSearchParams(paramsKey)), [paramsKey])
+  const queryRef = useRef(query)
+  queryRef.current = query
+  /**
+   * 与 `useState` 的 setter 同形（接对象或函数），但写的是地址栏。用 `replace`：
+   * 翻页、改筛选是同一页内的动作，不该在历史里堆出一串 `/meetings?page=2`、
+   * `page=3`……让后退键要按七次才回得到上一个页面。
+   */
+  const setQuery = useCallback(
+    (next: MeetingsQuery | ((q: MeetingsQuery) => MeetingsQuery)) => {
+      const q = typeof next === 'function' ? next(queryRef.current) : next
+      const s = serializeQuery(q)
+      if (s.toString() === serializeQuery(queryRef.current).toString()) return
+      setParams(s, { replace: true })
+    },
+    [setParams],
+  )
+  const [searchText, setSearchText] = useState(() => query.search)
   const [nonce, setNonce] = useState(0)
 
   // 搜索防抖：不防的话每敲一个字符就是一次请求，而后端那条 SQL 是 LIKE 全表。
@@ -410,6 +434,19 @@ export default function MeetingsPage() {
     [rows],
   )
 
+  /**
+   * 进预览页时把**这一页的地址**（含查询串）带在 `location.state.from` 上，
+   * 预览页的「返回会议列表」回的就是它——第 7 页进去，第 7 页出来。
+   */
+  const openPreview = useCallback(
+    (id: string) => {
+      navigate(`/preview/${encodeURIComponent(id)}`, {
+        state: { from: `${location.pathname}${location.search}` },
+      })
+    },
+    [navigate, location.pathname, location.search],
+  )
+
   /* ── 筛选的操作 ──────────────────────────────────────────── */
 
   const patchQuery = useCallback((patch: Partial<MeetingsQuery>) => {
@@ -493,7 +530,7 @@ export default function MeetingsPage() {
           extend(cursorMeeting.id)
           break
         case 'preview':
-          navigate(`/preview/${encodeURIComponent(cursorMeeting.id)}`)
+          openPreview(cursorMeeting.id)
           break
       }
     },
@@ -510,7 +547,7 @@ export default function MeetingsPage() {
       toggleStage,
       openGrant,
       extend,
-      navigate,
+      openPreview,
     ],
   )
 
@@ -670,7 +707,7 @@ export default function MeetingsPage() {
         onClearFilters={clearFilters}
         onGoRules={() => navigate('/rules')}
         onGoJobs={() => navigate('/jobs')}
-        onOpenTitle={(id) => navigate(`/preview/${encodeURIComponent(id)}`)}
+        onOpenTitle={openPreview}
         onOpenDetail={setDetailId}
         onToggleStage={toggleStage}
         onExtend={extend}

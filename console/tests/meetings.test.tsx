@@ -2075,3 +2075,70 @@ describe('操作历史 · 连续重复怎么折（纯函数）', () => {
     expect(historyAtText(g, nextYear)).toBe('2026-08-31 14:18–14:25')
   })
 })
+
+/* ── 查询条件住在 URL 里（回归：从预览页回来总是第一页） ─────────── */
+
+describe('查询条件住在 URL 里 · 从预览页回来还是那一页（回归）', () => {
+  /** 与 `renderPage` 同形，但把 router 交出来，好断言地址栏 */
+  function renderAt(entry: string) {
+    const router = createMemoryRouter(
+      [
+        { path: '/meetings', element: <MeetingsPage /> },
+        { path: '/preview/:id', element: <h1>内容预览占位</h1> },
+      ],
+      { initialEntries: [entry] },
+    )
+    render(
+      <SystemStateProvider initialState="ok">
+        <RouterProvider router={router} />
+      </SystemStateProvider>,
+    )
+    return router
+  }
+  const twelve = () =>
+    Array.from({ length: 12 }, (_, i) => meeting({ id: `x${i}`, meetingId: `x${i}`, title: `会议 ${i}` }))
+
+  test('翻页写进地址栏；点标题进预览页时把这一页的地址带在 state.from 上', async () => {
+    handler = defaultHandler(twelve())
+    const user = userEvent.setup()
+    const router = renderAt('/meetings')
+    await waitFor(() => expect(screen.getByTestId('row-x0')).toBeInTheDocument())
+    expect(router.state.location.search).toBe('')
+
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    await waitFor(() => expect(screen.getByTestId('row-x10')).toBeInTheDocument())
+    expect(router.state.location.search).toBe('?page=2')
+
+    await user.click(within(screen.getByTestId('row-x10')).getByRole('button', { name: '会议 10' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/preview/x10'))
+    expect(router.state.location.state).toEqual({ from: '/meetings?page=2' })
+  })
+
+  test('带着 ?page=2 打开就是第 2 页 —— 这就是返回链接回到的那一页', async () => {
+    handler = defaultHandler(twelve())
+    renderAt('/meetings?page=2')
+    await waitFor(() => expect(screen.getByTestId('row-x10')).toBeInTheDocument())
+    expect(lastQuery('/api/v1/admin/meetings')?.get('offset')).toBe('10')
+    expect(screen.queryByTestId('row-x0')).not.toBeInTheDocument()
+  })
+
+  test('筛选与搜索也进地址栏，且换筛选回到第 1 页', async () => {
+    handler = defaultHandler(twelve())
+    const user = userEvent.setup()
+    const router = renderAt('/meetings?page=2')
+    await waitFor(() => expect(screen.getByTestId('row-x10')).toBeInTheDocument())
+
+    await user.click(screen.getByTestId('triage-ungranted'))
+    await waitFor(() => expect(router.state.location.search).toBe('?triage=awaitingGrant'))
+    expect(lastQuery('/api/v1/admin/meetings')?.get('triage')).toBe('awaitingGrant')
+    expect(lastQuery('/api/v1/admin/meetings')?.get('offset')).toBe('0')
+  })
+
+  test('地址里认不出的值当没有：?page=abc&triage=whatever 是默认查询，不报错', async () => {
+    handler = defaultHandler(twelve())
+    renderAt('/meetings?page=abc&triage=whatever')
+    await waitFor(() => expect(screen.getByTestId('row-x0')).toBeInTheDocument())
+    expect(lastQuery('/api/v1/admin/meetings')?.get('offset')).toBe('0')
+    expect(lastQuery('/api/v1/admin/meetings')?.has('triage')).toBe(false)
+  })
+})

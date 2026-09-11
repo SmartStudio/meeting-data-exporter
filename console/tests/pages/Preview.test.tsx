@@ -5,7 +5,7 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
-import PreviewPage from '../../src/pages/Preview'
+import PreviewPage, { backTarget } from '../../src/pages/Preview'
 
 /**
  * 内容预览页（spec §4.4 · §2）。
@@ -1144,5 +1144,44 @@ describe('只读账号（spec §2：看内容是它该有的权限）', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: '产品周会' })).toBeInTheDocument())
     // 三个 tab 都点得动：它们是读
     for (const b of screen.getAllByRole('tab')) expect(b).toBeEnabled()
+  })
+})
+
+/* ── 返回链接回到来时的那一页（回归：总是回到第一页） ─────────────── */
+
+describe('返回链接回到来时的那一页（回归）', () => {
+  function renderWithState(state: unknown) {
+    const router = createMemoryRouter(
+      [
+        { path: '/preview/:id', element: <PreviewPage /> },
+        { path: '/meetings', element: <div>会议记录页</div> },
+      ],
+      { initialEntries: [{ pathname: '/preview/m-1', state }] },
+    )
+    return render(<RouterProvider router={router} />)
+  }
+
+  test('会议记录页带来的 from（含页码与筛选）就是返回链接的目标', () => {
+    stubHappyPath()
+    renderWithState({ from: '/meetings?page=7&triage=awaitingGrant' })
+    expect(screen.getByRole('link', { name: '返回会议列表' })).toHaveAttribute(
+      'href',
+      '/meetings?page=7&triage=awaitingGrant',
+    )
+  })
+
+  test('没有 from（审计页链接、直接贴地址）就回列表默认页', () => {
+    stubHappyPath()
+    renderWithState(null)
+    expect(screen.getByRole('link', { name: '返回会议列表' })).toHaveAttribute('href', '/meetings')
+  })
+
+  test('from 不是 /meetings 开头的一律不认 —— 返回链接不是跳去任意地址的口子', () => {
+    stubHappyPath()
+    renderWithState({ from: '/audit?x=1' })
+    expect(screen.getByRole('link', { name: '返回会议列表' })).toHaveAttribute('href', '/meetings')
+    expect(backTarget({ from: 'https://evil.example/' })).toBe('/meetings')
+    expect(backTarget({ from: '/meetingsx' })).toBe('/meetings')
+    expect(backTarget({ from: '/meetings' })).toBe('/meetings')
   })
 })

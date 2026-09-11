@@ -1,6 +1,6 @@
 import type { CSSProperties, KeyboardEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import type { ChaptersView, ContentIndex } from '@/api/admin/content'
 import {
   CUES_LIMIT,
@@ -60,8 +60,20 @@ import styles from './Preview.module.css'
  * 那一块自己说"取失败了"；授权取不到时显示"取失败"，**不显示成"没有授权"**——
  * 后者是一个我们没有依据的结论。
  */
+/**
+ * 「返回会议列表」回到**来时的那一页**。会议记录页跳过来时把自己的地址（含
+ * `?page=7&triage=…` 查询串）放在 `location.state.from`；没有它（从审计页的链接
+ * 进来、直接贴地址打开）就回列表默认页。只认 `/meetings` 开头的地址——state 是
+ * 可以被人伪造的，返回链接不能变成一个跳去任意地址的口子。
+ */
+export function backTarget(state: unknown): string {
+  const from = (state as { from?: unknown } | null)?.from
+  return typeof from === 'string' && /^\/meetings(\?|$)/.test(from) ? from : '/meetings'
+}
+
 export default function PreviewPage() {
   const { id = '' } = useParams()
+  const back = backTarget(useLocation().state)
 
   const index = useResource(() => fetchContentIndex(id), [id])
   // 转写分段是**跨三个 tab**的：播放位置区的标记与字幕、时间轴、转写高亮都吃它。
@@ -79,7 +91,7 @@ export default function PreviewPage() {
        回列表，而那时 `Body` 整个不渲染。 */
     <PageShell title="内容预览">
       <p className={styles.backLine}>
-        <Link to="/meetings" className={styles.back}>
+        <Link to={back} className={styles.back}>
           返回会议列表
         </Link>
       </p>
