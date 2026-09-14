@@ -6,12 +6,16 @@
 .git
 .gitignore
 .superpowers
+.claude
+.playwright-mcp
 
-node_modules
-dist
-build
+# 任意层级的依赖与构建产物都在容器里重新生成（console/node_modules 里有 playwright，
+# 光它一个就是几百 MB；pattern 不带 **/ 只匹配根目录那一个）
+**/node_modules
+**/dist
+**/build
 
-tests
+**/tests
 docs
 
 *.md

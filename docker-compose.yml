@@ -1,0 +1,120 @@
+# 一条命令起整套服务：MySQL + 网关（含控制台）+ 调度器。
+#
+#   cp .env.example .env && 编辑 .env        # 至少填腾讯凭据、JWT_SECRET、两个目录
+#   docker compose up -d --build
+#   docker compose exec gateway bun scripts/preflight.ts
+#   docker compose exec gateway bun scripts/admin-bootstrap.ts --username admin --password '<密码>'
+#
+# 配置只有一处：仓库根目录的 .env。它同时被两边读——
+#   · Compose 自己读它做 ${...} 插值（下面的端口、宿主机目录、MySQL 口令）
+#   · env_file 把它整份交给容器（腾讯/企微凭据、JWT_SECRET 等，见 .env.example）
+# 容器内路径类的变量（MDE_ARCHIVE_ROOT / MDE_NAS_ROOT / MDE_CONSOLE_DIST / PORT）
+# 在 environment 里被固定覆盖：.env 里那两个目录写的是**宿主机**路径，会被挂进容器。
+#
+# 外部依赖（都在 .env 里改，不用动本文件）：
+#   MDE_ARCHIVE_ROOT   宿主机上的本地归档目录  → 容器内 /data/archive   （必填）
+#   MDE_NAS_ROOT       宿主机上的 NAS 挂载点    → 容器内 /data/nas       （必填）
+#   DATABASE_URL       留空 = 用下面自带的 mysql；填了 = 用外部库（RDS 等），
+#                      此时可 `docker compose up -d --no-deps gateway scheduler` 不起自带库
+#   MYSQL_DATA_DIR     自带库的数据目录，默认走 Docker 命名卷 mde-mysql-data
+#   MDE_GATEWAY_PORT   网关对外端口，默认 3000
+#   MYSQL_HOST_PORT    自带库映射到宿主机 127.0.0.1 的端口，默认 33306（避开本机已有的 3306）
+#   MDE_UID / MDE_GID  网关与调度器的运行 uid/gid，默认 1000:1000；两个目录必须对它可写
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: meeting-export-gateway:local
+  # .env 放在仓库外（例如 /etc/meeting-export-gateway/.env）时：
+  #   docker compose --env-file /etc/meeting-export-gateway/.env up -d
+  # 并在那个文件里写 MDE_ENV_FILE=/etc/meeting-export-gateway/.env（前者管插值，后者管容器）
+  env_file: ${MDE_ENV_FILE:-.env}
+  restart: unless-stopped
+  # 归档根目录要真的可写（worker 启动时会写探针文件）：Linux 宿主机上把目录
+  # chown 给这个 uid，或把 MDE_UID/MDE_GID 改成目录属主。
+  user: "${MDE_UID:-1000}:${MDE_GID:-1000}"
+  volumes:
+    - ${MDE_ARCHIVE_ROOT:?在 .env 里设置 MDE_ARCHIVE_ROOT（宿主机本地归档目录，必须已存在）}:/data/archive
+    - ${MDE_NAS_ROOT:?在 .env 里设置 MDE_NAS_ROOT（宿主机上的 NAS 挂载点，必须已存在）}:/data/nas
+  depends_on:
+    mysql:
+      condition: service_healthy
+
+x-app-env: &app-env
+  # 三个进程共用同一份 .env，但路径必须换成容器里的挂载点
+  MDE_ARCHIVE_ROOT: /data/archive
+  MDE_NAS_ROOT: /data/nas
+  MDE_CONSOLE_DIST: /app/console/dist
+  # 留空走自带库；密码里含 @ / : / % 等字符时要按 URL 规则转义（%40 等）
+  DATABASE_URL: ${DATABASE_URL:-mysql://mde:${MYSQL_PASSWORD:-mde}@mysql:3306/meeting_gateway?charset=utf8mb4}
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    # utf8mb4 必须在服务端默认就设好：入口脚本建 MYSQL_DATABASE 用的是服务端默认字符集，
+    # 没这两个参数建出来的是 3 字节 utf8，会议主题里的 emoji 写入即报错（deploy.md §2.2）。
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: meeting_gateway
+      MYSQL_USER: mde
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mde}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-mde-root}
+    volumes:
+      - ${MYSQL_DATA_DIR:-mde-mysql-data}:/var/lib/mysql
+    ports:
+      # 只绑回环：给本机跑 scripts/、用客户端看库用，不对外
+      - "127.0.0.1:${MYSQL_HOST_PORT:-33306}:3306"
+    healthcheck:
+      # 初始化阶段临时实例只听 socket 不听 TCP，用 TCP ping 能把"还在建库"和"已就绪"分开
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+
+  gateway:
+    <<: *app
+    command: ["bun", "src/index.ts"]
+    environment:
+      <<: *app-env
+      PORT: 3000
+      HOST: 0.0.0.0
+    ports:
+      - "${MDE_GATEWAY_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # 调度器只能有一份（src/worker/scheduler.ts 文件头）：两份会同时往同一个 NAS 目录
+  # 搬同一批文件、同时执行不可逆删除。不要 --scale scheduler=2。
+  scheduler:
+    <<: *app
+    command: ["bun", "src/worker/scheduler.ts"]
+    environment:
+      <<: *app-env
+    healthcheck:
+      # 没有 HTTP 面，只看进程还在不在
+      test: ["CMD", "pgrep", "-f", "src/worker/scheduler.ts"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # 一次性 worker：人工补跑一段停机窗口，不随 up 启动。
+  #   docker compose run --rm worker --from 2026-09-01T00:00:00+08:00 --to 2026-09-02T00:00:00+08:00
+  worker:
+    <<: *app
+    profiles: ["tools"]
+    restart: "no"
+    entrypoint: ["bun", "src/worker/index.ts"]
+    environment:
+      <<: *app-env
+
+volumes:
+  mde-mysql-data:

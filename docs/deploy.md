@@ -423,6 +423,41 @@ VALUES
    出方向需要放行到 `api.meeting.qq.com`（443）、`qyapi.weixin.qq.com`
    （443）、以及 RDS 实例地址（3306）的访问。
 
+### 8.1 单机整套启动：Docker Compose
+
+不走 ACR / 反向代理拆分那一套、只想在一台机器上把 MySQL + 网关 + 调度器一起
+拉起来时，用仓库根目录的 `docker-compose.yml`：
+
+```bash
+cp .env.example .env            # 填腾讯凭据、JWT_SECRET、MDE_ARCHIVE_ROOT、MDE_NAS_ROOT
+docker compose up -d --build
+docker compose exec gateway bun scripts/preflight.ts
+docker compose exec gateway bun scripts/admin-bootstrap.ts --username admin --password '<密码>'
+```
+
+三个容器：`mysql`（8.0，服务端默认 utf8mb4）、`gateway`（网关 + 控制台静态页，
+镜像构建时顺手 `npm run build` 了 console/）、`scheduler`（常驻调度器，**只能一份**）。
+一次性 worker 不随 `up` 启动，补跑时用 `docker compose run --rm worker --from … --to …`。
+
+配置只有 `.env` 一处，与非容器部署共用同一份变量；容器化多出来的几项在
+`.env.example` 末尾「Docker Compose」一段。要点：
+
+- **两个目录**：`MDE_ARCHIVE_ROOT` / `MDE_NAS_ROOT` 在 `.env` 里写宿主机路径，
+  Compose 把它们挂到容器内的 `/data/archive` 与 `/data/nas`。目录必须已存在，且对
+  容器运行 uid（`MDE_UID`，默认 1000）可写——归档根目录启动时要写探针文件。
+- **数据库**：`DATABASE_URL` 留空就用自带的 `mysql` 服务（数据在命名卷
+  `mde-mysql-data`，或 `MYSQL_DATA_DIR` 指定的宿主机目录）；填了就用外部库，
+  这时用 `docker compose up -d --no-deps gateway scheduler` 不起自带库。注意容器里的
+  `localhost` 不是宿主机，本机的库要写 `host.docker.internal`。
+- **端口**：网关映射到 `MDE_GATEWAY_PORT`（默认 3000）；自带库只绑
+  `127.0.0.1:${MYSQL_HOST_PORT}`（默认 33306）。前面仍然要按第 5 步挂反向代理做
+  HTTPS，`TRUSTED_PROXY_HOPS` 按实际层数填。
+- **`.env` 放仓库外**：`docker compose --env-file /etc/meeting-export-gateway/.env up -d`，
+  并在该文件里写 `MDE_ENV_FILE=/etc/meeting-export-gateway/.env`（前者管 Compose
+  插值，后者管交给容器的那一份）。
+
+网关与调度器启动时都会跑迁移，靠 MySQL 的 `GET_LOCK` 互斥，同时起没有问题。
+
 ---
 
 ## 9. preflight 自检脚本使用方法
