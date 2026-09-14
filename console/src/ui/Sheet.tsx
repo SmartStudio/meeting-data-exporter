@@ -44,6 +44,7 @@ export function Sheet(props: SheetProps) {
       role="dialog"
       modal
       scrim
+      portal
       label={title ? undefined : label}
       labelledBy={title ? titleId : undefined}
       initialFocusRef={initialFocusRef}

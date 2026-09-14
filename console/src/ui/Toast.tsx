@@ -39,6 +39,7 @@ export function Toast(props: ToastProps) {
       onClose={onClose}
       role="status"
       modal={false}
+      portal
       autoFocus={false}
       restoreFocus={false}
       trapFocus={false}

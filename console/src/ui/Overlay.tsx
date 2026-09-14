@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef } from 'react'
+import { createContext, useContext, useEffect, useId, useRef } from 'react'
 import type { CSSProperties, ReactNode, RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import styles from './Overlay.module.css'
 
 /**
@@ -21,6 +22,13 @@ import styles from './Overlay.module.css'
  *
  * 3. **Esc 关闭要就近。** 多层浮层时只关最上面那层，用一个模块级栈判断
  *    「我是不是当前最上面那个」。
+ *
+ * 4. **固定定位的浮层要挂到 body 下（`portal`）。** `position: fixed` 只逃得出
+ *    滚动，逃不出祖先的**层叠上下文**：顶栏是 `position: sticky; z-index:
+ *    var(--z-sticky)`，自成一个上下文，留在它子树里的改密码弹窗 z-index 再高
+ *    也只在顶栏内部比大小——内容预览页的播放条同为 sticky、在 DOM 里更靠后，
+ *    于是整个顶栏连同弹窗被它压在下面。Sheet / Drawer / Toast 都传 `portal`；
+ *    Popover **不传**，它是纯 CSS 相对触发按钮定位的，搬走就找不到锚点。
  *
  * Overlay 本身不做视觉造型（唯一例外是可选的遮罩 `scrim`）——定位、进场方向
  * 由 Drawer / Popover / Sheet / Toast 各自的 CSS 通过 `className` 叠加，四者
@@ -70,6 +78,12 @@ export interface OverlayProps {
   forceInert?: boolean
   /** 打开时的初始聚焦目标；不传则聚焦面板内第一个可聚焦元素，再退到面板本身。 */
   initialFocusRef?: RefObject<HTMLElement | null>
+  /**
+   * 把面板（和遮罩）渲染到 `document.body` 下，逃出祖先的层叠上下文——
+   * 所有 `position: fixed` 的浮层都该开（理由见文件头第 4 条）。
+   * 只影响 DOM 挂载位置：React 树不变，事件冒泡、context、焦点管理照旧。
+   */
+  portal?: boolean
   className?: string
   style?: CSSProperties
 }
@@ -105,22 +119,30 @@ function getFocusable(container: HTMLElement): HTMLElement[] {
 /**
  * 当前打开的浮层栈，模块级、跨实例共享——Esc 只关最上面那层。
  *
- * 「最上面」按 DOM 嵌套判定，**不是按 push 顺序**：React 的 passive effect
- * 是子先于父触发的（子组件先挂载完成）。两个浮层若在同一次渲染里同时以
- * open=true 挂载（比如一段初始就展开的抽屉套着一段初始就展开的弹出层），
- * 内层的注册 effect 会先于外层跑，push 顺序反而是「先内后外」——如果拿
- * push 顺序当「谁在最上面」，会把外层错判成最上面那层。已经用一个专门的
- * 探针测试验证过这个触发顺序（bottom-up），不是猜测。
+ * 「最上面」按 **React 树的嵌套深度** 判定，**不是按 push 顺序，也不是按 DOM
+ * 包含关系**：
  *
- * 判定规则：候选里「不包含任何其他候选」的就是最内层；多个互不嵌套的候选
- * （并列的独立浮层）时，退回「最后打开的那个」。
+ * - 不按 push 顺序：React 的 passive effect 是子先于父触发的（子组件先挂载
+ *   完成）。两个浮层若在同一次渲染里同时以 open=true 挂载（比如一段初始就
+ *   展开的抽屉套着一段初始就展开的弹出层），内层的注册 effect 会先于外层跑，
+ *   push 顺序反而是「先内后外」——拿它当「谁在最上面」会把外层错判成最上面
+ *   那层。已经用一个专门的探针测试验证过这个触发顺序（bottom-up），不是猜测。
+ * - 不按 DOM 包含关系：开了 `portal` 的浮层都并列挂在 body 下，抽屉里打开的
+ *   对话框在 DOM 里不再是抽屉的后代，`contains` 看不出谁套着谁。
+ *
+ * 深度由 `DepthContext` 沿 React 树传下去（portal 不影响 context），每层 +1。
+ * 判定规则：深度最大的就是最内层；多个同深度（并列的独立浮层）时，退回
+ * 「最后打开的那个」。
  */
-let stack: Array<{ id: string; node: HTMLElement }> = []
+let stack: Array<{ id: string; depth: number }> = []
 
 function topmostId(): string | undefined {
-  const inner = stack.filter((a) => !stack.some((b) => b !== a && a.node.contains(b.node)))
+  const max = Math.max(...stack.map((x) => x.depth))
+  const inner = stack.filter((x) => x.depth === max)
   return inner[inner.length - 1]?.id
 }
+
+const DepthContext = createContext(0)
 
 export function Overlay(props: OverlayProps) {
   const {
@@ -139,11 +161,13 @@ export function Overlay(props: OverlayProps) {
     onScrimClick,
     forceInert = false,
     initialFocusRef,
+    portal = false,
     className,
     style,
   } = props
 
   const id = useId()
+  const depth = useContext(DepthContext) + 1
   const panelRef = useRef<HTMLDivElement>(null)
   const previouslyFocusedRef = useRef<HTMLElement | null>(null)
 
@@ -179,9 +203,7 @@ export function Overlay(props: OverlayProps) {
   // Esc 关闭：就近，只关最上面那层（判定见 topmostId 上的注释）。
   useEffect(() => {
     if (!open || !closeOnEsc) return
-    const panel = panelRef.current
-    if (!panel) return
-    stack.push({ id, node: panel })
+    stack.push({ id, depth })
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (topmostId() !== id) return
@@ -192,7 +214,7 @@ export function Overlay(props: OverlayProps) {
       stack = stack.filter((x) => x.id !== id)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [open, closeOnEsc, id])
+  }, [open, closeOnEsc, id, depth])
 
   // Tab 在浮层内循环，不让焦点跑到底层页面。只处理「从最后一个绕回第一个」
   // 和「从第一个反绕到最后一个」这两条边界——中间的 Tab 移动交给浏览器原生
@@ -224,8 +246,8 @@ export function Overlay(props: OverlayProps) {
 
   const isDialogLike = role === 'dialog' || role === 'alertdialog'
 
-  return (
-    <>
+  const tree = (
+    <DepthContext.Provider value={depth}>
       {scrim && (
         <div
           className={styles.scrim}
@@ -250,6 +272,8 @@ export function Overlay(props: OverlayProps) {
       >
         {children}
       </div>
-    </>
+    </DepthContext.Provider>
   )
+
+  return portal ? createPortal(tree, document.body) : tree
 }
