@@ -1,5 +1,16 @@
 import { describe, expect, test } from 'vitest'
-import { fmtDateTime, fmtDuration, fmtBytes, daysLeft, fmtDay, fmtClock } from '../src/lib/format'
+import {
+  fmtDateTime,
+  fmtDuration,
+  fmtBytes,
+  daysLeft,
+  fmtDay,
+  fmtClock,
+  fmtDateTimeSec,
+  fmtTimeSec,
+  dayKeyOf,
+  fmtDayHeading,
+} from '../src/lib/format'
 
 describe('format', () => {
   test('fmtDateTime 用本地时区，不补年（同年）', () => {
@@ -119,5 +130,28 @@ describe('fmtClock（播放位置 / 转写时间戳）', () => {
   test('小数按秒向下取整，负数夹到 0——播放位置不存在「负几秒」', () => {
     expect(fmtClock(65.9)).toBe('1:05')
     expect(fmtClock(-3)).toBe('0:00')
+  })
+
+  test('fmtDateTimeSec 在 fmtDateTime 后面补上秒，同年不补年', () => {
+    const t = new Date(2026, 8, 14, 10, 44, 7).getTime() / 1000
+    expect(fmtDateTimeSec(t, new Date(2026, 8, 14))).toBe('9-14 10:44:07')
+    const y = new Date(2025, 11, 31, 9, 5, 0).getTime() / 1000
+    expect(fmtDateTimeSec(y, new Date(2026, 8, 14))).toBe('2025-12-31 09:05:00')
+  })
+  test('fmtTimeSec 只报当天时刻，时分秒都补零', () => {
+    expect(fmtTimeSec(new Date(2026, 8, 14, 9, 4, 7).getTime() / 1000)).toBe('09:04:07')
+  })
+  test('dayKeyOf 按本地日期分组：23:59 与次日 00:00 是两天', () => {
+    const a = new Date(2026, 8, 14, 23, 59, 59).getTime() / 1000
+    const b = new Date(2026, 8, 15, 0, 0, 0).getTime() / 1000
+    expect(dayKeyOf(a)).toBe('2026-9-14')
+    expect(dayKeyOf(a)).not.toBe(dayKeyOf(b))
+    expect(dayKeyOf(a)).toBe(dayKeyOf(new Date(2026, 8, 14, 0, 0, 1).getTime() / 1000))
+  })
+  test('fmtDayHeading 带星期，跨年才补年份', () => {
+    const t = new Date(2026, 8, 14, 12).getTime() / 1000 // 2026-09-14 是周一
+    expect(fmtDayHeading(t, new Date(2026, 8, 20))).toBe('9 月 14 日 周一')
+    const y = new Date(2025, 11, 31, 12).getTime() / 1000 // 2025-12-31 是周三
+    expect(fmtDayHeading(y, new Date(2026, 8, 20))).toBe('2025 年 12 月 31 日 周三')
   })
 })

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useId, useMemo, useRef, useState } from 'react'
 import { listAudit, type AuditPage } from '@/api/admin/audit'
 import { fmtDateTime } from '@/lib/format'
 import { useResource } from '@/lib/useResource'
@@ -6,6 +6,7 @@ import { Button } from '@/ui/Button'
 import { Chip } from '@/ui/Chip'
 import { Input } from '@/ui/Input'
 import { PageShell } from '@/ui/PageShell'
+import { Pill } from '@/ui/Pill'
 import { Popover } from '@/ui/Popover'
 import { AuditTable } from './AuditTable'
 import {
@@ -13,8 +14,6 @@ import {
   AUDIT_RANGES,
   emptyKind,
   hasFieldFilters,
-  hasRangeFilter,
-  rangeOf,
   toQuery,
   type AuditUiFilter,
 } from './filters'
@@ -27,6 +26,16 @@ import styles from './Audit.module.css'
  * 所以筛选比表格本身更重要——而筛选**必须发生在后端**：一次请求只带回一页，
  * 在这一页上再筛一次，得到的是"这 50 条里符合的"，页脚却写着"共 N 条"。
  * 翻到第二页就对不上，而且用户看不出来。
+ *
+ * ## 版式：一条工具条 + 一行状态 + 一张一行一条的表
+ *
+ * 常用的筛选（身份、只看被拒绝、时间范围）全在一条工具条上，一眼看完；
+ * 少用的精确筛选（操作者 ID、动作代码）收进「精确筛选」面板，应用之后以
+ * 可移除的标签回显在工具条上——两个空输入框常驻在页面上，看起来像搜索框，
+ * 打半个名字查不到会被读成"这个程序没取过东西"。
+ *
+ * 更顺手的入口在表格里：展开任何一条记录，都能「只看这个操作者 / 只看这个
+ * 动作」——不用抄 ID，也不用知道动作代码怎么拼。
  *
  * ## 时间锚点冻在一次查询里
  *
@@ -48,8 +57,10 @@ export default function AuditPage() {
   // 打完一个程序名就是十几次全表查询。
   const [draftActorId, setDraftActorId] = useState('')
   const [draftAction, setDraftAction] = useState('')
-  const [rangeOpen, setRangeOpen] = useState(false)
+  const [exactOpen, setExactOpen] = useState(false)
   const [anchorSec, setAnchorSec] = useState(() => Math.floor(Date.now() / 1000))
+  const actorInputRef = useRef<HTMLInputElement>(null)
+  const ids = useId()
 
   const query = useMemo(() => toQuery(ui, anchorSec), [ui, anchorSec])
   // `useResource` 的依赖要是原始值，把参数序列化成一个键。
@@ -73,7 +84,6 @@ export default function AuditPage() {
   const loading = res.state === 'loading'
   const error = res.state === 'error' ? res.error : null
   const now = useMemo(() => new Date(anchorSec * 1000), [anchorSec])
-  const range = rangeOf(ui.rangeId)
 
   const patch = useCallback((next: Partial<AuditUiFilter>) => {
     // 任何筛选条件一变就回第一页：留在第 5 页的话，换条件之后大概率落在
@@ -86,10 +96,40 @@ export default function AuditPage() {
     patch({ actorKinds: has ? ui.actorKinds.filter((k) => k !== kind) : [...ui.actorKinds, kind] })
   }
 
+  const setRange = (rangeId: AuditUiFilter['rangeId']) => {
+    // 换范围时重新取锚点：上一次锚点可能是十分钟前打开页面时的，
+    // 「近 24 小时」用它算出来的窗口会少掉最近十分钟。
+    setAnchorSec(Math.floor(Date.now() / 1000))
+    patch({ rangeId })
+  }
+
   const clearFilters = () => {
     setDraftActorId('')
     setDraftAction('')
     setUi(AUDIT_DEFAULT_UI)
+  }
+
+  const applyExact = () => {
+    patch({ actorId: draftActorId.trim(), action: draftAction.trim() })
+    setExactOpen(false)
+  }
+
+  const closeExact = () => {
+    // 关掉面板时草稿退回已应用的值：打了一半没按「应用」的东西不该留着
+    // 下次打开时冒出来，让人以为它已经在生效。
+    setDraftActorId(ui.actorId)
+    setDraftAction(ui.action)
+    setExactOpen(false)
+  }
+
+  /** 表格里「只看这个操作者 / 只看这个动作」的入口——草稿与条件一起改。 */
+  const filterActor = (id: string) => {
+    setDraftActorId(id)
+    patch({ actorId: id })
+  }
+  const filterAction = (action: string) => {
+    setDraftAction(action)
+    patch({ action })
   }
 
   const refresh = () => {
@@ -98,37 +138,153 @@ export default function AuditPage() {
   }
 
   const narrowed = hasFieldFilters(ui) || ui.rangeId !== AUDIT_DEFAULT_UI.rangeId
+  const exactCount = (ui.actorId !== '' ? 1 : 0) + (ui.action !== '' ? 1 : 0)
 
   return (
     <PageShell
       title="操作审计"
-      description="每一次取用、每一次授权改动、每一次到期清理都留痕。管理员在后台看内容也记在这里。"
+      description="谁在什么时候对哪场会议做了什么，是准许还是拒绝，都在这里。"
       actions={
-        <Button onClick={refresh} disabled={loading}>
+        <Button onClick={refresh} disabled={loading} title="结果的时间上界钉在打开本页的那一刻；新记录按这里才会出现">
           刷新
         </Button>
       }
     >
-      <div className={styles.bar}>
-        <Chip active={ui.actorKinds.includes('person')} onClick={() => toggleKind('person')}>
-          人的操作
-        </Chip>
-        <Chip active={ui.actorKinds.includes('prog')} onClick={() => toggleKind('prog')}>
-          程序取用
-        </Chip>
-        <Chip active={ui.actorKinds.includes('sys')} onClick={() => toggleKind('sys')}>
-          系统自动
-        </Chip>
-        <span className={styles.gap} />
+      <div className={styles.toolbar}>
+        <div className={styles.group} role="group" aria-label="操作者身份">
+          <Chip active={ui.actorKinds.includes('person')} onClick={() => toggleKind('person')}>
+            人的操作
+          </Chip>
+          <Chip active={ui.actorKinds.includes('prog')} onClick={() => toggleKind('prog')}>
+            程序取用
+          </Chip>
+          <Chip active={ui.actorKinds.includes('sys')} onClick={() => toggleKind('sys')}>
+            系统自动
+          </Chip>
+        </div>
+
         <Chip active={ui.onlyDenied} onClick={() => patch({ onlyDenied: !ui.onlyDenied })}>
           只看被拒绝
         </Chip>
+
+        <span className={styles.exactWrap}>
+          <Button
+            size="sm"
+            aria-haspopup="dialog"
+            aria-expanded={exactOpen}
+            onClick={() => (exactOpen ? closeExact() : setExactOpen(true))}
+          >
+            精确筛选{exactCount > 0 ? ` · ${exactCount}` : ''} ▾
+          </Button>
+          <Popover
+            open={exactOpen}
+            onClose={closeExact}
+            label="精确筛选"
+            placement="bottom-start"
+            initialFocusRef={actorInputRef}
+            className={styles.exactPanel}
+          >
+            <form
+              className={styles.exactForm}
+              onSubmit={(e) => {
+                e.preventDefault()
+                applyExact()
+              }}
+            >
+              <div className={styles.exactField}>
+                <label className={styles.exactLabel} htmlFor={`${ids}-actor`}>
+                  操作者 ID
+                </label>
+                <Input
+                  ref={actorInputRef}
+                  id={`${ids}-actor`}
+                  type="text"
+                  value={draftActorId}
+                  onChange={(e) => setDraftActorId(e.target.value)}
+                  aria-describedby={`${ids}-actor-hint`}
+                  autoComplete="off"
+                />
+                {/* 后端这两个参数都是**精确匹配**，不是 LIKE。说清楚，否则输入框
+                    长得像搜索框，打半个名字查不到会被读成"这个程序没取过东西"。 */}
+                <span className={styles.exactHint} id={`${ids}-actor-hint`}>
+                  完整的账号名或程序 ID，精确匹配，不是模糊搜索。
+                </span>
+              </div>
+              <div className={styles.exactField}>
+                <label className={styles.exactLabel} htmlFor={`${ids}-action`}>
+                  动作代码
+                </label>
+                <Input
+                  id={`${ids}-action`}
+                  type="text"
+                  value={draftAction}
+                  onChange={(e) => setDraftAction(e.target.value)}
+                  aria-describedby={`${ids}-action-hint`}
+                  autoComplete="off"
+                />
+                <span className={styles.exactHint} id={`${ids}-action-hint`}>
+                  库里的原值，多个用逗号隔开。不记得代码？展开任一条记录，点「只看这个动作」。
+                </span>
+              </div>
+              <div className={styles.exactActs}>
+                <Button type="submit" variant="primary" size="sm">
+                  应用
+                </Button>
+                <Button variant="quiet" size="sm" onClick={closeExact}>
+                  取消
+                </Button>
+              </div>
+            </form>
+          </Popover>
+        </span>
+
+        {/* 已应用的精确条件回显成可移除的标签：面板收起之后，条件不能跟着
+            从眼前消失——看不见的筛选条件会让"没有记录"被读成"没发生过"。 */}
+        {ui.actorId !== '' && (
+          <Pill
+            tone="brand"
+            onRemove={() => filterActor('')}
+            removeLabel={`移除操作者筛选 ${ui.actorId}`}
+          >
+            操作者 <code className={styles.pillCode}>{ui.actorId}</code>
+          </Pill>
+        )}
+        {ui.action !== '' && (
+          <Pill tone="brand" onRemove={() => filterAction('')} removeLabel={`移除动作筛选 ${ui.action}`}>
+            动作 <code className={styles.pillCode}>{ui.action}</code>
+          </Pill>
+        )}
+
         {narrowed && (
           <Button variant="quiet" size="sm" onClick={clearFilters}>
             清除筛选
           </Button>
         )}
+
         <span className={styles.spacer} />
+
+        {/* 时间范围是分段单选，五档全摆在面上——它是这一页最常动的条件，
+            藏进下拉里每次要点两下，而且看不到还有哪几档可选。 */}
+        <div className={styles.ranges} role="radiogroup" aria-label="时间范围">
+          {AUDIT_RANGES.map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              role="radio"
+              aria-checked={r.id === ui.rangeId}
+              className={styles.range}
+              onClick={() => setRange(r.id)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={styles.status}>
+        {/* 读失败时不显示时间窗口：那一行描述的是**上一次成功**的查询，
+            而屏幕上摆着的是一个错误态——两者放在一起会被读成"这段时间没有记录"。 */}
+        {shown !== null && error === null && <WindowLine page={shown} now={now} />}
         {loading && (
           <span className={styles.loading} role="status" data-testid="audit-loading">
             {/* 上一次的结果还留在屏幕上时必须说出来：筛选片已经是新的选择，
@@ -136,86 +292,13 @@ export default function AuditPage() {
             {shown === null ? '正在读取…' : '正在按新条件重新查询，下面还是上一次的结果…'}
           </span>
         )}
-        <span className={styles.rangeWrap}>
-          <Button
-            aria-haspopup="menu"
-            aria-expanded={rangeOpen}
-            onClick={() => setRangeOpen((v) => !v)}
-          >
-            {range.label} ▾
-          </Button>
-          <Popover
-            open={rangeOpen}
-            onClose={() => setRangeOpen(false)}
-            role="menu"
-            label="审计时间范围"
-            placement="bottom-end"
-          >
-            {AUDIT_RANGES.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={r.id === ui.rangeId}
-                className={styles.rangeOpt}
-                onClick={() => {
-                  // 换范围时重新取锚点：上一次锚点可能是十分钟前打开页面时的，
-                  // 「近 24 小时」用它算出来的窗口会少掉最近十分钟。
-                  setAnchorSec(Math.floor(Date.now() / 1000))
-                  patch({ rangeId: r.id })
-                  setRangeOpen(false)
-                }}
-              >
-                {r.label}
-              </button>
-            ))}
-          </Popover>
-        </span>
       </div>
 
-      <form
-        className={styles.bar}
-        onSubmit={(e) => {
-          e.preventDefault()
-          patch({ actorId: draftActorId, action: draftAction })
-        }}
-      >
-        <Input
-          type="text"
-          className={styles.field}
-          value={draftActorId}
-          onChange={(e) => setDraftActorId(e.target.value)}
-          placeholder="kb-indexer"
-          aria-label="操作者 ID（精确匹配）"
-        />
-        <Input
-          type="text"
-          className={styles.field}
-          value={draftAction}
-          onChange={(e) => setDraftAction(e.target.value)}
-          placeholder="issue_download_url"
-          aria-label="动作（原值，精确匹配，逗号分隔多个）"
-        />
-        <Button type="submit" variant="primary" size="sm">
-          应用
-        </Button>
-        {/* 后端这两个参数都是**精确匹配**，不是 LIKE。说清楚，否则输入框长得
-            像搜索框，打半个名字查不到会被读成"这个程序没取过东西"。 */}
-        <span className={styles.hint}>
-          两个都是精确匹配（不是模糊搜索）。动作填库里的原值，就是表格里「动作」下面那一行。
-        </span>
-      </form>
-
       {ui.actorKinds.length > 0 && (
-        <p className={styles.caveat} data-testid="audit-unknown-caveat">
-          按身份筛选时，<b>「未知身份」的记录不会出现</b>——后端只认 prog / person / sys
-          三种，认不出的 <code>actor_type</code> 是它们的补集，筛不出来。要看全部请取消这几个筛选片。
+        <p className={styles.note} data-testid="audit-unknown-caveat">
+          按身份筛选时<b>不会显示「未知身份」的记录</b>——后端只认人 / 程序 / 系统三种。要看全部，请取消身份筛选。
         </p>
       )}
-
-      {/* 读失败时不显示时间窗口：那一行描述的是**上一次成功**的查询，
-          而屏幕上摆着的是一个错误态——两者放在一起会被读成"这段时间没有记录"。 */}
-      {shown !== null && error === null && <WindowLine page={shown} now={now} />}
 
       {shown !== null && error === null && <UnlabeledNote page={shown} />}
 
@@ -227,23 +310,14 @@ export default function AuditPage() {
         onRetry={refresh}
         empty={emptyKind(ui)}
         onClearFilters={clearFilters}
-        onAllTime={() => patch({ rangeId: 'all' })}
+        onAllTime={() => setRange('all')}
+        onFilterActor={filterActor}
+        onFilterAction={filterAction}
         current={ui.page}
         pageSize={ui.pageSize}
         onPage={(p) => setUi((prev) => ({ ...prev, page: p }))}
         onPageSize={(size) => setUi((prev) => ({ ...prev, page: 1, pageSize: size }))}
       />
-
-      {/* 两句口径说明收成一行脚注——内容照旧一个字都不丢，只是不再按正文的
-          字号排、也不再用 <br> 强制断成两段。上界钉在锚点上是有代价的
-          （新记录要刷新才出现），所以必须说出来，而不是让人以为这一页是
-          实时的；为什么钉见 filters.ts 的 toQuery。 */}
-      <p className={styles.foot}>
-        {hasRangeFilter(ui)
-          ? '这一页只显示所选时间范围内的记录，查更早的操作请把范围改成「全部时间」。'
-          : '时间范围是「全部时间」，这一页显示的是库里所有符合条件的记录。'}
-        {' 结果的时间上界钉在打开本页（或上次「刷新」）的那一刻，翻页时两页看的是同一段时间，要看更新的操作请按「刷新」。'}
-      </p>
     </PageShell>
   )
 }
@@ -265,20 +339,17 @@ export default function AuditPage() {
  *
  * 每一项的 `hint` 今天是同一句常量，所以按内容去重后只显示一次；
  * 将来后端按动作给不同的话，这里自然会各显示一句。
- *
- * 动作原来另起一个 `<ul>` 列表，是这块琥珀提示占到 150px 的主因之一——
- * 缺口提示是真的缺口提示，但一两个动作名不值得单独一段。折进第一句里，
- * 提示压成两行：第一行是"缺了什么"，第二行是后端那句原话。 */
+ */
 function UnlabeledNote({ page }: { page: AuditPage }) {
   const items = page.unlabeledActions
   if (items.length === 0) return null
   const hints = [...new Set(items.map((u) => u.hint))]
 
   return (
-    <div className={styles.caveat} data-testid="audit-unlabeled-actions">
+    <div className={styles.note} data-testid="audit-unlabeled-actions">
       <p>
-        这一页有 <b>{items.length}</b> 种动作后端还没有登记中文名，
-        「动作」列里显示的是 <code>audit_log</code> 的原值：
+        这一页有 <b>{items.length}</b> 种动作后端还没有登记中文名，「动作」列里显示的是{' '}
+        <code>audit_log</code> 的原值：
         {items.map((u, i) => (
           <span key={u.action}>
             {i > 0 && '、'}
@@ -295,11 +366,14 @@ function UnlabeledNote({ page }: { page: AuditPage }) {
 }
 
 /**
- * 本次结果真正用的时间窗口。
+ * 本次结果真正用的时间窗口 + 总数。
  *
  * **回显的是后端算出来的那一段，不是界面上选的那一档。** 两者本该一致；
  * 不一致的时候（比如没传 from、后端兜了一个默认的 7 天窗口），说了实话的
  * 那一个才有用——看不见的默认窗口会让管理员把"它在窗口之外"读成"它没发生过"。
+ *
+ * 上界钉在锚点上是有代价的（新记录要刷新才出现），所以在这里说出来，
+ * 不让人以为这一页是实时的；为什么钉见 filters.ts 的 toQuery。
  */
 function WindowLine({ page, now }: { page: AuditPage; now: Date }) {
   const { window: w } = page
@@ -311,9 +385,17 @@ function WindowLine({ page, now }: { page: AuditPage; now: Date }) {
   return (
     <p className={styles.window} data-testid="audit-window">
       <span className={styles.windowRange}>
-        本次结果的时间范围：{from} — {to}
+        {from} — {to}
       </span>
-      {w.isDefault && w.text !== null && <b className={styles.windowWarn}>{w.text}</b>}
+      <span className={styles.windowSep} aria-hidden="true">
+        ·
+      </span>
+      <span className={styles.windowRange}>共 {page.total} 条</span>
+      {w.isDefault && w.text !== null ? (
+        <b className={styles.windowWarn}>{w.text}</b>
+      ) : (
+        <span className={styles.windowNote}>新记录要按「刷新」才会出现</span>
+      )}
     </p>
   )
 }

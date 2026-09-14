@@ -127,3 +127,39 @@ export function fmtDay(unixSec: number): string {
   const d = new Date(unixSec * 1000)
   return `${d.getMonth() + 1} 月 ${d.getDate()} 日`
 }
+
+/**
+ * `fmtDateTime` 带秒：`9-14 10:44:07`。
+ *
+ * 审计记录要到秒——同一个程序在一分钟里取了两次，`10:44` 两行看起来是重复，
+ * `10:44:07` 与 `10:44:41` 才看得出是两次。其它页面不需要秒，仍用 `fmtDateTime`。
+ */
+export function fmtDateTimeSec(unixSec: number, now: Date = new Date()): string {
+  const d = new Date(unixSec * 1000)
+  return `${fmtDateTime(unixSec, now)}:${pad2(d.getSeconds())}`
+}
+
+/** 当天的时刻，到秒：`10:44:07`。日期由别处（分组行）给出时用它。 */
+export function fmtTimeSec(unixSec: number): string {
+  const d = new Date(unixSec * 1000)
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+/** 本地日期键 `YYYY-M-D`，用来判断两个时刻是不是同一天（不是 UTC 的同一天）。 */
+export function dayKeyOf(unixSec: number): string {
+  const d = new Date(unixSec * 1000)
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const
+
+/**
+ * 分组行的日期：`9 月 14 日 周日`；跨年补年份 `2025 年 12 月 31 日 周三`。
+ * 星期是给人定位用的——"上周五那次"比"9 月 11 日那次"更接近人回忆事情的方式。
+ */
+export function fmtDayHeading(unixSec: number, now: Date = new Date()): string {
+  const d = new Date(unixSec * 1000)
+  const wd = WEEKDAYS[d.getDay()] ?? ''
+  const md = `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${wd}`
+  return d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()} 年 ${md}`
+}

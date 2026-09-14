@@ -5,7 +5,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import { render, renderAsRole } from '../helpers/session'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
-import { fmtDateTime } from '../../src/lib/format'
+import { fmtDateTime, fmtDateTimeSec, fmtDayHeading, fmtTimeSec } from '../../src/lib/format'
 import AuditPage from '../../src/pages/Audit'
 import { AUDIT_DEFAULT_UI, AUDIT_RANGES, rangeOf, toQuery } from '../../src/pages/Audit/filters'
 
@@ -97,6 +97,12 @@ async function ready(id = 1) {
   return screen.findByTestId(`audit-row-${id}`)
 }
 
+/** 打开「精确筛选」面板（操作者 ID / 动作代码两个输入框收在里面）。 */
+async function openExact(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /精确筛选/ }))
+  return screen.findByRole('dialog', { name: '精确筛选' })
+}
+
 beforeEach(() => {
   installFetch()
   serve([row()])
@@ -159,18 +165,36 @@ describe('筛选条件 → 查询参数', () => {
 /* ── 一行长什么样 ───────────────────────────────────────────────── */
 
 describe('审计条目', () => {
-  test('时间按 unix 秒渲染 —— 当成毫秒会掉到 1970 年', async () => {
+  test('时间按 unix 秒渲染、到秒 —— 当成毫秒会掉到 1970 年', async () => {
     const tr = await ready()
-    expect(within(tr).getByText(fmtDateTime(AT))).toBeInTheDocument()
+    // 行上只报当天的时刻（日期在分组行里），完整日期时间在 title 上
+    const t = within(tr).getByText(fmtTimeSec(AT))
+    expect(t).toHaveAttribute('title', fmtDateTimeSec(AT))
     expect(tr.textContent).not.toContain('1970')
+    expect(screen.getByTestId('audit-day').textContent).toContain(fmtDayHeading(AT))
   })
 
-  test('操作者带色块，色块里是人/程/系那一个字，旁边是 ID 与库里的原值', async () => {
+  test('按天分组：跨天时插一行日期，但每一条仍然各占一行', async () => {
+    serve([row({ id: 1, at: AT }), row({ id: 2, at: AT - 3 }), row({ id: 3, at: AT - 2 * 86_400 })])
+    await ready()
+    const days = screen.getAllByTestId('audit-day')
+    expect(days).toHaveLength(2)
+    expect(days[0]!.textContent).toContain(fmtDayHeading(AT))
+    expect(days[1]!.textContent).toContain(fmtDayHeading(AT - 2 * 86_400))
+    expect(screen.getAllByTestId(/^audit-row-/)).toHaveLength(3)
+  })
+
+  test('操作者带色块与 ID；库里的 actor_type 原值在 title 与展开区，不占行', async () => {
+    const user = userEvent.setup()
     const tr = await ready()
     const who = within(tr).getByTestId('audit-actor-1')
     expect(who).toHaveAttribute('data-kind', 'prog')
     expect(who.textContent).toContain('kb-indexer')
-    expect(who.textContent).toContain('service_account')
+    expect(within(who).getByTitle(/service_account/)).toBeInTheDocument()
+    // 读屏能念到身份（色块里的字是 aria-hidden 的装饰）
+    expect(who.textContent).toContain('程序')
+    await user.click(within(tr).getByRole('button', { name: '完整记录' }))
+    expect(screen.getByTestId('audit-expanded-1').textContent).toContain('service_account')
   })
 
   test('认不出的操作者身份不折成三种色块里的任何一种，原值照显示', async () => {
@@ -191,11 +215,14 @@ describe('审计条目', () => {
     expect(within(tr).getByTestId('audit-unlabeled-1')).toHaveTextContent('未登记标签')
   })
 
-  test('动作登记过时不出现那个标记，原值仍在第二行', async () => {
+  test('动作登记过时不出现那个标记；原值在 title 与展开区，不再占第二行', async () => {
     serve([row()])
+    const user = userEvent.setup()
     const tr = await ready()
     expect(within(tr).queryByTestId('audit-unlabeled-1')).toBeNull()
-    expect(within(tr).getByText('issue_download_url')).toBeInTheDocument()
+    expect(within(tr).getByTitle('issue_download_url')).toHaveTextContent('签发下载链接')
+    await user.click(within(tr).getByRole('button', { name: '完整记录' }))
+    expect(screen.getByTestId('audit-expanded-1').textContent).toContain('issue_download_url')
   })
 
   test('对象：标题 + 会议号；能定位到会议时标题是通向内容预览的链接', async () => {
@@ -215,7 +242,7 @@ describe('审计条目', () => {
   test('这次操作不针对某一场会议时说清楚，不是一个空格子', async () => {
     serve([row({ object: null })])
     const tr = await ready()
-    expect(within(tr).getByText(/不针对某一场会议/)).toBeInTheDocument()
+    expect(within(tr).getByText('无关联会议')).toHaveAttribute('title', expect.stringMatching(/不针对某一场会议/))
   })
 
   test('放行的结果是「准许」——默认值，不占视觉：这一行不带左侧色条', async () => {
@@ -306,6 +333,40 @@ describe('审计条目', () => {
     expect(box.textContent).toContain('未记录')
   })
 
+  test('点行上任何空白处也能展开；点链接不展开', async () => {
+    const user = userEvent.setup()
+    const tr = await ready()
+    await user.click(within(tr).getByTestId('audit-detail-1'))
+    expect(screen.getByTestId('audit-expanded-1')).toBeInTheDocument()
+    expect(within(tr).getByRole('button', { name: '完整记录' })).toHaveAttribute('aria-expanded', 'true')
+    await user.click(within(tr).getByTestId('audit-detail-1'))
+    expect(screen.queryByTestId('audit-expanded-1')).toBeNull()
+  })
+
+  test('展开区里「只看这个操作者」直接变成筛选条件，并回显成可移除的标签', async () => {
+    const user = userEvent.setup()
+    await ready()
+    await user.click(screen.getByRole('button', { name: '完整记录' }))
+    await user.click(screen.getByRole('button', { name: '只看这个操作者' }))
+    await waitFor(() => expect(lastQuery().get('actorId')).toBe('kb-indexer'))
+    expect(lastQuery().get('offset')).toBe('0')
+    // 面板收着，条件也得看得见
+    const remove = screen.getByRole('button', { name: '移除操作者筛选 kb-indexer' })
+    expect(screen.getByRole('button', { name: /精确筛选 · 1/ })).toBeInTheDocument()
+    await user.click(remove)
+    await waitFor(() => expect(lastQuery().has('actorId')).toBe(false))
+    expect(screen.queryByRole('button', { name: /移除操作者筛选/ })).toBeNull()
+  })
+
+  test('展开区里「只看这个动作」按原值筛，不用知道代码怎么拼', async () => {
+    const user = userEvent.setup()
+    await ready()
+    await user.click(screen.getByRole('button', { name: '完整记录' }))
+    await user.click(screen.getByRole('button', { name: '只看这个动作' }))
+    await waitFor(() => expect(lastQuery().getAll('action')).toEqual(['issue_download_url']))
+    expect(screen.getByRole('button', { name: '移除动作筛选 issue_download_url' })).toBeInTheDocument()
+  })
+
   test('两条看起来一样的记录就是发生过两次 —— 不折叠、不去重', async () => {
     serve([row({ id: 11 }), row({ id: 12 }), row({ id: 13 })])
     await ready(11)
@@ -344,28 +405,59 @@ describe('筛选', () => {
   test('切到「全部时间」发 from=0', async () => {
     const user = userEvent.setup()
     await ready()
-    await user.click(screen.getByRole('button', { name: /近 7 天/ }))
-    await user.click(screen.getByRole('menuitemradio', { name: /全部时间/ }))
+    expect(screen.getByRole('radio', { name: '近 7 天' })).toHaveAttribute('aria-checked', 'true')
+    await user.click(screen.getByRole('radio', { name: '全部时间' }))
     await waitFor(() => expect(lastQuery().get('from')).toBe('0'))
+    expect(screen.getByRole('radio', { name: '全部时间' })).toHaveAttribute('aria-checked', 'true')
   })
 
-  test('操作者是精确匹配，不是模糊搜索；提交之后才发请求', async () => {
+  test('操作者是精确匹配，不是模糊搜索；面板里提交之后才发请求', async () => {
     const user = userEvent.setup()
     await ready()
-    const input = screen.getByLabelText(/操作者 ID/)
+    // 两个输入框不常驻在页面上——常驻的空输入框长得像搜索框。
+    // Popover 关着时仍在 DOM 里，但整块 inert（不可见、Tab 不到）
+    expect(screen.getByLabelText(/操作者 ID/).closest('[inert]')).not.toBeNull()
+    const panel = await openExact(user)
+    expect(within(panel).getByLabelText(/操作者 ID/).closest('[inert]')).toBeNull()
+    const input = within(panel).getByLabelText(/操作者 ID/)
+    expect(input).toHaveAccessibleDescription(/精确匹配/)
     const before = urls.length
     await user.type(input, 'kb-indexer')
     expect(urls).toHaveLength(before) // 每敲一个字都发一次请求是不行的
-    await user.click(screen.getByRole('button', { name: '应用' }))
+    await user.click(within(panel).getByRole('button', { name: '应用' }))
     await waitFor(() => expect(lastQuery().get('actorId')).toBe('kb-indexer'))
+    // 应用后面板收起，条件回显成标签
+    expect(screen.getByRole('dialog', { name: '精确筛选' })).toHaveAttribute('data-state', 'closed')
+    expect(screen.getByRole('button', { name: '移除操作者筛选 kb-indexer' })).toBeInTheDocument()
+  })
+
+  test('面板里按「取消」，没应用的草稿不会留下来生效', async () => {
+    const user = userEvent.setup()
+    await ready()
+    const panel = await openExact(user)
+    await user.type(within(panel).getByLabelText(/操作者 ID/), 'half')
+    await user.click(within(panel).getByRole('button', { name: '取消' }))
+    expect(lastQuery().has('actorId')).toBe(false)
+    const again = await openExact(user)
+    expect(within(again).getByLabelText(/操作者 ID/)).toHaveValue('')
   })
 
   test('动作按原值筛，可以用逗号给多个', async () => {
     const user = userEvent.setup()
     await ready()
-    await user.type(screen.getByLabelText(/动作/), 'login,list_meetings')
-    await user.click(screen.getByRole('button', { name: '应用' }))
+    const panel = await openExact(user)
+    await user.type(within(panel).getByLabelText(/动作代码/), 'login,list_meetings')
+    await user.click(within(panel).getByRole('button', { name: '应用' }))
     await waitFor(() => expect(lastQuery().getAll('action')).toEqual(['login', 'list_meetings']))
+    expect(screen.getByRole('button', { name: /精确筛选 · 1/ })).toBeInTheDocument()
+  })
+
+  test('时间范围五档全在面上，是一个单选组', async () => {
+    await ready()
+    const group = screen.getByRole('radiogroup', { name: '时间范围' })
+    expect(within(group).getAllByRole('radio').map((r) => r.textContent)).toEqual(
+      AUDIT_RANGES.map((r) => r.label),
+    )
   })
 
   test('翻页只改 offset，时间窗口两头都不动 —— 两页看的必须是同一段时间', async () => {
@@ -563,8 +655,7 @@ describe('加载中 / 读不到 / 空', () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByTestId('audit-empty')
-    await user.click(screen.getByRole('button', { name: /近 7 天/ }))
-    await user.click(screen.getByRole('menuitemradio', { name: /全部时间/ }))
+    await user.click(screen.getByRole('radio', { name: '全部时间' }))
     await waitFor(() =>
       expect(screen.getByTestId('audit-empty')).toHaveAttribute('data-kind', 'none-at-all'),
     )
@@ -602,10 +693,11 @@ describe('页面骨架', () => {
 })
 
 describe('窄屏一行一张卡片（spec §11 缺口 2）', () => {
-  test('六个格子都带 data-label——卡片形态下 thead 不渲染，列名靠它', async () => {
+  test('六个有列名的格子都带 data-label——卡片形态下 thead 不渲染，列名靠它', async () => {
     const tr = await ready()
     const labels = [...tr.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
-    expect(labels).toEqual(['时间', '操作者', '动作', '对象', '结果', '细节'])
+    // 最后一格是展开钮，没有列名，也不该在卡片上冒出一个空标签
+    expect(labels).toEqual(['时间', '操作者', '动作', '对象', '结果', '细节', null])
   })
 })
 

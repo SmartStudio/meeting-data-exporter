@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { AuditPage } from '@/api/admin/audit'
+import { dayKeyOf, fmtDayHeading } from '@/lib/format'
 import { Button } from '@/ui/Button'
 import { Skeleton } from '@/ui/Skeleton'
 import { Table } from '@/ui/Table'
@@ -7,8 +8,8 @@ import { AuditRow } from './AuditRow'
 import { AUDIT_PAGE_SIZES, type AuditEmptyKind } from './filters'
 import styles from './Audit.module.css'
 
-/** 时间 · 操作者 · 动作 · 对象 · 结果 · 细节（spec §4.10 的五个字段 + 明细）。 */
-const COL_COUNT = 6
+/** 时间 · 操作者 · 动作 · 对象 · 结果 · 细节（spec §4.10 的五个字段 + 明细）+ 行尾的展开钮。 */
+const COL_COUNT = 7
 
 export interface AuditTableProps {
   page: AuditPage | null
@@ -19,6 +20,9 @@ export interface AuditTableProps {
   empty: AuditEmptyKind
   onClearFilters: () => void
   onAllTime: () => void
+  /** 展开区里「只看这个操作者 / 只看这个动作」——直接从一条记录出发缩小范围。 */
+  onFilterActor: (id: string) => void
+  onFilterAction: (action: string) => void
 
   /** 当前请求的页码（1 起）与每页条数——**分页控件按"我请求的是什么"来画**。 */
   current: number
@@ -33,9 +37,16 @@ export interface AuditTableProps {
  * 筛选与分页**全在后端**（见 `filters.ts`），这里不做任何本地过滤：
  * 一次请求只带回一页，在这一页上再筛一次，得到的是"这 50 条里符合的"，
  * 而页脚写的是"共 N 条"——翻到第二页就对不上，且看不出来。
+ *
+ * ## 按天分组，但不折叠
+ *
+ * 每一天的第一条前面插一行日期（`9 月 14 日 周日`），时间列因此只报当天的
+ * 时刻、到秒。这是**分组**不是**合并**：每一条记录仍然是自己一行，一条不少
+ * ——审计不许折叠的规矩见 `AuditRow.tsx` 顶部。
  */
 export function AuditTable(props: AuditTableProps) {
-  const { page, now, loading, error, onRetry, empty, onClearFilters, onAllTime } = props
+  const { page, now, loading, error, onRetry, empty, onClearFilters, onAllTime, onFilterActor, onFilterAction } =
+    props
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
 
   const toggle = (id: number) =>
@@ -50,19 +61,48 @@ export function AuditTable(props: AuditTableProps) {
   // 加载中 / 读不到都**不是**空态：三者的出口完全不同（spec.md §8）。
   const showEmpty = !loading && error === null && rows.length === 0
 
+  const body: ReactNode[] = []
+  let lastDay: string | null = null
+  for (const row of rows) {
+    const day = dayKeyOf(row.at)
+    if (day !== lastDay) {
+      lastDay = day
+      body.push(
+        <tr key={`day-${day}`} className={styles.dayRow} data-testid="audit-day">
+          <td colSpan={COL_COUNT}>{fmtDayHeading(row.at, now)}</td>
+        </tr>,
+      )
+    }
+    body.push(
+      <AuditRow
+        key={row.id}
+        row={row}
+        now={now}
+        expanded={expanded.has(row.id)}
+        onToggle={toggle}
+        onFilterActor={onFilterActor}
+        onFilterAction={onFilterAction}
+        colSpan={COL_COUNT}
+      />,
+    )
+  }
+
   return (
     <div className={styles.tableWrap}>
       {/* cards：窄屏（≤56em）一行一张卡片，而不是横向滚动（spec §11 缺口 2）。
-          每个 <td> 因此必须带 data-label——见 AuditRow。 */}
+          每个有列名的 <td> 因此必须带 data-label——见 AuditRow。 */}
       <Table className={styles.table} cards>
         <thead>
           <tr>
-            <th>时间</th>
+            <th className={styles.timeHead}>时间</th>
             <th>操作者</th>
             <th>动作</th>
             <th>对象</th>
             <th>结果</th>
             <th>细节</th>
+            <th className={styles.toggleHead}>
+              <span className={styles.srOnly}>展开</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -73,16 +113,7 @@ export function AuditTable(props: AuditTableProps) {
           ) : showEmpty ? (
             <EmptyRow kind={empty} onClearFilters={onClearFilters} onAllTime={onAllTime} />
           ) : (
-            rows.map((row) => (
-              <AuditRow
-                key={row.id}
-                row={row}
-                now={now}
-                expanded={expanded.has(row.id)}
-                onToggle={toggle}
-                colSpan={COL_COUNT}
-              />
-            ))
+            body
           )}
         </tbody>
       </Table>
@@ -92,25 +123,17 @@ export function AuditTable(props: AuditTableProps) {
   )
 }
 
-const SKELETON_WIDTHS: Array<[string, string | null]> = [
-  ['70%', null],
-  ['52%', '38%'],
-  ['46%', '58%'],
-  ['64%', '30%'],
-  ['34%', '50%'],
-  ['58%', null],
-]
+const SKELETON_WIDTHS: string[] = ['80%', '60%', '55%', '70%', '40%', '85%', '30%']
 
-/** 骨架按真实行的几何画，宽度不齐——齐了就不像一张表，像一块占位板。 */
+/** 骨架按真实行的几何画（一行一条，宽度不齐）——齐了就不像一张表，像一块占位板。 */
 function SkeletonRows() {
   return (
     <>
-      {Array.from({ length: 6 }, (_, r) => (
+      {Array.from({ length: 8 }, (_, r) => (
         <tr key={r} data-skeleton="true" {...(r === 0 ? { 'data-testid': 'audit-skeleton' } : {})}>
-          {SKELETON_WIDTHS.map(([main, sub], i) => (
+          {SKELETON_WIDTHS.map((w, i) => (
             <td key={i}>
-              <Skeleton width={shrink(main, r)} />
-              {sub !== null && <Skeleton width={sub} size="sm" />}
+              <Skeleton width={shrink(w, r)} size="sm" />
             </td>
           ))}
         </tr>
