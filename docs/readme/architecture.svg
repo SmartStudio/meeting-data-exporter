@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" font-family="-apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="640" fill="#ffffff"/>
+
+  <!-- 列 A：腾讯会议 -->
+  <rect x="40" y="60" width="260" height="470" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="170" y="96" text-anchor="middle" font-size="18" font-weight="700" fill="#0f172a">腾讯会议企业版</text>
+  <text x="170" y="118" text-anchor="middle" font-size="12" fill="#64748b">会议开在腾讯云上</text>
+
+  <g font-size="13" fill="#0f172a">
+    <rect x="64" y="140" width="212" height="34" rx="8" fill="#ffffff" stroke="#e2e8f0"/><text x="170" y="162" text-anchor="middle">云录制（录像 / 录音）</text>
+    <rect x="64" y="182" width="212" height="34" rx="8" fill="#ffffff" stroke="#e2e8f0"/><text x="170" y="204" text-anchor="middle">逐字稿</text>
+    <rect x="64" y="224" width="212" height="34" rx="8" fill="#ffffff" stroke="#e2e8f0"/><text x="170" y="246" text-anchor="middle">AI 纪要</text>
+    <rect x="64" y="266" width="212" height="34" rx="8" fill="#ffffff" stroke="#e2e8f0"/><text x="170" y="288" text-anchor="middle">章节 / 时间轴</text>
+  </g>
+
+  <line x1="64" y1="326" x2="276" y2="326" stroke="#e2e8f0"/>
+  <g font-size="12" fill="#b91c1c">
+    <text x="64" y="352">· 挂在创建者账号下，不在企业主体</text>
+    <text x="64" y="374">· 列表约 30 天，到期后 90 天删除</text>
+    <text x="64" y="396">· 下载中心是人工任务，链接会过期</text>
+    <text x="64" y="418">· CLI / Skill / MCP 只发个人账号</text>
+    <text x="64" y="440">· 即使开通，也只是个人 OAuth 范围</text>
+  </g>
+  <text x="170" y="500" text-anchor="middle" font-size="12" fill="#64748b">企业拿到的是在线协作权</text>
+  <text x="170" y="518" text-anchor="middle" font-size="12" fill="#64748b">不是可带走的数据所有权</text>
+
+  <!-- A → B -->
+  <line x1="300" y1="230" x2="376" y2="230" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="338" y="214" text-anchor="middle" font-size="11" fill="#475569">企业自建应用</text>
+  <text x="338" y="252" text-anchor="middle" font-size="11" fill="#475569">AK/SK</text>
+
+  <!-- 列 B：本项目 -->
+  <rect x="380" y="60" width="480" height="470" rx="14" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="620" y="96" text-anchor="middle" font-size="18" font-weight="700" fill="#1e3a8a">meeting-data-exporter</text>
+  <text x="620" y="118" text-anchor="middle" font-size="12" fill="#3b82f6">一份镜像，两个进程，落到企业自己的存储</text>
+
+  <!-- 控制台条 -->
+  <rect x="404" y="136" width="432" height="40" rx="8" fill="#1e293b"/>
+  <text x="620" y="153" text-anchor="middle" font-size="12" font-weight="600" fill="#f8fafc">管理控制台</text>
+  <text x="620" y="169" text-anchor="middle" font-size="11" fill="#cbd5e1">会议记录 · 采集授权 · 自动规则 · 定时任务 · 归档存储 · 操作审计</text>
+
+  <!-- 调度器链路 -->
+  <text x="404" y="204" font-size="12" font-weight="600" fill="#1e3a8a">调度器（单实例）</text>
+  <rect x="404" y="214" width="128" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="468" y="238" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">拉取</text>
+  <text x="468" y="256" text-anchor="middle" font-size="11" fill="#475569">每 15 分钟扫全企业</text>
+  <text x="468" y="272" text-anchor="middle" font-size="11" fill="#475569">拉取规则决定范围</text>
+
+  <line x1="532" y1="250" x2="552" y2="250" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="556" y="214" width="128" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="620" y="238" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">本地归档目录</text>
+  <text x="620" y="256" text-anchor="middle" font-size="11" fill="#475569">保留 30 天取用窗口</text>
+  <text x="620" y="272" text-anchor="middle" font-size="11" fill="#475569">到期删文件，留记录</text>
+
+  <line x1="684" y1="250" x2="704" y2="250" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="708" y="214" width="128" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="772" y="238" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">NAS / 主存储</text>
+  <text x="772" y="256" text-anchor="middle" font-size="11" fill="#475569">每小时归档，校验哈希</text>
+  <text x="772" y="272" text-anchor="middle" font-size="11" fill="#475569">留存期限企业自己定</text>
+
+  <!-- 网关 -->
+  <text x="404" y="322" font-size="12" font-weight="600" fill="#1e3a8a">网关（可多实例）</text>
+  <rect x="404" y="332" width="432" height="176" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="620" y="356" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">唯一持有腾讯 AK/SK 的进程</text>
+  <text x="620" y="376" text-anchor="middle" font-size="11" fill="#475569">service account 鉴权 · 采集权限规则判定 · 签发临时下载地址 · 写审计</text>
+
+  <text x="620" y="404" text-anchor="middle" font-size="12" font-weight="600" fill="#1e3a8a">一场会议能被一个程序取走，要同时满足</text>
+  <g font-size="12" fill="#0f172a">
+    <rect x="420" y="418" width="124" height="36" rx="18" fill="#dbeafe" stroke="#60a5fa"/><text x="482" y="441" text-anchor="middle">有授权</text>
+    <text x="556" y="441" text-anchor="middle" font-size="14" fill="#1e3a8a">且</text>
+    <rect x="568" y="418" width="124" height="36" rx="18" fill="#dbeafe" stroke="#60a5fa"/><text x="630" y="441" text-anchor="middle">在保留期内</text>
+    <text x="704" y="441" text-anchor="middle" font-size="14" fill="#1e3a8a">且</text>
+    <rect x="716" y="418" width="106" height="36" rx="18" fill="#dbeafe" stroke="#60a5fa"/><text x="769" y="441" text-anchor="middle">规则允许</text>
+  </g>
+  <text x="620" y="480" text-anchor="middle" font-size="11" fill="#475569">判定结果附带逐阶段理由：为什么这个程序取不到这场会议</text>
+  <text x="620" y="497" text-anchor="middle" font-size="11" fill="#475569">HR 敏感会议可以拉下来归档，但用规则禁止任何程序取走</text>
+
+  <!-- B → C -->
+  <line x1="860" y1="420" x2="936" y2="420" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <text x="898" y="404" text-anchor="middle" font-size="11" fill="#2563eb">临时下载地址</text>
+  <text x="898" y="442" text-anchor="middle" font-size="11" fill="#2563eb">逐条审计</text>
+
+  <!-- 列 C：企业自己的 -->
+  <rect x="940" y="60" width="220" height="470" rx="14" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="1050" y="96" text-anchor="middle" font-size="18" font-weight="700" fill="#14532d">企业自己的</text>
+  <text x="1050" y="118" text-anchor="middle" font-size="12" fill="#16a34a">数据面，不是个人 OAuth 范围</text>
+
+  <rect x="964" y="150" width="172" height="64" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="1050" y="174" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">对象存储 / NAS</text>
+  <text x="1050" y="194" text-anchor="middle" font-size="11" fill="#475569">可迁移、可审计、可离线</text>
+
+  <rect x="964" y="388" width="172" height="64" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="1050" y="412" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">采集程序（mde CLI）</text>
+  <text x="1050" y="432" text-anchor="middle" font-size="11" fill="#475569">断点续传，不持有 AK/SK</text>
+
+  <line x1="1050" y1="388" x2="1050" y2="300" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="964" y="232" width="172" height="64" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="1050" y="256" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">自己的模型 / Agent</text>
+  <text x="1050" y="276" text-anchor="middle" font-size="11" fill="#475569">CRM、知识库、合规文档</text>
+
+  <!-- NAS 连线：B 的 NAS 盒子到 C 的对象存储 -->
+  <line x1="836" y1="250" x2="936" y2="192" stroke="#475569" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+
+  <!-- 底部说明 -->
+  <text x="600" y="576" text-anchor="middle" font-size="13" fill="#0f172a">企管强制自动云录制与转写 → 自建应用 AK/SK → 自己的存储 → 自己的权限与审计 → 自己的模型</text>
+  <text x="600" y="600" text-anchor="middle" font-size="12" fill="#64748b">这是把会议资产变成企业资产的唯一完整路径。本项目实现的是中间三段。</text>
+</svg>
