@@ -1,11 +1,12 @@
 /**
- * http/ 层的测试哲学（design doc §5.10）："端到端：假腾讯 API + 真网关"——
- * 只在 TencentClient（get/post）这一个边界上打桩，其余全部模块（store、
- * policy、audit、auth、sts、catalog）都是真实实现，连接真实的隔离测试数据库。
+ * http/ 层的测试哲学（design doc §5.10）：真网关 + 真库。全部模块（store、policy、
+ * audit、auth）都是真实实现，连接真实的隔离测试数据库；网关进程本身不调腾讯
+ * （2026-09-20 起会议与资产都读调度器写好的库与盘），所以这里没有任何腾讯桩——
+ * 会议用 `seedMeeting`、资产用 `seedCompletedAsset` 直接种进库里。
  */
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import type { Pool } from '../../src/store/db'
-import type { TencentClient, RequestOptions } from '../../src/tencent/client'
-import type { QueryParams } from '../../src/tencent/url'
 import type { WecomClient, WecomUser } from '../../src/auth/wecom'
 import type { IdentityStrategy } from '../../src/config'
 import type { RuleCond } from '../../src/policy/conds'
@@ -24,10 +25,7 @@ import { createAdminStore } from '../../src/store/admin'
 import { createAdminAuth } from '../../src/auth/admin'
 import { createMeetingCacheStore } from '../../src/store/meetings'
 import { createConsoleMeetingsStore } from '../../src/store/console-meetings'
-import { createRecordsApi } from '../../src/tencent/records'
-import { createAddressesApi } from '../../src/tencent/addresses'
-import { createSmartApi } from '../../src/tencent/smart'
-import { createCatalog } from '../../src/catalog/index'
+import { createStoredRecordsApi } from '../../src/store/stored-records'
 import { createApp, type AppDeps } from '../../src/http/router'
 import { createLoginRateLimiter } from '../../src/http/ratelimit'
 import { createProgramsStore } from '../../src/store/programs'
@@ -45,18 +43,6 @@ import type { VisibilityDeps } from '../../src/worker/visibility'
 export const JWT_SECRET = 'test-jwt-secret-32-bytes-minimum'
 export const OPERATOR_ID = 'operator-1'
 
-export function stubTencentClient(handlers: {
-  get?: (path: string, query: QueryParams, opts?: RequestOptions) => unknown
-  post?: (path: string, body: object) => unknown
-}): TencentClient {
-  return {
-    get: async <T,>(path: string, query: QueryParams, opts?: RequestOptions) =>
-      (handlers.get?.(path, query, opts) ?? {}) as T,
-    post: async <T,>(path: string, body: object) => (handlers.post?.(path, body) ?? {}) as T,
-    currentQps: () => 5,
-  }
-}
-
 export function stubWecomClient(exchangeCode: (code: string) => Promise<WecomUser>): WecomClient {
   return {
     buildAuthorizeUrl: (redirectUri, state) =>
@@ -67,8 +53,9 @@ export function stubWecomClient(exchangeCode: (code: string) => Promise<WecomUse
 
 export interface TestAppOptions {
   now?: () => number
-  tencentGet?: (path: string, query: QueryParams, opts?: RequestOptions) => unknown
-  tencentPost?: (path: string, body: object) => unknown
+  /** 采集程序下载文件的根目录。不给就是「没配」（内容端点 503），要真发文件的用例传临时目录 */
+  localArchiveRoot?: string
+  nasRoot?: string
   wecomExchangeCode?: (code: string) => Promise<WecomUser>
   /** 置 true 模拟「本部署未配置企业微信」（config.wecom === null 的运行时形态） */
   wecomDisabled?: boolean
@@ -86,16 +73,9 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
   const now = opts.now ?? (() => 1_700_000_000)
   const jwtSecret = opts.jwtSecret ?? JWT_SECRET
 
-  const tencentClient = stubTencentClient({ get: opts.tencentGet, post: opts.tencentPost })
-  // 顺序跟随 src/index.ts：meeting_cache 是精确查询的第一级，得先有它
+  // 跟随 src/index.ts：网关只读 meeting_cache
   const meetingsCache = createMeetingCacheStore(pool)
-  const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID, meetingsCache)
-  const addressesApi = createAddressesApi(tencentClient, OPERATOR_ID)
-  // 与 addressesApi 同一口径：真实构造 + 同一个 stub client。桩里没登记 /v1/smart/*
-  // 的用例会拿到空对象，getMinutes/getChapters 于是返回 null（「这一类不存在」）
-  const smartApi = createSmartApi(tencentClient, OPERATOR_ID)
-
-  const catalog = createCatalog({ addressesApi, smartApi, now })
+  const recordsApi = createStoredRecordsApi(meetingsCache)
 
   const policyStore = createPolicyStore(pool)
   // 会议查询 store（T1）。getMeetings 与规则页的影响预览用的是同一个实例，
@@ -151,7 +131,8 @@ export function buildTestApp(pool: Pool, opts: TestAppOptions = {}): TestApp {
     jwtSecret,
     gatewayBaseUrl,
     recordsApi,
-    catalog,
+    localArchiveRoot: opts.localArchiveRoot ?? null,
+    nasRoot: opts.nasRoot ?? null,
     accessGate,
     archives: archivesStore,
     auditRecorder,
@@ -354,4 +335,74 @@ export async function insertPolicyRule(
       opts.enabled ?? 1,
     ],
   )
+}
+
+/**
+ * 往 meeting_cache 种一场会议——生产上这是调度器每轮写透的（tencent/records.ts），
+ * 网关只读。`subMeetingId` 恒等于 `meetingRecordId`（周期会议按录制记录拆场次）。
+ */
+export async function seedMeeting(
+  pool: Pool,
+  m: Pick<Meeting, 'meetingRecordId' | 'meetingId' | 'meetingCode' | 'hostUserId'> & Partial<Meeting>,
+): Promise<Meeting> {
+  const startTime = m.startTime ?? 1_700_000_000
+  const meeting: Meeting = {
+    subMeetingId: m.meetingRecordId,
+    recordType: 0,
+    subject: '测试会议',
+    endTime: startTime + 3600,
+    state: 'completed',
+    ...m,
+    startTime,
+  }
+  await createMeetingCacheStore(pool).upsertMany([meeting], startTime)
+  return meeting
+}
+
+/**
+ * 往 meeting_assets 种一份**已下载完成**的资产，返回它的 asset_id。
+ *
+ * 走真实的 `upsertAsset`（引擎发现资产时写的那条路），再把状态推到 completed——
+ * store 层没有「直接建一条 completed 行」的方法，因为生产上只有下载器能把它推过去。
+ * `targetPath` 相对 MDE_ARCHIVE_ROOT；文件本身由 `writeArchiveFile` 放。
+ */
+export async function seedCompletedAsset(
+  pool: Pool,
+  a: {
+    meetingId: string
+    subMeetingId: string
+    assetType: string
+    remoteId: string
+    fileType?: string
+    selector?: string
+    targetPath: string
+    bytesExpected?: number
+  },
+): Promise<string> {
+  const assetId = `${a.subMeetingId}:${a.remoteId}:${a.assetType}:${a.selector ?? '0'}`
+  await createMysqlStore(pool).upsertAsset(
+    {
+      meetingId: a.meetingId,
+      subMeetingId: a.subMeetingId,
+      assetType: a.assetType,
+      remoteId: a.remoteId,
+      assetId,
+      fileType: a.fileType ?? 'mp4',
+      bytesExpected: a.bytesExpected ?? null,
+    },
+    0,
+  )
+  await pool.execute(
+    `UPDATE meeting_assets SET status = 'completed', target_path = ? WHERE asset_id = ?`,
+    [a.targetPath, assetId],
+  )
+  return assetId
+}
+
+/** 在根目录下按相对路径放一个文件，父目录一并建出来 */
+export function writeArchiveFile(root: string, relPath: string, body: string): string {
+  const abs = join(root, relPath)
+  mkdirSync(dirname(abs), { recursive: true })
+  writeFileSync(abs, body)
+  return abs
 }

@@ -171,3 +171,18 @@ test('record_type 往返：转写记录存 3，查回仍是 3', async () => {
   await store.upsertMany([meeting({ meetingRecordId: 'rec-zx', subject: '转写_评审', recordType: 0 })], 2000)
   expect((await store.getByRecordId('rec-zx'))?.recordType).toBe(0)
 })
+
+test('listByRange 两端含边界，按 startTime 倒序、同一秒再按 meetingRecordId 正序', async () => {
+  const store = createMeetingCacheStore(pool)
+  await store.upsertMany([
+    meeting({ meetingRecordId: 'rec-r-out-lo', meetingId: 'm-r', startTime: 799_999 }),
+    meeting({ meetingRecordId: 'rec-r-lo', meetingId: 'm-r', startTime: 800_000 }),
+    meeting({ meetingRecordId: 'rec-r-b', meetingId: 'm-r', startTime: 800_500 }),
+    meeting({ meetingRecordId: 'rec-r-a', meetingId: 'm-r', startTime: 800_500 }),
+    meeting({ meetingRecordId: 'rec-r-hi', meetingId: 'm-r', startTime: 801_000 }),
+    meeting({ meetingRecordId: 'rec-r-out-hi', meetingId: 'm-r', startTime: 801_001 }),
+  ], 9000)
+
+  const rows = await store.listByRange(800_000, 801_000)
+  expect(rows.map((m) => m.meetingRecordId)).toEqual(['rec-r-hi', 'rec-r-a', 'rec-r-b', 'rec-r-lo'])
+})

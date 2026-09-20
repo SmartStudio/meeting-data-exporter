@@ -1,11 +1,15 @@
+import { stat } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { DOWNLOAD_TOKEN_TTL_SEC, signDownloadToken, verifyDownloadToken } from '../../auth/tokens'
 import { parseAssetId } from '../../domain/assetid'
 import { type ActorIdentity, type Asset, type Meeting } from '../../domain/types'
 import { allowsAsset, isVisible } from '../../policy/access'
 import type { AllowDecision } from '../../policy/stacks'
 import { archiveStateKey } from '../../store/archives'
+import { STORED_LOOKUP_NOTE } from '../../store/stored-records'
 import { MeetingNotFoundInRangeError } from '../../tencent/records'
-import { AssetUrlMissingError, InvalidAssetIdError } from '../../catalog/index'
 import { DEFAULT_WINDOW_SEC } from '../../tencent/window'
+import { isInsideRoot, parseRange } from '../byterange'
 import { clientKindOf, requireAuth } from '../middleware'
 import { json } from '../respond'
 import type { RouteCtx } from '../router'
@@ -64,6 +68,74 @@ function pickMeeting(meetings: Meeting[], subMeetingId: string | null): Meeting 
   return [...meetings].sort((a, b) => b.startTime - a.startTime)[0] ?? null
 }
 
+function meetingNotFound(err: MeetingNotFoundInRangeError): Response {
+  return json(404, { error: 'meeting_not_found_in_range', message: err.message })
+}
+
+/** 与 recordsApi 未命中时同一形状、同一措辞的 404，供点不中场次与判定不可见两处复用 */
+function storedMeetingNotFound(req: Request, meetingId: string): Response {
+  const url = new URL(req.url)
+  const from = parseIntParam(url.searchParams.get('from')) ?? null
+  const to = parseIntParam(url.searchParams.get('to')) ?? null
+  return meetingNotFound(new MeetingNotFoundInRangeError(meetingId, from, to, STORED_LOOKUP_NOTE))
+}
+
+/**
+ * `/meetings/:meetingId` 与 `/meetings/:meetingId/assets` 共用的场次定位：按
+ * meeting_id 取窗口内的全部录制记录，再由 `sub_meeting_id` 点名（见 `pickMeeting`）。
+ *
+ * 点不中与「查询根本没命中」回同一个 404（理由见 `pickMeeting`），所以措辞也用
+ * recordsApi 抛的那个错误类。
+ */
+async function resolveMeeting(req: Request, ctx: RouteCtx, now: number): Promise<Meeting | Response> {
+  const url = new URL(req.url)
+  const from = parseIntParam(url.searchParams.get('from'))
+  const to = parseIntParam(url.searchParams.get('to'))
+  const meetingId = ctx.params.meetingId!
+
+  let meetings: Meeting[]
+  try {
+    meetings = await ctx.deps.recordsApi.listMeetings({ kind: 'id', meetingId, from, to }, now)
+  } catch (err) {
+    if (err instanceof MeetingNotFoundInRangeError) return meetingNotFound(err)
+    throw err
+  }
+  return pickMeeting(meetings, url.searchParams.get('sub_meeting_id')) ?? storedMeetingNotFound(req, meetingId)
+}
+
+/**
+ * 这场会议已经落到网关本地归档的资产。调度器每轮下载完成后把行标成 completed 并
+ * 写上 asset_id；网关不再实时问腾讯，也就不会列出「腾讯有、本地还没下完」的资产
+ * ——引擎对缺席类型按 wait 处理，下一轮 `mde run` 会补上。
+ *
+ * `asset_id` 为空的行是这一列出现之前的旧数据，没有 id 就签不出下载地址，跳过并留日志。
+ */
+async function storedAssets(ctx: RouteCtx, meeting: Meeting): Promise<Asset[]> {
+  const rows = await ctx.deps.archivesStore.listCompletedAssets(meeting.meetingId, meeting.subMeetingId)
+  const assets: Asset[] = []
+  for (const row of rows) {
+    const parsed = parseAssetId(row.assetId ?? '')
+    if (parsed === null) {
+      console.warn(
+        `[meetings] meeting_assets (${row.meetingId}/${row.subMeetingId}/${row.assetType}/${row.remoteId}) ` +
+          `的 asset_id 为空或不合法，无法签发下载地址，已从清单里略过`,
+      )
+      continue
+    }
+    assets.push({
+      assetId: row.assetId!,
+      meetingId: row.meetingId,
+      subMeetingId: row.subMeetingId,
+      assetType: parsed.assetType,
+      recordFileId: row.remoteId,
+      fileType: row.fileType,
+      bytesExpected: row.bytesExpected,
+      allowDownload: true,
+    })
+  }
+  return assets
+}
+
 /**
  * 这场会议对该 actor 的采集权限判定。**一场会议只判一次**——判定结果里带着
  * 「放行哪几类资产」，具体某一类取不取得到由 `allowsAsset` 作用在结果之上
@@ -111,7 +183,9 @@ async function filterVisibleMeetings(
 /**
  * GET /api/v1/meetings?from=&to=&meeting_code=&meeting_id=&cursor=&limit=
  *
- * 未传 from/to 时默认最近 31 天（与平台单次查询上限一致，不触发切分）。
+ * 读的是 `meeting_cache`，即**调度器已经存下来的会议**，不是腾讯此刻有的会议
+ * （见 store/stored-records.ts）：上线前 24 小时以前的会议要靠调度器补跑窗口才会出现。
+ * 未传 from/to 时默认最近 31 天。
  * meeting_code 命中多场时返回数组，不擅自择一。
  * 指定 meeting_id/meeting_code 但范围内未命中：返回 meeting_not_found_in_range，
  * 而不是一个容易被误读为「没权限」或「不存在」的笼统错误。
@@ -142,15 +216,9 @@ export async function listMeetings(req: Request, ctx: RouteCtx): Promise<Respons
   try {
     meetings = await ctx.deps.recordsApi.listMeetings(selector, now)
   } catch (err) {
-    if (err instanceof MeetingNotFoundInRangeError) {
-      return json(404, { error: 'meeting_not_found_in_range', message: err.message })
-    }
+    if (err instanceof MeetingNotFoundInRangeError) return meetingNotFound(err)
     throw err
   }
-
-  // meeting_cache 的写入不在这里：`recordsApi` 每次从 `/v1/corp/records` 拿到会议
-  // 就整批写进去（见 tencent/records.ts 的 fetchWindow）。写入点散在各个处理器里
-  // 必然漂移，而 download-url 端点与精确查询两个读者都押在「列过的会议一定在表里」。
 
   const visible = await filterVisibleMeetings(ctx, auth.identity, meetings, now)
 
@@ -182,41 +250,19 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
   const auth = requireAuth(req, ctx.deps.jwtSecret, now)
   if (!auth.ok) return auth.response
 
-  const url = new URL(req.url)
-  const from = parseIntParam(url.searchParams.get('from'))
-  const to = parseIntParam(url.searchParams.get('to'))
-  const meetingIdParam = ctx.params.meetingId!
-
-  let meetings: Meeting[]
-  try {
-    meetings = await ctx.deps.recordsApi.listMeetings({ kind: 'id', meetingId: meetingIdParam, from, to }, now)
-  } catch (err) {
-    if (err instanceof MeetingNotFoundInRangeError) {
-      return json(404, { error: 'meeting_not_found_in_range', message: err.message })
-    }
-    throw err
-  }
-
-  // 缓存写入由 recordsApi 统一负责（见上面 listMeetings 处的说明）
-  const meeting = pickMeeting(meetings, url.searchParams.get('sub_meeting_id'))
-  if (meeting === null) {
-    const notFound = new MeetingNotFoundInRangeError(meetingIdParam, from ?? now - DEFAULT_WINDOW_SEC, to ?? now)
-    return json(404, { error: 'meeting_not_found_in_range', message: notFound.message })
-  }
+  const meeting = await resolveMeeting(req, ctx, now)
+  if (meeting instanceof Response) return meeting
 
   // 整场会议只判一次：可见性与「哪几类资产能列出来」用的是**同一个判定结果**。
   // 判两次不只是多花一次查询——两次之间规则若被改动，就会出现「会议可见但
   // 资产清单是空的」这种自相矛盾的响应。
   const decision = await decideMeeting(ctx, auth.identity, meeting, now)
   if (!isVisible(decision)) {
-    // 与真正「范围外未命中」时抛出的 MeetingNotFoundInRangeError 使用完全相同的
-    // from/to 缺省口径（见 tencent/records.ts），使两种情况下的响应体在形状与
-    // 措辞上都不可区分。
-    const notFound = new MeetingNotFoundInRangeError(meetingIdParam, from ?? now - DEFAULT_WINDOW_SEC, to ?? now)
-    return json(404, { error: 'meeting_not_found_in_range', message: notFound.message })
+    // 与 resolveMeeting 点不中时的响应在形状与措辞上都不可区分
+    return storedMeetingNotFound(req, ctx.params.meetingId!)
   }
 
-  const assets = await ctx.deps.catalog.listAssets(meeting)
+  const assets = await storedAssets(ctx, meeting)
   const visibleAssets = filterAssetsByDecision(decision, assets)
   await ctx.deps.auditRecorder.recordListing(auth.identity, 1)
 
@@ -226,42 +272,18 @@ export async function getMeeting(req: Request, ctx: RouteCtx): Promise<Response>
 /**
  * GET /api/v1/meetings/:meetingId/assets?sub_meeting_id=&from=&to=
  *
- * 场次的挑选与 `getMeeting` 同一口径（`pickMeeting`）：`sub_meeting_id` 给了就
+ * 场次的挑选与 `getMeeting` 同一口径（`resolveMeeting`）：`sub_meeting_id` 给了就
  * 取那一条录制记录，不给取最新一条，点不中回 404 meeting_not_found_in_range。
- *
- * 五类资产没有一类依赖 STS-Token（批量 addresses + 智能接口，见 catalog/index.ts），
- * 这里不需要任何降级分支。
  */
 export async function listAssets(req: Request, ctx: RouteCtx): Promise<Response> {
   const now = ctx.deps.now()
   const auth = requireAuth(req, ctx.deps.jwtSecret, now)
   if (!auth.ok) return auth.response
 
-  const url = new URL(req.url)
-  const from = parseIntParam(url.searchParams.get('from'))
-  const to = parseIntParam(url.searchParams.get('to'))
+  const meeting = await resolveMeeting(req, ctx, now)
+  if (meeting instanceof Response) return meeting
 
-  let meetings: Meeting[]
-  try {
-    meetings = await ctx.deps.recordsApi.listMeetings(
-      { kind: 'id', meetingId: ctx.params.meetingId!, from, to },
-      now,
-    )
-  } catch (err) {
-    if (err instanceof MeetingNotFoundInRangeError) {
-      return json(404, { error: 'meeting_not_found_in_range', message: err.message })
-    }
-    throw err
-  }
-
-  // 缓存写入由 recordsApi 统一负责（见上面 listMeetings 处的说明）
-  const meeting = pickMeeting(meetings, url.searchParams.get('sub_meeting_id'))
-  if (meeting === null) {
-    const notFound = new MeetingNotFoundInRangeError(ctx.params.meetingId!, from ?? now - DEFAULT_WINDOW_SEC, to ?? now)
-    return json(404, { error: 'meeting_not_found_in_range', message: notFound.message })
-  }
-
-  const assets = await ctx.deps.catalog.listAssets(meeting)
+  const assets = await storedAssets(ctx, meeting)
   const decision = await decideMeeting(ctx, auth.identity, meeting, now)
   const visibleAssets = filterAssetsByDecision(decision, assets)
   await ctx.deps.auditRecorder.recordListing(auth.identity, visibleAssets.length)
@@ -353,23 +375,94 @@ export async function downloadUrl(req: Request, ctx: RouteCtx): Promise<Response
 
   if (!asset.allowed) return json(403, { error: 'forbidden' })
 
-  const target: Asset = {
-    assetId,
-    meetingId: meeting.meetingId,
-    subMeetingId: meeting.subMeetingId,
-    assetType: parsed.assetType,
-    recordFileId: parsed.recordFileId,
-    fileType: null,
-    bytesExpected: null,
-    allowDownload: true,
+  // 判定通过才去看盘上有没有：先查文件再判定，会让 404/403 的先后把「资产存不存在」
+  // 泄露给无权者
+  const located = await ctx.deps.archivesStore.findCompletedAssetByAssetId(assetId)
+  if (located === null) return json(404, { error: 'asset_not_found' })
+
+  // 地址指回网关自己（见 assetContent）。令牌放在查询串里，是因为引擎下载器拿到
+  // 这条 URL 后只会加一个 Range 头，与腾讯 CDN 直链同一种用法
+  const token = signDownloadToken(assetId, ctx.deps.jwtSecret, now)
+  return json(200, {
+    url: `${ctx.deps.gatewayBaseUrl}/api/v1/assets/${encodeURIComponent(assetId)}/content?token=${token}`,
+    expires_at: now + DOWNLOAD_TOKEN_TTL_SEC,
+  })
+}
+
+/**
+ * GET /api/v1/assets/:assetId/content?token=
+ *
+ * 采集程序拿 download-url 给的地址来这里取字节。**不走 Bearer**：引擎下载器
+ * （packages/engine/src/downloader）只 `fetch(url, { headers: { range } })`，凭证
+ * 只能在 URL 里。令牌证明了「网关签发、给这一个资产、未过期」，策略判定在
+ * download-url 那一步已经做过。
+ *
+ * 文件先找本地归档（`meeting_assets.target_path`，相对 MDE_ARCHIVE_ROOT），本地
+ * 被保留策略清掉后回退 NAS（`archived_assets.nas_path`，相对 MDE_NAS_ROOT）。两处
+ * 都做根目录包含检查：路径来自库，库里一条写坏的记录不该能读到根目录之外。
+ *
+ * Range 语义与管理端媒体流（handlers/console/media.ts）同一套：引擎断点续传靠
+ * 206 + Content-Range，起点越界回 416 让它丢掉 .part 重来。
+ */
+export async function assetContent(req: Request, ctx: RouteCtx): Promise<Response> {
+  const now = ctx.deps.now()
+  const token = new URL(req.url).searchParams.get('token') ?? ''
+  const assetId = ctx.params.assetId!
+  // 令牌指向的资产必须就是路径上这一个：否则一张合法令牌能换着路径读别的文件
+  if (verifyDownloadToken(token, ctx.deps.jwtSecret, now) !== assetId) return json(403, { error: 'forbidden' })
+
+  const localRoot = ctx.deps.localArchiveRoot
+  if (localRoot === null) return json(503, { error: 'archive_root_unconfigured' })
+
+  const located = await ctx.deps.archivesStore.findCompletedAssetByAssetId(assetId)
+  if (located === null) return json(404, { error: 'asset_not_found' })
+
+  const candidates: Array<{ root: string; path: string }> = [{ root: localRoot, path: located.targetPath }]
+  if (located.nasPath !== null && ctx.deps.nasRoot !== null) {
+    candidates.push({ root: ctx.deps.nasRoot, path: located.nasPath })
   }
 
-  try {
-    const { url, expiresAt } = await ctx.deps.catalog.resolveDownloadUrl(target)
-    return json(200, { url, expires_at: expiresAt })
-  } catch (err) {
-    if (err instanceof AssetUrlMissingError) return json(404, { error: 'asset_not_found' })
-    if (err instanceof InvalidAssetIdError) return json(400, { error: 'invalid_asset_id' })
-    throw err
+  let abs: string | null = null
+  let size = 0
+  for (const c of candidates) {
+    const candidate = resolve(c.root, c.path)
+    if (!isInsideRoot(c.root, candidate)) {
+      // 路径只进日志不进响应：对调用方它就是没有这个资产
+      console.warn(`[assets] 拒绝越界读取：${assetId} 的记录路径解析为 ${candidate}，不在 ${resolve(c.root)} 之内`)
+      continue
+    }
+    try {
+      const st = await stat(candidate)
+      if (!st.isFile()) continue
+      abs = candidate
+      size = st.size
+      break
+    } catch {
+      continue
+    }
   }
+  if (abs === null) return json(404, { error: 'asset_not_found' })
+
+  const range = parseRange(req.headers.get('range'), size)
+  if (range.kind === 'unsatisfiable') {
+    return new Response(null, {
+      status: 416,
+      headers: { 'content-range': `bytes */${size}`, 'accept-ranges': 'bytes' },
+    })
+  }
+  const start = range.kind === 'full' ? 0 : range.start
+  const end = range.kind === 'full' ? size - 1 : range.end
+  const headers = new Headers({
+    'content-type': Bun.file(abs).type,
+    'accept-ranges': 'bytes',
+    'content-length': String(end - start + 1),
+    'cache-control': 'private, no-store',
+  })
+  if (range.kind === 'partial') headers.set('content-range', `bytes ${start}-${end}/${size}`)
+
+  // slice 出来的是惰性 Blob，录像几个 GB 也不进内存；end 是闭区间，slice 第二参是开区间
+  return new Response(Bun.file(abs).slice(start, end + 1), {
+    status: range.kind === 'partial' ? 206 : 200,
+    headers,
+  })
 }

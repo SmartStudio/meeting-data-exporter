@@ -33,6 +33,8 @@ interface SeedAssetInput {
   contentHash?: string | null
   /** 放弃原因，只有 skipped / dead 的行才有意义 */
   lastError?: string | null
+  /** 网关格式的资产 id；016 之前入库的旧行没有它 */
+  assetId?: string | null
 }
 
 async function seedAsset(pool: Pool, input: SeedAssetInput): Promise<void> {
@@ -48,14 +50,15 @@ async function seedAsset(pool: Pool, input: SeedAssetInput): Promise<void> {
     bytesExpected = null,
     contentHash = null,
     lastError = null,
+    assetId = null,
   } = input
   await pool.execute(
     `INSERT INTO meeting_assets
        (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path,
-        bytes_written, bytes_expected, content_hash, last_error, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1000, 1000)`,
+        bytes_written, bytes_expected, content_hash, last_error, asset_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1000, 1000)`,
     [meetingId, subMeetingId, assetType, remoteId, fileType, status, targetPath,
-     bytesWritten, bytesExpected, contentHash, lastError],
+     bytesWritten, bytesExpected, contentHash, lastError, assetId],
   )
 }
 
@@ -77,6 +80,7 @@ test('listCompletedAssets 只返回 status=completed 的行，字段映射正确
         assetType: 'video',
         remoteId: 'remote-1',
         fileType: 'mp4',
+        assetId: null,
         targetPath: '2026/08/dir/a.mp4',
         bytesWritten: 555,
         // BIGINT 列必须是 number 而不是字符串：这个值会被写进 NAS 上的 JSON 清单，
@@ -579,6 +583,41 @@ test('listMeetingKeysWithLocalFiles：空库返回空数组，周期性会议的
       { meetingId: 'm-rec', subMeetingId: 's-1' },
       { meetingId: 'm-rec', subMeetingId: 's-2' },
     ])
+  } finally {
+    await cleanup()
+  }
+})
+
+// ── findCompletedAssetByAssetId：网关 content 端点定位文件的唯一入口 ──────────
+
+test('findCompletedAssetByAssetId 只认 completed 且有 target_path 的行，NAS 路径来自 archived_assets', async () => {
+  const { pool, cleanup } = await withTestDb()
+  try {
+    const store = createArchivesStore(pool)
+    await seedAsset(pool, {
+      meetingId: 'm-f', subMeetingId: 'rec-f', remoteId: 'file-f', targetPath: 'f/video.mp4',
+      assetId: 'rec-f:file-f:video:0',
+    })
+    await seedAsset(pool, {
+      meetingId: 'm-f', subMeetingId: 'rec-f', assetType: 'audio', remoteId: 'file-f', fileType: 'm4a',
+      status: 'pending', targetPath: null, assetId: 'rec-f:file-f:audio:0',
+    })
+
+    // 还没归档：只有本地路径
+    expect(await store.findCompletedAssetByAssetId('rec-f:file-f:video:0')).toEqual({
+      meetingId: 'm-f', subMeetingId: 'rec-f', targetPath: 'f/video.mp4', nasPath: null,
+    })
+
+    // 归档之后同一条查询带出 NAS 路径——本地被清掉后网关靠它回退
+    await store.recordArchivedAsset({
+      meetingId: 'm-f', subMeetingId: 'rec-f', assetType: 'video', remoteId: 'file-f', fileType: 'mp4',
+      localPath: 'f/video.mp4', nasPath: 'nas/f/video.mp4', nasHash: 'a'.repeat(64), archivedAt: 2000,
+    })
+    expect((await store.findCompletedAssetByAssetId('rec-f:file-f:video:0'))?.nasPath).toBe('nas/f/video.mp4')
+
+    // 还在下的资产不能被发出去——签了令牌也定位不到
+    expect(await store.findCompletedAssetByAssetId('rec-f:file-f:audio:0')).toBeNull()
+    expect(await store.findCompletedAssetByAssetId('rec-nope:file-x:video:0')).toBeNull()
   } finally {
     await cleanup()
   }

@@ -607,15 +607,14 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
    区别）。采集权限的主体本身是采集程序（`service_accounts.id`），逐程序配置，
    不存在「整个部门」这种批量授权方式——见第 7 节。
 
-7. **`Asset` 不含 `meetingRecordId`，`download-url` 对 video/audio/
-   meeting_summary 类型依赖进程内索引**（`src/catalog/index.ts`）。这些资产
-   类型解析下载地址时，要求同一个 `Catalog` 实例此前对该会议调用过
-   `listAssets`（用于建立 `recordFileId -> meetingRecordId` 的内存索引）。
-   在网关多实例部署、且没有粘性会话（sticky session）的情况下，如果"列会议"
-   与"取下载地址"两次请求被负载均衡到不同实例，取下载地址会失败并抛出
-   `AssetNotIndexedError`。当前网关是无状态水平扩展设计，这个限制与该设计目标
-   存在张力，建议上线前评估实际流量下命中该问题的概率，或在后续迭代给
-   `Meeting`/`Asset` 补上 `meetingRecordId` 字段以彻底解决。
+7. **✅ 已解决（2026-09-20）：网关不再依赖进程内索引。** 网关的列会议、列资产、
+   `download-url` 三个端点改为只读调度器写好的 `meeting_cache` 与 `meeting_assets`
+   （`src/store/stored-records.ts`），`download-url` 按 `asset_id` 查库并签发指向
+   `GET /api/v1/assets/:assetId/content` 的短期令牌（15 分钟），文件由网关从
+   `MDE_ARCHIVE_ROOT` 直出，本地被清理后回退 `MDE_NAS_ROOT`。任何实例都能签发与
+   直出，多实例无粘性会话也成立。腾讯接口只剩调度器在调。
+   随之而来的口径变化：采集程序看到的是调度器已经下载完成的会议与资产，不是
+   腾讯此刻有的；上线前 24 小时以前的会议要先补跑调度器窗口。
 
 8. **`GET /v1/addresses`（错误码前缀 51174 相关接口）的响应字段名是推断得出，
    未逐字对照官方文档核实**（`src/tencent/addresses.ts`）。推断依据是
@@ -631,9 +630,9 @@ docker run --rm --env-file /etc/meeting-export-gateway/.env \
    可用内嵌 webview 覆盖更顺滑的体验，但网关已自带这层兜底，不再是上线阻塞项。
 
 10. **`download-url` 成功响应目前只有 `{ url, expires_at }`**，缺少设计文档
-    提到的 `file_type` / `bytes_expected` 字段（`catalog.resolveDownloadUrl`
-    本身的返回值就没有这两个字段）。如果下游客户端依赖这两个字段做进度展示或
-    文件类型判断，需要先补齐。
+    提到的 `file_type` / `bytes_expected` 字段。这两个字段在
+    `GET /meetings/:id/assets` 的每条资产上已经有了（读自 `meeting_assets`），
+    如果下游客户端只凭 `download-url` 的响应做进度展示或文件类型判断，需要先补齐。
 
 以上各项在对应任务的报告（`.superpowers/sdd/task-*-report.md` 的"疑虑"章节）
 里有更详细的背景说明，本节只做面向部署决策的摘要。这份清单本身不追求穷尽——

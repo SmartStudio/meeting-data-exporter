@@ -1,10 +1,22 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../src/store/db'
-import type { QueryParams } from '../../src/tencent/url'
 import { withTestDb } from '../helpers/testdb'
-import { buildTestApp, insertGrant, insertPolicyRule, insertServiceProgram, JWT_SECRET } from './testApp'
-import { signAccessToken } from '../../src/auth/tokens'
+import {
+  buildTestApp,
+  insertGrant,
+  insertPolicyRule,
+  insertServiceProgram,
+  seedCompletedAsset,
+  seedMeeting,
+  writeArchiveFile,
+  JWT_SECRET,
+} from './testApp'
+import { signAccessToken, signDownloadToken } from '../../src/auth/tokens'
+import { createArchivesStore } from '../../src/store/archives'
 import type { ActorIdentity } from '../../src/domain/types'
 
 let pool: Pool
@@ -36,93 +48,54 @@ const TEST_PROGRAM_IDS = [
     'prog-erin-1',
     'prog-frank-1',
     'prog-frank-2',
-    'prog-grace-1',
     'prog-henry-1',
-    'prog-ivan-1',
     'prog-judy-1',
     'prog-kate-1',
     'prog-lena-1',
+    'prog-mike-1',
     'prog-noaccess-1',
 ] as const
+
+let archiveRoot: string
+let nasRoot: string
 
 beforeAll(async () => {
   const db = await withTestDb()
   pool = db.pool
   cleanup = db.cleanup
   for (const id of TEST_PROGRAM_IDS) await insertServiceProgram(pool, { id })
+  archiveRoot = mkdtempSync(join(tmpdir(), 'mde-archive-'))
+  nasRoot = mkdtempSync(join(tmpdir(), 'mde-nas-'))
 })
-afterAll(() => cleanup())
+afterAll(async () => {
+  await cleanup()
+  rmSync(archiveRoot, { recursive: true, force: true })
+  rmSync(nasRoot, { recursive: true, force: true })
+})
 
 const NOW = 1_700_000_000
-
-function rawMeeting(o: {
-  meeting_record_id: string
-  meeting_id: string
-  meeting_code: string
-  host_user_id: string
-  subject?: string
-  state?: number
-}): unknown {
-  return {
-    meeting_record_id: o.meeting_record_id,
-    meeting_id: o.meeting_id,
-    meeting_code: o.meeting_code,
-    host_user_id: o.host_user_id,
-    media_start_time: NOW * 1000,
-    subject: o.subject ?? '测试会议',
-    state: o.state ?? 3,
-    record_type: 0,
-    record_files: [],
-  }
-}
-
-function recordsPage(meetings: unknown[]): unknown {
-  return { total_page: 1, record_meetings: meetings }
-}
-
-/**
- * 供给 `/v1/corp/records`——网关唯一会调的会议列表接口（范围查询与精确查询都走它，
- * 见 src/tencent/records.ts 的文件头）。
- *
- * fixture 里主持人写作 `host_user_id`，这里改名成 `userid` 再吐出去：那个接口的
- * wire 形状就是这样，照搬 host_user_id 会让主持人静默变成 undefined。故意让两个
- * 名字不同，这个 bug 才不会在测试里蒙混过关。
- *
- * 返回 null 表示该 path 不是会议列表接口，调用方继续往下判断。
- */
-function recordsFor(path: string, meetings: unknown[]): unknown | null {
-  if (path !== '/v1/corp/records') return null
-  return recordsPage(
-    meetings.map((m) => {
-      const { host_user_id: host, ...rest } = m as Record<string, unknown>
-      return { ...rest, userid: host }
-    }),
-  )
-}
-
-function addressesPage(files: unknown[]): unknown {
-  return { total_page: 1, record_files: files }
-}
 
 function bearer(identity: ActorIdentity, now = NOW): Record<string, string> {
   return { Authorization: `Bearer ${signAccessToken(identity, JWT_SECRET, now)}` }
 }
 
-test('列表按策略过滤，被拒的会议不出现', async () => {
-  const alice: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-alice-1', programId: 'prog-alice-1',
-  }
-  const meetingA = rawMeeting({
-    meeting_record_id: 'rec-a-1', meeting_id: 'm-a-1', meeting_code: '881', host_user_id: 'tm-alice-1',
-  })
-  const meetingB = rawMeeting({
-    meeting_record_id: 'rec-b-1', meeting_id: 'm-b-1', meeting_code: '882', host_user_id: 'tm-bob-1',
-  })
+function program(n: string): ActorIdentity {
+  return { kind: 'service_account', wecomUserId: null, tmUserId: `tm-${n}`, programId: `prog-${n}` }
+}
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => (recordsFor(path, [meetingA, meetingB]) ?? {}),
+function downloadUrlReq(assetId: string, headers: Record<string, string>): Request {
+  return new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
+    method: 'POST',
+    headers,
   })
+}
+
+test('列表按策略过滤，被拒的会议不出现', async () => {
+  const alice = program('alice-1')
+  await seedMeeting(pool, { meetingRecordId: 'rec-a-1', meetingId: 'm-a-1', meetingCode: '881', hostUserId: 'tm-alice-1' })
+  await seedMeeting(pool, { meetingRecordId: 'rec-b-1', meetingId: 'm-b-1', meetingCode: '882', hostUserId: 'tm-bob-1' })
+
+  const { app } = buildTestApp(pool, { now: () => NOW })
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-alice-1',
     conds: [{ f: 'host', op: 'is', v: 'tm-alice-1' }], assetTypes: ['*'], effect: 'allow',
@@ -139,21 +112,13 @@ test('列表按策略过滤，被拒的会议不出现', async () => {
 })
 
 test('单场详情对无可见权限的会议返回 404，且不泄露会议属性（不是无条件全量返回）', async () => {
-  const noAccess: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-noaccess-1', programId: 'prog-noaccess-1',
-  }
-  const secretMeeting = rawMeeting({
-    meeting_record_id: 'rec-secret-1',
-    meeting_id: 'm-secret-1',
-    meeting_code: '999',
-    host_user_id: 'tm-owner-1',
+  const noAccess = program('noaccess-1')
+  await seedMeeting(pool, {
+    meetingRecordId: 'rec-secret-1', meetingId: 'm-secret-1', meetingCode: '999', hostUserId: 'tm-owner-1',
     subject: '并购谈判纪要',
   })
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => (recordsFor(path, [secretMeeting]) ?? {}),
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW })
   // 有意不插入任何策略规则：noAccess 对该会议的任何资产类型都判定为 deny，
   // 因此按 listMeetings 相同口径，这场会议对她不可见。
 
@@ -180,42 +145,24 @@ test('单场详情对无可见权限的会议返回 404，且不泄露会议属�
 })
 
 test('download-url 对无权资产返回 403 且写审计', async () => {
-  const carol: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-carol-1', programId: 'prog-carol-1',
-  }
-  const meeting = rawMeeting({
-    meeting_record_id: 'rec-carol-1', meeting_id: 'm-carol-1', meeting_code: '883', host_user_id: 'tm-carol-1',
+  const carol = program('carol-1')
+  await seedMeeting(pool, { meetingRecordId: 'rec-carol-1', meetingId: 'm-carol-1', meetingCode: '883', hostUserId: 'tm-carol-1' })
+  const assetId = await seedCompletedAsset(pool, {
+    meetingId: 'm-carol-1', subMeetingId: 'rec-carol-1', assetType: 'video', remoteId: 'file-carol-1',
+    targetPath: 'carol/video.mp4',
   })
-  const addressFile = {
-    record_file_id: 'file-carol-1', download_address: 'https://cos/carol.mp4', download_address_file_type: 'mp4',
-  }
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => {
-      const meetingsRes = recordsFor(path, [meeting])
-      if (meetingsRes) return meetingsRes
-      if (path === '/v1/addresses') return addressesPage([addressFile])
-      return {}
-    },
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
   // 有意不插入任何策略规则：默认 deny
 
   const headers = bearer(carol)
 
-  // 先列资产，使 meeting 元数据写入缓存（真实客户端流程必然先看到 assetId）
   const listRes = await app(new Request('https://gw/api/v1/meetings/m-carol-1/assets', { headers }))
   expect(listRes.status).toBe(200)
   const listBody = (await listRes.json()) as { assets: unknown[] }
   expect(listBody.assets).toEqual([]) // 列资产同样过滤：无权限的资产不展示
 
-  const assetId = 'rec-carol-1:file-carol-1:video:0'
-  const dlRes = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const dlRes = await app(downloadUrlReq(assetId, headers))
   expect(dlRes.status).toBe(403)
   expect((await dlRes.json()).error).toBe('forbidden')
 
@@ -230,20 +177,11 @@ test('download-url 对无权资产返回 403 且写审计', async () => {
 })
 
 test('download-url 对越权构造的 assetId 返回 403（不是 404）', async () => {
-  const alice: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-alice-2', programId: 'prog-alice-2',
-  }
-  const meetingA = rawMeeting({
-    meeting_record_id: 'rec-a-2', meeting_id: 'm-a-2', meeting_code: '884', host_user_id: 'tm-alice-2',
-  })
-  const meetingB = rawMeeting({
-    meeting_record_id: 'rec-b-2', meeting_id: 'm-b-2', meeting_code: '885', host_user_id: 'tm-bob-2',
-  })
+  const alice = program('alice-2')
+  await seedMeeting(pool, { meetingRecordId: 'rec-a-2', meetingId: 'm-a-2', meetingCode: '884', hostUserId: 'tm-alice-2' })
+  await seedMeeting(pool, { meetingRecordId: 'rec-b-2', meetingId: 'm-b-2', meetingCode: '885', hostUserId: 'tm-bob-2' })
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => (recordsFor(path, [meetingA, meetingB]) ?? {}),
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW })
   await insertPolicyRule(pool, {
     priority: 10, programId: 'prog-alice-2',
     conds: [{ f: 'host', op: 'is', v: 'tm-alice-2' }], assetTypes: ['*'], effect: 'allow',
@@ -253,81 +191,42 @@ test('download-url 对越权构造的 assetId 返回 403（不是 404）', async
   await insertGrant(pool, { meetingId: 'm-a-2', subMeetingId: 'rec-a-2', programId: 'prog-alice-2' })
   await insertGrant(pool, { meetingId: 'm-b-2', subMeetingId: 'rec-b-2', programId: 'prog-alice-2' })
 
-  const headers = bearer(alice)
-  // 列会议使 meetingB 也进入 meeting_cache（尽管它对 alice 不可见——缓存写入
-  // 与展示过滤是两回事，见 http/handlers/meetings.ts 的注释）
-  await app(new Request('https://gw/api/v1/meetings', { headers }))
-
   // alice 构造出她从未被授权查看的 meetingB 下某资产的 assetId
-  const foreignAssetId = 'rec-b-2:file-b-2:video:0'
-  const res = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(foreignAssetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const res = await app(downloadUrlReq('rec-b-2:file-b-2:video:0', bearer(alice)))
   expect(res.status).toBe(403)
   expect((await res.json()).error).toBe('forbidden')
 })
 
-test('download-url 对从未被任何人列出过的 meetingRecordId 同样返回 403 而非 404', async () => {
-  const henry: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-henry-1', programId: 'prog-henry-1',
-  }
+test('download-url 对从未入库的 meetingRecordId 同样返回 403 而非 404', async () => {
+  const henry = program('henry-1')
   const { app } = buildTestApp(pool, { now: () => NOW })
 
-  const res = await app(
-    new Request('https://gw/api/v1/assets/never-cached-rec:file-x:video:0/download-url', {
-      method: 'POST',
-      headers: bearer(henry),
-    }),
-  )
+  const res = await app(downloadUrlReq('never-cached-rec:file-x:video:0', bearer(henry)))
   expect(res.status).toBe(403)
   expect((await res.json()).error).toBe('forbidden')
 })
 
 test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条路径下语义一致（均为 meetingRecordId 维度）', async () => {
-  const kate: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-kate-1', programId: 'prog-kate-1',
-  }
-  const meeting = rawMeeting({
-    meeting_record_id: 'rec-kate-1', meeting_id: 'm-kate-1', meeting_code: '890', host_user_id: 'tm-kate-1',
+  const kate = program('kate-1')
+  await seedMeeting(pool, { meetingRecordId: 'rec-kate-1', meetingId: 'm-kate-1', meetingCode: '890', hostUserId: 'tm-kate-1' })
+  const hitAssetId = await seedCompletedAsset(pool, {
+    meetingId: 'm-kate-1', subMeetingId: 'rec-kate-1', assetType: 'video', remoteId: 'file-kate-1',
+    targetPath: 'kate/video.mp4',
   })
-  const addressFile = {
-    record_file_id: 'file-kate-1', download_address: 'https://cos/kate.mp4', download_address_file_type: 'mp4',
-  }
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => {
-      const meetingsRes = recordsFor(path, [meeting])
-      if (meetingsRes) return meetingsRes
-      if (path === '/v1/addresses') return addressesPage([addressFile])
-      return {}
-    },
-  })
-  await insertPolicyRule(pool, {
-    priority: 10, programId: 'prog-kate-1', assetTypes: ['*'], effect: 'allow',
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
+  await insertPolicyRule(pool, { priority: 10, programId: 'prog-kate-1', assetTypes: ['*'], effect: 'allow' })
   await insertGrant(pool, { meetingId: 'm-kate-1', subMeetingId: 'rec-kate-1', programId: 'prog-kate-1' })
 
   const headers = bearer(kate)
 
-  // 缓存未命中分支：meetingRecordId 从未被任何人列出过，网关根本拿不到真正的
+  // 缓存未命中分支：meetingRecordId 从未入库，网关根本拿不到真正的
   // Tencent meeting_id，只有 record_id 可用。
   const missAssetId = 'rec-never-listed-kate:file-x:video:0'
-  const missRes = await app(
-    new Request(`https://gw/api/v1/assets/${missAssetId}/download-url`, { method: 'POST', headers }),
-  )
+  const missRes = await app(downloadUrlReq(missAssetId, headers))
   expect(missRes.status).toBe(403) // 未命中一律 deny（见 downloadUrl 注释）
 
-  // 缓存命中分支：先列会议使其进入 meeting_cache，此时网关同时知道
-  // meetingRecordId 与真正的 meeting_id 两者。
-  await app(new Request('https://gw/api/v1/meetings', { headers }))
-  const hitAssetId = 'rec-kate-1:file-kate-1:video:0'
-  const hitRes = await app(
-    new Request(`https://gw/api/v1/assets/${hitAssetId}/download-url`, { method: 'POST', headers }),
-  )
+  const hitRes = await app(downloadUrlReq(hitAssetId, headers))
   expect(hitRes.status).toBe(200)
 
   const [missRows] = await pool.execute<RowDataPacket[]>(
@@ -348,48 +247,33 @@ test('download-url 写入 audit_log.meeting_id 在缓存命中/未命中两条�
   expect(hitRows[0]!.meeting_id).not.toBe('m-kate-1') // 不再是 Tencent meeting_id
 })
 
-test('未传 from/to 时默认最近 31 天', async () => {
-  const dave: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-dave-1', programId: 'prog-dave-1',
-  }
-  const queries: QueryParams[] = []
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path, query) => {
-      const meetingsRes = recordsFor(path, [])
-      if (meetingsRes) {
-        queries.push(query)
-        return meetingsRes
-      }
-      return {}
-    },
+test('未传 from/to 时默认最近 31 天：窗口内的列出来，早一秒的不列', async () => {
+  const dave = program('dave-1')
+  const edge = NOW - 31 * 86400
+  await seedMeeting(pool, {
+    meetingRecordId: 'rec-dave-in', meetingId: 'm-dave-in', meetingCode: '870', hostUserId: 'tm-dave-1', startTime: edge,
   })
+  await seedMeeting(pool, {
+    meetingRecordId: 'rec-dave-out', meetingId: 'm-dave-out', meetingCode: '871', hostUserId: 'tm-dave-1', startTime: edge - 1,
+  })
+  const { app } = buildTestApp(pool, { now: () => NOW })
+  await insertPolicyRule(pool, { priority: 10, programId: 'prog-dave-1', assetTypes: ['*'], effect: 'allow' })
+  await insertGrant(pool, { meetingId: 'm-dave-in', subMeetingId: 'rec-dave-in', programId: 'prog-dave-1' })
+  await insertGrant(pool, { meetingId: 'm-dave-out', subMeetingId: 'rec-dave-out', programId: 'prog-dave-1' })
 
   const res = await app(new Request('https://gw/api/v1/meetings', { headers: bearer(dave) }))
   expect(res.status).toBe(200)
-  expect(queries).toHaveLength(1)
-  expect(Number(queries[0]!.start_time)).toBe(NOW - 31 * 86400)
-  expect(Number(queries[0]!.end_time)).toBe(NOW)
+  const body = (await res.json()) as { meetings: Array<{ meeting_id: string }> }
+  expect(body.meetings.map((m) => m.meeting_id)).toEqual(['m-dave-in'])
 })
 
 test('meeting_code 命中多场时返回数组而非单个对象', async () => {
-  const erin: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-erin-1', programId: 'prog-erin-1',
-  }
-  const m1 = rawMeeting({
-    meeting_record_id: 'rec-e-1', meeting_id: 'm-e-1', meeting_code: '886', host_user_id: 'tm-erin-1',
-  })
-  const m2 = rawMeeting({
-    meeting_record_id: 'rec-e-2', meeting_id: 'm-e-2', meeting_code: '886', host_user_id: 'tm-erin-1',
-  })
+  const erin = program('erin-1')
+  await seedMeeting(pool, { meetingRecordId: 'rec-e-1', meetingId: 'm-e-1', meetingCode: '886', hostUserId: 'tm-erin-1' })
+  await seedMeeting(pool, { meetingRecordId: 'rec-e-2', meetingId: 'm-e-2', meetingCode: '886', hostUserId: 'tm-erin-1' })
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => (recordsFor(path, [m1, m2]) ?? {}),
-  })
-  await insertPolicyRule(pool, {
-    priority: 10, programId: 'prog-erin-1', assetTypes: ['*'], effect: 'allow',
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW })
+  await insertPolicyRule(pool, { priority: 10, programId: 'prog-erin-1', assetTypes: ['*'], effect: 'allow' })
   await insertGrant(pool, { meetingId: 'm-e-1', subMeetingId: 'rec-e-1', programId: 'prog-erin-1' })
   await insertGrant(pool, { meetingId: 'm-e-2', subMeetingId: 'rec-e-2', programId: 'prog-erin-1' })
 
@@ -402,30 +286,22 @@ test('meeting_code 命中多场时返回数组而非单个对象', async () => {
   expect(body.meetings.every((m) => m.meeting_code === '886')).toBe(true)
 })
 
-test('范围外未命中返回 404 且 error 为 meeting_not_found_in_range（单场详情端点）', async () => {
-  const frank: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-frank-1', programId: 'prog-frank-1',
-  }
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => (recordsFor(path, []) ?? {}),
-  })
+test('范围外未命中返回 404 且 error 为 meeting_not_found_in_range，提示里说明要靠调度器补跑（单场详情端点）', async () => {
+  const frank = program('frank-1')
+  const { app } = buildTestApp(pool, { now: () => NOW })
 
   const res = await app(
     new Request('https://gw/api/v1/meetings/m-does-not-exist', { headers: bearer(frank) }),
   )
   expect(res.status).toBe(404)
-  expect((await res.json()).error).toBe('meeting_not_found_in_range')
+  const body = (await res.json()) as { error: string; message: string }
+  expect(body.error).toBe('meeting_not_found_in_range')
+  expect(body.message).toContain('scheduler')
 })
 
 test('范围外未命中返回 404（列表端点携带 meeting_id 过滤时同样适用）', async () => {
-  const frank2: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-frank-2', programId: 'prog-frank-2',
-  }
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => (recordsFor(path, []) ?? {}),
-  })
+  const frank2 = program('frank-2')
+  const { app } = buildTestApp(pool, { now: () => NOW })
 
   const res = await app(
     new Request('https://gw/api/v1/meetings?meeting_id=m-does-not-exist', { headers: bearer(frank2) }),
@@ -435,9 +311,7 @@ test('范围外未命中返回 404（列表端点携带 meeting_id 过滤时同�
 })
 
 test('malformed assetId 返回 400 invalid_asset_id', async () => {
-  const judy: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-judy-1', programId: 'prog-judy-1',
-  }
+  const judy = program('judy-1')
   const { app } = buildTestApp(pool, { now: () => NOW })
 
   const res = await app(
@@ -458,29 +332,15 @@ test('malformed assetId 返回 400 invalid_asset_id', async () => {
 // 这一条端到端地钉住那道闸门：规则放行了，没有授权行照样一个字节都出不去。
 
 test('有 allow 规则但没有授权行：列不出来、详情 404、download-url 403 且审计说得出是授权', async () => {
-  const lena: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-lena-1', programId: 'prog-lena-1',
-  }
-  const meeting = rawMeeting({
-    meeting_record_id: 'rec-l-1', meeting_id: 'm-l-1', meeting_code: '891', host_user_id: 'tm-lena-1',
+  const lena = program('lena-1')
+  await seedMeeting(pool, { meetingRecordId: 'rec-l-1', meetingId: 'm-l-1', meetingCode: '891', hostUserId: 'tm-lena-1' })
+  const assetId = await seedCompletedAsset(pool, {
+    meetingId: 'm-l-1', subMeetingId: 'rec-l-1', assetType: 'video', remoteId: 'file-l-1', targetPath: 'lena/1.mp4',
   })
-  const addressFile = {
-    record_file_id: 'file-l-1', download_address: 'https://cos/lena.mp4', download_address_file_type: 'mp4',
-  }
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => {
-      const meetingsRes = recordsFor(path, [meeting])
-      if (meetingsRes) return meetingsRes
-      if (path === '/v1/addresses') return addressesPage([addressFile])
-      return {}
-    },
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
   // 规则放行全部八类，但一条授权行都没有
-  await insertPolicyRule(pool, {
-    priority: 10, programId: 'prog-lena-1', assetTypes: ['*'], effect: 'allow',
-  })
+  await insertPolicyRule(pool, { priority: 10, programId: 'prog-lena-1', assetTypes: ['*'], effect: 'allow' })
 
   const headers = bearer(lena)
 
@@ -492,10 +352,7 @@ test('有 allow 规则但没有授权行：列不出来、详情 404、download-
   const detailRes = await app(new Request('https://gw/api/v1/meetings/m-l-1', { headers }))
   expect(detailRes.status).toBe(404)
 
-  const assetId = 'rec-l-1:file-l-1:video:0'
-  const dlRes = await app(
-    new Request(`https://gw/api/v1/assets/${assetId}/download-url`, { method: 'POST', headers }),
-  )
+  const dlRes = await app(downloadUrlReq(assetId, headers))
   expect(dlRes.status).toBe(403)
 
   const [rows] = await pool.execute<RowDataPacket[]>(
@@ -511,31 +368,29 @@ test('有 allow 规则但没有授权行：列不出来、详情 404、download-
   expect(String(rows[0]!.detail)).toContain('prog-lena-1')
 })
 
-test('补上授权行之后，同一场会议立刻列得出来、下载地址也签得出来', async () => {
-  const lena: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-lena-1', programId: 'prog-lena-1',
-  }
-  const meeting = rawMeeting({
-    meeting_record_id: 'rec-l-2', meeting_id: 'm-l-2', meeting_code: '892', host_user_id: 'tm-lena-1',
+test('补上授权行之后，同一场会议列得出来、清单来自 meeting_assets、下载地址指回网关并能取到字节', async () => {
+  const lena = program('lena-1')
+  await seedMeeting(pool, { meetingRecordId: 'rec-l-2', meetingId: 'm-l-2', meetingCode: '892', hostUserId: 'tm-lena-1' })
+  const assetId = await seedCompletedAsset(pool, {
+    meetingId: 'm-l-2', subMeetingId: 'rec-l-2', assetType: 'video', remoteId: 'file-l-2',
+    targetPath: 'lena/2.mp4', bytesExpected: 26,
   })
-  const addressFile = {
-    record_file_id: 'file-l-2', download_address: 'https://cos/lena2.mp4', download_address_file_type: 'mp4',
-  }
+  // 一条 completed 但没有 asset_id 的旧行：网关签不出它的地址，清单里不该有它
+  await pool.execute(
+    `INSERT INTO meeting_assets (meeting_id, sub_meeting_id, asset_type, remote_id, file_type, status, target_path, created_at, updated_at)
+     VALUES ('m-l-2', 'rec-l-2', 'audio', 'file-l-2', 'm4a', 'completed', 'lena/2.m4a', 0, 0)`,
+  )
+  // 还没下完的资产也不在清单里：发出去是半个文件
+  await pool.execute(
+    `INSERT INTO meeting_assets (meeting_id, sub_meeting_id, asset_type, remote_id, asset_id, file_type, status, created_at, updated_at)
+     VALUES ('m-l-2', 'rec-l-2', 'ai_minutes', 'file-l-2', 'rec-l-2:file-l-2:ai_minutes:0', 'md', 'pending', 0, 0)`,
+  )
+  writeArchiveFile(archiveRoot, 'lena/2.mp4', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW,
-    tencentGet: (path) => {
-      const meetingsRes = recordsFor(path, [meeting])
-      if (meetingsRes) return meetingsRes
-      if (path === '/v1/addresses') return addressesPage([addressFile])
-      return {}
-    },
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
   // 与上一条用例逐字相同的规则（不靠它跑在前面：用例之间不该有执行顺序上的依赖）。
   // 这次多出来的只有授权行——两条用例之间**唯一**的差别就是它
-  await insertPolicyRule(pool, {
-    priority: 10, programId: 'prog-lena-1', assetTypes: ['*'], effect: 'allow',
-  })
+  await insertPolicyRule(pool, { priority: 10, programId: 'prog-lena-1', assetTypes: ['*'], effect: 'allow' })
   await insertGrant(pool, { meetingId: 'm-l-2', subMeetingId: 'rec-l-2', programId: 'prog-lena-1' })
 
   const headers = bearer(lena)
@@ -547,14 +402,148 @@ test('补上授权行之后，同一场会议立刻列得出来、下载地址�
 
   const detailRes = await app(new Request('https://gw/api/v1/meetings/m-l-2', { headers }))
   expect(detailRes.status).toBe(200)
+  const detail = (await detailRes.json()) as { assets: Array<Record<string, unknown>> }
+  expect(detail.assets).toEqual([
+    {
+      asset_id: assetId,
+      meeting_id: 'm-l-2',
+      sub_meeting_id: 'rec-l-2',
+      asset_type: 'video',
+      remote_id: 'file-l-2',
+      file_type: 'mp4',
+      bytes_expected: 26,
+      allow_download: true,
+    },
+  ])
 
-  const dlRes = await app(
-    new Request('https://gw/api/v1/assets/rec-l-2:file-l-2:video:0/download-url', {
-      method: 'POST', headers,
-    }),
-  )
+  const dlRes = await app(downloadUrlReq(assetId, headers))
   expect(dlRes.status).toBe(200)
-  expect(((await dlRes.json()) as { url: string }).url).toBe('https://cos/lena2.mp4')
+  const dl = (await dlRes.json()) as { url: string; expires_at: number }
+  expect(dl.url.startsWith(`https://gw.example/api/v1/assets/${encodeURIComponent(assetId)}/content?token=`)).toBe(true)
+  expect(dl.expires_at).toBe(NOW + 900)
+
+  // 引擎下载器就是这么用这条 URL 的：不带 Bearer，直接 fetch
+  const full = await app(new Request(dl.url))
+  expect(full.status).toBe(200)
+  expect(full.headers.get('accept-ranges')).toBe('bytes')
+  expect(full.headers.get('content-length')).toBe('26')
+  expect(await full.text()).toBe('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+
+  // 断点续传：206 + Content-Range，只发后半段
+  const resumed = await app(new Request(dl.url, { headers: { range: 'bytes=10-' } }))
+  expect(resumed.status).toBe(206)
+  expect(resumed.headers.get('content-range')).toBe('bytes 10-25/26')
+  expect(resumed.headers.get('content-length')).toBe('16')
+  expect(await resumed.text()).toBe('KLMNOPQRSTUVWXYZ')
+
+  // 起点越界：416，让下载器丢掉 .part 重来
+  const beyond = await app(new Request(dl.url, { headers: { range: 'bytes=26-' } }))
+  expect(beyond.status).toBe(416)
+  expect(beyond.headers.get('content-range')).toBe('bytes */26')
+})
+
+// ── GET /api/v1/assets/:assetId/content 的凭证与路径边界 ───────────────────
+
+function contentUrl(assetId: string, token: string): string {
+  return `https://gw/api/v1/assets/${encodeURIComponent(assetId)}/content?token=${token}`
+}
+
+test('content 端点：没有令牌、签名不对、过期、令牌指向别的资产，一律 403 且一个字节都不发', async () => {
+  await seedMeeting(pool, { meetingRecordId: 'rec-m-1', meetingId: 'm-m-1', meetingCode: '893', hostUserId: 'tm-mike-1' })
+  const assetId = await seedCompletedAsset(pool, {
+    meetingId: 'm-m-1', subMeetingId: 'rec-m-1', assetType: 'video', remoteId: 'file-m-1', targetPath: 'mike/1.mp4',
+  })
+  const otherAssetId = await seedCompletedAsset(pool, {
+    meetingId: 'm-m-1', subMeetingId: 'rec-m-1', assetType: 'audio', remoteId: 'file-m-1', fileType: 'm4a', targetPath: 'mike/1.m4a',
+  })
+  writeArchiveFile(archiveRoot, 'mike/1.mp4', 'video-bytes')
+  writeArchiveFile(archiveRoot, 'mike/1.m4a', 'audio-bytes')
+
+  const { app } = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
+  const good = signDownloadToken(assetId, JWT_SECRET, NOW)
+
+  // 对照：这张令牌本身是好的
+  expect((await app(new Request(contentUrl(assetId, good)))).status).toBe(200)
+
+  const cases: Array<[string, string]> = [
+    ['没有令牌', `https://gw/api/v1/assets/${encodeURIComponent(assetId)}/content`],
+    ['签名被改', contentUrl(assetId, good.slice(0, -2) + 'xx')],
+    ['别的密钥签的', contentUrl(assetId, signDownloadToken(assetId, 'another-secret-that-is-long-enough', NOW))],
+    ['过期', contentUrl(assetId, signDownloadToken(assetId, JWT_SECRET, NOW - 900))],
+    ['令牌是给另一份资产的', contentUrl(assetId, signDownloadToken(otherAssetId, JWT_SECRET, NOW))],
+  ]
+  for (const [label, url] of cases) {
+    const res = await app(new Request(url))
+    expect(res.status, label).toBe(403)
+    expect(((await res.json()) as { error: string }).error, label).toBe('forbidden')
+  }
+})
+
+test('content 端点：没配 MDE_ARCHIVE_ROOT 回 503；令牌合法但库里没有这份 completed 资产回 404', async () => {
+  const assetId = 'rec-nowhere:file-x:video:0'
+  const token = signDownloadToken(assetId, JWT_SECRET, NOW)
+
+  const unconfigured = buildTestApp(pool, { now: () => NOW })
+  const res503 = await unconfigured.app(new Request(contentUrl(assetId, token)))
+  expect(res503.status).toBe(503)
+  expect(((await res503.json()) as { error: string }).error).toBe('archive_root_unconfigured')
+
+  const configured = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
+  const res404 = await configured.app(new Request(contentUrl(assetId, token)))
+  expect(res404.status).toBe(404)
+  expect(((await res404.json()) as { error: string }).error).toBe('asset_not_found')
+})
+
+test('content 端点：记录里的路径解析到根目录之外（../ 或前缀相似的兄弟目录）回 404，不读那个文件', async () => {
+  // 根目录旁边放一个同前缀的兄弟目录：纯 startsWith 会把它放进来
+  const evilSibling = `${archiveRoot}-evil`
+  writeArchiveFile(evilSibling, 'leak.txt', 'must-not-be-served')
+  writeArchiveFile(archiveRoot, 'outside-marker.txt', 'in-root')
+  try {
+    const dotdot = await seedCompletedAsset(pool, {
+      meetingId: 'm-m-2', subMeetingId: 'rec-m-2', assetType: 'video', remoteId: 'file-dotdot',
+      targetPath: `../${archiveRoot.split('/').pop()}-evil/leak.txt`,
+    })
+    const sibling = await seedCompletedAsset(pool, {
+      meetingId: 'm-m-2', subMeetingId: 'rec-m-2', assetType: 'audio', remoteId: 'file-sibling',
+      targetPath: `${evilSibling}/leak.txt`,
+    })
+    const { app } = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
+
+    for (const assetId of [dotdot, sibling]) {
+      const res = await app(new Request(contentUrl(assetId, signDownloadToken(assetId, JWT_SECRET, NOW))))
+      expect(res.status, assetId).toBe(404)
+      expect(((await res.json()) as { error: string }).error, assetId).toBe('asset_not_found')
+    }
+  } finally {
+    rmSync(evilSibling, { recursive: true, force: true })
+  }
+})
+
+test('content 端点：本地副本被清掉后回退到 NAS 上归档的那一份；两处都没有回 404', async () => {
+  await seedMeeting(pool, { meetingRecordId: 'rec-m-3', meetingId: 'm-m-3', meetingCode: '894', hostUserId: 'tm-mike-1' })
+  const assetId = await seedCompletedAsset(pool, {
+    meetingId: 'm-m-3', subMeetingId: 'rec-m-3', assetType: 'video', remoteId: 'file-m-3', targetPath: 'mike/3.mp4',
+  })
+  await createArchivesStore(pool).recordArchivedAsset({
+    meetingId: 'm-m-3', subMeetingId: 'rec-m-3', assetType: 'video', remoteId: 'file-m-3', fileType: 'mp4',
+    localPath: 'mike/3.mp4', nasPath: 'archived/m-m-3/3.mp4', nasHash: 'deadbeef', archivedAt: NOW,
+  })
+  const token = signDownloadToken(assetId, JWT_SECRET, NOW)
+
+  // 本地那份从未存在（被保留策略清掉了），NAS 那份在
+  writeArchiveFile(nasRoot, 'archived/m-m-3/3.mp4', 'from-nas')
+  const withNas = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot, nasRoot })
+  const res = await withNas.app(new Request(contentUrl(assetId, token), { headers: { range: 'bytes=5-' } }))
+  expect(res.status).toBe(206)
+  expect(res.headers.get('content-range')).toBe('bytes 5-7/8')
+  expect(await res.text()).toBe('nas')
+
+  // 没挂 NAS 的进程回 404：它确实发不出这份文件
+  const withoutNas = buildTestApp(pool, { now: () => NOW, localArchiveRoot: archiveRoot })
+  const miss = await withoutNas.app(new Request(contentUrl(assetId, token)))
+  expect(miss.status).toBe(404)
+  expect(((await miss.json()) as { error: string }).error).toBe('asset_not_found')
 })
 
 test('GET /healthz 无需鉴权，返回 200', async () => {
@@ -571,26 +560,17 @@ test('未知路径返回 404', async () => {
 })
 
 test('单场详情与资产清单可按 sub_meeting_id 点名要某一场，未命中 404', async () => {
-  const judy: ActorIdentity = {
-    kind: 'service_account', wecomUserId: null, tmUserId: 'tm-judy-1', programId: 'prog-judy-1',
-  }
+  const judy = program('judy-1')
   // 同一个 meeting_id 的两条录制记录 = 周期会议的两场
-  const first = rawMeeting({
-    meeting_record_id: 'rec-j-1', meeting_id: 'm-j-1', meeting_code: '893', host_user_id: 'tm-judy-1',
-    subject: '第一场',
+  await seedMeeting(pool, {
+    meetingRecordId: 'rec-j-1', meetingId: 'm-j-1', meetingCode: '893', hostUserId: 'tm-judy-1', subject: '第一场',
   })
-  const second = {
-    ...(rawMeeting({
-      meeting_record_id: 'rec-j-2', meeting_id: 'm-j-1', meeting_code: '893', host_user_id: 'tm-judy-1',
-      subject: '第二场',
-    }) as Record<string, unknown>),
-    media_start_time: (NOW + 3600) * 1000,   // 更晚的一场：不带参数时它胜出
-  }
+  await seedMeeting(pool, {
+    meetingRecordId: 'rec-j-2', meetingId: 'm-j-1', meetingCode: '893', hostUserId: 'tm-judy-1', subject: '第二场',
+    startTime: NOW + 3600, // 更晚的一场：不带参数时它胜出
+  })
 
-  const { app } = buildTestApp(pool, {
-    now: () => NOW + 7200,
-    tencentGet: (path) => (recordsFor(path, [first, second]) ?? {}),
-  })
+  const { app } = buildTestApp(pool, { now: () => NOW + 7200 })
   await insertPolicyRule(pool, { priority: 10, programId: 'prog-judy-1', assetTypes: ['*'], effect: 'allow' })
   await insertGrant(pool, { meetingId: 'm-j-1', subMeetingId: 'rec-j-1', programId: 'prog-judy-1' })
   await insertGrant(pool, { meetingId: 'm-j-1', subMeetingId: 'rec-j-2', programId: 'prog-judy-1' })

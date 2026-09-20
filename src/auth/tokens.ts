@@ -85,6 +85,40 @@ export function verifyAccessToken(token: string, secret: string, now: number): A
   }
 }
 
+export const DOWNLOAD_TOKEN_TTL_SEC = 900 // 15 分钟，与 download-url 响应里的 expires_at 同一个数
+
+/**
+ * 下载令牌：`GET /api/v1/assets/:assetId/content?token=` 的唯一凭证。
+ *
+ * 引擎的下载器只 `fetch(url, { headers: { range } })`，不带 Bearer（它拿到的是一条
+ * 与腾讯 CDN 链接同形状的 URL），所以 URL 自己得能证明「是网关签发的、给这一个
+ * 资产的、还没过期」。载荷只有 assetId 与 exp：策略判定在签发那一刻已经做过，
+ * 15 分钟窗口内的变更与 access token 同一取舍。
+ */
+export function signDownloadToken(assetId: string, secret: string, now: number): string {
+  const body = b64u(JSON.stringify({ assetId, exp: now + DOWNLOAD_TOKEN_TTL_SEC }))
+  return `${body}.${b64u(hmac(secret, body))}`
+}
+
+/** 返回令牌指向的 assetId；签名不对、过期、格式不对一律返回 null——调用方统一回 403 */
+export function verifyDownloadToken(token: string, secret: string, now: number): string | null {
+  const parts = token.split('.')
+  if (parts.length !== 2) return null
+  const [body, sig] = parts as [string, string]
+  const expected = hmac(secret, body)
+  const actual = Buffer.from(sig, 'base64url')
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null
+  let payload: { assetId?: unknown; exp?: unknown }
+  try {
+    payload = JSON.parse(Buffer.from(body, 'base64url').toString())
+  } catch {
+    return null
+  }
+  if (typeof payload.assetId !== 'string' || typeof payload.exp !== 'number') return null
+  if (now >= payload.exp) return null
+  return payload.assetId
+}
+
 /** 去除 0/O/1/I 等易混字符——user_code 会被用户读出并手工输入 */
 const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 

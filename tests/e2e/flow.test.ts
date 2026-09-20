@@ -1,18 +1,24 @@
 /**
- * 端到端测试（design doc §5.10）："端到端：假腾讯 API + 真网关"。
+ * 端到端测试（design doc §5.10）：真网关 + 真库 + 真盘。
  *
- * 与 tests/http/*.test.ts（Task 14）的关键区别：那里用 tests/http/testApp.ts
- * 的 stubTencentClient 在内存里直接返回 fixture，TencentClient 这一层本身
- * 完全没有被跑到——签名的构造/校验逻辑因此从未在集成层面被真正验证过。
- *
- * 这里改用真实的 createTencentClient，指向本文件启动的假腾讯服务
- * （tests/fake-tencent/server.ts），后者会用 src/tencent/signer.ts 的同一套
- * 算法重新计算签名，不匹配则拒绝。除此之外全部走真实实现：真实 HTTP 路由
+ * 采集程序走的整条链路（登录 → 列会议 → 取资产 → 换下载地址 → 取字节）
+ * 现在只碰网关自己的库与归档目录，一次腾讯都不调（spec 2026-09-20 §2）。
+ * 所以这里没有假腾讯服务：会议由 `seedMeeting` 写进 `meeting_cache`（调度器
+ * 每轮写透的就是这张表），资产由 `seedCompletedAsset` 标成 `completed` 并在
+ * 临时目录放真实文件。除此之外全部走真实实现：真实 HTTP 路由
  * （src/http/router.ts）、真实 store、真实 MySQL（withTestDb）、真实策略引擎、
- * 真实审计。唯一的桩是企业微信 exchangeCode（与 Task 14 一致——WeCom 侧本就
- * 不在本任务范围内）。
+ * 真实审计、真实的下载令牌签发与文件直出。唯一的桩是企业微信 exchangeCode。
+ *
+ * 与 tests/http/*.test.ts 的区别：那里自己签 JWT；这里令牌都是从
+ * `POST /api/v1/auth/service-token` / 设备授权流程真换出来的。
+ *
+ * 腾讯签名那一层（src/tencent/signer.ts）与假腾讯服务只剩最后一条用例在用，
+ * 它验的是调度器那条活路的 client，与网关无关。
  */
 import { afterEach, beforeAll, afterAll, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RowDataPacket } from 'mysql2'
 import type { Pool } from '../../src/store/db'
 import type { WecomUser } from '../../src/auth/wecom'
@@ -23,13 +29,13 @@ import {
   OPERATOR_ID,
   stubWecomClient,
   insertPolicyRule,
+  seedCompletedAsset,
+  seedMeeting,
+  writeArchiveFile,
 } from '../http/testApp'
 import { createTencentClient } from '../../src/tencent/client'
 import { TencentApiError } from '../../src/tencent/errors'
-import { createRecordsApi } from '../../src/tencent/records'
-import { createAddressesApi } from '../../src/tencent/addresses'
-import { createSmartApi } from '../../src/tencent/smart'
-import { createCatalog } from '../../src/catalog/index'
+import { createStoredRecordsApi } from '../../src/store/stored-records'
 import { createGrantsStore } from '../../src/store/grants'
 import { createPolicyStore } from '../../src/store/policy'
 import { createAccessGate } from '../../src/policy/access'
@@ -53,23 +59,22 @@ import { createConsoleStorageStore } from '../../src/store/console-storage'
 import { createAuditMeetingLookup } from '../../src/http/handlers/console/audit'
 import { createContentLookup } from '../../src/http/handlers/console/content'
 import { createMysqlStore } from '../../src/worker/store-mysql'
-// 阶段 4 · T6（A3 规则 API）新增的一条依赖，装配方式跟随 src/index.ts
-import {
-  startFakeTencentServer,
-  createFakeTencentState,
-  type FakeTencentState,
-  type FakeTencentRequestLogEntry,
-} from '../fake-tencent/server'
+import { startFakeTencentServer, createFakeTencentState } from '../fake-tencent/server'
 
 let pool: Pool
 let cleanup: () => Promise<void>
+let archiveRoot: string
 
 beforeAll(async () => {
   const db = await withTestDb()
   pool = db.pool
   cleanup = db.cleanup
+  archiveRoot = mkdtempSync(join(tmpdir(), 'mde-e2e-archive-'))
 })
-afterAll(() => cleanup())
+afterAll(async () => {
+  await cleanup()
+  rmSync(archiveRoot, { recursive: true, force: true })
+})
 
 const NOW = 1_700_000_000
 
@@ -97,55 +102,18 @@ interface E2eAppOptions {
 interface E2eApp {
   app: (req: Request) => Promise<Response>
   deps: AppDeps
-  fakeState: FakeTencentState
-  requestLog: FakeTencentRequestLogEntry[]
 }
 
 /**
- * 装配一个"真网关 + 假腾讯 HTTP 服务"的实例：与 src/index.ts 使用完全相同的
- * 装配方式（同一套 create* 工厂函数），唯一区别是 TencentClient 指向本地假
- * 服务而不是 api.meeting.qq.com，且 wecomClient 用 stub（企微不在本任务范围）。
+ * 装配一个真网关实例：与 src/index.ts 使用完全相同的装配方式（同一套 create*
+ * 工厂函数），区别只有 wecomClient 用 stub（企微不在本任务范围）、归档根指向
+ * 本文件的临时目录。
  */
 function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
   const now = opts.now ?? (() => NOW)
 
-  const fakeState = createFakeTencentState()
-  const fakeServer = startFakeTencentServer(
-    { secretId: TENCENT_SECRET_ID, secretKey: TENCENT_SECRET_KEY },
-    fakeState,
-  )
-  runningServers.push(fakeServer.stop)
-
-  let fakeMs = Date.now()
-  const tencentClient = createTencentClient(
-    {
-      appId: 'app-e2e',
-      sdkId: 'sdk-e2e',
-      secretId: TENCENT_SECRET_ID,
-      secretKey: TENCENT_SECRET_KEY,
-      operatorId: OPERATOR_ID,
-      qps: 50,
-      baseUrl: fakeServer.url,
-    },
-    // 令牌桶与 `/v1/corp/records` 的分钟级配额都按毫秒计时：这里必须给毫秒时钟，
-    // 给秒级的 now 会让补充速率慢 1000 倍。
-    //
-    // 用**假的**毫秒时钟、由 sleep 往前拨，而不是 Date.now + 空 sleep：corp 的配额
-    // 是零突发的 10次/min，一个测试里第二次 corp 调用要隔满 6 秒。真睡就是慢 6 秒，
-    // 而 sleep 直接 resolve 会让 client 里那个 `for(;;) { tryTake; await sleep }`
-    // 空转 6 秒真实时间——微任务连轴转，把同进程里 Bun.serve 的连接直接饿死
-    // （表现是「Unable to connect」，看起来像假服务挂了）。
-    { fetch, sleep: (ms) => { fakeMs += ms; return Promise.resolve() }, nowMs: () => fakeMs },
-  )
-
-  // 顺序跟随 src/index.ts：meeting_cache 是精确查询的第一级，得先有它
   const meetingsCache = createMeetingCacheStore(dbPool)
-  const recordsApi = createRecordsApi(tencentClient, OPERATOR_ID, meetingsCache)
-  const addressesApi = createAddressesApi(tencentClient, OPERATOR_ID)
-  // 智能纪要/章节走 AK/SK 直调，同一个真实 client 打到假服务上（没登记的文件回 500182）
-  const smartApi = createSmartApi(tencentClient, OPERATOR_ID)
-
-  const catalog = createCatalog({ addressesApi, smartApi, now })
+  const recordsApi = createStoredRecordsApi(meetingsCache)
 
   const policyStore = createPolicyStore(dbPool)
   // 与 src/index.ts / testApp.ts 同一个实例口径
@@ -195,7 +163,8 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     jwtSecret: JWT_SECRET,
     gatewayBaseUrl,
     recordsApi,
-    catalog,
+    localArchiveRoot: archiveRoot,
+    nasRoot: null,
     accessGate,
     archives: archivesStore,
     auditRecorder,
@@ -272,7 +241,7 @@ function buildE2eApp(dbPool: Pool, opts: E2eAppOptions = {}): E2eApp {
     },
   }
 
-  return { app: createApp(deps), deps, fakeState, requestLog: fakeServer.requestLog }
+  return { app: createApp(deps), deps }
 }
 
 async function lookupDeviceState(deviceCode: string): Promise<string> {
@@ -288,6 +257,13 @@ function deviceTokenRequest(deviceCode: string): Request {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ device_code: deviceCode }),
+  })
+}
+
+function downloadUrlRequest(assetId: string, headers: Record<string, string>): Request {
+  return new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
+    method: 'POST',
+    headers,
   })
 }
 
@@ -355,7 +331,7 @@ async function serviceLogin(
  * 凡是断言「取得到」的链路，除了造规则还要造授权。
  *
  * 走真实的 `GrantsStore.grant`（控制台按下「授权」时跑的就是这一段），
- * 不往表里塞 SQL——本文件的规矩是「假腾讯 API + 真网关」，写侧同样要是真的。
+ * 不往表里塞 SQL——本文件的规矩是「真网关」，写侧同样要是真的。
  *
  * `assetTypes: null` = 不额外限制资产范围，判定完全由规则那一栈说了算。
  */
@@ -375,38 +351,34 @@ async function grantMeeting(
   })
 }
 
-test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下载地址', async () => {
+test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下载地址 → 从网关取回字节', async () => {
   const clock = stepClock(NOW)
   const meetingRecordId = 'rec-e2e-full-1'
   const meetingId = 'm-e2e-full-1'
   const fileId = 'file-e2e-full-1'
 
-  const { app, fakeState, requestLog } = buildE2eApp(pool, {
+  const { app } = buildE2eApp(pool, {
     now: clock.now,
     wecomExchangeCode: async () => ({ userId: 'ww-e2e-full-1', email: null }),
   })
 
-  fakeState.records.push({
-    meeting_record_id: meetingRecordId,
-    meeting_id: meetingId,
-    meeting_code: '700001',
-    host_user_id: 'ww-e2e-full-1', // identity strategy 'direct' ⇒ tmUserId === wecomUserId
-    media_start_time: NOW * 1000,
-    subject: '端到端全流程验证会议',
-    state: 3,
+  await seedMeeting(pool, {
+    meetingRecordId, meetingId, meetingCode: '700001',
+    hostUserId: 'ww-e2e-full-1', // identity strategy 'direct' ⇒ tmUserId === wecomUserId
+    startTime: NOW, subject: '端到端全流程验证会议',
   })
-  fakeState.addressesByRecordId.set(meetingRecordId, [
-    {
-      record_file_id: fileId,
-      download_address: 'https://cos.example/full-video.mp4',
-      download_address_file_type: 'mp4',
-      audio_address: 'https://cos.example/full-audio.m4a',
-      audio_address_file_type: 'm4a',
-      allow_download: true,
-    },
-  ])
-  // 纪要走智能接口：正文由网关取回后内嵌成 data: URL，平台不签发链接
-  fakeState.smartMinutesByFileId.set(fileId, '## 会议摘要\n\n正文\n')
+  const videoBytes = 'e2e-video-bytes-0123456789'
+  const minutesText = '## 会议摘要\n\n正文\n'
+  writeArchiveFile(archiveRoot, 'full/video.mp4', videoBytes)
+  writeArchiveFile(archiveRoot, 'full/audio.m4a', 'e2e-audio')
+  writeArchiveFile(archiveRoot, 'full/minutes.md', minutesText)
+  for (const [assetType, fileType, targetPath] of [
+    ['video', 'mp4', 'full/video.mp4'],
+    ['audio', 'm4a', 'full/audio.m4a'],
+    ['ai_minutes', 'md', 'full/minutes.md'],
+  ] as const) {
+    await seedCompletedAsset(pool, { meetingId, subMeetingId: meetingRecordId, assetType, remoteId: fileId, fileType, targetPath })
+  }
 
   await insertPolicyRule(pool, {
     priority: 10,
@@ -440,35 +412,28 @@ test('完整流程：采集程序登录 → 列会议 → 取资产 → 换下�
   const videoAsset = assetsBody.assets.find((a) => a.asset_type === 'video')!
   const minutesAsset = assetsBody.assets.find((a) => a.asset_type === 'ai_minutes')!
 
-  // 4. 换下载地址：video 走批量接口（6 小时时效），纪要走智能接口（data: URL）
-  const videoDl = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(videoAsset.asset_id)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  // 4. 换下载地址：两类都指回网关自己的 content 端点，15 分钟时效
+  const videoDl = await app(downloadUrlRequest(videoAsset.asset_id, headers))
   expect(videoDl.status).toBe(200)
   const videoDlBody = (await videoDl.json()) as { url: string; expires_at: number }
-  expect(videoDlBody.url).toBe('https://cos.example/full-video.mp4')
-  expect(videoDlBody.expires_at - clock.now()).toBe(6 * 3600)
+  expect(videoDlBody.url.startsWith('https://gw.e2e.example/api/v1/assets/')).toBe(true)
+  expect(videoDlBody.expires_at - clock.now()).toBe(900)
 
-  const minutesDl = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(minutesAsset.asset_id)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const minutesDl = await app(downloadUrlRequest(minutesAsset.asset_id, headers))
   expect(minutesDl.status).toBe(200)
   const minutesDlBody = (await minutesDl.json()) as { url: string }
-  // 正文内嵌在 URL 里——对它做一次普通 fetch 就该拿回假服务登记的那份 markdown
-  expect(await (await fetch(minutesDlBody.url)).text()).toBe('## 会议摘要\n\n正文\n')
 
-  // 假腾讯服务确实被真实、带正确签名地调用过（不是从未走网络的旁路）
-  const hitPaths = new Set(requestLog.filter((r) => r.signatureValid).map((r) => r.path))
-  expect(hitPaths.has('/v1/corp/records')).toBe(true)
-  expect(hitPaths.has('/v1/addresses')).toBe(true)
-  expect(hitPaths.has(`/v1/smart/minutes/${fileId}`)).toBe(true)
-  expect(requestLog.every((r) => r.signatureValid)).toBe(true) // 全程签名均正确、无一次被假服务拒绝
+  // 5. 引擎的下载器拿这条 URL 直接取：不带 Bearer，带 Range 续传
+  const videoRes = await app(new Request(videoDlBody.url))
+  expect(videoRes.status).toBe(200)
+  expect(await videoRes.text()).toBe(videoBytes)
+
+  const resumed = await app(new Request(videoDlBody.url, { headers: { range: 'bytes=16-' } }))
+  expect(resumed.status).toBe(206)
+  expect(resumed.headers.get('content-range')).toBe(`bytes 16-${videoBytes.length - 1}/${videoBytes.length}`)
+  expect(await resumed.text()).toBe(videoBytes.slice(16))
+
+  expect(await (await app(new Request(minutesDlBody.url))).text()).toBe(minutesText)
 
   // 审计留痕：两次下载地址签发都记为 allow
   const [auditRows] = await pool.execute<RowDataPacket[]>(
@@ -493,28 +458,18 @@ test('设备授权登录成功，但企微用户不是采集程序，一场会�
   const meetingId = 'm-e2e-person-1'
   const fileId = 'file-e2e-person-1'
 
-  const { app, fakeState } = buildE2eApp(pool, {
+  const { app } = buildE2eApp(pool, {
     now: clock.now,
     wecomExchangeCode: async () => ({ userId: 'ww-e2e-person-1', email: null }),
   })
 
-  fakeState.records.push({
-    meeting_record_id: meetingRecordId,
-    meeting_id: meetingId,
-    meeting_code: '700005',
-    host_user_id: 'ww-e2e-person-1',
-    media_start_time: NOW * 1000,
-    subject: '企微用户看不到的会议',
-    state: 3,
+  await seedMeeting(pool, {
+    meetingRecordId, meetingId, meetingCode: '700005', hostUserId: 'ww-e2e-person-1',
+    startTime: NOW, subject: '企微用户看不到的会议',
   })
-  fakeState.addressesByRecordId.set(meetingRecordId, [
-    {
-      record_file_id: fileId,
-      download_address: 'https://cos.example/person-video.mp4',
-      download_address_file_type: 'mp4',
-      allow_download: true,
-    },
-  ])
+  const assetId = await seedCompletedAsset(pool, {
+    meetingId, subMeetingId: meetingRecordId, assetType: 'video', remoteId: fileId, targetPath: 'person/video.mp4',
+  })
 
   // 旧形状的规则：主体是人（腾讯会议 userid）。换语义后它对任何身份都不生效。
   await insertPolicyRule(pool, {
@@ -534,15 +489,8 @@ test('设备授权登录成功，但企微用户不是采集程序，一场会�
   expect(listRes.status).toBe(200)
   expect(((await listRes.json()) as { meetings: unknown[] }).meetings).toEqual([])
 
-  // 列会议这一步已经把 meeting 写进了 meeting_cache（缓存写入与展示过滤是两回事），
-  // 所以下面这个 assetId 走的是「缓存命中 + 判定为拒绝」那条路径，不是「查不到」。
-  const assetId = `${meetingRecordId}:${fileId}:video:0`
-  const dlRes = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  // 会议在库里，所以下面这个 assetId 走的是「命中 + 判定为拒绝」那条路径，不是「查不到」。
+  const dlRes = await app(downloadUrlRequest(assetId, headers))
   expect(dlRes.status).toBe(403)
   expect((await dlRes.json()).error).toBe('forbidden')
 
@@ -563,30 +511,21 @@ test('策略拒绝时整条链路在 download-url 处被拦截', async () => {
   const meetingId = 'm-e2e-deny-1'
   const fileId = 'file-e2e-deny-1'
 
-  const { app, fakeState } = buildE2eApp(pool, {
+  const { app } = buildE2eApp(pool, {
     now: clock.now,
     wecomExchangeCode: async () => ({ userId: 'ww-e2e-deny-1', email: null }),
   })
 
-  fakeState.records.push({
-    meeting_record_id: meetingRecordId,
-    meeting_id: meetingId,
-    meeting_code: '700002',
-    host_user_id: 'ww-e2e-deny-1',
-    media_start_time: NOW * 1000,
-    subject: '仅放行 video 的会议',
-    state: 3,
+  await seedMeeting(pool, {
+    meetingRecordId, meetingId, meetingCode: '700002', hostUserId: 'ww-e2e-deny-1',
+    startTime: NOW, subject: '仅放行 video 的会议',
   })
-  fakeState.addressesByRecordId.set(meetingRecordId, [
-    {
-      record_file_id: fileId,
-      download_address: 'https://cos.example/deny-video.mp4',
-      download_address_file_type: 'mp4',
-      audio_address: 'https://cos.example/deny-audio.m4a',
-      audio_address_file_type: 'm4a',
-      allow_download: true,
-    },
-  ])
+  await seedCompletedAsset(pool, {
+    meetingId, subMeetingId: meetingRecordId, assetType: 'video', remoteId: fileId, targetPath: 'deny/video.mp4',
+  })
+  const audioAssetId = await seedCompletedAsset(pool, {
+    meetingId, subMeetingId: meetingRecordId, assetType: 'audio', remoteId: fileId, fileType: 'm4a', targetPath: 'deny/audio.m4a',
+  })
 
   // 只放行 video；audio（及其余类型）取不到——命中的规则只放行 video 这一类，
   // 这与「一条规则都没命中走兜底 deny」是两种不同的拒绝（计划 §3.4.1 D-e）
@@ -616,24 +555,13 @@ test('策略拒绝时整条链路在 download-url 处被拦截', async () => {
   const videoAssetId = assetsBody.assets[0]!.asset_id
 
   // video：策略允许，download-url 正常放行
-  const videoDl = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(videoAssetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const videoDl = await app(downloadUrlRequest(videoAssetId, headers))
   expect(videoDl.status).toBe(200)
 
   // audio：清单里已经看不到，但客户端仍可能持有一份旧清单缓存并据此构造出这个
   // assetId——download-url 端点必须独立重新判定策略（而不是信任清单已经把关过），
   // 在这里被拦截。
-  const audioAssetId = `${meetingRecordId}:${fileId}:audio:0`
-  const audioDl = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(audioAssetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const audioDl = await app(downloadUrlRequest(audioAssetId, headers))
   expect(audioDl.status).toBe(403)
   expect((await audioDl.json()).error).toBe('forbidden')
 
@@ -652,28 +580,18 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
   const meetingId = 'm-e2e-ovr-1'
   const fileId = 'file-e2e-ovr-1'
 
-  const { app, fakeState } = buildE2eApp(pool, {
+  const { app } = buildE2eApp(pool, {
     now: clock.now,
     wecomExchangeCode: async () => ({ userId: 'ww-e2e-ovr-1', email: null }),
   })
 
-  fakeState.records.push({
-    meeting_record_id: meetingRecordId,
-    meeting_id: meetingId,
-    meeting_code: '700009',
-    host_user_id: 'ww-e2e-ovr-1',
-    media_start_time: NOW * 1000,
-    subject: '法务要求不外发的会议',
-    state: 3,
+  await seedMeeting(pool, {
+    meetingRecordId, meetingId, meetingCode: '700009', hostUserId: 'ww-e2e-ovr-1',
+    startTime: NOW, subject: '法务要求不外发的会议',
   })
-  fakeState.addressesByRecordId.set(meetingRecordId, [
-    {
-      record_file_id: fileId,
-      download_address: 'https://cos.example/ovr-video.mp4',
-      download_address_file_type: 'mp4',
-      allow_download: true,
-    },
-  ])
+  await seedCompletedAsset(pool, {
+    meetingId, subMeetingId: meetingRecordId, assetType: 'video', remoteId: fileId, targetPath: 'ovr/video.mp4',
+  })
 
   // 规则本身是放行的——本用例要证明的正是「规则说可以，改写说不行，以改写为准」
   await insertPolicyRule(pool, {
@@ -697,12 +615,7 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
   const assetsBody = (await assetsRes.json()) as { assets: Array<{ asset_id: string }> }
   const assetId = assetsBody.assets[0]!.asset_id
 
-  const okDl = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const okDl = await app(downloadUrlRequest(assetId, headers))
   expect(okDl.status).toBe(200)
 
   // ② 管理员按下「这场不许取」。改写优先于所有规则（spec §5.4），而且必须在
@@ -724,23 +637,13 @@ test('人工改写 deny 拦得住 download-url——改写要到达真正的安�
 
   // ④ 客户端拿着改写之前缓存下来的 assetId 直接换下载地址——被拦住。
   //    这一条才是真正要紧的：清单过滤是 UI 便利，download-url 才是安全边界
-  const deniedDl = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const deniedDl = await app(downloadUrlRequest(assetId, headers))
   expect(deniedDl.status).toBe(403)
   expect((await deniedDl.json()).error).toBe('forbidden')
 
   // ⑤ 撤销改写后回落到规则判定
   await createGrantsStore(pool).revokeOverride(meetingId, meetingRecordId, 'allow', NOW * 1000 + 1)
-  const restoredDl = await app(
-    new Request(`https://gw/api/v1/assets/${encodeURIComponent(assetId)}/download-url`, {
-      method: 'POST',
-      headers,
-    }),
-  )
+  const restoredDl = await app(downloadUrlRequest(assetId, headers))
   expect(restoredDl.status).toBe(200)
 })
 
@@ -748,34 +651,21 @@ test('会议号命中多场时列出候选', async () => {
   const clock = stepClock(NOW)
   const meetingCode = '700004'
 
-  const { app, fakeState } = buildE2eApp(pool, {
+  const { app } = buildE2eApp(pool, {
     now: clock.now,
     wecomExchangeCode: async () => ({ userId: 'ww-e2e-multi-1', email: null }),
   })
 
-  fakeState.records.push(
-    {
-      meeting_record_id: 'rec-e2e-multi-1',
-      meeting_id: 'm-e2e-multi-1',
-      meeting_code: meetingCode,
-      host_user_id: 'ww-e2e-multi-1',
-      media_start_time: NOW * 1000,
-      subject: '周期会议第一次',
-      state: 3,
-    },
-    {
-      meeting_record_id: 'rec-e2e-multi-2',
-      meeting_id: 'm-e2e-multi-2',
-      meeting_code: meetingCode,
-      host_user_id: 'ww-e2e-multi-1',
-      // 查询窗口的右边界是请求发生时的 now（会随设备登录流程的 clock.advance
-      // 略微前移），不能晚于它——用早于 NOW 的时间点，而不是晚于，才稳妥地落在
-      // [now - 31天, now] 窗口内。
-      media_start_time: (NOW - 3600) * 1000,
-      subject: '周期会议第二次',
-      state: 3,
-    },
-  )
+  await seedMeeting(pool, {
+    meetingRecordId: 'rec-e2e-multi-1', meetingId: 'm-e2e-multi-1', meetingCode, hostUserId: 'ww-e2e-multi-1',
+    startTime: NOW, subject: '周期会议第一次',
+  })
+  await seedMeeting(pool, {
+    meetingRecordId: 'rec-e2e-multi-2', meetingId: 'm-e2e-multi-2', meetingCode, hostUserId: 'ww-e2e-multi-1',
+    // 查询窗口的右边界是请求发生时的 now，不能晚于它——用早于 NOW 的时间点
+    // 才稳妥地落在 [now - 31天, now] 窗口内。
+    startTime: NOW - 3600, subject: '周期会议第二次',
+  })
 
   await insertPolicyRule(pool, {
     priority: 10,
@@ -837,7 +727,7 @@ test('身份映射失败时登录被拒，错误码为 account_not_provisioned',
   expect((await tokenRes.json()).error).toBe('authorization_pending')
 })
 
-test('假腾讯服务对签名不匹配的请求返回 9042，网关判定为致命错误并立即失败（不重试）', async () => {
+test('假腾讯服务对签名不匹配的请求返回 9042，调度器用的 client 判定为致命错误并立即失败（不重试）', async () => {
   const fakeState = createFakeTencentState()
   const fakeServer = startFakeTencentServer(
     { secretId: TENCENT_SECRET_ID, secretKey: TENCENT_SECRET_KEY },
@@ -892,140 +782,4 @@ test('假腾讯服务对签名不匹配的请求返回 9042，网关判定为致
   // fatal 分类的既有约定是不重试（见 src/tencent/client.ts）：假服务应当只被真实打过一次。
   expect(fakeServer.requestLog).toHaveLength(1)
   expect(fakeServer.requestLog[0]!.signatureValid).toBe(false)
-})
-
-/**
- * **全公司归档的数据来源**（spec §1.2 · US-5.1），端到端钉死。
- *
- * 2026-08-27 真实环境实测：走 `/v1/records` 拉最近 31 天，7 场会议的
- * host_userid 全是 TM_OPERATOR_ID 本人——官方文档对该接口的原话是「查询**用户**
- * 所有会议的录制列表」，参数表里根本没有指定查谁的参数，应用配了「查看企业录制」
- * 权限也改变不了。范围查询因此改走账户级的 `/v1/corp/records`。
- *
- * 这条用例走真网关 + 真签名 + 假腾讯 HTTP 服务，验三件事：
- *   1. 范围查询打的是 `/v1/corp/records`，一次都没打 `/v1/records`；
- *   2. 拿得到**别人主持的**会议，主持人不再恒等于 operator；
- *   3. `userid` → hostUserId 的映射真的接通了。
- */
-test('范围查询经 /v1/corp/records 拿到别人主持的会议——不再只看得到 operator 自己的', async () => {
-  const clock = stepClock(NOW)
-  const { app, fakeState, requestLog } = buildE2eApp(pool, {
-    now: clock.now,
-    wecomExchangeCode: async () => ({ userId: 'ww-e2e-corp-1', email: null }),
-  })
-
-  // 三场会议，主持人各不相同，且**没有一个**是网关的 operator。
-  // 走旧的 /v1/records 时这三场一场都拉不到。
-  const hosts = ['ww-e2e-corp-alice', 'ww-e2e-corp-bob', 'ww-e2e-corp-carol']
-  hosts.forEach((host, i) => {
-    fakeState.records.push({
-      meeting_record_id: 'rec-e2e-corp-' + i,
-      meeting_id: 'm-e2e-corp-' + i,
-      meeting_code: '70011' + i,
-      host_user_id: host,
-      media_start_time: NOW * 1000,
-      subject: '别人主持的会议 ' + i,
-      state: 3,
-    })
-  })
-  expect(fakeState.records.every((r) => r.host_user_id !== OPERATOR_ID)).toBe(true)
-
-  await insertPolicyRule(pool, {
-    priority: 10,
-    programId: 'prog-e2e-corp-1',
-    assetTypes: ['*'],
-    effect: 'allow',
-    note: '放行 e2e 企业维度采集程序',
-  })
-  for (let i = 0; i < hosts.length; i++) await grantMeeting('m-e2e-corp-' + i, 'prog-e2e-corp-1', 'rec-e2e-corp-' + i)
-
-  const { access_token } = await serviceLogin(app, 'prog-e2e-corp-1', 'ww-e2e-corp-1')
-  const headers = { Authorization: 'Bearer ' + access_token }
-
-  // 不带 meeting_code / meeting_id ⇒ 范围查询（worker 的主路径）
-  const res = await app(new Request('https://gw/api/v1/meetings', { headers }))
-  expect(res.status).toBe(200)
-  const body = (await res.json()) as {
-    meetings: Array<{ meeting_id: string; host_user_id: string }>
-  }
-
-  expect(body.meetings.map((m) => m.meeting_id).sort()).toEqual([
-    'm-e2e-corp-0', 'm-e2e-corp-1', 'm-e2e-corp-2',
-  ])
-  // userid → hostUserId 的映射真的接通了；照搬 host_user_id 时这里全是 undefined
-  expect(body.meetings.map((m) => m.host_user_id).sort()).toEqual(hosts)
-  expect(body.meetings.every((m) => m.host_user_id !== OPERATOR_ID)).toBe(true)
-
-  const hitPaths = requestLog.filter((r) => r.signatureValid).map((r) => r.path)
-  expect(hitPaths).toContain('/v1/corp/records')
-  expect(hitPaths).not.toContain('/v1/records') // 范围查询一次都不该打用户维度接口
-  expect(requestLog.every((r) => r.signatureValid)).toBe(true) // 新路径的签名同样正确
-})
-
-/**
- * 与上一条互补：精确查询（`mde get --code` 依赖的那条路）**也**走 `/v1/corp/records`。
- *
- * 2026-08-27 之前它走 `/v1/records`，那是个只看得到 operator 自己会议的接口，
- * 于是范围查询改走 corp 之后当场炸出 P0（见 tencent/records.ts 的文件头）。
- * 现在的解析顺序是「meeting_cache → corp 全窗口枚举 + 本地过滤 → 报错」，
- * 这条用例逐级钉住：**别人主持的会议按会议号查得到**、缓存热了之后零调用、
- * 未命中的理由说的是时间窗而不是可见范围。
- */
-test('精确查询走 corp + meeting_cache：查得到别人主持的会议，缓存热了之后零调用', async () => {
-  const clock = stepClock(NOW)
-  const { app, fakeState, requestLog } = buildE2eApp(pool, {
-    now: clock.now,
-    wecomExchangeCode: async () => ({ userId: 'ww-e2e-exact-1', email: null }),
-  })
-
-  fakeState.records.push({
-    meeting_record_id: 'rec-e2e-exact-1',
-    meeting_id: 'm-e2e-exact-1',
-    meeting_code: '700120',
-    // 主持人**不是**登录的这个采集程序对应的人，也不是 OPERATOR_ID：
-    // 旧实现（走 /v1/records）在真实环境里根本看不见这一场
-    host_user_id: 'ww-e2e-someone-else',
-    media_start_time: NOW * 1000,
-    subject: '按会议号点名查询',
-    state: 3,
-  })
-
-  await insertPolicyRule(pool, {
-    priority: 10, programId: 'prog-e2e-exact-1', assetTypes: ['*'], effect: 'allow',
-  })
-  await grantMeeting('m-e2e-exact-1', 'prog-e2e-exact-1', 'rec-e2e-exact-1')
-  const { access_token } = await serviceLogin(app, 'prog-e2e-exact-1', 'ww-e2e-exact-1')
-  const headers = { Authorization: 'Bearer ' + access_token }
-
-  const hitRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700120', { headers }))
-  expect(hitRes.status).toBe(200)
-  const hitBody = (await hitRes.json()) as { meetings: Array<{ meeting_id: string; host_user_id: string }> }
-  expect(hitBody.meetings.map((m) => m.meeting_id)).toEqual(['m-e2e-exact-1'])
-  expect(hitBody.meetings[0]!.host_user_id).toBe('ww-e2e-someone-else')
-
-  const afterFirst = requestLog.filter((r) => r.signatureValid).map((r) => r.path)
-  expect(afterFirst).toContain('/v1/corp/records')
-  // `/v1/records` 在假服务那边是个会报错的陷阱，走上去这条断言之前就红了
-  expect(afterFirst).not.toContain('/v1/records')
-  const corpCallsAfterFirst = afterFirst.filter((p) => p === '/v1/corp/records').length
-
-  // 第二次同样的点名查询：上一次的全窗口枚举已经把这一场写进 meeting_cache，
-  // 这一次一个字节都不该再发给腾讯
-  const againRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700120', { headers }))
-  expect(againRes.status).toBe(200)
-  const corpCallsAfterSecond = requestLog
-    .filter((r) => r.signatureValid)
-    .filter((r) => r.path === '/v1/corp/records').length
-  expect(corpCallsAfterSecond).toBe(corpCallsAfterFirst)
-
-  // 未命中：错误提示要能让人查下去，而不是只丢一句「没找到」
-  const missRes = await app(new Request('https://gw/api/v1/meetings?meeting_code=700999', { headers }))
-  expect(missRes.status).toBe(404)
-  const missBody = (await missRes.json()) as { error: string; message: string }
-  expect(missBody.error).toBe('meeting_not_found_in_range')
-  expect(missBody.message).toContain('700999')
-  expect(missBody.message).toContain('meeting_cache')
-  expect(missBody.message).toContain('/v1/corp/records')
-  // 「只看得到 operator 自己的会议」这条限制已经不存在了，提示里不许再说
-  expect(missBody.message).not.toMatch(/operator/i)
 })

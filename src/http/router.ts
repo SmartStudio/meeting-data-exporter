@@ -1,7 +1,6 @@
 import type { AuthStore } from '../store/auth'
 import type { MeetingCacheStore } from '../store/meetings'
 import type { RecordsApi } from '../tencent/records'
-import type { Catalog } from '../catalog/index'
 import type { AccessGate, MeetingMeta } from '../policy/access'
 import type { ArchivesStore } from '../store/archives'
 import type { AuditRecorder } from '../audit/recorder'
@@ -58,8 +57,11 @@ export interface AppDeps {
   now: () => number
   jwtSecret: string
   gatewayBaseUrl: string
+  /** 网关侧是只读 `meeting_cache` 的实现（store/stored-records.ts）；活路归调度器 */
   recordsApi: RecordsApi
-  catalog: Catalog
+  /** 采集程序下载文件的两个根目录（MDE_ARCHIVE_ROOT / MDE_NAS_ROOT）。null = 没配 */
+  localArchiveRoot: string | null
+  nasRoot: string | null
   /** 采集权限判定（allow 栈）。网关只判第三栈，拉取/归档两栈是 worker 的事 */
   accessGate: AccessGate
   /** 规则里的 `arch` 条件要的归档状态。只用到这一个方法，故收窄到它 */
@@ -250,6 +252,8 @@ const ROUTES: Route[] = [
   compile('GET', '/api/v1/meetings/:meetingId', meetingsHandlers.getMeeting),
   compile('GET', '/api/v1/meetings/:meetingId/assets', meetingsHandlers.listAssets),
   compile('POST', '/api/v1/assets/:assetId/download-url', meetingsHandlers.downloadUrl),
+  // 凭 download-url 签出的 token 取字节，不走 Bearer（见 handlers/meetings.ts 的 assetContent）
+  compile('GET', '/api/v1/assets/:assetId/content', meetingsHandlers.assetContent),
 
   compile('GET', '/healthz', async () => json(200, { status: 'ok' })),
 

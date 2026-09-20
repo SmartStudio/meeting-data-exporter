@@ -12,6 +12,9 @@ import type { Pool } from './db'
 export interface CompletedAssetRow {
   meetingId: string
   subMeetingId: string
+  /** 网关签发给采集程序的 id（`<meetingRecordId>:<recordFileId>:<assetType>:<selector>`）。
+   *  引擎发现资产时写入；早于这一列存在的旧行是 NULL，网关列资产时跳过它们。 */
+  assetId: string | null
   assetType: string
   remoteId: string
   fileType: string
@@ -30,6 +33,16 @@ export interface CompletedAssetRow {
   /** 下载器在**本地**算出的整文件 sha256；视频/音频恒为 null（不整读，会吃爆内存）。
    *  与归档记下的 `nas_hash` 是两个值、两种含义，见 domain/manifest.ts。 */
   contentHash: string | null
+}
+
+/** 一份已下载完成的资产在盘上的两个可能位置，供网关直出（handlers/meetings.ts 的 assetContent） */
+export interface CompletedAssetLocation {
+  meetingId: string
+  subMeetingId: string
+  /** 相对 `MDE_ARCHIVE_ROOT` */
+  targetPath: string
+  /** 相对 `MDE_NAS_ROOT`；还没归档到 NAS 时为 null */
+  nasPath: string | null
 }
 
 /**
@@ -126,6 +139,12 @@ export interface ArchivesStore {
    *  按 id 升序（= 入库顺序）：归档顺序与 NAS sidecar 的 `assets[]` 顺序都由它决定，
    *  重跑要产出同样的内容就不能让顺序跟着优化器走。与引擎那份清单同一种排序。 */
   listCompletedAssets(meetingId: string, subMeetingId: string): Promise<CompletedAssetRow[]>
+  /**
+   * 网关直出文件时按 asset_id 找那一份：本地副本的相对路径，以及（已归档时）NAS 上
+   * 那一份的路径——本地副本会被保留策略清掉，那之后只剩 NAS 那份能发。
+   * 不是 completed 的行不算：文件还没落全，发出去是半个文件。
+   */
+  findCompletedAssetByAssetId(assetId: string): Promise<CompletedAssetLocation | null>
   /** 同一场会议里**没拿到**的资产（status='skipped' / 'dead' / 'failed'），供 NAS sidecar 的
    *  `missing[]` 用——US-6.2 第三条验收标准要的就是这一段。按 id 升序，理由同上。
    *  三个状态各自的取舍见 `MissingAssetRow` 的注释。
@@ -256,6 +275,7 @@ export interface ArchivesStore {
 interface CompletedAssetSqlRow extends RowDataPacket {
   meeting_id: string
   sub_meeting_id: string
+  asset_id: string | null
   asset_type: string
   remote_id: string
   file_type: string
@@ -267,6 +287,13 @@ interface CompletedAssetSqlRow extends RowDataPacket {
   bytes_written: number
   bytes_expected: number | null
   content_hash: string | null
+}
+
+interface CompletedAssetLocationSqlRow extends RowDataPacket {
+  meeting_id: string
+  sub_meeting_id: string
+  target_path: string
+  nas_path: string | null
 }
 
 interface MissingAssetSqlRow extends RowDataPacket {
@@ -327,6 +354,7 @@ function mapCompletedAssetRow(r: CompletedAssetSqlRow): CompletedAssetRow {
   return {
     meetingId: r.meeting_id,
     subMeetingId: r.sub_meeting_id,
+    assetId: r.asset_id,
     assetType: r.asset_type,
     remoteId: r.remote_id,
     fileType: r.file_type,
@@ -382,7 +410,7 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
   return {
     async listCompletedAssets(meetingId, subMeetingId) {
       const [rows] = await pool.execute<CompletedAssetSqlRow[]>(
-        `SELECT meeting_id, sub_meeting_id, asset_type, remote_id, file_type, target_path,
+        `SELECT meeting_id, sub_meeting_id, asset_id, asset_type, remote_id, file_type, target_path,
                 bytes_written, bytes_expected, content_hash
            FROM meeting_assets
           WHERE meeting_id = ? AND sub_meeting_id = ? AND status = 'completed'
@@ -390,6 +418,25 @@ export function createArchivesStore(pool: Pool): ArchivesStore {
         [meetingId, subMeetingId],
       )
       return rows.map(mapCompletedAssetRow)
+    },
+
+    async findCompletedAssetByAssetId(assetId) {
+      // asset_id 没有唯一键，但它以 meetingRecordId 开头、以 file_type 结尾，
+      // 与 uk_asset 五列一一对应，实际上不会有第二行；取 id 最小的那条以防万一
+      const [rows] = await pool.execute<CompletedAssetLocationSqlRow[]>(
+        `SELECT a.meeting_id, a.sub_meeting_id, a.target_path, r.nas_path
+           FROM meeting_assets a
+           LEFT JOIN archived_assets r
+             ON r.meeting_id = a.meeting_id AND r.sub_meeting_id = a.sub_meeting_id
+            AND r.asset_type = a.asset_type AND r.remote_id = a.remote_id AND r.file_type = a.file_type
+          WHERE a.asset_id = ? AND a.status = 'completed' AND a.target_path IS NOT NULL
+          ORDER BY a.id
+          LIMIT 1`,
+        [assetId],
+      )
+      const r = rows[0]
+      if (r === undefined) return null
+      return { meetingId: r.meeting_id, subMeetingId: r.sub_meeting_id, targetPath: r.target_path, nasPath: r.nas_path }
     },
 
     async listMissingAssets(meetingId, subMeetingId) {

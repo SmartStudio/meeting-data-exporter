@@ -77,12 +77,20 @@ const EXACT_LOOKUP_RESOLUTION_NOTE =
   'visibility limit: the recording simply has no media start time inside the window. ' +
   'Widen from/to and retry.'
 
+/**
+ * `from` / `to` 为 null 表示这次查询没限时间（网关只读缓存时点名查询就是这样，
+ * 见 store/stored-records.ts）；`note` 说明查过哪几级、该往哪里查下去——
+ * 活路与只读缓存两种实现的解析顺序不同，提示也就不同。
+ */
 export class MeetingNotFoundInRangeError extends Error {
-  constructor(readonly identifier: string, readonly from: number, readonly to: number) {
-    super(
-      `meeting ${identifier} not found within [${from}, ${to}]. ` +
-        EXACT_LOOKUP_RESOLUTION_NOTE,
-    )
+  constructor(
+    readonly identifier: string,
+    readonly from: number | null,
+    readonly to: number | null,
+    note: string = EXACT_LOOKUP_RESOLUTION_NOTE,
+  ) {
+    const window = from !== null && to !== null ? ` within [${from}, ${to}]` : ''
+    super(`meeting ${identifier} not found${window}. ${note}`)
     this.name = 'MeetingNotFoundInRangeError'
   }
 }
@@ -225,7 +233,7 @@ function toMeeting(r: RawCorpRecordMeeting): Meeting {
  * 只去掉分隔符，不做别的归一：数字串之间不存在「差别只在分隔符」的两场会议，
  * 所以这条放宽不会引入错误匹配。
  */
-function normalizeMeetingCode(code: string): string {
+export function normalizeMeetingCode(code: string): string {
   const stripped = code.replace(/[\s-]/g, '')
   return stripped === '' ? code : stripped
 }

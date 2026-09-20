@@ -35,6 +35,11 @@ import type { Meeting, RecordState } from '../domain/types'
  * 靠这一级，worker 一轮里 discovery 拉到的会议直接喂饱后续每一次 `listAssets`
  * 的反查，corp 接口只被调用分页所需的那几次。
  *
+ * ## 读者三：网关的整个会议视图（2026-09-20 起）
+ *
+ * 网关进程不再调腾讯：范围列表与精确查询都只读本表（`store/stored-records.ts`），
+ * 喂它的只有调度器每 15 分钟一轮的写透。
+ *
  * 表存于共享 MySQL，多实例部署下安全（不依赖任何进程内缓存）。
  */
 export interface MeetingCacheStore {
@@ -57,6 +62,12 @@ export interface MeetingCacheStore {
   listByMeetingId(meetingId: string, from?: number, to?: number): Promise<Meeting[]>
   /** 同 `listByMeetingId`，按会议号。会议号的分隔符归一由调用方负责（见 records.ts） */
   listByMeetingCode(meetingCode: string, from?: number, to?: number): Promise<Meeting[]>
+  /**
+   * `start_time` 落在 [from, to]（含两端）的全部会议。网关的范围列表读这里，
+   * 不再实时枚举 `/v1/corp/records`——那条路 10 次/分的配额让一个 31 天窗口要翻
+   * 几分钟，请求在中途就被切断（见 store/stored-records.ts）。
+   */
+  listByRange(from: number, to: number): Promise<Meeting[]>
 }
 
 interface MeetingCacheRow extends RowDataPacket {
@@ -208,5 +219,16 @@ export function createMeetingCacheStore(pool: Pool): MeetingCacheStore {
 
     listByMeetingId: (meetingId, from, to) => listBy('meeting_id', meetingId, from, to),
     listByMeetingCode: (meetingCode, from, to) => listBy('meeting_code', meetingCode, from, to),
+
+    async listByRange(from, to) {
+      const [rows] = await pool.execute<MeetingCacheRow[]>(
+        `SELECT ${SELECT_COLUMNS}
+           FROM meeting_cache
+          WHERE start_time BETWEEN ? AND ?
+          ORDER BY start_time DESC, meeting_record_id ASC`,
+        [from, to],
+      )
+      return rows.map(toMeeting)
+    },
   }
 }

@@ -11,11 +11,7 @@ import { createAuditStore } from './store/audit'
 import { createJobsStore, schedulerFetchLookbackHours, schedulerTzOffsetSec } from './store/jobs'
 import { createMysqlStore } from './worker/store-mysql'
 import { createMeetingCacheStore } from './store/meetings'
-import { createTencentClient } from './tencent/client'
-import { createRecordsApi } from './tencent/records'
-import { createAddressesApi } from './tencent/addresses'
-import { createSmartApi } from './tencent/smart'
-import { createCatalog } from './catalog/index'
+import { createStoredRecordsApi } from './store/stored-records'
 import { createAccessGate } from './policy/access'
 import { createArchivesStore } from './store/archives'
 import { createAuditRecorder } from './audit/recorder'
@@ -46,23 +42,10 @@ async function main(): Promise<void> {
 
   const now = (): number => Math.floor(Date.now() / 1000)
 
-  const tencentClient = createTencentClient(config.tencent, {
-    fetch,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    // 毫秒时钟：项目里通用的 now() 是秒级，喂给令牌桶会让补充速率慢 1000 倍
-    nowMs: Date.now,
-  })
-  // meeting_cache 要在 recordsApi 之前建：精确查询（按会议号/ID 点名查）的第一级
-  // 就是它，而 `/v1/corp/records` 没有精确过滤参数（见 tencent/records.ts 的
-  // EXACT_LOOKUP_RESOLUTION_NOTE）。同一个 store 也供 download-url 端点凭
-  // meetingRecordId 重建 Meeting。
+  // 网关进程不调腾讯：会议、资产、文件全部来自调度器写好的库与盘
+  // （见 store/stored-records.ts 与 handlers/meetings.ts 的 assetContent）
   const meetingsCache = createMeetingCacheStore(pool)
-  const recordsApi = createRecordsApi(tencentClient, config.tencent.operatorId, meetingsCache)
-  const addressesApi = createAddressesApi(tencentClient, config.tencent.operatorId)
-  // 智能纪要与智能章节：AK/SK 直调（见 tencent/smart.ts 的文件头）
-  const smartApi = createSmartApi(tencentClient, config.tencent.operatorId)
-
-  const catalog = createCatalog({ addressesApi, smartApi, now })
+  const recordsApi = createStoredRecordsApi(meetingsCache)
 
   const policyStore = createPolicyStore(pool)
   // 网关这边只读授权与改写，不写。写侧在控制台的管理端点里（阶段 4）
@@ -220,7 +203,8 @@ async function main(): Promise<void> {
     jwtSecret: config.jwtSecret,
     gatewayBaseUrl: config.gatewayBaseUrl,
     recordsApi,
-    catalog,
+    localArchiveRoot: localArchiveRoot === '' ? null : localArchiveRoot,
+    nasRoot: nasRoot === '' ? null : nasRoot,
     accessGate,
     archives: archivesStore,
     auditRecorder,
