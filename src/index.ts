@@ -299,7 +299,10 @@ async function main(): Promise<void> {
     throw new Error(`PORT must be an integer in 1..65535, got: ${process.env.PORT}`)
   }
   const hostname = process.env.HOST || '0.0.0.0'
-  const server = Bun.serve({ port, hostname, fetch: app })
+  // idleTimeout：Bun 默认 10 秒，处理函数还没回响应就把连接切断，客户端看到
+  // 「Empty reply」，网关不留任何日志。列会议要实时翻 /v1/corp/records（每页 20 条，
+  // 每分钟至多 10 页），一个 31 天的窗口翻完可能要几分钟。255 是 Bun 允许的上限。
+  const server = Bun.serve({ port, hostname, fetch: app, idleTimeout: 255 })
   console.log(`meeting-export-gateway listening on ${hostname}:${server.port}`)
 }
 

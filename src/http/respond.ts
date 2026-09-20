@@ -71,6 +71,9 @@ export function upstreamError(err: TencentApiError): Response {
       return json(404, { error: 'asset_not_found', tencent_code: err.errorCode })
     case 'transient':
     case 'asset_pending': // 还在生成，稍后再试——对调用方与瞬时错误同一语义
+      // 也要留一行：503 之前 client 已经重试过 5 次，全程一声不吭的话，
+      // 线上排查只能看到客户端那句「upstream_unavailable」
+      console.warn('tencent transient error after retries', err.errorCode, err.apiMessage)
       return json(503, { error: 'upstream_unavailable', tencent_code: err.errorCode })
   }
 }

@@ -30,12 +30,13 @@ test('converge 收敛速率至一半，下限 1 QPS', () => {
 // 等于 300 次/min，6 秒就能把一分钟的配额用光。
 // ---------------------------------------------------------------------------
 
-test('配额闸门零突发：两次放行之间恒定间隔 60000/perMinute 毫秒', () => {
-  const q = createEndpointQuota(10) // 10 次/min → 每 6 秒一次
-  expect(q.tryTake(0)).toBe(0)
-  expect(q.tryTake(0)).toBe(6_000) // 立刻再取，被告知还要等 6 秒
-  expect(q.tryTake(5_999)).toBe(1)
-  expect(q.tryTake(6_000)).toBe(0)
+test('配额闸门允许一口气用满 perMinute 次，第 perMinute+1 次要等到最早那次满 60 秒', () => {
+  const q = createEndpointQuota(10)
+  for (let i = 0; i < 10; i++) expect(q.tryTake(i * 100)).toBe(0) // 0.9 秒内连翻 10 页
+  expect(q.tryTake(1_000)).toBe(59_000) // 最早那次在 0，要等到 60_000
+  expect(q.tryTake(59_999)).toBe(1)
+  expect(q.tryTake(60_000)).toBe(0) // 0 那次出窗，放行
+  expect(q.tryTake(60_000)).toBe(100) // 下一个出窗的是 100 那次
 })
 
 test('任意 60 秒窗口内至多放行 perMinute 次——不是「先突发 N 次再补 N 次」', () => {
@@ -47,10 +48,10 @@ test('任意 60 秒窗口内至多放行 perMinute 次——不是「先突发 N
 })
 
 test('拒绝时返回的是「还要等多少毫秒」，可直接喂给 sleep', () => {
-  const q = createEndpointQuota(6) // 每 10 秒一次
-  q.tryTake(1_000)
+  const q = createEndpointQuota(6)
+  for (let i = 0; i < 6; i++) q.tryTake(1_000)
   const waitMs = q.tryTake(3_000)
-  expect(waitMs).toBe(8_000)
+  expect(waitMs).toBe(58_000)
   expect(q.tryTake(3_000 + waitMs)).toBe(0)
 })
 

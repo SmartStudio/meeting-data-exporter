@@ -194,12 +194,13 @@ test('配额闸门跟着 client 实例走：同一实例的后续调用继续受
     { fetch: fn, sleep: async (ms: number) => { clockMs += ms }, nowMs: () => clockMs },
   )
 
-  await c.get('/v1/corp/records', { page: 1 })
-  const afterFirstMs = clockMs
-  await c.get('/v1/corp/records', { page: 2 })
-
-  // 两次之间必须隔满 60000/10 = 6 秒
-  expect(clockMs - afterFirstMs).toBeGreaterThanOrEqual(6_000)
+  const startMs = clockMs
+  // 10 次/min：前 10 页一口气翻完（列会议每页 20 条，这是它能不等的上限）
+  for (let page = 1; page <= 10; page++) await c.get('/v1/corp/records', { page })
+  expect(clockMs - startMs).toBeLessThan(1_000)
+  // 第 11 次要等到第 1 次满 60 秒——闸门记着前面那 10 次，不是每次调用都从零开始
+  await c.get('/v1/corp/records', { page: 11 })
+  expect(clockMs - startMs).toBeGreaterThanOrEqual(60_000)
 })
 
 /**
@@ -216,14 +217,14 @@ test('quotaKey 让路径带变量的接口也受分钟级配额约束', async ()
   )
 
   const startMs = clockMs
-  // 每次都是不同的 path，只有 quotaKey 相同
-  for (let i = 0; i < 3; i++) {
+  // 每次都是不同的 path，只有 quotaKey 相同：61 次里第 61 次必须等到第 1 次满 60 秒。
+  // 按 path 匹配的话每条都是新 path，61 次全部秒过，这里会是 0。
+  for (let i = 0; i < 61; i++) {
     await c.get(`/v1/users/u-${i}`, { operator_id: 'admin' }, { quotaKey: USER_DETAIL_QUOTA_KEY })
   }
 
-  expect(calls).toHaveLength(3)
-  // 60/min = 两次之间至少隔 1 秒，三次至少 2 秒
-  expect(clockMs - startMs).toBeGreaterThanOrEqual(2_000)
+  expect(calls).toHaveLength(61)
+  expect(clockMs - startMs).toBeGreaterThanOrEqual(60_000)
 })
 
 /**
