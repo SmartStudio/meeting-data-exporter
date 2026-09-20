@@ -283,8 +283,12 @@ export async function listAssets(req: Request, ctx: RouteCtx): Promise<Response>
   const meeting = await resolveMeeting(req, ctx, now)
   if (meeting instanceof Response) return meeting
 
-  const assets = await storedAssets(ctx, meeting)
   const decision = await decideMeeting(ctx, auth.identity, meeting, now)
+  // 与 getMeeting 同一口径：判定不可见就回与「库里没有」相同的 404。此前这里回
+  // 200 加空列表，而不存在的 id 回 404，调用方由此能推断出「存在但无权」
+  if (!isVisible(decision)) return storedMeetingNotFound(req, ctx.params.meetingId!)
+
+  const assets = await storedAssets(ctx, meeting)
   const visibleAssets = filterAssetsByDecision(decision, assets)
   await ctx.deps.auditRecorder.recordListing(auth.identity, visibleAssets.length)
 

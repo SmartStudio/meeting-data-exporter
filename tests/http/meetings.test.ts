@@ -142,6 +142,21 @@ test('单场详情对无可见权限的会议返回 404，且不泄露会议属�
   expect(body.assets).toBeUndefined()
   expect(JSON.stringify(body)).not.toContain('并购谈判纪要')
   expect(JSON.stringify(body)).not.toContain('tm-owner-1')
+
+  // 资产清单端点同一口径：此前对被拒的会议回 200 加空列表，而不存在的 id 回 404，
+  // 两者一对照就能推断出「这场会议存在但我没权限」
+  const assetsRes = await app(
+    new Request('https://gw/api/v1/meetings/m-secret-1/assets', { headers: bearer(noAccess) }),
+  )
+  expect(assetsRes.status).toBe(404)
+  const assetsBody = (await assetsRes.json()) as Record<string, unknown>
+  expect(assetsBody.error).toBe('meeting_not_found_in_range')
+  expect(assetsBody.assets).toBeUndefined()
+  const missingRes = await app(
+    new Request('https://gw/api/v1/meetings/m-does-not-exist/assets', { headers: bearer(noAccess) }),
+  )
+  expect(missingRes.status).toBe(404)
+  expect(((await missingRes.json()) as Record<string, unknown>).error).toBe('meeting_not_found_in_range')
 })
 
 test('download-url 对无权资产返回 403 且写审计', async () => {
@@ -157,10 +172,9 @@ test('download-url 对无权资产返回 403 且写审计', async () => {
 
   const headers = bearer(carol)
 
+  // 列资产同样过滤：被拒的会议与不存在的会议同一个 404，不给出「存在但无权」的信号
   const listRes = await app(new Request('https://gw/api/v1/meetings/m-carol-1/assets', { headers }))
-  expect(listRes.status).toBe(200)
-  const listBody = (await listRes.json()) as { assets: unknown[] }
-  expect(listBody.assets).toEqual([]) // 列资产同样过滤：无权限的资产不展示
+  expect(listRes.status).toBe(404)
 
   const dlRes = await app(downloadUrlReq(assetId, headers))
   expect(dlRes.status).toBe(403)
