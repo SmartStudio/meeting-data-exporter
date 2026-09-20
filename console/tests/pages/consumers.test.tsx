@@ -808,6 +808,26 @@ describe('轮换凭据：一次性展示', () => {
     expect(screen.getByTestId('rotated-note')).toHaveTextContent(ROTATED.secretNote)
   })
 
+  test('列表刷新不能把新明文冲掉：刷新发生在关掉这一屏之后，且刷新完面板还在', async () => {
+    await cardReady()
+    respond(/POST .*\/rotate-secret$/, () => [200, ROTATED])
+    const listCalls = () => calls.filter((c) => c.method === 'GET' && /\/admin\/programs$/.test(c.url)).length
+    const before = listCalls()
+    await userEvent.click(screen.getByRole('button', { name: '轮换凭据' }))
+    await userEvent.click(await screen.findByRole('button', { name: '确认轮换' }))
+    await screen.findByTestId('rotated-secret')
+
+    // 明文还在屏上时不能刷列表：刷新会把卡片整个卸掉，state 里的明文随之消失
+    expect(listCalls()).toBe(before)
+    expect(screen.getByTestId('rotated-secret')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /保存好了/ }))
+    await userEvent.click(screen.getByRole('button', { name: '关掉这一屏' }))
+    await waitFor(() => expect(listCalls()).toBe(before + 1))
+    await screen.findByTestId('reach-kb-indexer')
+    expect(screen.queryByTestId('rotated-secret')).not.toBeInTheDocument()
+  })
+
   test('没勾「我已经保存好了」就关，会被再问一遍，而不是一声不吭地关掉', async () => {
     await cardReady()
     respond(/POST .*\/rotate-secret$/, () => [200, ROTATED])

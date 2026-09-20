@@ -147,7 +147,9 @@ export function ProgramActions({
       setAck(false)
       setLeaveWarn(null)
       setRotated(res)
-      onChanged()
+      // 这里**不能**调 onChanged()：它会让列表页重新拉一遍，页面在 loading 期间
+      // 把整张表连同这个组件一起卸掉，state 里的新明文随之消失，一次性展示的那一屏
+      // 一闪就没了。刷新挪到 closeRotated 里，管理员确认保存好了再刷。
     } catch (e) {
       fail(e)
     } finally {
@@ -164,6 +166,7 @@ export function ProgramActions({
     }
     setRotated(null)
     setLeaveWarn(null)
+    onChanged()
   }
 
   return (
