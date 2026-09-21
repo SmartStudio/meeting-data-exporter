@@ -153,7 +153,7 @@ Batch 3/4/5（各单独） T9 executor → T10 cli → T11 e2e + README
 
 > **2026-08-25 更新。** 原文写的「下一步是 M3.5」已过时。
 
-1. **M6 阶段 3（规则与授权）** —— 当前下一步，见 [`docs/console/dev-plan.md` §7](console/dev-plan.md)
+1. **M6 阶段 3（规则与授权）** —— 当前下一步，见 [`docs/console/dev-plan.md` §7](../console/dev-plan.md)
 2. ~~**M3.5 的 Stage 8/9**~~ —— **2026-08-26 补跑，只剩 AI 纪要延迟探测一项**（见 §7）
 3. ~~M4（存储扩展 OSS / NAS）~~ —— 已收敛为只做 NAS 并随 M6 阶段 2 交付（2026-08-24）；
    ~~M5（桌面应用）~~ —— 无限期推迟（2026-08-23，D2）

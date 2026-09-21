@@ -137,7 +137,7 @@ CLI 和 Skill 只能作为个人助手的补充。没有这条链路，企业拿
 
 几个设计决定：
 
-- 规则引擎分三个栈，全部默认拒绝，拒绝优先。前两栈由调度器读取，第三栈由网关读取。管理员可对单场会议做人工改写，改写只替换规则判定结果，授权是独立条件。
+- 规则引擎分三个栈，按优先级首条命中。拉取、归档两栈由调度器读取，放行栈由网关读取。放行栈没有命中就拒绝，另两栈没有命中就跳过；拉取栈一条规则都没有时按时间窗全拉。管理员可对单场会议做人工改写，改写只替换规则判定结果，授权是独立条件。
 - 采集权限的主体是程序，不是人。企微用户可以登录控制台，但不是 service account，请求取数时直接拒绝。
 - 调度按时间片，不补跑。停机期间错过的时间片不补跑，上一轮未结束时不启动新一轮，并写一行 skipped 记录。
 - 失败分两层。整轮抛异常时该轮标记失败。轮内单个对象失败时该轮仍算成功，失败对象进入失败项表。
@@ -198,7 +198,7 @@ bun client/bin/mde.ts run --from 2026-09-01 --to 2026-09-14 --out ./export
 | MySQL 8.0 或更高 | `DATABASE_URL` | 建库必须显式指定 utf8mb4。留空则使用 compose 自带实例 |
 | 本地归档目录 | `MDE_ARCHIVE_ROOT` | 下载落盘与 30 天保留窗口所在目录，必须存在且可写 |
 | NAS 挂载点 | `MDE_NAS_ROOT` | 主存储。compose 下填宿主机路径，挂载进容器 |
-| 企业微信自建应用（可选） | `WECOM_*` | 控制台企微登录。全填或全不填 |
+| 企业微信自建应用（可选） | `WECOM_*` | 采集程序设备授权时核验企微身份。三项全填或全不填，不填则设备授权路由返回 501 |
 | 身份映射策略 | `IDENTITY_STRATEGY` | `direct` / `email` / `table`，企微用户到腾讯会议 userid 的映射方式 |
 | 时区 | `MDE_SCHEDULER_TZ_OFFSET_MIN` | 决定"每天 03:00 清理"的时区。东八区填 `480` |
 
@@ -238,7 +238,7 @@ cd console && npm ci && npm run dev    # 控制台开发
 | --- | --- |
 | [`docs/deploy.md`](docs/deploy.md) | 部署手册：MySQL 准备、腾讯会议与企微后台配置、身份映射策略、采集权限规则模板、Docker Compose、preflight、错误码对照 |
 | [`docs/console/spec.md`](docs/console/spec.md) | 控制台功能说明书：产品模型、页面行为、规则引擎语义、系统状态与降级、已知缺口 |
-| [`docs/roadmap.md`](docs/roadmap.md) | 里程碑 M1 到 M6 与状态 |
+| [`docs/history/`](docs/history/README.md) | 历史记录：里程碑路线图、阶段总结、联调 runbook、各次上线步骤，只反映当时状态 |
 | [`docs/superpowers/specs/2026-07-20-meeting-export-gateway-design.md`](docs/superpowers/specs/2026-07-20-meeting-export-gateway-design.md) | 网关设计与安全模型 |
 | [`docs/superpowers/specs/2026-07-23-export-engine-cli-design.md`](docs/superpowers/specs/2026-07-23-export-engine-cli-design.md) | 导出引擎与 CLI 设计 |
 | [`docs/superpowers/specs/2026-07-20-user-stories.md`](docs/superpowers/specs/2026-07-20-user-stories.md) | 用户故事 |

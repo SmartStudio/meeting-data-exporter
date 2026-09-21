@@ -9,7 +9,7 @@
  *   1   配置完整性        loadConfig 不抛错
  *   2   数据库连通性      SELECT 1
  *   2b  数据库字符集      必须 utf8mb4 / utf8mb4_unicode_ci
- *   2c  数据库版本        >= 5.7
+ *   2c  数据库版本        >= 8.0.19
  *   3   腾讯凭证与签名    调 GET /v1/corp/records 取最近 1 天
  *   4   账号版本          由第 3 步的成败推出（免费版/专业版会在第 3 步失败）
  *   5   企微凭证          调 gettoken
@@ -200,19 +200,21 @@ async function stepVersion(pool: Pool): Promise<void> {
   try {
     const [rows] = await pool.query<VersionRow[]>('SELECT VERSION() AS v')
     const version = rows[0]?.v ?? ''
-    const match = /^(\d+)\.(\d+)/.exec(version)
+    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(version)
     const major = match ? Number(match[1]) : 0
     const minor = match ? Number(match[2]) : 0
-    const ok = major > 5 || (major === 5 && minor >= 7)
+    const patch = match?.[3] ? Number(match[3]) : 0
+    // worker 的 upsert 用 `VALUES (...) AS new` 行别名，8.0.19 才有；8.0.0 到 8.0.18 上是语法错误
+    const ok = major > 8 || (major === 8 && (minor > 0 || patch >= 19))
     if (ok) {
-      record('2c', '数据库版本', 'pass', `MySQL 版本 "${version}"，满足 >= 5.7 的要求。`)
+      record('2c', '数据库版本', 'pass', `MySQL 版本 "${version}"，满足 >= 8.0.19 的要求。`)
     } else {
       record(
         '2c',
         '数据库版本',
         'fail',
-        `MySQL 版本 "${version}"，低于要求的 5.7。`,
-        '升级 MySQL 实例到 5.7 及以上（推荐 8.0+）——网关依赖的 JSON 列类型等特性需要该版本。',
+        `MySQL 版本 "${version}"，低于要求的 8.0.19。`,
+        '升级 MySQL 实例到 8.0.19 及以上——worker 依赖 SKIP LOCKED 与 VALUES (...) AS new 行别名。',
       )
     }
   } catch (err) {

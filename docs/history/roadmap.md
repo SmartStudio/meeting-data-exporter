@@ -9,7 +9,7 @@
   `COPY src scripts migrations package.json`——`packages/` 与 `console/` 都不在镜像里，
   于是**控制台前端从没被任何人打开过**，`src/policy/access.ts` 与 `src/worker/*`
   在镜像里连 import 都做不到。逐条见下方 M6 章与
-  [`docs/console/dev-plan.md` §7](console/dev-plan.md)
+  [`docs/console/dev-plan.md` §7](../console/dev-plan.md)
 - 本文回答：接下来做什么、按什么顺序、每块的范围与依赖
 
 ---
@@ -163,7 +163,7 @@ B1–B5 都是小到中等改动（各自 1–3 个文件、逻辑明确），�
 **为什么单列一块**：`client/` 此前只对「我们自己写的假网关」验证过，而假网关是照着
 `gateway/client.ts` 的期望写的——两者必然吻合，**不构成对真实网关的证据**。
 
-**联调环境**：网关 bun 直跑在 VPS `43.156.203.171:9999`（HTTP + 裸 IP），库切到阿里云 RDS 8.0.36
+**联调环境**：网关 bun 直跑在 VPS `<旧 VPS IP>:9999`（HTTP + 裸 IP），库切到阿里云 RDS 8.0.36
 （与投产同构），Mac 端 `mde` 走 SSH 隧道，**不建企业微信自建应用、只走服务账号**。
 
 ### 实际改出来的东西（都只可能来自真实响应）
@@ -226,15 +226,15 @@ M3 的 `storage` 从第一天就是接口，本项目只新增实现类，`execu
 - **⏸ 无限期推迟（2026-08-23）**：它的独占价值「把文件落到管理员本机」已被 `mde` CLI 覆盖，
   「给不用命令行的人一个界面」由 M6 控制台覆盖，桌面端夹在中间没有独占价值。
   将来真要做，走「内嵌 webview 复用控制台前端」，成本低一个数量级——所以更该等控制台前端做完。
-  见 [`docs/console/dev-plan.md` §1 D2](console/dev-plan.md)
+  见 [`docs/console/dev-plan.md` §1 D2](../console/dev-plan.md)
 
 ---
 
 ## M6 · 子项目 5：管理控制台（Web）
 
 > **六个阶段的功能全部完成并合并 master（2026-08-23～08-27）。但一行都没上线。**
-> 完整文档见 [`docs/console/`](console/README.md)：功能说明书、设计系统、差距分析、22 张原型图、
-> 可运行的单文件原型。逐阶段状态见 [`dev-plan.md` §3](console/dev-plan.md)。
+> 完整文档见 [`docs/console/`](../console/README.md)：功能说明书、设计系统、差距分析、22 张原型图、
+> 可运行的单文件原型。逐阶段状态见 [`dev-plan.md` §3](../console/dev-plan.md)。
 >
 > | 阶段 | 内容 | 状态 |
 > | --- | --- | --- |
@@ -259,7 +259,7 @@ M3 的 `storage` 从第一天就是接口，本项目只新增实现类，`execu
 > | **装到机器上** | ❌ | ❌ **仍然没有，且仓库里不存在这条路径** |
 >
 > 逐条用户故事的覆盖率明细（✅24 · ◐4 · ⬜1 · ⏸1 · —1）见
-> [用户故事 §9.4](superpowers/specs/2026-07-20-user-stories.md)——**只有那一处有明细**，
+> [用户故事 §9.4](../superpowers/specs/2026-07-20-user-stories.md)——**只有那一处有明细**，
 > 本文引用它，不重复抄。
 
 管理员用的 Web 控制台。它把产品模型从「管理员按需导出」推进到**「系统持续归档 +
@@ -277,14 +277,14 @@ M3 的 `storage` 从第一天就是接口，本项目只新增实现类，`execu
 现有网关 + `mde` CLI 做的是「拉下来就结束」。控制台要的归档、保留窗口、到期清理三段，
 **立项时（2026-08-23）一行代码都没有；G1–G10 十个缺口已于 2026-08-27 全部闭合**
 （阶段 2 闭合 G1/G2/G10，阶段 3 闭合 G3/G4，阶段 4 闭合 G5–G9）。差距逐条分析见
-[`docs/console/backend-gap.md`](console/backend-gap.md)——**该文写于立项时，它现在回答的是
-「当初缺什么、各自落在哪个阶段」，不回答现状；现状以 [`dev-plan.md` §3](console/dev-plan.md)
-为准，闭合之后剩下的欠账见 [`dev-plan.md` §8](console/dev-plan.md)。**
+[`docs/console/backend-gap.md`](../console/backend-gap.md)——**该文写于立项时，它现在回答的是
+「当初缺什么、各自落在哪个阶段」，不回答现状；现状以 [`dev-plan.md` §3](../console/dev-plan.md)
+为准，闭合之后剩下的欠账见 [`dev-plan.md` §8](../console/dev-plan.md)。**
 
 ### 研发计划
 
 阶段拆解、并行编排、**`mde` CLI 的整合方案**、以及开工前必须消解的七处
-「规格与现有实现互相矛盾」，见 [`docs/console/dev-plan.md`](console/dev-plan.md)。
+「规格与现有实现互相矛盾」，见 [`docs/console/dev-plan.md`](../console/dev-plan.md)。
 
 要点：**`client/` 的引擎可以整体复用到服务端**——它的 `GatewayClient` / `Store` /
 `Storage` 三个外部依赖从第一天就是接口，换宿主只需换实现，引擎一行不改。
@@ -299,7 +299,7 @@ M3 的 `storage` 从第一天就是接口，本项目只新增实现类，`execu
 | **D2** | **M5 桌面端无限期推迟，不取消** | 桌面端的独占价值「文件落到本机」已被 `mde` CLI 覆盖；将来若做，走「内嵌 webview 复用控制台前端」，成本低一个数量级 |
 | **D3** | **前端 React + Vite + TypeScript** | `tokens.css` 原样引入，不套 UI 框架——`design-system.md` 已是一套完整令牌与组件语义 |
 
-理由详见 [`dev-plan.md` §1](console/dev-plan.md)。
+理由详见 [`dev-plan.md` §1](../console/dev-plan.md)。
 
 ### 与 M4 的合并（✅ 已执行）
 
@@ -328,7 +328,7 @@ M6 控制台    ✅  阶段 0–5 全部完成并合并 master（2026-08-23～08
 ### 下一步是部署（三条实测判据）
 
 **这一条不在任何阶段里**，因为立项时没人想到「功能全做完、镜像里却没有 `packages/`
-和 `console/`」这种形态。逐条落点见 [`dev-plan.md` §7](console/dev-plan.md)。
+和 `console/`」这种形态。逐条落点见 [`dev-plan.md` §7](../console/dev-plan.md)。
 
 **① 镜像里没有 `packages/`，网关自己都 import 不动。**
 `Dockerfile` 的 release 阶段只有 `COPY src ./src` / `scripts` / `migrations` / `package.json`。
@@ -362,11 +362,11 @@ M6 控制台    ✅  阶段 0–5 全部完成并合并 master（2026-08-23～08
   但建下第一条的那一刻兜底翻面。确认日志 `mode=governed` 且 `fetched` 数与原先的
   `meetings` 数吻合之后再逐步收紧。回滚 = 规则页把拉取规则全部停用，不用重新部署。
 - **A8 上线前跑一句核对**（找「规则里有、`service_accounts` 里没有」的程序，它们会从
-  「取得到」变成「取不到」）——SQL 原文在 [`dev-plan.md` §7.2](console/dev-plan.md) 指的
+  「取得到」变成「取不到」）——SQL 原文在 [`dev-plan.md` §7.2](../console/dev-plan.md) 指的
   阶段 5 计划 §13.4。
 
 **上线之后剩下的欠账**（含三条会伤人的、三条会说假话的）见
-[`dev-plan.md` §8](console/dev-plan.md)。
+[`dev-plan.md` §8](../console/dev-plan.md)。
 
 ### 阶段 3 的开工决策（保留为执行记录）
 
