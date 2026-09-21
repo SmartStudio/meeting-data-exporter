@@ -1,6 +1,8 @@
 # mde — Meeting Data Exporter CLI
 
-`mde` 是会议数据导出网关（M2 网关）的命令行客户端：按时间范围或会议号/ID 发现会议、把想要的资产（录像/录音/文字记录/AI 智能纪要）落到本地磁盘，断点续传、崩溃可恢复、对暂未生成的资产自动轮询直到就绪或超时放弃。
+`mde` 是会议数据导出网关的命令行客户端：按时间范围或会议号/ID 发现会议、把想要的资产（录像/录音/文字记录/AI 智能纪要/章节）落到本地磁盘，断点续传、崩溃可恢复、对暂未生成的资产自动轮询直到就绪或超时放弃。
+
+本文是命令与参数的参考。整条链路怎么跑（数据从哪来、凭证怎么放、第一次全量与历史补跑、日常 cron、排错、网关接口契约）见 [`docs/collector.md`](../docs/collector.md)。
 
 ## 安装
 
@@ -124,13 +126,18 @@ mde run --from 2026-07-01 --to 2026-07-31 --out ./export --assets video,ai_minut
 导出目录结构：
 
 ```
-<out>/<yyyy>/<mm>/<yyyy-mm-dd>_<hhmm>_<清洗后的会议主题>_<会议号或ID>/
-  recording_<remoteId>.mp4
-  recording_<remoteId>.m4a
-  transcript.txt
-  ai_minutes.txt
-<out>/.mde/queue.sqlite     # 本地任务队列/状态库
+<out>/<yyyy>/<mm>/<yyyy-mm-dd>_<hhmm>_<会议号>/
+  recording_<remoteId>.mp4        video
+  transcript.txt / .docx / .pdf   transcript，三种格式各一份
+  minutes.md                      ai_minutes
+  chapters.json                   chapters
+  meeting.json                    会议元数据
+  _manifest.json                  文件清单与哈希
+<out>/.mde/queue.sqlite           # 本地任务队列/状态库
 ```
+
+目录名不含会议主题。周期会议每一场各占一个目录，同一分钟的第二场以 `_2` 结尾。
+`audio` 腾讯普通云录制从不产出，实际很少见到。
 
 ## 延迟资产（AI 智能纪要）与探测机制
 
