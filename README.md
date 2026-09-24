@@ -151,7 +151,7 @@ CLI 和 Skill 只能作为个人助手的补充。没有这条链路，企业拿
 需要 Docker 与 Docker Compose v2。
 
 ```bash
-git clone https://github.com/joesmart/meeting-data-exporter.git
+git clone https://github.com/yaowu-ai/meeting-data-exporter.git
 cd meeting-data-exporter
 
 # 1. 准备配置。必填：腾讯会议五项凭证、JWT_SECRET、GATEWAY_BASE_URL、
